@@ -15,6 +15,7 @@ sealed class AADisplayConfig<T>(val key: String) {
     object LauncherPackage: StringConfig("LauncherPackage", null)
     object HomePackage: StringConfig("HomePackage", null)
     object AutoOpen: BooleanConfig("AutoOpen", true)
+    object EnableOneUiSplit: BooleanConfig("EnableOneUiSplit", false)
     object DisableWazeOnAa: BooleanConfig("DisableWazeOnAa", false)
     object DisableGoogleMapsOnAa: BooleanConfig("DisableGoogleMapsOnAa", false)
     object VirtualDisplayDpi: IntConfig("VirtualDisplayDpi", 0)

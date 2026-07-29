@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.ui.aa
 import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.ActivityOptions
+import android.app.ActivityTaskManager
 import android.app.ITaskStackListener
 import android.content.ComponentName
 import android.content.Context
@@ -42,6 +43,10 @@ class AaVirtualDisplayAdapter(
     companion object {
         const val TAG = "AADisplay_AaVirtualDisplayAdapter"
         private const val WINDOWING_MODE_PINNED = 2
+        private const val WINDOWING_MODE_SPLIT_SCREEN_PRIMARY = 3
+        private const val WINDOWING_MODE_SPLIT_SCREEN_SECONDARY = 4
+        private const val WINDOWING_MODE_FREEFORM = 5
+        private const val WINDOWING_MODE_MULTI_WINDOW = 6
         private const val DISPLAY_IME_POLICY_LOCAL = 0
 
         /** Package names to ignore in recent task list */
@@ -55,6 +60,13 @@ class AaVirtualDisplayAdapter(
             "android",
             "com.android.internal.app",
             "com.android.settings"
+        )
+
+        private val MULTI_WINDOW_MODES = setOf(
+            WINDOWING_MODE_SPLIT_SCREEN_PRIMARY,
+            WINDOWING_MODE_SPLIT_SCREEN_SECONDARY,
+            WINDOWING_MODE_FREEFORM,
+            WINDOWING_MODE_MULTI_WINDOW
         )
     }
 
@@ -161,7 +173,9 @@ class AaVirtualDisplayAdapter(
                 }
                 setDisplayImePolicy(mDisplayId, DISPLAY_IME_POLICY_LOCAL)
                 setShouldShowWithInsecureKeyguard(mDisplayId, false)
-                setShouldShowSystemDecors(mDisplayId, false)
+                val showSystemDecors = isOneUiSplitEnabled()
+                setShouldShowSystemDecors(mDisplayId, showSystemDecors)
+                log(TAG, "setShouldShowSystemDecors=$showSystemDecors (EnableOneUiSplit)")
             }
         } catch (e : Throwable){
             log(TAG, "设置虚拟屏幕参数失败: ", e)
@@ -293,12 +307,16 @@ class AaVirtualDisplayAdapter(
         injectInputEvent(createKeyEvent(KeyEvent.ACTION_UP, action))
         if (action == KeyEvent.KEYCODE_BACK) {
             // Match Home-button behavior: if back navigation returns to home and a PiP task is left
-            // pinned, remove it so the launcher view is clean.
+            // pinned, remove it so the launcher view is clean. Never touch OneUI split/MW tasks.
             Handler(Looper.getMainLooper()).post {
-                clearPinnedTasksIfHomeFront("back")
+                if (!shouldPreserveMultiWindowLayout()) {
+                    clearPinnedTasksIfHomeFront("back")
+                }
             }
             Handler(Looper.getMainLooper()).postDelayed({
-                clearPinnedTasksIfHomeFront("back-delay")
+                if (!shouldPreserveMultiWindowLayout()) {
+                    clearPinnedTasksIfHomeFront("back-delay")
+                }
             }, 350L)
         }
     }
@@ -364,6 +382,7 @@ class AaVirtualDisplayAdapter(
         startHomeLauncher()
         // On some ROMs, moving Home to front auto-pins the previous video task (PiP).
         // Clean up pinned tasks on the AA virtual display so Home returns to a normal state.
+        // Only clears WINDOWING_MODE_PINNED; split/MW tasks are never removed here.
         clearPinnedTasksOnDisplay("home")
         Handler(Looper.getMainLooper()).postDelayed({
             clearPinnedTasksOnDisplay("home-delay")
@@ -403,21 +422,34 @@ class AaVirtualDisplayAdapter(
     }
 
     fun startActivity(packageName: String, userId: Int): Boolean{
-        try {
-            if(mDisplayId == Display.INVALID_DISPLAY) return false
-            val componentName = resolveLaunchComponent(packageName) ?: return false
-            log(TAG, "startActivity: $componentName on display=$mDisplayId user=$userId")
+        if(mDisplayId == Display.INVALID_DISPLAY) return false
+        val componentName = resolveLaunchComponent(packageName) ?: return false
+        val launchAdjacent = shouldLaunchAdjacent(packageName)
+        log(TAG, "startActivity: $componentName on display=$mDisplayId user=$userId adjacent=$launchAdjacent")
+        if (launchAdjacent) {
+            val adjacentOk = launchActivityAsUser(componentName, userId, adjacent = true)
+            if (adjacentOk) return true
+            log(TAG, "startActivity adjacent failed; falling back to fullscreen")
+        }
+        return launchActivityAsUser(componentName, userId, adjacent = false)
+    }
+
+    private fun launchActivityAsUser(componentName: ComponentName, userId: Int, adjacent: Boolean): Boolean {
+        return try {
+            val flags = if (adjacent) {
+                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT
+            } else {
+                Intent.FLAG_ACTIVITY_NEW_TASK
+            }
             context.invokeMethod(
                 "startActivityAsUser",
                 args(
                     Intent().apply {
-                        //addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         component = componentName
-                        `package` = component?.packageName ?: return false
+                        `package` = componentName.packageName
                         action = Intent.ACTION_VIEW
                         putExtra("displayId", mDisplayId)
-                        //putExtra("isUcarMode", true)
-                        setFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        setFlags(flags)
                     },
                     ActivityOptions.makeBasic().apply {
                         launchDisplayId = mDisplayId
@@ -429,11 +461,22 @@ class AaVirtualDisplayAdapter(
                     )
                 ), argTypes(Intent::class.java, Bundle::class.java, UserHandle::class.java)
             )
-            return true
-      } catch (e: Throwable) {
-          log(TAG, "startActivity error:", e)
-          return false
-      }
+            true
+        } catch (e: Throwable) {
+            log(TAG, "launchActivityAsUser adjacent=$adjacent error:", e)
+            false
+        }
+    }
+
+    private fun shouldLaunchAdjacent(packageName: String): Boolean {
+        if (!isOneUiSplitEnabled()) return false
+        if (packageName == mHomePackage) return false
+        if (IGNORE_RECENT_PACKAGE.contains(packageName)) return false
+        val foreground = getForegroundPackagesOnDisplay(mDisplayId)
+        if (foreground.isEmpty()) return false
+        if (foreground.all { it == mHomePackage || IGNORE_RECENT_PACKAGE.contains(it) }) return false
+        if (foreground.contains(packageName) && foreground.size == 1) return false
+        return true
     }
 
     private fun refreshLauncherPackage(reason: String) {
@@ -555,6 +598,12 @@ class AaVirtualDisplayAdapter(
     @SuppressLint("MissingPermission")
     fun moveTaskToFront(taskId: Int): Boolean {
         if(mDisplayId == Display.INVALID_DISPLAY) return false
+        if (isOneUiSplitEnabled() && isDisplayInMultiWindow()) {
+            if (setFocusedTaskSafe(taskId)) {
+                log(TAG, "moveTaskToFront: setFocusedTask($taskId) to preserve multi-window")
+                return true
+            }
+        }
         return try {
             Instances.activityManager.moveTaskToFront(taskId, 0)
             true
@@ -578,10 +627,25 @@ class AaVirtualDisplayAdapter(
     /**
      * Move the second task to front
      * If the second task is the Home package app, move the third task to front instead
+     * When OneUI split is active, cycle focus among multi-window tasks instead of collapsing split.
      */
     fun moveSecondTaskToFront(){
         if(mDisplayId == Display.INVALID_DISPLAY)
             return
+        if (isOneUiSplitEnabled() && isDisplayInMultiWindow()) {
+            val mwTasks = getMultiWindowTasksOnDisplay()
+            if (mwTasks.size >= 2) {
+                val focused = mwTasks.firstOrNull()?.taskId
+                val next = mwTasks.firstOrNull { it.taskId != focused } ?: mwTasks[1]
+                log(TAG, "moveSecondTaskToFront: focus multi-window task=${next.taskId}")
+                setFocusedTaskSafe(next.taskId)
+                return
+            }
+            if (mwTasks.size == 1) {
+                setFocusedTaskSafe(mwTasks[0].taskId)
+                return
+            }
+        }
         val allRootTaskInfosOnDisplay = Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId).filter { i -> i.topActivity != null }
         if(allRootTaskInfosOnDisplay.size < 2){
             return
@@ -593,6 +657,63 @@ class AaVirtualDisplayAdapter(
                 allRootTaskInfosOnDisplay[2].taskId
             }
         )
+    }
+
+    private fun isOneUiSplitEnabled(): Boolean {
+        config?.reload()
+        return AADisplayConfig.EnableOneUiSplit.get(config)
+    }
+
+    private fun shouldPreserveMultiWindowLayout(): Boolean {
+        return isOneUiSplitEnabled() && isDisplayInMultiWindow()
+    }
+
+    private fun getWindowingMode(taskInfo: Any): Int? {
+        return try {
+            taskInfo.invokeMethod("getWindowingMode", args(), argTypes()) as? Int
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun isMultiWindowMode(mode: Int?): Boolean {
+        return mode != null && MULTI_WINDOW_MODES.contains(mode)
+    }
+
+    private fun isDisplayInMultiWindow(): Boolean {
+        if (mDisplayId == Display.INVALID_DISPLAY) return false
+        return try {
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
+                .any { taskInfo ->
+                    taskInfo.topActivity != null && isMultiWindowMode(getWindowingMode(taskInfo))
+                }
+        } catch (e: Throwable) {
+            log(TAG, "isDisplayInMultiWindow error:", e)
+            false
+        }
+    }
+
+    private fun getMultiWindowTasksOnDisplay(): List<ActivityTaskManager.RootTaskInfo> {
+        if (mDisplayId == Display.INVALID_DISPLAY) return emptyList()
+        return try {
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
+                .filter { taskInfo ->
+                    taskInfo.topActivity != null && isMultiWindowMode(getWindowingMode(taskInfo))
+                }
+        } catch (e: Throwable) {
+            log(TAG, "getMultiWindowTasksOnDisplay error:", e)
+            emptyList()
+        }
+    }
+
+    private fun setFocusedTaskSafe(taskId: Int): Boolean {
+        return try {
+            Instances.iActivityTaskManager.setFocusedTask(taskId)
+            true
+        } catch (e: Throwable) {
+            log(TAG, "setFocusedTask error:", e)
+            false
+        }
     }
 
     private fun clearPinnedTasksOnDisplay(reason: String) {
@@ -634,12 +755,7 @@ class AaVirtualDisplayAdapter(
     }
 
     private fun isPinnedWindowMode(taskInfo: Any): Boolean {
-        return try {
-            val mode = taskInfo.invokeMethod("getWindowingMode", args(), argTypes()) as? Int
-            mode == WINDOWING_MODE_PINNED
-        } catch (_: Throwable) {
-            false
-        }
+        return getWindowingMode(taskInfo) == WINDOWING_MODE_PINNED
     }
 
     private fun injectInputEvent(event: InputEvent): Boolean {
@@ -802,7 +918,12 @@ class AaVirtualDisplayAdapter(
             }
             if(mHomeTaskId == taskId) {
                 mHomeTaskId = null
-                startHomeLauncher()
+                // Do not restart Home while OneUI split/MW is active — that collapses the layout.
+                if (shouldPreserveMultiWindowLayout()) {
+                    log(TAG, "onTaskRemoved: skip startHomeLauncher while multi-window active, task=$taskId")
+                } else {
+                    startHomeLauncher()
+                }
             } else if(mLauncherPackageTaskId == taskId) {
                 mLauncherPackageTaskId = null
             }
@@ -827,10 +948,14 @@ class AaVirtualDisplayAdapter(
         override fun onTaskSnapshotInvalidated(taskId: Int) {}
 
         //Samsung OneUi
-        override fun onActivityDismissingSplitTask(str: String?) {}
+        override fun onActivityDismissingSplitTask(str: String?) {
+            log(TAG, "onActivityDismissingSplitTask: $str")
+        }
         override fun onOccludeChangeNotice(componentName: ComponentName?, z: Boolean) {}
         override fun onTaskbarIconVisibleChangeRequest(componentName: ComponentName?, z: Boolean) {}
         //Samsung OneUi 7
-        override fun onTaskWindowingModeChanged(i: Int) {}
+        override fun onTaskWindowingModeChanged(i: Int) {
+            log(TAG, "onTaskWindowingModeChanged: mode=$i, displayInMw=${isDisplayInMultiWindow()}")
+        }
     }
 }

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- OneUI split-screen support on the AA virtual display (opt-in setting `EnableOneUiSplit`):
+  - Enables system decorations on the virtual display so OneUI multi-window can stay active.
+  - Launching a second app while another non-Home app is foreground uses `FLAG_ACTIVITY_LAUNCH_ADJACENT` (falls back to fullscreen on failure).
+  - Task switches prefer `setFocusedTask` while multi-window is active so split is not collapsed by `moveTaskToFront`.
+  - Home/Back PiP cleanup and Home restart skip actions that would tear down split/MW layouts.
+
+### Known limitations
+- Depends on OneUI multi-window policy; non-resizable apps may still fail (Developer option “Force activities to be resizable” helps).
+- Enabling system decorations may show status/nav chrome on the virtual display.
+- Not a custom split UI; pairing UI and cross-display split are out of scope. Non-Samsung devices are unsupported.
+
 ## 0.23.6 (2026-07-26)
 
 ### Changed
