@@ -184,6 +184,7 @@ object AndroidHook : BaseHook() {
         private var activityTaskManagerService_startProcessAsync_hook: XC_MethodHook.Unhook? = null
         private var applicationThread_bindApplication_hook: XC_MethodHook.Unhook? = null
         private var activityRecord_ensureConfiguration_hook: XC_MethodHook.Unhook? = null
+        private var hooked = false
 
         fun markPackageOnVirtualDisplay(packageName: String?, displayId: Int) {
             val pkg = normalizePackage(packageName) ?: return
@@ -210,9 +211,20 @@ object AndroidHook : BaseHook() {
             }
         }
 
+        /**
+         * Install density hooks once per DisplayWindow session.
+         * AA reconnect / onResume must NOT clear [appInitUseDisplay] — that drops VD DPI pinning
+         * mid-session and OneUI split often needs a reboot to recover.
+         */
+        fun ensureHooked() {
+            if (!isReadyForSystemHooks()) return
+            if (hooked) return
+            hook()
+        }
+
         fun hook() {
             if (!isReadyForSystemHooks()) return
-            unHook()
+            uninstallHooks()
             activityTaskManagerService_startProcessAsync_hook =
                 activityTaskManagerService_startProcessAsync?.hookBefore { param ->
                     try {
@@ -254,10 +266,16 @@ object AndroidHook : BaseHook() {
                 }
             // Re-pin VD density when WM recomputes activity configuration after cross-display moves.
             activityRecord_ensureConfiguration_hook = hookActivityRecordConfigurationPin()
+            hooked = true
         }
 
         fun unHook() {
+            uninstallHooks()
             appInitUseDisplay.clear()
+            hooked = false
+        }
+
+        private fun uninstallHooks() {
             activityTaskManagerService_startProcessAsync_hook?.apply { unhook() }
             activityTaskManagerService_startProcessAsync_hook = null
 
@@ -266,6 +284,7 @@ object AndroidHook : BaseHook() {
 
             activityRecord_ensureConfiguration_hook?.apply { unhook() }
             activityRecord_ensureConfiguration_hook = null
+            hooked = false
         }
 
         private fun hookActivityRecordConfigurationPin(): XC_MethodHook.Unhook? {
@@ -285,14 +304,17 @@ object AndroidHook : BaseHook() {
                         val packageName = normalizePackage(record.getObject("packageName") as? String)
                             ?: return@hookBefore
                         if (displayId == vdId) {
-                            markPackageOnVirtualDisplay(packageName, vdId)
-                            // Override merged config density before ensure publishes it to the app.
+                            if (!appInitUseDisplay.containsKey(packageName)) {
+                                markPackageOnVirtualDisplay(packageName, vdId)
+                            }
+                            // Only rewrite when wrong — constant writes during OneUI MW layout fights
+                            // split bounds and can leave MW unusable until reboot.
                             val config = runCatching {
                                 record.getObject("mMergedOverrideConfiguration") as? Configuration
                             }.getOrNull() ?: runCatching {
                                 record.invokeMethod("getConfiguration") as? Configuration
                             }.getOrNull()
-                            if (config != null) {
+                            if (config != null && config.densityDpi != vdDpi) {
                                 config.densityDpi = vdDpi
                             }
                         } else if (displayId == Display.DEFAULT_DISPLAY) {
@@ -311,7 +333,7 @@ object AndroidHook : BaseHook() {
         private fun pinDensityIfMapped(packageName: String, configuration: Configuration) {
             if (!appInitUseDisplay.containsKey(packageName)) return
             val densityDpi = CoreManagerService.getDensityDpi()
-            if (densityDpi != 0) {
+            if (densityDpi != 0 && configuration.densityDpi != densityDpi) {
                 configuration.densityDpi = densityDpi
             }
         }

@@ -61,6 +61,11 @@ class DisplayRecyclerViewAdapter(
                 onExit()
             }
         }
+        holder.binding.ibClose.setOnClickListener {
+            // Stay on the stack panel so multiple tasks can be closed in sequence.
+            removeItem(item)
+            CoreApi.removeTask(item.taskId)
+        }
     }
 
     override fun getItemCount(): Int = items.size

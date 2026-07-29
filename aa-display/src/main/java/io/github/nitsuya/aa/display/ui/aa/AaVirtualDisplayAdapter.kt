@@ -96,19 +96,32 @@ class AaVirtualDisplayAdapter(
 
     private var mDoInit = false
     private var mShellManager: IShellManager? = null
+    private val mShellDeathRecipient = IBinder.DeathRecipient {
+        log(TAG, "ShellManagerService binder died")
+        mShellManager = null
+    }
     private var mServiceConnection = object: ServiceConnection {
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
             log(TAG, "ShellManagerService connected: $name")
+            tryOrNull { mShellManager?.asBinder()?.unlinkToDeath(mShellDeathRecipient, 0) }
             mShellManager = IShellManager.Stub.asInterface(service)
+            try {
+                service.linkToDeath(mShellDeathRecipient, 0)
+            } catch (e: Throwable) {
+                log(TAG, "ShellManagerService linkToDeath failed:", e)
+                mShellManager = null
+            }
             if(mDoInit) return
-            mDoInit = !mDoInit
-            mShellManager?.createVirtualDisplayBefore()
+            mDoInit = true
+            // Scripts are best-effort; never block VD creation if the app process is already dead.
+            invokeShellManager("createVirtualDisplayBefore") { it.createVirtualDisplayBefore() }
             runMain {
                onReady(this@AaVirtualDisplayAdapter)
             }
         }
         override fun onServiceDisconnected(name: ComponentName) {
             log(TAG, "ShellManagerService disconnected: $name")
+            tryOrNull { mShellManager?.asBinder()?.unlinkToDeath(mShellDeathRecipient, 0) }
             mShellManager = null
         }
     }
@@ -167,18 +180,7 @@ class AaVirtualDisplayAdapter(
         log(TAG, "virtual display created: id=$mDisplayId, ${width}x$height,$densityDpi, surface=${surface != null}, launcher=${mLauncherPackage.orEmpty()}")
 
         try {
-            Instances.iWindowManager.apply {
-                val configuredImePolicy = AADisplayConfig.DisplayImePolicy.get(config)
-                if (configuredImePolicy != DISPLAY_IME_POLICY_LOCAL) {
-                    log(TAG, "override display IME policy: $configuredImePolicy -> $DISPLAY_IME_POLICY_LOCAL")
-                }
-                setDisplayImePolicy(mDisplayId, DISPLAY_IME_POLICY_LOCAL)
-                setShouldShowWithInsecureKeyguard(mDisplayId, false)
-                val showSystemDecors = isOneUiSplitEnabled()
-                setShouldShowSystemDecors(mDisplayId, showSystemDecors)
-                log(TAG, "setShouldShowSystemDecors=$showSystemDecors (EnableOneUiSplit)")
-                applyForcedVirtualDisplayDensity("connect")
-            }
+            applyVirtualDisplayPolicies("connect")
         } catch (e : Throwable){
             log(TAG, "设置虚拟屏幕参数失败: ", e)
         }
@@ -223,7 +225,13 @@ class AaVirtualDisplayAdapter(
         refreshLauncherPackage("reconnect")
         trackPackage(mLauncherPackage, 0)
         trackPackage(mHomePackage, 0)
-        applyForcedVirtualDisplayDensity("reconnect")
+        // AA reconnect must re-assert OneUI-friendly display policies; otherwise split
+        // only works until the first surface/policy churn after boot.
+        try {
+            applyVirtualDisplayPolicies("reconnect")
+        } catch (e: Throwable) {
+            log(TAG, "onReconnected display policies failed:", e)
+        }
     }
 
     fun onDestroy() {
@@ -268,13 +276,9 @@ class AaVirtualDisplayAdapter(
             }
         }
         // ShellManager may already be dead during teardown; never let this crash system_server.
-        try {
-            mShellManager?.destroyVirtualDisplayAfter()
-        } catch (e: Throwable) {
-            log(TAG, "onDestroy destroyVirtualDisplayAfter ignored:", e)
-        } finally {
-            mShellManager = null
-        }
+        invokeShellManager("destroyVirtualDisplayAfter") { it.destroyVirtualDisplayAfter() }
+        tryOrNull { mShellManager?.asBinder()?.unlinkToDeath(mShellDeathRecipient, 0) }
+        mShellManager = null
         tryOrNull { CoreManagerService.systemContext.unbindService(mServiceConnection) }
         mSurfaceControls.values.forEach { it.release() }
         mSurfaceControls.clear()
@@ -640,9 +644,17 @@ class AaVirtualDisplayAdapter(
 
     fun removeTask(taskId: Int): Boolean {
         if(mDisplayId == Display.INVALID_DISPLAY) return false
+        val packageName = findPackageForTask(taskId)
+        val onVirtualDisplay = isTaskOnVirtualDisplay(taskId)
         return try {
-            Instances.iActivityTaskManager.removeTask(taskId)
-            true
+            val removed = Instances.iActivityTaskManager.removeTask(taskId)
+            if (removed && onVirtualDisplay && !packageName.isNullOrBlank()) {
+                if (!hasPackageTaskOnDisplay(packageName, mDisplayId)) {
+                    AndroidHook.FuckAppUseApplicationContext.clearPackageVirtualDisplay(packageName)
+                    untrackPackage(packageName)
+                }
+            }
+            removed
         } catch (e: Throwable){
             log(TAG,"removeTask error:", e)
             false
@@ -741,6 +753,44 @@ class AaVirtualDisplayAdapter(
         }
     }
 
+    private fun applyVirtualDisplayPolicies(reason: String) {
+        if (mDisplayId == Display.INVALID_DISPLAY) return
+        Instances.iWindowManager.apply {
+            val configuredImePolicy = AADisplayConfig.DisplayImePolicy.get(config)
+            if (configuredImePolicy != DISPLAY_IME_POLICY_LOCAL) {
+                log(TAG, "override display IME policy[$reason]: $configuredImePolicy -> $DISPLAY_IME_POLICY_LOCAL")
+            }
+            setDisplayImePolicy(mDisplayId, DISPLAY_IME_POLICY_LOCAL)
+            setShouldShowWithInsecureKeyguard(mDisplayId, false)
+            val showSystemDecors = isOneUiSplitEnabled()
+            setShouldShowSystemDecors(mDisplayId, showSystemDecors)
+            log(TAG, "setShouldShowSystemDecors[$reason]=$showSystemDecors (EnableOneUiSplit)")
+        }
+        applyForcedVirtualDisplayDensity(reason)
+    }
+
+    private fun invokeShellManager(op: String, block: (IShellManager) -> Unit) {
+        val sm = mShellManager ?: return
+        val binder = try {
+            sm.asBinder()
+        } catch (_: Throwable) {
+            null
+        }
+        if (binder == null || !binder.isBinderAlive || !binder.pingBinder()) {
+            log(TAG, "$op skipped: ShellManager binder dead")
+            mShellManager = null
+            return
+        }
+        try {
+            block(sm)
+        } catch (e: DeadObjectException) {
+            log(TAG, "$op ignored (DeadObject):", e)
+            mShellManager = null
+        } catch (e: Throwable) {
+            log(TAG, "$op ignored:", e)
+        }
+    }
+
     private fun applyForcedVirtualDisplayDensity(reason: String) {
         if (mDisplayId == Display.INVALID_DISPLAY || mDensityDpi <= 0) return
         try {
@@ -780,6 +830,19 @@ class AaVirtualDisplayAdapter(
         return try {
             Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
                 .any { it.taskId == taskId }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun hasPackageTaskOnDisplay(packageName: String, displayId: Int): Boolean {
+        if (displayId == Display.INVALID_DISPLAY) return false
+        val pkg = packageName.trim()
+        if (pkg.isEmpty()) return false
+        return try {
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId).any { taskInfo ->
+                taskInfo.topActivity?.packageName == pkg
+            }
         } catch (_: Throwable) {
             false
         }
@@ -874,6 +937,11 @@ class AaVirtualDisplayAdapter(
     private fun trackPackage(packageName: String?, userId: Int = 0) {
         val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
         mTrackedPackageUsers.getOrPut(pkg) { linkedSetOf() }.add(userId)
+    }
+
+    private fun untrackPackage(packageName: String?) {
+        val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        mTrackedPackageUsers.remove(pkg)
     }
 
     private fun trackPackageFromTask(taskInfo: Any) {

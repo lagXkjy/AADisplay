@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Recent-task stack UI: explicit close button on each task (phone overlay and AA car panel). Outward swipe-to-remove is unchanged.
 - OneUI split-screen support on the AA virtual display (opt-in setting `EnableOneUiSplit`):
   - Enables system decorations on the virtual display so OneUI multi-window can stay active.
   - Launching a second app while another non-Home app is foreground uses `FLAG_ACTIVITY_LAUNCH_ADJACENT` (falls back to fullscreen on failure).
@@ -10,6 +11,12 @@
   - Home/Back PiP cleanup and Home restart skip actions that would tear down split/MW layouts.
 
 ### Fixed
+- OneUI split often surviving only until the first AA reconnect / display destroy (needed phone reboot):
+  - AA reconnect no longer reinstalls density hooks in a way that clears the VD DPI map mid-session.
+  - `ActivityRecord` density pin only rewrites when DPI actually differs (avoids fighting OneUI MW layout).
+  - Reconnect re-applies IME / system-decors / forced VD density policies.
+  - `ShellManager` teardown checks binder liveness + death recipient (stops noisy `DeadObjectException` on destroy).
+- `removeTask` now uses `IActivityTaskManager.removeTask` return value, and when the last task of a package leaves the virtual display it clears the VD DPI map and package tracking.
 - Cross-display task moves between the phone stack and the AA virtual-display stack (recent-task swipe / OneUI move):
   - `moveTaskId` no longer uses `setFocusedTask` after `moveRootTaskToDisplay` (that left moves half-applied and broke MW + density).
   - Virtual-display DPI map is updated immediately on `moveTaskId` and `onTaskDisplayChanged` (mark on VD, clear on phone).

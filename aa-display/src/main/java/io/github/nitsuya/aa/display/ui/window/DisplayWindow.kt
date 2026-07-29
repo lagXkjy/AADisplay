@@ -121,8 +121,9 @@ class DisplayWindow(
                     monitor.acquire()
                 }
             }
+            // ensureHooked: do not reinstall/clear map on AA reconnect (onResume → init).
             if (AndroidHook.isReadyForSystemHooks()) {
-                AndroidHook.FuckAppUseApplicationContext.hook()
+                AndroidHook.FuckAppUseApplicationContext.ensureHooked()
             }
         }
         fun release(){
