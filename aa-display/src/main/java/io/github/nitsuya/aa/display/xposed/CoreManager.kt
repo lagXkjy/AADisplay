@@ -9,7 +9,6 @@ import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceControl
 import io.github.nitsuya.aa.display.model.RecentTask
-import io.github.nitsuya.template.bases.runIO
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy

@@ -24,10 +24,6 @@ import dev.rikka.tools.refine.Refine
 object Instances {
     val iInputManager:         IInputManager          by lazy { IInputManager.Stub.asInterface(ServiceManager.getService(Context.INPUT_SERVICE)) }
     val packageManager:        PackageManager         by lazy { mContext.packageManager }
-//    val userManager:           UserManager            by lazy { mContext.getSystemService(UserManager::class.java) }
-//    val iStatusBarService:     IStatusBarService      by lazy { IStatusBarService.Stub.asInterface(ServiceManager.getService(Context.STATUS_BAR_SERVICE)) }
-//    val notificationManager:   NotificationManager    by lazy { mContext.getSystemService(NotificationManager::class.java) }
-
     val displayManager:        DisplayManager         by lazy { mContext.getSystemService(DisplayManager::class.java) }
 
     val windowManager:         WindowManager          by lazy { mContext.getSystemService(WindowManager::class.java) }
@@ -38,7 +34,6 @@ object Instances {
 
     val activityManager:       ActivityManager        by lazy { mContext.getSystemService(ActivityManager::class.java) }
     val activityManagerHidden: ActivityManagerHidden  by lazy { Refine.unsafeCast(activityManager) as ActivityManagerHidden }
-    //val iActivityManager:      IActivityManager       by lazy { IActivityManager.Stub.asInterface(ServiceManager.getService(Context.ACTIVITY_SERVICE)) }
 
     val iActivityTaskManager:  IActivityTaskManager   by lazy { IActivityTaskManager.Stub.asInterface(ServiceManager.getService(/* Context.ACTIVITY_TASK_SERVICE */"activity_task")) }
 

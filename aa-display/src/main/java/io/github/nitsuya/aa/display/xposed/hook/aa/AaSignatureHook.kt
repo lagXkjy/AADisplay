@@ -6,7 +6,6 @@ import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
-import io.github.nitsuya.aa.display.xposed.log
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.enums.StringMatchType

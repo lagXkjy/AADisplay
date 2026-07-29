@@ -22,15 +22,7 @@ object BridgeService {
         } else {
             pms.getPackageUid(BuildConfig.APPLICATION_ID, 0, 0)
         }
-//        val appPackage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-//            pms.getPackageInfo(BuildConfig.APPLICATION_ID, 0L, 0)
-//        } else {
-//            pms.getPackageInfo(BuildConfig.APPLICATION_ID, 0, 0)
-//        }
-//        if (!Utils.verifyAppSignature(appPackage.applicationInfo.sourceDir)) {
-//            logE(TAG, "Fatal: App signature mismatch")
-//            return
-//        }
+
         log(TAG, "Client uid: $appUid")
         log(TAG, "Service uid: ${Process.myUid()}")
         log(TAG, "Initialize service proxy")

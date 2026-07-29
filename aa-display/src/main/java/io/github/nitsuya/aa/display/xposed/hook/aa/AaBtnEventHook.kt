@@ -5,7 +5,6 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
-import android.util.ArraySet
 import android.view.KeyEvent
 import androidx.core.content.IntentCompat
 import com.github.kyuubiran.ezxhelper.utils.findAllMethods
@@ -18,7 +17,6 @@ import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.hook.abortMethod
 import io.github.nitsuya.aa.display.xposed.log
-import java.util.ArrayList
 import java.util.Collections
 import java.util.HashMap
 import java.util.HashSet
@@ -56,7 +54,6 @@ object AaBtnEventHook: AaHook() {
                 return@hookBefore
             }
             isDisposeHookReceive.putIfAbsent(needAction, param.args[0])
-//                log(tagName,"registerReceiver->$clazzName:${mActions.joinToString()}")
             try {
                 findMethod(clazz, findSuper = true) {
                     name == "onReceive"
