@@ -9,6 +9,8 @@ public interface IWindowManager extends IInterface {
 
     void setForcedDisplayDensityForUser(int displayId, int density, int userId);
 
+    void clearForcedDisplayDensityForUser(int displayId, int userId);
+
     int getWindowingMode(int displayId);
 
     void setWindowingMode(int displayId, int mode);

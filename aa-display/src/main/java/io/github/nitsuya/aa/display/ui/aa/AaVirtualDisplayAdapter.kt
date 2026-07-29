@@ -30,6 +30,7 @@ import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.IShellManager
 import io.github.nitsuya.aa.display.xposed.TipUtil
+import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.template.bases.runMain
@@ -176,6 +177,7 @@ class AaVirtualDisplayAdapter(
                 val showSystemDecors = isOneUiSplitEnabled()
                 setShouldShowSystemDecors(mDisplayId, showSystemDecors)
                 log(TAG, "setShouldShowSystemDecors=$showSystemDecors (EnableOneUiSplit)")
+                applyForcedVirtualDisplayDensity("connect")
             }
         } catch (e : Throwable){
             log(TAG, "设置虚拟屏幕参数失败: ", e)
@@ -221,12 +223,14 @@ class AaVirtualDisplayAdapter(
         refreshLauncherPackage("reconnect")
         trackPackage(mLauncherPackage, 0)
         trackPackage(mHomePackage, 0)
+        applyForcedVirtualDisplayDensity("reconnect")
     }
 
     fun onDestroy() {
         mIsDestroying = true
         trackPackage(mLauncherPackage, 0)
         trackPackage(mHomePackage, 0)
+        clearForcedVirtualDisplayDensity()
         val protectedPackages = linkedSetOf<String>().apply {
             add(BuildConfig.APPLICATION_ID)
             mLauncherPackage?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }
@@ -441,6 +445,10 @@ class AaVirtualDisplayAdapter(
             } else {
                 Intent.FLAG_ACTIVITY_NEW_TASK
             }
+            AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(
+                componentName.packageName,
+                mDisplayId
+            )
             context.invokeMethod(
                 "startActivityAsUser",
                 args(
@@ -582,28 +590,45 @@ class AaVirtualDisplayAdapter(
 
     fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean): Boolean {
         if(mDisplayId == Display.INVALID_DISPLAY) return false
+        val packageName = findPackageForTask(taskId)
+        val targetDisplayId = if (isVirtualDisplay) mDisplayId else Display.DEFAULT_DISPLAY
+        log(
+            TAG,
+            "moveTaskId: task=$taskId pkg=${packageName.orEmpty()} -> display=$targetDisplayId (vd=$isVirtualDisplay)"
+        )
         try {
-            Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, if(isVirtualDisplay) mDisplayId else 0)
+            Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, targetDisplayId)
         } catch (e: Throwable){
-            log(TAG,"moveTaskId error:", e)
+            log(TAG,"moveTaskId moveRootTaskToDisplay error:", e)
         }
-        return try {
-            moveTaskToFront(taskId)
-        } catch (e: Throwable){
-            log(TAG,"moveTaskId error:", e)
-            false
+        // Cross-display move must update DPI map immediately (bindApplication will not re-run).
+        if (isVirtualDisplay) {
+            AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(packageName, mDisplayId)
+        } else {
+            AndroidHook.FuckAppUseApplicationContext.clearPackageVirtualDisplay(packageName)
         }
+        // Never use setFocusedTask here — that only switches panes inside an existing MW layout
+        // and leaves VD↔phone moves half-applied (split + density chaos).
+        return bringTaskToFrontOnDisplay(taskId)
     }
 
     @SuppressLint("MissingPermission")
     fun moveTaskToFront(taskId: Int): Boolean {
         if(mDisplayId == Display.INVALID_DISPLAY) return false
-        if (isOneUiSplitEnabled() && isDisplayInMultiWindow()) {
+        // Preserve OneUI split only when the task is already on this virtual display.
+        if (isOneUiSplitEnabled()
+            && isDisplayInMultiWindow()
+            && isTaskOnVirtualDisplay(taskId)
+        ) {
             if (setFocusedTaskSafe(taskId)) {
                 log(TAG, "moveTaskToFront: setFocusedTask($taskId) to preserve multi-window")
                 return true
             }
         }
+        return bringTaskToFrontOnDisplay(taskId)
+    }
+
+    private fun bringTaskToFrontOnDisplay(taskId: Int): Boolean {
         return try {
             Instances.activityManager.moveTaskToFront(taskId, 0)
             true
@@ -714,6 +739,59 @@ class AaVirtualDisplayAdapter(
             log(TAG, "setFocusedTask error:", e)
             false
         }
+    }
+
+    private fun applyForcedVirtualDisplayDensity(reason: String) {
+        if (mDisplayId == Display.INVALID_DISPLAY || mDensityDpi <= 0) return
+        try {
+            Instances.iWindowManager.setForcedDisplayDensityForUser(mDisplayId, mDensityDpi, 0)
+            log(TAG, "setForcedDisplayDensityForUser[$reason]: display=$mDisplayId dpi=$mDensityDpi")
+        } catch (e: Throwable) {
+            log(TAG, "setForcedDisplayDensityForUser[$reason] failed:", e)
+        }
+    }
+
+    private fun clearForcedVirtualDisplayDensity() {
+        if (mDisplayId == Display.INVALID_DISPLAY) return
+        try {
+            Instances.iWindowManager.clearForcedDisplayDensityForUser(mDisplayId, 0)
+            log(TAG, "clearForcedDisplayDensityForUser: display=$mDisplayId")
+        } catch (e: Throwable) {
+            log(TAG, "clearForcedDisplayDensityForUser failed:", e)
+        }
+    }
+
+    private fun findPackageForTask(taskId: Int): String? {
+        fun fromDisplay(displayId: Int): String? {
+            return try {
+                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+                    .firstOrNull { it.taskId == taskId }
+                    ?.topActivity
+                    ?.packageName
+            } catch (_: Throwable) {
+                null
+            }
+        }
+        return fromDisplay(mDisplayId) ?: fromDisplay(Display.DEFAULT_DISPLAY)
+    }
+
+    private fun isTaskOnVirtualDisplay(taskId: Int): Boolean {
+        if (mDisplayId == Display.INVALID_DISPLAY) return false
+        return try {
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
+                .any { it.taskId == taskId }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun syncDensityMapForDisplayChange(taskId: Int, newDisplayId: Int) {
+        val packageName = findPackageForTask(taskId)
+        AndroidHook.FuckAppUseApplicationContext.onTaskDisplayChanged(packageName, newDisplayId)
+        log(
+            TAG,
+            "onTaskDisplayChanged: task=$taskId pkg=${packageName.orEmpty()} -> display=$newDisplayId"
+        )
     }
 
     private fun clearPinnedTasksOnDisplay(reason: String) {
@@ -936,7 +1014,9 @@ class AaVirtualDisplayAdapter(
         override fun onTaskProfileLocked(taskInfo: ActivityManager.RunningTaskInfo?, userId: Int) {}
         override fun onTaskSnapshotChanged(taskId: Int, snapshot: TaskSnapshot?) {}
         override fun onBackPressedOnTaskRoot(taskInfo: ActivityManager.RunningTaskInfo?) {}
-        override fun onTaskDisplayChanged(taskId: Int, newDisplayId: Int) {}
+        override fun onTaskDisplayChanged(taskId: Int, newDisplayId: Int) {
+            syncDensityMapForDisplayChange(taskId, newDisplayId)
+        }
         override fun onRecentTaskListUpdated() {}
         override fun onRecentTaskRemovedForAddTask(taskId: Int) {}
         override fun onRecentTaskListFrozenChanged(frozen: Boolean) {}

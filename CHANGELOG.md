@@ -9,6 +9,12 @@
   - Task switches prefer `setFocusedTask` while multi-window is active so split is not collapsed by `moveTaskToFront`.
   - Home/Back PiP cleanup and Home restart skip actions that would tear down split/MW layouts.
 
+### Fixed
+- Cross-display task moves between the phone stack and the AA virtual-display stack (recent-task swipe / OneUI move):
+  - `moveTaskId` no longer uses `setFocusedTask` after `moveRootTaskToDisplay` (that left moves half-applied and broke MW + density).
+  - Virtual-display DPI map is updated immediately on `moveTaskId` and `onTaskDisplayChanged` (mark on VD, clear on phone).
+  - Virtual display density is forced via `setForcedDisplayDensityForUser`, and ActivityRecord configuration ensure re-pins VD `densityDpi` for tasks on the VD.
+
 ### Known limitations
 - Depends on OneUI multi-window policy; non-resizable apps may still fail (Developer option “Force activities to be resizable” helps).
 - Enabling system decorations may show status/nav chrome on the virtual display.

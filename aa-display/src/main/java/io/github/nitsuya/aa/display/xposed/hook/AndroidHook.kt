@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.pm.IPackageManager
 import android.content.res.Configuration
+import android.view.Display
 import com.github.kyuubiran.ezxhelper.utils.*
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
@@ -14,6 +15,7 @@ import io.github.nitsuya.aa.display.xposed.log
 import io.github.qauxv.util.Initiator
 import java.io.File
 import java.lang.reflect.Method
+import java.util.concurrent.ConcurrentHashMap
 
 object AndroidHook : BaseHook() {
     override val tagName: String = "AAD_AndroidHook"
@@ -149,8 +151,12 @@ object AndroidHook : BaseHook() {
         }
     }
 
+    /**
+     * Pins virtual-display densityDpi for processes whose tasks live on the AA VD.
+     * Must stay in sync when tasks move between the phone stack and the virtual-display stack.
+     */
     object FuckAppUseApplicationContext {
-        private val appInitUseDisplay: HashMap<String, Int> = hashMapOf()
+        private val appInitUseDisplay: ConcurrentHashMap<String, Int> = ConcurrentHashMap()
         private val activityTaskManagerService_startProcessAsync by lazy {
             try {
                 findSystemMethod("com.android.server.wm.ActivityTaskManagerService") {
@@ -175,9 +181,35 @@ object AndroidHook : BaseHook() {
                 null
             }
         }
-
         private var activityTaskManagerService_startProcessAsync_hook: XC_MethodHook.Unhook? = null
         private var applicationThread_bindApplication_hook: XC_MethodHook.Unhook? = null
+        private var activityRecord_ensureConfiguration_hook: XC_MethodHook.Unhook? = null
+
+        fun markPackageOnVirtualDisplay(packageName: String?, displayId: Int) {
+            val pkg = normalizePackage(packageName) ?: return
+            if (displayId == Display.DEFAULT_DISPLAY || displayId == Display.INVALID_DISPLAY) return
+            appInitUseDisplay[pkg] = displayId
+            log(tagName, "VD density map mark: $pkg -> display=$displayId")
+        }
+
+        fun clearPackageVirtualDisplay(packageName: String?) {
+            val pkg = normalizePackage(packageName) ?: return
+            if (appInitUseDisplay.remove(pkg) != null) {
+                log(tagName, "VD density map clear: $pkg")
+            }
+        }
+
+        /** Keep package→display DPI mapping in sync when a task moves VD ↔ phone. */
+        fun onTaskDisplayChanged(packageName: String?, newDisplayId: Int) {
+            val pkg = normalizePackage(packageName) ?: return
+            val vdId = CoreManagerService.getDisplayId()
+            if (vdId != Display.INVALID_DISPLAY && newDisplayId == vdId) {
+                markPackageOnVirtualDisplay(pkg, vdId)
+            } else if (newDisplayId == Display.DEFAULT_DISPLAY) {
+                clearPackageVirtualDisplay(pkg)
+            }
+        }
+
         fun hook() {
             if (!isReadyForSystemHooks()) return
             unHook()
@@ -187,13 +219,18 @@ object AndroidHook : BaseHook() {
                         val activityRecord = param.args[0]
                         val displayId = activityRecord.invokeMethod("getDisplayId") as Int
                         val packageName = activityRecord.getObject("packageName") as String
-                        if (displayId == 0) {
-                            if (appInitUseDisplay.containsKey(packageName)) {
-                                appInitUseDisplay.remove(packageName)
-                            }
+                        val pkg = normalizePackage(packageName) ?: return@hookBefore
+                        val vdId = CoreManagerService.getDisplayId()
+                        if (displayId == Display.DEFAULT_DISPLAY) {
+                            // Task is on the phone stack — never keep forcing VD DPI.
+                            clearPackageVirtualDisplay(pkg)
                             return@hookBefore
                         }
-                        appInitUseDisplay[packageName] = displayId
+                        if (vdId != Display.INVALID_DISPLAY && displayId == vdId) {
+                            markPackageOnVirtualDisplay(pkg, displayId)
+                        } else if (displayId != Display.DEFAULT_DISPLAY) {
+                            appInitUseDisplay[pkg] = displayId
+                        }
                     } catch (e: Exception) {
                         log(
                             tagName,
@@ -209,19 +246,14 @@ object AndroidHook : BaseHook() {
                         if (configuration !is Configuration) {
                             return@hookBefore
                         }
-                        val packageName = (param.args[0] as String).run {
-                            this.substringBeforeLast(":")
-                        }
-                        if (appInitUseDisplay.containsKey(packageName)) {
-                            val densityDpi = CoreManagerService.getDensityDpi()
-                            if (densityDpi != 0) {
-                                configuration.densityDpi = densityDpi
-                            }
-                        }
+                        val packageName = normalizePackage(param.args[0] as? String) ?: return@hookBefore
+                        pinDensityIfMapped(packageName, configuration)
                     } catch (e: Exception) {
                         log(tagName, "applicationThread_bindApplication Hook Exception", e)
                     }
                 }
+            // Re-pin VD density when WM recomputes activity configuration after cross-display moves.
+            activityRecord_ensureConfiguration_hook = hookActivityRecordConfigurationPin()
         }
 
         fun unHook() {
@@ -231,6 +263,62 @@ object AndroidHook : BaseHook() {
 
             applicationThread_bindApplication_hook?.apply { unhook() }
             applicationThread_bindApplication_hook = null
+
+            activityRecord_ensureConfiguration_hook?.apply { unhook() }
+            activityRecord_ensureConfiguration_hook = null
+        }
+
+        private fun hookActivityRecordConfigurationPin(): XC_MethodHook.Unhook? {
+            return try {
+                val method = findSystemMethod("com.android.server.wm.ActivityRecord", findSuper = true) {
+                    name == "ensureActivityConfiguration"
+                } ?: findSystemMethod("com.android.server.wm.ActivityRecord", findSuper = true) {
+                    name == "ensureConfiguration"
+                } ?: return null
+                method.hookBefore { param ->
+                    try {
+                        val record = param.thisObject
+                        val displayId = record.invokeMethod("getDisplayId") as? Int ?: return@hookBefore
+                        val vdId = CoreManagerService.getDisplayId()
+                        val vdDpi = CoreManagerService.getDensityDpi()
+                        if (vdId == Display.INVALID_DISPLAY || vdDpi == 0) return@hookBefore
+                        val packageName = normalizePackage(record.getObject("packageName") as? String)
+                            ?: return@hookBefore
+                        if (displayId == vdId) {
+                            markPackageOnVirtualDisplay(packageName, vdId)
+                            // Override merged config density before ensure publishes it to the app.
+                            val config = runCatching {
+                                record.getObject("mMergedOverrideConfiguration") as? Configuration
+                            }.getOrNull() ?: runCatching {
+                                record.invokeMethod("getConfiguration") as? Configuration
+                            }.getOrNull()
+                            if (config != null) {
+                                config.densityDpi = vdDpi
+                            }
+                        } else if (displayId == Display.DEFAULT_DISPLAY) {
+                            clearPackageVirtualDisplay(packageName)
+                        }
+                    } catch (e: Exception) {
+                        log(tagName, "ActivityRecord configuration pin Exception", e)
+                    }
+                }
+            } catch (e: Throwable) {
+                log(tagName, "ActivityRecord configuration pin hook failed", e)
+                null
+            }
+        }
+
+        private fun pinDensityIfMapped(packageName: String, configuration: Configuration) {
+            if (!appInitUseDisplay.containsKey(packageName)) return
+            val densityDpi = CoreManagerService.getDensityDpi()
+            if (densityDpi != 0) {
+                configuration.densityDpi = densityDpi
+            }
+        }
+
+        private fun normalizePackage(packageName: String?): String? {
+            val pkg = packageName?.substringBeforeLast(":")?.trim().orEmpty()
+            return pkg.takeIf { it.isNotEmpty() }
         }
 
     }
