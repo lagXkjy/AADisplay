@@ -121,7 +121,9 @@ class DisplayWindow(
                     monitor.acquire()
                 }
             }
-            AndroidHook.FuckAppUseApplicationContext.hook()
+            if (AndroidHook.isReadyForSystemHooks()) {
+                AndroidHook.FuckAppUseApplicationContext.hook()
+            }
         }
         fun release(){
             if(mScreenOffReplaceLockScreen){

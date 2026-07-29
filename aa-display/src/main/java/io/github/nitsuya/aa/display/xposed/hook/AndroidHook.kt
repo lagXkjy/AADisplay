@@ -8,15 +8,52 @@ import com.github.kyuubiran.ezxhelper.utils.*
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.CoreApi
-import io.github.nitsuya.aa.display.IsSystemEnv
 import io.github.nitsuya.aa.display.xposed.BridgeService
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.log
 import io.github.qauxv.util.Initiator
+import java.io.File
+import java.lang.reflect.Method
 
 object AndroidHook : BaseHook() {
     override val tagName: String = "AAD_AndroidHook"
+
+    @Volatile
+    var isSystemServerHooked: Boolean = false
+        private set
+
+    @Volatile
+    private var systemServerClassLoader: ClassLoader? = null
+
+    /** True only in the real system_server process after AndroidHook.init. */
+    fun isReadyForSystemHooks(): Boolean =
+        isSystemServerHooked && isSystemServerProcess()
+
+    private fun isSystemServerProcess(): Boolean {
+        return try {
+            val name = File("/proc/self/cmdline").readBytes()
+                .takeWhile { it != 0.toByte() }
+                .toByteArray()
+                .toString(Charsets.UTF_8)
+            name == "system_server"
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun findSystemMethod(
+        className: String,
+        findSuper: Boolean = false,
+        condition: Method.() -> Boolean
+    ): Method? {
+        if (!isReadyForSystemHooks()) return null
+        val cl = systemServerClassLoader ?: return null
+        return findMethod(className, cl, findSuper, condition)
+    }
+
     override fun init(lpparam: XC_LoadPackage.LoadPackageParam) {
+        systemServerClassLoader = lpparam.classLoader
+        isSystemServerHooked = true
         Initiator.init(lpparam.classLoader)
         log(tagName, "xposed init")
         var serviceManagerHook: XC_MethodHook.Unhook? = null
@@ -79,9 +116,8 @@ object AndroidHook : BaseHook() {
 
     object Power {
         private val powerPress by lazy {
-            if (!IsSystemEnv) return@lazy null
             try {
-                findMethod("com.android.server.policy.PhoneWindowManager") {
+                findSystemMethod("com.android.server.policy.PhoneWindowManager") {
                     name == "powerPress"
                             && parameterCount == 3
                             && parameterTypes[0] == Long::class.javaPrimitiveType //eventTime
@@ -95,6 +131,7 @@ object AndroidHook : BaseHook() {
         }
         private var hookPower: XC_MethodHook.Unhook? = null
         fun hook() {
+            if (!isReadyForSystemHooks()) return
             unHook()
             hookPower = powerPress?.hookBefore {
                 if (!(it.args[2] as Boolean)) {
@@ -115,9 +152,8 @@ object AndroidHook : BaseHook() {
     object FuckAppUseApplicationContext {
         private val appInitUseDisplay: HashMap<String, Int> = hashMapOf()
         private val activityTaskManagerService_startProcessAsync by lazy {
-            if (!IsSystemEnv) return@lazy null
             try {
-                findMethod("com.android.server.wm.ActivityTaskManagerService") {
+                findSystemMethod("com.android.server.wm.ActivityTaskManagerService") {
                     name == "startProcessAsync"
                 }
             } catch (e: Throwable) {
@@ -130,9 +166,8 @@ object AndroidHook : BaseHook() {
             }
         }
         private val applicationThread_bindApplication by lazy {
-            if (!IsSystemEnv) return@lazy null
             try {
-                findMethod("android.app.IApplicationThread\$Stub\$Proxy") {
+                findSystemMethod("android.app.IApplicationThread\$Stub\$Proxy") {
                     name == "bindApplication"
                 }
             } catch (e: Throwable) {
@@ -144,6 +179,7 @@ object AndroidHook : BaseHook() {
         private var activityTaskManagerService_startProcessAsync_hook: XC_MethodHook.Unhook? = null
         private var applicationThread_bindApplication_hook: XC_MethodHook.Unhook? = null
         fun hook() {
+            if (!isReadyForSystemHooks()) return
             unHook()
             activityTaskManagerService_startProcessAsync_hook =
                 activityTaskManagerService_startProcessAsync?.hookBefore { param ->
