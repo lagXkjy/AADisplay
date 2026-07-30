@@ -2,9 +2,12 @@
 
 ## Unreleased
 
+### Changed
+- Default settings: `EnableOneUiSplit` and `DisableGoogleMapsOnAa` now default to `true` (fresh installs / missing prefs keys).
+
 ### Added
 - Recent-task stack UI: explicit close button on each task (phone overlay and AA car panel). Outward swipe-to-remove is unchanged.
-- OneUI split-screen support on the AA virtual display (opt-in setting `EnableOneUiSplit`):
+- OneUI split-screen support on the AA virtual display (setting `EnableOneUiSplit`, default on):
   - Enables system decorations on the virtual display so OneUI multi-window can stay active.
   - Sets the virtual display windowing mode to freeform and launches non-Home apps as freeform so the OneUI caption/handle bar (drag, resize, enter split) is available.
   - Launching a second app while another non-Home app is foreground uses `FLAG_ACTIVITY_LAUNCH_ADJACENT` (falls back to freeform/fullscreen on failure).
@@ -12,14 +15,16 @@
   - Home/Back PiP cleanup and Home restart skip actions that would tear down split/MW layouts.
 
 ### Fixed
-- Apps opening fullscreen on the AA virtual display with no OneUI freeform caption bar (could not resize or enter split):
+- AA facet / side menu buttons missing on Android Auto 17.x: `AaUiHook` only matched `gh_coolwalk_vertical_facet_bar`, but canonical vertical-rail layouts often inflate other coolwalk facet hosts (or equivalent content). Now matches multiple facet layout IDs and also detects facet chrome by `status_bar` + launcher icon views, with safer null handling and inject logging.
   - When `EnableOneUiSplit` is on, apply `setWindowingMode(FREEFORM)` with system decors on connect/reconnect (do not force FULLSCREEN when the setting is off).
-  - Non-Home launches use `ActivityOptions.setLaunchWindowingMode(FREEFORM)`; Home/launcher stays fullscreen.
-  - After a task lands on the VD (create / move-to-front / display-changed / post-launch), force `setTaskWindowingMode(FREEFORM)` when still fullscreen so caption appears without a phone↔VD round-trip.
+  - Non-Home launches use `ActivityOptions.setLaunchWindowingMode(FREEFORM)` + inset `setLaunchBounds`; Home/launcher stays fullscreen.
+  - After a task lands on the VD (create / move-to-front / display-changed / post-launch), force `setTaskWindowingMode(FREEFORM)` and inset `resizeTask` when still fullscreen or maximized-looking freeform, with multi-delay retries, so caption appears without a phone↔VD round-trip.
 - OneUI caption “split” moving the freeform app onto the phone stack:
   - Track VD tasks and bounce unsolicited `VD → DEFAULT_DISPLAY` moves back onto the virtual display (intentional recent-task `moveTaskId` to phone is suppressed).
-  - Follow-up scan pulls paired split-stage tasks that lag behind the first move.
-- Settings appearing “lost” after reboot for hooks (especially `EnableOneUiSplit`, whose default is false):
+  - Also track owned **packages** (e.g. `com.autonavi.amapauto`): OneUI often recreates a new taskId on the phone and opens an Apps/Home chooser (“应用…”); reclaim scans the phone stack on stack/windowing/display changes and pulls owned apps back.
+  - Follow-up reclaim passes at 0/400/1000ms for lagged split-stage moves. Phone launcher / SystemUI chooser packages are never bounced.
+  - After bounce/reclaim, briefly suppress ensureFreeform (~1.8s) so forcing FREEFORM does not collapse OneUI split/MW; `onTaskWindowingModeChanged` only reclaims (no freeform force). Intentional `moveTaskId` back to VD still ensures freeform.
+- Settings appearing “lost” after reboot for hooks (especially `EnableOneUiSplit`):
   - App prefs XML was already saved; SELinux blocks system_server from reading `app_data_file`.
   - On save, copy the same `aadisplay_config.xml` to `/data/system/aadisplay_config.xml` (`system_data_file`, survives reboot; `/data/local/tmp` is wiped on many devices) and load via `XSharedPreferences(File)` when the package path is unreadable.
 - `AaMainFragment` crash (`Fragment not attached to a context`) during AA reconnect when registering control receivers after detach; skip register/unregister when detached so steering-wheel / screen-control hooks keep working.

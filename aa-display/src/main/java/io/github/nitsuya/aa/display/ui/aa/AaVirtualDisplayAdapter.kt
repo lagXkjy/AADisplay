@@ -13,6 +13,7 @@ import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.os.*
@@ -71,6 +72,34 @@ class AaVirtualDisplayAdapter(
             WINDOWING_MODE_FREEFORM,
             WINDOWING_MODE_MULTI_WINDOW
         )
+
+        /** ActivityTaskManager.RESIZE_MODE_SYSTEM — resize without preserving window. */
+        private const val RESIZE_MODE_SYSTEM = 0
+        /** Freeform window as fraction of VD size (centered inset so caption is visible). */
+        private const val FREEFORM_INSET_RATIO = 0.88f
+        /** Treat freeform as "fake fullscreen" when bounds cover more than this of the display. */
+        private const val FREEFORM_MAX_FILL_RATIO = 0.95f
+        /** After split bounce/reclaim, do not force FREEFORM (would collapse OneUI split). */
+        private const val SUPPRESS_ENSURE_FREEFORM_MS = 1800L
+
+        private val ENSURE_FREEFORM_DELAYS_MS = longArrayOf(0L, 200L, 500L, 1000L, 1800L)
+        private val RECLAIM_FOLLOWUP_DELAYS_MS = longArrayOf(0L, 400L, 1000L)
+
+        /**
+         * Never bounce these phone-side surfaces back onto the VD.
+         * OneUI split entry often opens an Apps/Home chooser ("应用…") on DEFAULT_DISPLAY.
+         */
+        private val BOUNCE_EXCLUDED_PACKAGES = setOf(
+            BuildConfig.APPLICATION_ID,
+            "android",
+            "com.android.systemui",
+            "com.android.launcher3",
+            "com.sec.android.app.launcher",
+            "com.samsung.android.apps.applock",
+            "com.samsung.android.app.galaxyfinder",
+            "com.samsung.android.honeyboard",
+            "com.samsung.android.knox.containercore"
+        )
     }
 
     /** Default launch package name: the app package to launch when virtual display is created, can be null */
@@ -89,11 +118,25 @@ class AaVirtualDisplayAdapter(
     private val mTaskStackListener = TaskStackListener()
     /** Tasks last known on the AA virtual display (for OneUI split bounce-back). */
     private val mVdTaskIds = mutableSetOf<Int>()
+    /**
+     * App packages owned by the VD session. OneUI split often recreates tasks with new IDs on the
+     * phone, so package-based reclaim is required (task-id tracking alone misses amapauto etc.).
+     */
+    private val mVdPackages = mutableSetOf<String>()
     /** Ignore onTaskDisplayChanged bounce while we intentionally move VD ↔ phone. */
     private var mSuppressDisplayBounceUntil = 0L
+    /**
+     * After bounce/reclaim for OneUI split, skip ensureFreeform so we do not force FREEFORM
+     * over an in-progress MULTI_WINDOW / split transition.
+     */
+    private var mSuppressEnsureFreeformUntil = 0L
     private val mLastFreeformEnsureAt = mutableMapOf<Int, Long>()
     private val mLastDisplayBounceAt = mutableMapOf<Int, Long>()
+    private var mLastReclaimAt = 0L
     private val mHandler = Handler(Looper.getMainLooper())
+    private val mDebouncedStackReclaim = Runnable {
+        reclaimVirtualDisplayTasks("stack-changed")
+    }
     var mDisplayId = Display.INVALID_DISPLAY
     var mDensityDpi: Int = 0
 
@@ -161,9 +204,13 @@ class AaVirtualDisplayAdapter(
         mIsDestroying = false
         mTrackedPackageUsers.clear()
         mVdTaskIds.clear()
+        mVdPackages.clear()
         mLastFreeformEnsureAt.clear()
         mLastDisplayBounceAt.clear()
         mSuppressDisplayBounceUntil = 0L
+        mSuppressEnsureFreeformUntil = 0L
+        mLastReclaimAt = 0L
+        mHandler.removeCallbacks(mDebouncedStackReclaim)
         refreshLauncherPackage("connect")
         trackPackage(mLauncherPackage, 0)
         trackPackage(mHomePackage, 0)
@@ -250,9 +297,13 @@ class AaVirtualDisplayAdapter(
     fun onDestroy() {
         mIsDestroying = true
         mVdTaskIds.clear()
+        mVdPackages.clear()
         mLastFreeformEnsureAt.clear()
         mLastDisplayBounceAt.clear()
         mSuppressDisplayBounceUntil = 0L
+        mSuppressEnsureFreeformUntil = 0L
+        mLastReclaimAt = 0L
+        mHandler.removeCallbacks(mDebouncedStackReclaim)
         trackPackage(mLauncherPackage, 0)
         trackPackage(mHomePackage, 0)
         clearForcedVirtualDisplayDensity()
@@ -499,6 +550,16 @@ class AaVirtualDisplayAdapter(
                                 log(TAG, "setLaunchWindowingMode($launchWindowingMode) failed:", e)
                             }
                         }
+                        if (launchWindowingMode == WINDOWING_MODE_FREEFORM) {
+                            val bounds = buildFreeformInsetBounds()
+                            if (bounds != null) {
+                                try {
+                                    launchBounds = bounds
+                                } catch (e: Throwable) {
+                                    log(TAG, "setLaunchBounds failed:", e)
+                                }
+                            }
+                        }
                     }.toBundle(),
                     UserHandle::class.java.newInstance(
                         args(userId),
@@ -515,8 +576,8 @@ class AaVirtualDisplayAdapter(
                                 info.topActivity?.packageName == componentName.packageName
                             }
                             .forEach { info ->
-                                mVdTaskIds.add(info.taskId)
-                                ensureTaskFreeformOnVirtualDisplay(info.taskId, "launchActivityAsUser")
+                                markVirtualDisplayOwnership(info.taskId, componentName.packageName)
+                                scheduleEnsureFreeform(info.taskId, "launchActivityAsUser", force = true)
                             }
                     } catch (e: Throwable) {
                         log(TAG, "post-launch ensureFreeform failed:", e)
@@ -665,7 +726,7 @@ class AaVirtualDisplayAdapter(
         // Intentional recent-task swipe must not be bounced back by onTaskDisplayChanged.
         mSuppressDisplayBounceUntil = SystemClock.uptimeMillis() + 2000L
         if (!isVirtualDisplay) {
-            mVdTaskIds.remove(taskId)
+            forgetVirtualDisplayOwnership(taskId, packageName)
         }
         try {
             Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, targetDisplayId)
@@ -674,9 +735,11 @@ class AaVirtualDisplayAdapter(
         }
         // Cross-display move must update DPI map immediately (bindApplication will not re-run).
         if (isVirtualDisplay) {
-            mVdTaskIds.add(taskId)
+            markVirtualDisplayOwnership(taskId, packageName)
             AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(packageName, mDisplayId)
-            scheduleEnsureFreeform(taskId, "moveTaskId")
+            // Intentional move back onto VD: always allow freeform ensure (clear split suppress).
+            mSuppressEnsureFreeformUntil = 0L
+            scheduleEnsureFreeform(taskId, "moveTaskId", force = true)
         } else {
             AndroidHook.FuckAppUseApplicationContext.clearPackageVirtualDisplay(packageName)
         }
@@ -822,23 +885,39 @@ class AaVirtualDisplayAdapter(
         }
     }
 
-    private fun scheduleEnsureFreeform(taskId: Int, reason: String) {
+    private fun scheduleEnsureFreeform(taskId: Int, reason: String, force: Boolean = false) {
         if (!isOneUiSplitEnabled()) return
-        mHandler.post { ensureTaskFreeformOnVirtualDisplay(taskId, reason) }
-        mHandler.postDelayed({ ensureTaskFreeformOnVirtualDisplay(taskId, "$reason-delay") }, 350L)
+        for (delay in ENSURE_FREEFORM_DELAYS_MS) {
+            if (delay == 0L) {
+                mHandler.post { ensureTaskFreeformOnVirtualDisplay(taskId, reason, force) }
+            } else {
+                mHandler.postDelayed(
+                    { ensureTaskFreeformOnVirtualDisplay(taskId, "$reason-$delay", force) },
+                    delay
+                )
+            }
+        }
     }
 
     /**
      * OneUI often ignores launch FREEFORM on virtual displays (and launcher icon starts never
-     * see our ActivityOptions). Force task windowing mode after the task lands on the VD —
-     * same end state as the user's "move to phone then back" workaround.
+     * see our ActivityOptions). Force task windowing mode + inset bounds after the task lands
+     * on the VD — same end state as the user's "move to phone then back" workaround.
      */
-    private fun ensureTaskFreeformOnVirtualDisplay(taskId: Int, reason: String) {
+    private fun ensureTaskFreeformOnVirtualDisplay(
+        taskId: Int,
+        reason: String,
+        force: Boolean = false
+    ) {
         if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return
         if (!isOneUiSplitEnabled()) return
+        if (!force && SystemClock.uptimeMillis() < mSuppressEnsureFreeformUntil) {
+            log(TAG, "ensureFreeform skipped (suppress): task=$taskId [$reason]")
+            return
+        }
         val now = SystemClock.uptimeMillis()
         val last = mLastFreeformEnsureAt[taskId] ?: 0L
-        if (now - last < 250L) return
+        if (now - last < 180L) return
         mLastFreeformEnsureAt[taskId] = now
 
         val taskInfo = findRootTaskInfoOnDisplay(taskId, mDisplayId) ?: return
@@ -847,17 +926,166 @@ class AaVirtualDisplayAdapter(
         if (pkg == mHomePackage || pkg == mLauncherPackage) return
         if (IGNORE_RECENT_PACKAGE.contains(pkg)) return
 
-        mVdTaskIds.add(taskId)
+        markVirtualDisplayOwnership(taskId, pkg)
         val mode = getWindowingMode(taskInfo)
         // Leave split / multi-window alone; only correct plain fullscreen (or unknown).
-        if (mode == WINDOWING_MODE_FREEFORM) return
-        if (mode != null && mode != WINDOWING_MODE_FULLSCREEN && mode != WINDOWING_MODE_UNDEFINED) {
+        if (mode != null && mode != WINDOWING_MODE_FULLSCREEN && mode != WINDOWING_MODE_UNDEFINED
+            && mode != WINDOWING_MODE_FREEFORM
+        ) {
             return
         }
-        if (setTaskWindowingModeSafe(taskId, WINDOWING_MODE_FREEFORM)) {
-            log(TAG, "ensureFreeform[$reason]: task=$taskId pkg=$pkg mode=${mode ?: "?"} -> FREEFORM")
+
+        var needMode = mode == null || mode == WINDOWING_MODE_FULLSCREEN || mode == WINDOWING_MODE_UNDEFINED
+        var needBounds = false
+        if (mode == WINDOWING_MODE_FREEFORM) {
+            val currentBounds = getTaskBoundsSafe(taskId, taskInfo)
+            needBounds = isNearlyFullscreenBounds(currentBounds)
+            if (!needBounds) return
+        }
+
+        if (needMode) {
+            if (!setTaskWindowingModeSafe(taskId, WINDOWING_MODE_FREEFORM)) {
+                log(TAG, "ensureFreeform[$reason]: setTaskWindowingMode failed task=$taskId pkg=$pkg mode=${mode ?: "?"}")
+                return
+            }
+            needBounds = true
+        }
+
+        val resized = if (needBounds) resizeTaskToFreeformBounds(taskId) else false
+        val after = findRootTaskInfoOnDisplay(taskId, mDisplayId)?.let { getWindowingMode(it) }
+        if (after == WINDOWING_MODE_FREEFORM) {
+            log(
+                TAG,
+                "ensureFreeform[$reason]: task=$taskId pkg=$pkg mode=${mode ?: "?"} -> FREEFORM bounds=$resized"
+            )
         } else {
-            log(TAG, "ensureFreeform[$reason]: setTaskWindowingMode failed task=$taskId pkg=$pkg mode=${mode ?: "?"}")
+            log(
+                TAG,
+                "ensureFreeform[$reason]: still not freeform task=$taskId pkg=$pkg mode=${mode ?: "?"} after=${after ?: "?"} bounds=$resized"
+            )
+        }
+    }
+
+    private fun buildFreeformInsetBounds(): Rect? {
+        if (mDisplayId == Display.INVALID_DISPLAY) return null
+        return try {
+            val display = Instances.displayManager.getDisplay(mDisplayId) ?: return null
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            display.getRealMetrics(metrics)
+            val w = metrics.widthPixels
+            val h = metrics.heightPixels
+            if (w <= 0 || h <= 0) return null
+            val insetW = (w * FREEFORM_INSET_RATIO).toInt().coerceAtLeast(1)
+            val insetH = (h * FREEFORM_INSET_RATIO).toInt().coerceAtLeast(1)
+            val left = ((w - insetW) / 2).coerceAtLeast(0)
+            val top = ((h - insetH) / 2).coerceAtLeast(0)
+            Rect(left, top, left + insetW, top + insetH)
+        } catch (e: Throwable) {
+            log(TAG, "buildFreeformInsetBounds failed:", e)
+            null
+        }
+    }
+
+    private fun isNearlyFullscreenBounds(bounds: Rect?): Boolean {
+        if (bounds == null || bounds.isEmpty) return true
+        if (mDisplayId == Display.INVALID_DISPLAY) return false
+        return try {
+            val display = Instances.displayManager.getDisplay(mDisplayId) ?: return false
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            display.getRealMetrics(metrics)
+            val displayArea = metrics.widthPixels.toLong() * metrics.heightPixels.toLong()
+            if (displayArea <= 0L) return false
+            val taskArea = bounds.width().toLong() * bounds.height().toLong()
+            taskArea.toDouble() / displayArea.toDouble() >= FREEFORM_MAX_FILL_RATIO
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun getTaskBoundsSafe(taskId: Int, taskInfo: Any?): Rect? {
+        try {
+            val atm = Instances.iActivityTaskManager as Any
+            val fromAtm = atm.invokeMethod(
+                "getTaskBounds",
+                args(taskId),
+                argTypes(Integer.TYPE)
+            ) as? Rect
+            if (fromAtm != null && !fromAtm.isEmpty) return Rect(fromAtm)
+        } catch (_: Throwable) {
+        }
+        if (taskInfo != null) {
+            try {
+                val bounds = taskInfo.getObjectAs("bounds", Rect::class.java) as? Rect
+                if (bounds != null && !bounds.isEmpty) return Rect(bounds)
+            } catch (_: Throwable) {
+            }
+            try {
+                val conf = taskInfo.getObject("configuration") ?: return null
+                val winConf = conf.invokeMethod("getWindowConfiguration", args(), argTypes()) ?: return null
+                val bounds = winConf.invokeMethod("getBounds", args(), argTypes()) as? Rect
+                if (bounds != null && !bounds.isEmpty) return Rect(bounds)
+            } catch (_: Throwable) {
+            }
+        }
+        return null
+    }
+
+    private fun resizeTaskToFreeformBounds(taskId: Int): Boolean {
+        val bounds = buildFreeformInsetBounds() ?: return false
+        val atm = Instances.iActivityTaskManager as Any
+        try {
+            atm.invokeMethod(
+                "resizeTask",
+                args(taskId, bounds, RESIZE_MODE_SYSTEM),
+                argTypes(Integer.TYPE, Rect::class.java, Integer.TYPE)
+            )
+            return true
+        } catch (_: Throwable) {
+        }
+        try {
+            atm.invokeMethod(
+                "resizeTask",
+                args(taskId, bounds),
+                argTypes(Integer.TYPE, Rect::class.java)
+            )
+            return true
+        } catch (_: Throwable) {
+        }
+        return try {
+            val task = resolveTaskObject(taskId) ?: return false
+            task.invokeMethod("setBounds", args(bounds), argTypes(Rect::class.java))
+            true
+        } catch (e: Throwable) {
+            log(TAG, "resizeTaskToFreeformBounds($taskId) failed:", e)
+            false
+        }
+    }
+
+    private fun isBounceExcludedPackage(packageName: String?): Boolean {
+        val pkg = packageName?.trim().orEmpty()
+        if (pkg.isEmpty()) return true
+        if (BOUNCE_EXCLUDED_PACKAGES.contains(pkg)) return true
+        if (pkg == mHomePackage || pkg == mLauncherPackage) return true
+        if (IGNORE_RECENT_PACKAGE.contains(pkg)) return true
+        return false
+    }
+
+    private fun markVirtualDisplayOwnership(taskId: Int, packageName: String?) {
+        mVdTaskIds.add(taskId)
+        val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        if (isBounceExcludedPackage(pkg)) return
+        if (mVdPackages.add(pkg)) {
+            log(TAG, "VD ownership mark: pkg=$pkg task=$taskId")
+        }
+    }
+
+    private fun forgetVirtualDisplayOwnership(taskId: Int, packageName: String?) {
+        mVdTaskIds.remove(taskId)
+        val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        if (mVdPackages.remove(pkg)) {
+            log(TAG, "VD ownership forget: pkg=$pkg task=$taskId")
         }
     }
 
@@ -938,56 +1166,121 @@ class AaVirtualDisplayAdapter(
         return null
     }
 
+    private fun scheduleReclaimVirtualDisplayTasks(reason: String) {
+        if (!isOneUiSplitEnabled()) return
+        for (delay in RECLAIM_FOLLOWUP_DELAYS_MS) {
+            if (delay == 0L) {
+                mHandler.post { reclaimVirtualDisplayTasks(reason) }
+            } else {
+                mHandler.postDelayed({ reclaimVirtualDisplayTasks("$reason-$delay") }, delay)
+            }
+        }
+    }
+
     /**
-     * OneUI caption "split" often moves the freeform task onto DEFAULT_DISPLAY.
-     * Pull it back onto the AA virtual display unless the user moved it via [moveTaskId].
+     * OneUI caption "split" often moves (or recreates) the freeform task onto DEFAULT_DISPLAY and
+     * shows a phone Apps/Home chooser ("应用…"). Pull owned packages back onto the AA VD.
      */
     private fun maybeBounceTaskBackToVirtualDisplay(taskId: Int, newDisplayId: Int) {
         if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return
         if (!isOneUiSplitEnabled()) return
-        if (newDisplayId != Display.DEFAULT_DISPLAY) return
-        if (!mVdTaskIds.contains(taskId)) return
-        if (SystemClock.uptimeMillis() < mSuppressDisplayBounceUntil) {
-            // Intentional moveTaskId(false) already removed the id; bounce's own short
-            // suppress must not drop tracking or paired split stages are lost.
-            log(TAG, "bounce skipped (suppressed): task=$taskId")
+        if (newDisplayId == mDisplayId) return
+        val pkg = findPackageForTask(taskId)
+        val owned = mVdTaskIds.contains(taskId) ||
+            (!pkg.isNullOrBlank() && mVdPackages.contains(pkg))
+        if (!owned) {
+            // Still scan — OneUI may have recreated the task under a new id.
+            scheduleReclaimVirtualDisplayTasks("display-changed-unowned")
             return
+        }
+        if (isBounceExcludedPackage(pkg)) {
+            mVdTaskIds.remove(taskId)
+            return
+        }
+        bounceTaskToVirtualDisplay(taskId, pkg, "display-changed->$newDisplayId")
+        scheduleReclaimVirtualDisplayTasks("display-changed")
+    }
+
+    private fun bounceTaskToVirtualDisplay(taskId: Int, packageName: String?, reason: String): Boolean {
+        if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return false
+        if (SystemClock.uptimeMillis() < mSuppressDisplayBounceUntil) {
+            log(TAG, "bounce skipped (suppressed): task=$taskId pkg=${packageName.orEmpty()} [$reason]")
+            return false
+        }
+        if (isTaskOnVirtualDisplay(taskId)) {
+            markVirtualDisplayOwnership(taskId, packageName)
+            return false
         }
         val now = SystemClock.uptimeMillis()
         val last = mLastDisplayBounceAt[taskId] ?: 0L
-        if (now - last < 800L) return
+        if (now - last < 300L) return false
         mLastDisplayBounceAt[taskId] = now
 
-        val pkg = findPackageForTask(taskId)
-        log(TAG, "bounce to VD: task=$taskId pkg=${pkg.orEmpty()} (OneUI left virtual display)")
-        // Suppress re-entry while we move; do not clear mVdTaskIds — task still belongs on VD.
-        mSuppressDisplayBounceUntil = now + 500L
-        try {
+        log(TAG, "bounce to VD[$reason]: task=$taskId pkg=${packageName.orEmpty()}")
+        // Short suppress only to avoid re-entrancy on our own moveRootTaskToDisplay.
+        mSuppressDisplayBounceUntil = now + 250L
+        // Do not force FREEFORM over OneUI split entry after we pull the task back.
+        mSuppressEnsureFreeformUntil = now + SUPPRESS_ENSURE_FREEFORM_MS
+        return try {
             Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, mDisplayId)
-            AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(pkg, mDisplayId)
-            mVdTaskIds.add(taskId)
+            AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(packageName, mDisplayId)
+            markVirtualDisplayOwnership(taskId, packageName)
             bringTaskToFrontOnDisplay(taskId)
+            true
         } catch (e: Throwable) {
-            log(TAG, "bounce to VD failed: task=$taskId", e)
+            log(TAG, "bounce to VD failed: task=$taskId [$reason]", e)
+            false
         }
-        // Split entry may move a second stage task shortly after the first.
-        mHandler.postDelayed({ bounceStrayVirtualDisplayTasks("bounce-followup") }, 400L)
     }
 
-    private fun bounceStrayVirtualDisplayTasks(reason: String) {
+    /**
+     * Package-based reclaim: OneUI split frequently assigns a new taskId on the phone, so
+     * task-id tracking alone misses amapauto / etc. Scan DEFAULT_DISPLAY for owned packages.
+     */
+    private fun reclaimVirtualDisplayTasks(reason: String) {
         if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return
         if (!isOneUiSplitEnabled()) return
         if (SystemClock.uptimeMillis() < mSuppressDisplayBounceUntil) return
-        val tracked = mVdTaskIds.toList()
-        for (taskId in tracked) {
-            if (isTaskOnVirtualDisplay(taskId)) continue
-            val onPhone = findRootTaskInfoOnDisplay(taskId, Display.DEFAULT_DISPLAY) != null
-            if (!onPhone) {
-                mVdTaskIds.remove(taskId)
-                continue
+        if (mVdPackages.isEmpty() && mVdTaskIds.isEmpty()) return
+
+        val now = SystemClock.uptimeMillis()
+        if (now - mLastReclaimAt < 150L) return
+        mLastReclaimAt = now
+
+        val phoneTasks = try {
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(Display.DEFAULT_DISPLAY)
+        } catch (e: Throwable) {
+            log(TAG, "reclaim[$reason] list phone tasks failed:", e)
+            return
+        }
+
+        var bounced = 0
+        for (taskInfo in phoneTasks) {
+            val taskId = taskInfo.taskId
+            val pkg = taskInfo.topActivity?.packageName
+                ?: runCatching {
+                    taskInfo.getObjectAs("baseActivity", ComponentName::class.java) as? ComponentName
+                }.getOrNull()?.packageName
+            if (isBounceExcludedPackage(pkg)) continue
+
+            val ownedById = mVdTaskIds.contains(taskId)
+            val ownedByPkg = !pkg.isNullOrBlank() && mVdPackages.contains(pkg)
+            if (!ownedById && !ownedByPkg) continue
+
+            if (bounceTaskToVirtualDisplay(taskId, pkg, "reclaim:$reason")) {
+                bounced++
             }
-            log(TAG, "bounce follow-up[$reason]: task=$taskId still on phone")
-            maybeBounceTaskBackToVirtualDisplay(taskId, Display.DEFAULT_DISPLAY)
+        }
+
+        // Drop stale task ids that no longer exist on either display.
+        val staleIds = mVdTaskIds.filter { id ->
+            findRootTaskInfoOnDisplay(id, mDisplayId) == null &&
+                findRootTaskInfoOnDisplay(id, Display.DEFAULT_DISPLAY) == null
+        }
+        staleIds.forEach { mVdTaskIds.remove(it) }
+
+        if (bounced > 0) {
+            log(TAG, "reclaim[$reason]: bounced=$bounced ownedPkgs=$mVdPackages ownedTasks=$mVdTaskIds")
         }
     }
 
@@ -1276,7 +1569,11 @@ class AaVirtualDisplayAdapter(
 
 
     inner class TaskStackListener : ITaskStackListener.Stub() {
-        override fun onTaskStackChanged() {}
+        override fun onTaskStackChanged() {
+            if (!isOneUiSplitEnabled() || mIsDestroying) return
+            mHandler.removeCallbacks(mDebouncedStackReclaim)
+            mHandler.postDelayed(mDebouncedStackReclaim, 120L)
+        }
         override fun onActivityPinned(packageName: String?, userId: Int, taskId: Int, stackId: Int) {}
         override fun onActivityUnpinned() {}
         override fun onActivityRestartAttempt(task: ActivityManager.RunningTaskInfo?, homeTaskVisible: Boolean, clearedTask: Boolean, wasVisible: Boolean) {}
@@ -1299,16 +1596,14 @@ class AaVirtualDisplayAdapter(
             // Launcher icon starts never pass through launchActivityAsUser FREEFORM options.
             mHandler.post {
                 if (isTaskOnVirtualDisplay(taskId)) {
-                    mVdTaskIds.add(taskId)
-                    ensureTaskFreeformOnVirtualDisplay(taskId, "onTaskCreated")
+                    markVirtualDisplayOwnership(taskId, packageName)
+                    scheduleEnsureFreeform(taskId, "onTaskCreated")
+                } else if (mVdPackages.contains(packageName)) {
+                    // OneUI split often recreates the app task on the phone with a new taskId.
+                    bounceTaskToVirtualDisplay(taskId, packageName, "onTaskCreated-phone")
+                    scheduleReclaimVirtualDisplayTasks("onTaskCreated-phone")
                 }
             }
-            mHandler.postDelayed({
-                if (isTaskOnVirtualDisplay(taskId)) {
-                    mVdTaskIds.add(taskId)
-                    ensureTaskFreeformOnVirtualDisplay(taskId, "onTaskCreated-delay")
-                }
-            }, 350L)
         }
         
         /**
@@ -1338,13 +1633,19 @@ class AaVirtualDisplayAdapter(
             } else if(mLauncherPackageTaskId == taskId) {
                 mLauncherPackageTaskId = null
             }
+            // Keep mVdPackages: OneUI may recreate the same package under a new taskId on phone.
+            scheduleReclaimVirtualDisplayTasks("onTaskRemoved")
         }
         override fun onTaskMovedToFront(taskInfo: ActivityManager.RunningTaskInfo) {
             val taskId = taskInfo.taskId
+            val pkg = taskInfo.topActivity?.packageName
             mHandler.post {
                 if (isTaskOnVirtualDisplay(taskId)) {
-                    mVdTaskIds.add(taskId)
-                    ensureTaskFreeformOnVirtualDisplay(taskId, "onTaskMovedToFront")
+                    markVirtualDisplayOwnership(taskId, pkg)
+                    scheduleEnsureFreeform(taskId, "onTaskMovedToFront")
+                } else if (!pkg.isNullOrBlank() && mVdPackages.contains(pkg)) {
+                    bounceTaskToVirtualDisplay(taskId, pkg, "onTaskMovedToFront-phone")
+                    scheduleReclaimVirtualDisplayTasks("onTaskMovedToFront-phone")
                 }
             }
         }
@@ -1358,9 +1659,10 @@ class AaVirtualDisplayAdapter(
         override fun onTaskDisplayChanged(taskId: Int, newDisplayId: Int) {
             syncDensityMapForDisplayChange(taskId, newDisplayId)
             if (mDisplayId != Display.INVALID_DISPLAY && newDisplayId == mDisplayId) {
-                mVdTaskIds.add(taskId)
+                val pkg = findPackageForTask(taskId)
+                markVirtualDisplayOwnership(taskId, pkg)
                 scheduleEnsureFreeform(taskId, "onTaskDisplayChanged")
-            } else if (newDisplayId == Display.DEFAULT_DISPLAY) {
+            } else if (mDisplayId != Display.INVALID_DISPLAY && newDisplayId != mDisplayId) {
                 maybeBounceTaskBackToVirtualDisplay(taskId, newDisplayId)
             }
         }
@@ -1383,20 +1685,10 @@ class AaVirtualDisplayAdapter(
         //Samsung OneUi 7
         override fun onTaskWindowingModeChanged(i: Int) {
             log(TAG, "onTaskWindowingModeChanged: mode=$i, displayInMw=${isDisplayInMultiWindow()}")
-            // Some OneUI builds only pass the mode int; re-scan VD tasks that are still fullscreen.
             if (!isOneUiSplitEnabled() || mDisplayId == Display.INVALID_DISPLAY) return
-            mHandler.post {
-                try {
-                    Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
-                        .filter { it.topActivity != null }
-                        .forEach { taskInfo ->
-                            mVdTaskIds.add(taskInfo.taskId)
-                            ensureTaskFreeformOnVirtualDisplay(taskInfo.taskId, "onTaskWindowingModeChanged")
-                        }
-                } catch (e: Throwable) {
-                    log(TAG, "onTaskWindowingModeChanged scan failed:", e)
-                }
-            }
+            // Split entry dumps VD apps onto the phone chooser — reclaim only.
+            // Do NOT ensureFreeform here: forcing FREEFORM collapses OneUI split/MW.
+            scheduleReclaimVirtualDisplayTasks("windowing-mode=$i")
         }
     }
 }

@@ -50,8 +50,12 @@ object AaUiHook: AaHook() {
     private var resIdStatusBarId: Int = 0
     private var resIdLauncherAndDashboardIconContainerId: Int = 0
     private var resIdLauncherAndDashboardIconId: Int = 0
+    /** Layout resource IDs that host the AA facet / rail chrome we inject into. */
+    private val facetBarLayoutIds = mutableSetOf<Int>()
     private var canHookLayout: Boolean = false
     private var canHookFacetBar: Boolean = false
+    private var mInjectingFacetBar: Boolean = false
+    private val facetBarInjectedTag = Any()
 
     override fun isSupportProcess(processName: String): Boolean {
         return processProjection == processName
@@ -81,13 +85,25 @@ object AaUiHook: AaHook() {
             log(tagName,  "AaUiHook: not found CarSystemUiControllerService.a static method", e)
         }
 
-        resLayoutGhFacetBarId = InitFields.appContext.resources.getIdentifier("gh_coolwalk_vertical_facet_bar", "layout", InitFields.appContext.packageName)
+        val pkg = InitFields.appContext.packageName
+        val res = InitFields.appContext.resources
+        fun layoutId(name: String): Int = res.getIdentifier(name, "layout", pkg).also { id ->
+            if (id != 0) facetBarLayoutIds.add(id)
+        }
+
+        // AA 16.x used vertical coolwalk facet; 17.x with canonical rail may still inflate
+        // the non-vertical / RHD variants — match all known facet hosts.
+        resLayoutGhFacetBarId = layoutId("gh_coolwalk_vertical_facet_bar")
+        layoutId("gh_coolwalk_facet_bar")
+        layoutId("gh_coolwalk_facet_bar_rhd")
+        layoutId("gh_coolwalk_vertical_facet_bar_rhd")
+
         resIdStatusBarId = getIdByName("status_bar")
         resIdLauncherAndDashboardIconContainerId = getIdByName("launcher_and_dashboard_icon_container")
         resIdLauncherAndDashboardIconId = getIdByName("launcher_and_dashboard_icon")
 
-        resLayoutLeftResourceId = InitFields.appContext.resources.getIdentifier("sys_ui_layout_canonical_vertical_rail_lhd", "layout", InitFields.appContext.packageName)
-        resLayoutRightResourceId = InitFields.appContext.resources.getIdentifier("sys_ui_layout_canonical_vertical_rail_rhd", "layout", InitFields.appContext.packageName)
+        resLayoutLeftResourceId = res.getIdentifier("sys_ui_layout_canonical_vertical_rail_lhd", "layout", pkg)
+        resLayoutRightResourceId = res.getIdentifier("sys_ui_layout_canonical_vertical_rail_rhd", "layout", pkg)
 
         canHookLayout = resLayoutLeftResourceId != 0 && resLayoutRightResourceId != 0
         if (!canHookLayout) {
@@ -97,15 +113,17 @@ object AaUiHook: AaHook() {
             )
         }
         canHookFacetBar =
-            resLayoutGhFacetBarId != 0 &&
+            facetBarLayoutIds.isNotEmpty() &&
             resIdStatusBarId != 0 &&
             resIdLauncherAndDashboardIconContainerId != 0 &&
             resIdLauncherAndDashboardIconId != 0
         if (!canHookFacetBar) {
             log(
                 tagName,
-                "AaUiHook: skip facet-bar override, missing resources: facet=$resLayoutGhFacetBarId, status=$resIdStatusBarId, launcherContainer=$resIdLauncherAndDashboardIconContainerId, launcherIcon=$resIdLauncherAndDashboardIconId"
+                "AaUiHook: skip facet-bar override, missing resources: facetIds=$facetBarLayoutIds, status=$resIdStatusBarId, launcherContainer=$resIdLauncherAndDashboardIconContainerId, launcherIcon=$resIdLauncherAndDashboardIconId"
             )
+        } else {
+            log(tagName, "AaUiHook: facet layout ids=$facetBarLayoutIds")
         }
     }
 
@@ -195,109 +213,158 @@ object AaUiHook: AaHook() {
             && parameterTypes[1] == ViewGroup::class.java // root
             && parameterTypes[2] == Boolean::class.javaPrimitiveType // attachToRoot
         }.hookAfter { param ->
-            if (param.args[0] as Int != resLayoutGhFacetBarId) {
+            if (mInjectingFacetBar) return@hookAfter
+            val layoutResId = param.args[0] as Int
+            val resultViewGroup = param.result as? ViewGroup ?: return@hookAfter
+            if (resultViewGroup.tag === facetBarInjectedTag) {
                 return@hookAfter
             }
-            val resultViewGroup = param.result as ViewGroup? ?: return@hookAfter //androidx.constraintlayout.widget.ConstraintLayout
-            val ctx = (param.thisObject as LayoutInflater).context
-            val ctx2 = CommonContextWrapper.createAppCompatContext(ctx)
-            val layoutInflater = LayoutInflater.from(ctx2)
-            val resultViewGroupParent = (resultViewGroup.parent as ViewGroup?)?.apply {
-                removeView(resultViewGroup)
+            val matchedById = facetBarLayoutIds.contains(layoutResId)
+            val matchedByContent = !matchedById && isFacetBarContent(resultViewGroup)
+            if (!matchedById && !matchedByContent) {
+                return@hookAfter
             }
-            if(closeLauncherDashboard){
-                resultViewGroup.findViewById<View>(resIdLauncherAndDashboardIconId).apply {
-                    setOnClickFinallyListener {
-                        performLongClick()
-                    }
-                }
+            try {
+                mInjectingFacetBar = true
+                injectAaFacetBar(
+                    param = param,
+                    resultViewGroup = resultViewGroup,
+                    closeLauncherDashboard = closeLauncherDashboard,
+                    autoOpen = autoOpen,
+                    matchReason = if (matchedById) "layoutId=$layoutResId" else "content"
+                )
+            } catch (e: Throwable) {
+                log(tagName, "AaUiHook: inject facet bar failed [$layoutResId]", e)
+            } finally {
+                mInjectingFacetBar = false
             }
-            val aaFacetBar = layoutInflater.inflate(R.layout.aa_facet_bar, resultViewGroupParent, false) as ConstraintLayout
-            if(autoOpen){
-                aaFacetBar.post {
-                    runMain {
-                        delay(1000)
-                        try{
-                            startMethod?.invoke(null, Intent().apply {
-                                component = ComponentName(BuildConfig.APPLICATION_ID, AaActivityService::class.java.name)
-                                putExtra("android.intent.extra.PACKAGE_NAME", BuildConfig.APPLICATION_ID)
-                            })
-                        } catch (e: Throwable) {
-                            log(tagName, "CarSystemUiControllerService.a start app error", e)
-                        }
-                    }
-                }
-            }
-            val createBtn: (resId: Int, block: View.() -> Unit) -> Int = { resId, block ->
-                val btn = ImageView(ctx).apply {
-                    id = View.generateViewId()
-                    layoutParams = ConstraintLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                    setImageResource(resId)
-                }
-                block(btn)
-                aaFacetBar.addView(btn)
-                btn.id
-            }
-            val topIds = arrayListOf(
-                resIdStatusBarId,
-                resIdLauncherAndDashboardIconContainerId
-            )
-            val bottomIds = arrayListOf(
-                createBtn(R.drawable.ic_aa_home_44){
-                    val intentClick = Intent().apply {
-                        action = AABroadcastConst.ACTION_SCREEN_CONTROL
-                        putExtra(AABroadcastConst.EXTRA_ACTION, KeyEvent.KEYCODE_HOME)
-                    }
-                    setOnClickListener {
-                        ctx.sendBroadcast(intentClick)
-                    }
-                    setPadding(0, 5, 0, 5)
-                },
-                createBtn(R.drawable.ic_aa_fullscreen_44){
-                    val intentClick = Intent().apply {
-                        action = AABroadcastConst.ACTION_SCREEN_CONTROL
-                        putExtra(AABroadcastConst.EXTRA_ACTION, KeyEvent.KEYCODE_APP_SWITCH)
-                    }
-                    setOnClickListener {
-                        ctx.sendBroadcast(intentClick)
-                    }
-                    setPadding(0, 5, 0, 5)
-                },
-                createBtn(R.drawable.ic_aa_arrow_back_44){
-                    val intentClick = Intent().apply {
-                        action = AABroadcastConst.ACTION_SCREEN_CONTROL
-                        putExtra(AABroadcastConst.EXTRA_ACTION, KeyEvent.KEYCODE_BACK)
-                    }
-                    setOnClickListener {
-                        ctx.sendBroadcast(intentClick)
-                    }
-                    setPadding(0, 5, 0, 5)
-                },
-            )
-            arrayListOf(resIdStatusBarId, resIdLauncherAndDashboardIconContainerId).forEach { vId ->
-                val view = resultViewGroup.findViewById<View>(vId)
-                (view.parent as ViewGroup?)?.apply {
-                    removeView(view)
-                }
-                aaFacetBar.addView(view)
-            }
-            val set = ConstraintSet()
-            set.clone(aaFacetBar)
-            bottomIds.forEachIndexed { index, vId ->
-                set.connect(vId, ConstraintSet.BOTTOM, if(index == 0) ConstraintSet.PARENT_ID else bottomIds[index-1], if(index == 0) ConstraintSet.BOTTOM else ConstraintSet.TOP, 0)
-                set.connect(vId, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END, 0)
-                set.connect(vId, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START, 0)
-            }
-            topIds.forEachIndexed { index, vId ->
-                set.connect(vId, ConstraintSet.TOP, if(index == 0) ConstraintSet.PARENT_ID else topIds[index-1], if(index == 0) ConstraintSet.TOP else ConstraintSet.BOTTOM, 0)
-                set.connect(vId, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END, 0)
-                set.connect(vId, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START, 0)
-            }
-            set.applyTo(aaFacetBar)
-            resultViewGroup.visibility = View.GONE
-            aaFacetBar.addView(resultViewGroup)
-            param.result = aaFacetBar
         }
+    }
+
+    private fun isFacetBarContent(root: ViewGroup): Boolean {
+        // Canonical rail does not embed these ids; coolwalk facet bars do.
+        if (root.findViewById<View>(resIdStatusBarId) == null) return false
+        if (root.findViewById<View>(resIdLauncherAndDashboardIconContainerId) == null) return false
+        if (root.findViewById<View>(resIdLauncherAndDashboardIconId) == null) return false
+        // Full-screen host layouts are much larger; facet chrome is a narrow bar.
+        val w = root.layoutParams?.width ?: root.measuredWidth
+        val h = root.layoutParams?.height ?: root.measuredHeight
+        if (w > 0 && h > 0) {
+            val min = minOf(w, h)
+            val max = maxOf(w, h)
+            // Reject square-ish / full content panes; keep thin bars.
+            if (min > 0 && max / min < 3) return false
+        }
+        return true
+    }
+
+    private fun injectAaFacetBar(
+        param: de.robv.android.xposed.XC_MethodHook.MethodHookParam,
+        resultViewGroup: ViewGroup,
+        closeLauncherDashboard: Boolean,
+        autoOpen: Boolean,
+        matchReason: String
+    ) {
+        val ctx = (param.thisObject as LayoutInflater).context
+        val ctx2 = CommonContextWrapper.createAppCompatContext(ctx)
+        val layoutInflater = LayoutInflater.from(ctx2)
+        val resultViewGroupParent = (resultViewGroup.parent as ViewGroup?)?.apply {
+            removeView(resultViewGroup)
+        }
+        if (closeLauncherDashboard) {
+            val launcherIcon = resultViewGroup.findViewById<View>(resIdLauncherAndDashboardIconId)
+            if (launcherIcon != null) {
+                launcherIcon.setOnClickFinallyListener(OnClickFinallyListener {
+                    launcherIcon.performLongClick()
+                })
+            }
+        }
+        val aaFacetBar = layoutInflater.inflate(R.layout.aa_facet_bar, resultViewGroupParent, false) as ConstraintLayout
+        aaFacetBar.tag = facetBarInjectedTag
+        resultViewGroup.tag = facetBarInjectedTag
+        log(tagName, "AaUiHook: inject facet bar ($matchReason)")
+        if (autoOpen) {
+            aaFacetBar.post {
+                runMain {
+                    delay(1000)
+                    try {
+                        startMethod?.invoke(null, Intent().apply {
+                            component = ComponentName(BuildConfig.APPLICATION_ID, AaActivityService::class.java.name)
+                            putExtra("android.intent.extra.PACKAGE_NAME", BuildConfig.APPLICATION_ID)
+                        })
+                    } catch (e: Throwable) {
+                        log(tagName, "CarSystemUiControllerService.a start app error", e)
+                    }
+                }
+            }
+        }
+        val createBtn: (resId: Int, block: View.() -> Unit) -> Int = { resId, block ->
+            val btn = ImageView(ctx).apply {
+                id = View.generateViewId()
+                layoutParams = ConstraintLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                setImageResource(resId)
+            }
+            block(btn)
+            aaFacetBar.addView(btn)
+            btn.id
+        }
+        val topIds = arrayListOf(
+            resIdStatusBarId,
+            resIdLauncherAndDashboardIconContainerId
+        )
+        val bottomIds = arrayListOf(
+            createBtn(R.drawable.ic_aa_home_44) {
+                val intentClick = Intent().apply {
+                    action = AABroadcastConst.ACTION_SCREEN_CONTROL
+                    putExtra(AABroadcastConst.EXTRA_ACTION, KeyEvent.KEYCODE_HOME)
+                }
+                setOnClickListener {
+                    ctx.sendBroadcast(intentClick)
+                }
+                setPadding(0, 5, 0, 5)
+            },
+            createBtn(R.drawable.ic_aa_fullscreen_44) {
+                val intentClick = Intent().apply {
+                    action = AABroadcastConst.ACTION_SCREEN_CONTROL
+                    putExtra(AABroadcastConst.EXTRA_ACTION, KeyEvent.KEYCODE_APP_SWITCH)
+                }
+                setOnClickListener {
+                    ctx.sendBroadcast(intentClick)
+                }
+                setPadding(0, 5, 0, 5)
+            },
+            createBtn(R.drawable.ic_aa_arrow_back_44) {
+                val intentClick = Intent().apply {
+                    action = AABroadcastConst.ACTION_SCREEN_CONTROL
+                    putExtra(AABroadcastConst.EXTRA_ACTION, KeyEvent.KEYCODE_BACK)
+                }
+                setOnClickListener {
+                    ctx.sendBroadcast(intentClick)
+                }
+                setPadding(0, 5, 0, 5)
+            },
+        )
+        arrayListOf(resIdStatusBarId, resIdLauncherAndDashboardIconContainerId).forEach { vId ->
+            val view = resultViewGroup.findViewById<View>(vId) ?: return@forEach
+            (view.parent as ViewGroup?)?.removeView(view)
+            aaFacetBar.addView(view)
+        }
+        val set = ConstraintSet()
+        set.clone(aaFacetBar)
+        bottomIds.forEachIndexed { index, vId ->
+            set.connect(vId, ConstraintSet.BOTTOM, if (index == 0) ConstraintSet.PARENT_ID else bottomIds[index - 1], if (index == 0) ConstraintSet.BOTTOM else ConstraintSet.TOP, 0)
+            set.connect(vId, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END, 0)
+            set.connect(vId, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START, 0)
+        }
+        topIds.forEachIndexed { index, vId ->
+            set.connect(vId, ConstraintSet.TOP, if (index == 0) ConstraintSet.PARENT_ID else topIds[index - 1], if (index == 0) ConstraintSet.TOP else ConstraintSet.BOTTOM, 0)
+            set.connect(vId, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END, 0)
+            set.connect(vId, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START, 0)
+        }
+        set.applyTo(aaFacetBar)
+        resultViewGroup.visibility = View.GONE
+        aaFacetBar.addView(resultViewGroup)
+        param.result = aaFacetBar
     }
 
     private fun hookBaseClick() {
