@@ -8,6 +8,7 @@ import android.content.pm.ActivityInfo
 import android.graphics.PixelFormat
 import android.os.CountDownTimer
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.*
 import androidx.core.view.ViewCompat
@@ -45,6 +46,13 @@ class DisplayWindow(
 ): View.OnTouchListener {
     companion object {
         private const val TAG = "AADisplay_DisplayWindow"
+        /** Keep OWN_DISPLAY_GROUP user-activity from timing out / dozing on Samsung. */
+        private const val KEEP_AWAKE_INTERVAL_MS = 15_000L
+        private const val TOUCH_KEEP_AWAKE_MIN_INTERVAL_MS = 1_000L
+        /** PowerManager.USER_ACTIVITY_EVENT_TOUCH */
+        private const val USER_ACTIVITY_EVENT_TOUCH = 2
+        /** PowerManager.USER_ACTIVITY_EVENT_OTHER */
+        private const val USER_ACTIVITY_EVENT_OTHER = 0
     }
 
     private var mControllerBinding: WindowControllerBinding? = null
@@ -78,12 +86,32 @@ class DisplayWindow(
     }
 
     private val isSupportInteractive = RomUtil.isMiui()
+    private val mVirtualDisplayId: Int
+        get() = try {
+            displayAdapter.mVirtualDisplay.display.displayId
+        } catch (_: Throwable) {
+            Display.INVALID_DISPLAY
+        }
+    private var mKeepAwakeJob: Job? = null
+    private var mLastTouchKeepAwakeAt = 0L
+    private var mMiuiReceiverRegistered = false
+    private var iPowerManagerService: Any? = null
+    private var iPowerManagerUserActivity: java.lang.reflect.Method? = null
     private var interactiveMonitor = object: BroadcastReceiver(){
         val monitor by lazy {
             Instances.powerManagerHidden.newWakeLock(
                         PowerManager.SCREEN_BRIGHT_WAKE_LOCK
-                , "${BuildConfig.APPLICATION_ID}:Monitor", displayAdapter.mVirtualDisplay.display.displayId).apply {
+                , "${BuildConfig.APPLICATION_ID}:Monitor", mVirtualDisplayId).apply {
                     setReferenceCounted(false)
+            }
+        }
+        val wakePulse by lazy {
+            Instances.powerManagerHidden.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                "${BuildConfig.APPLICATION_ID}:VdWake",
+                mVirtualDisplayId
+            ).apply {
+                setReferenceCounted(false)
             }
         }
         fun addAction(intentFilter: IntentFilter): IntentFilter {
@@ -98,44 +126,164 @@ class DisplayWindow(
             }
         }
         fun onReceive(context: Context, action: String){
-            if(!isSupportInteractive) return
+            if(isSupportInteractive) {
+                try {
+                    when(action){
+                        Intent.ACTION_SCREEN_ON -> Settings.Secure.putInt(context.contentResolver, "synergy_mode", 0)
+                        Intent.ACTION_SCREEN_OFF -> Settings.Secure.putInt(context.contentResolver, "synergy_mode", 1)
+                    }
+                } catch (_: Throwable) {}
+            }
+            // Phone screen policy must not blank the AA virtual display group.
+            keepVirtualDisplayAwake("phone-$action", forceWake = true)
+        }
+        fun acquireMonitor() {
+            val displayId = mVirtualDisplayId
+            if (displayId == Display.INVALID_DISPLAY) return
             try {
-                when(action){
-                    Intent.ACTION_SCREEN_ON -> Settings.Secure.putInt(context.contentResolver, "synergy_mode", 0)
-                    Intent.ACTION_SCREEN_OFF -> Settings.Secure.putInt(context.contentResolver, "synergy_mode", 1)
-                    //miui
-                    //Settings.Global.putInt(contentResolver, "ucar_casting_state", 1);
-                    //Settings.Secure.putInt(contentResolver, "screen_project_in_screening", 1);
-                    //Settings.Secure.putInt(context.contentResolver, "synergy_mode", 1);
+                if (!monitor.isHeld) {
+                    monitor.acquire()
+                    log(TAG, "VD Monitor wake lock acquired display=$displayId")
                 }
-            } catch (e : Throwable){}
+            } catch (e: Throwable) {
+                log(TAG, "VD Monitor acquire failed:", e)
+            }
+        }
+        fun releaseMonitor() {
+            try {
+                if (monitor.isHeld) {
+                    monitor.release()
+                }
+            } catch (e: Throwable) {
+                log(TAG, "VD Monitor release failed:", e)
+            }
+            try {
+                if (wakePulse.isHeld) {
+                    wakePulse.release()
+                }
+            } catch (_: Throwable) {}
         }
         fun init(){
             if(mScreenOffReplaceLockScreen){
                 AndroidHook.Power.hook()
-            } else if(isSupportInteractive){
-                mContext.registerReceiver(this, addAction(IntentFilter()))
-                onReceive(mContext, if(Instances.powerManager.isInteractive) Intent.ACTION_SCREEN_ON else Intent.ACTION_SCREEN_OFF)
-            } else {
-                if (!monitor.isHeld) {
-                    monitor.acquire()
+            }
+            // Always watch phone screen transitions so OWN_DISPLAY_GROUP is re-asserted
+            // when Samsung DreamManager tries to DOZE the AA virtual display with the phone.
+            if (!mMiuiReceiverRegistered) {
+                try {
+                    mContext.registerReceiver(this, addAction(IntentFilter()))
+                    mMiuiReceiverRegistered = true
+                } catch (e: Throwable) {
+                    log(TAG, "register SCREEN_ON/OFF failed:", e)
                 }
             }
+            if (isSupportInteractive) {
+                onReceive(mContext, if(Instances.powerManager.isInteractive) Intent.ACTION_SCREEN_ON else Intent.ACTION_SCREEN_OFF)
+            }
+            // Always hold a display-scoped SCREEN_BRIGHT lock for the AA VD group.
+            // MIUI synergy / ScreenOffReplace only affect the phone panel; without this,
+            // Samsung OWN_DISPLAY_GROUP still DOZEs the car virtual display.
+            acquireMonitor()
+            startKeepAwakeLoop()
+            keepVirtualDisplayAwake("init", forceWake = true)
             // ensureHooked: do not reinstall/clear map on AA reconnect (onResume → init).
             if (AndroidHook.isReadyForSystemHooks()) {
                 AndroidHook.FuckAppUseApplicationContext.ensureHooked()
             }
         }
         fun release(){
+            stopKeepAwakeLoop()
             if(mScreenOffReplaceLockScreen){
                 AndroidHook.Power.unHook()
-            } else if(isSupportInteractive){
-                mContext.unregisterReceiver(this)
-                onReceive(mContext, Intent.ACTION_SCREEN_ON)
-            } else {
-                monitor.release()
             }
+            if (mMiuiReceiverRegistered) {
+                try {
+                    mContext.unregisterReceiver(this)
+                } catch (_: Throwable) {}
+                mMiuiReceiverRegistered = false
+            }
+            if (isSupportInteractive) {
+                try {
+                    Settings.Secure.putInt(mContext.contentResolver, "synergy_mode", 0)
+                } catch (_: Throwable) {}
+            }
+            releaseMonitor()
             AndroidHook.FuckAppUseApplicationContext.unHook()
+        }
+    }
+
+    private fun startKeepAwakeLoop() {
+        if (mKeepAwakeJob?.isActive == true) return
+        mKeepAwakeJob = CoroutineScope(Dispatchers.Default).launch {
+            while (isActive) {
+                delay(KEEP_AWAKE_INTERVAL_MS)
+                keepVirtualDisplayAwake("heartbeat", forceWake = false)
+            }
+        }
+    }
+
+    private fun stopKeepAwakeLoop() {
+        mKeepAwakeJob?.cancel()
+        mKeepAwakeJob = null
+    }
+
+    /**
+     * Keep / restore power for the AA virtual display group so the car UI does not
+     * stay black after phone sleep, doze, or OWN_DISPLAY_GROUP user-activity timeout.
+     */
+    fun keepVirtualDisplayAwake(reason: String, forceWake: Boolean = false) {
+        val displayId = mVirtualDisplayId
+        if (displayId == Display.INVALID_DISPLAY) return
+        try {
+            interactiveMonitor.acquireMonitor()
+            userActivityOnDisplay(
+                displayId,
+                if (forceWake) USER_ACTIVITY_EVENT_TOUCH else USER_ACTIVITY_EVENT_OTHER
+            )
+            if (forceWake) {
+                try {
+                    if (!interactiveMonitor.wakePulse.isHeld) {
+                        interactiveMonitor.wakePulse.acquire(2_000L)
+                    }
+                } catch (e: Throwable) {
+                    log(TAG, "VD wakePulse failed[$reason]:", e)
+                }
+            }
+        } catch (e: Throwable) {
+            log(TAG, "keepVirtualDisplayAwake[$reason] failed:", e)
+        }
+    }
+
+    /** Throttled keep-awake for AA touch / key forwarding. */
+    fun onVirtualDisplayUserInteraction() {
+        val now = SystemClock.uptimeMillis()
+        if (now - mLastTouchKeepAwakeAt < TOUCH_KEEP_AWAKE_MIN_INTERVAL_MS) return
+        mLastTouchKeepAwakeAt = now
+        keepVirtualDisplayAwake("interaction", forceWake = true)
+    }
+
+    /**
+     * IPowerManager.userActivity(displayId, …) — PowerManager only forwards the
+     * context display id, which is useless for OWN_DISPLAY_GROUP virtual displays.
+     */
+    private fun userActivityOnDisplay(displayId: Int, event: Int) {
+        try {
+            val service = iPowerManagerService
+                ?: PowerManager::class.java.getDeclaredField("mService").apply {
+                    isAccessible = true
+                }.get(Instances.powerManager)?.also { iPowerManagerService = it }
+                ?: return
+            val method = iPowerManagerUserActivity
+                ?: service.javaClass.getMethod(
+                    "userActivity",
+                    Int::class.javaPrimitiveType,
+                    Long::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType
+                ).also { iPowerManagerUserActivity = it }
+            method.invoke(service, displayId, SystemClock.uptimeMillis(), event, 0)
+        } catch (e: Throwable) {
+            log(TAG, "IPowerManager.userActivity(display=$displayId) failed:", e)
         }
     }
 
@@ -356,14 +504,14 @@ class DisplayWindow(
     }
 
     suspend fun onDestroyPromptly() {
+        restorePhoneDisplayPower()
         interactiveMonitor.release()
-        toggleDisplayPower(true)
         mDestroyJob?.cancelAndJoin()
         close()
     }
     suspend fun onDestroy(onDestroySucceed: () -> Unit) {
+        restorePhoneDisplayPower()
         interactiveMonitor.release()
-        toggleDisplayPower(true)
         mDestroyJob?.cancelAndJoin()
 
         if(mDelayDestroyTime == 0){
@@ -398,6 +546,29 @@ class DisplayWindow(
         }
     }
 
+    /** Restore phone panel power only (ScreenOffReplace / legacy wakeup). */
+    private fun restorePhoneDisplayPower() {
+        try {
+            if (mScreenOffReplaceLockScreen) {
+                mDisplayPower = true
+                SurfaceControlHidden.setDisplayPowerMode(
+                    SurfaceControlHidden.getInternalDisplayToken(),
+                    SurfaceControlHidden.POWER_MODE_NORMAL
+                )
+            } else {
+                Instances.powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                    "${BuildConfig.APPLICATION_ID}:wakeup"
+                ).apply {
+                    acquire()
+                    release()
+                }
+            }
+        } catch (e: Throwable) {
+            log(TAG, "restorePhoneDisplayPower failed:", e)
+        }
+    }
+
     fun toggleDisplayPower(displayPower: Boolean = !mDisplayPower){
         try {
             if(mScreenOffReplaceLockScreen){
@@ -407,12 +578,15 @@ class DisplayWindow(
                 } else {
                     SurfaceControlHidden.setDisplayPowerMode(SurfaceControlHidden.getInternalDisplayToken(), SurfaceControlHidden.POWER_MODE_OFF)
                 }
-            } else {
+            } else if (displayPower) {
+                // Wake phone panel only when explicitly turning power on (legacy path).
                 Instances.powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "${BuildConfig.APPLICATION_ID}:wakeup").apply {
                     acquire()
                     release()
                 }
             }
+            // Always restore the AA virtual display group — this is what the car sees.
+            keepVirtualDisplayAwake("toggleDisplayPower:$displayPower", forceWake = displayPower)
         } catch (e : Throwable){
             log(TAG, "", e)
         }

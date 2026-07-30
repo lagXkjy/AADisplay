@@ -315,12 +315,16 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
 
     override fun pressKey(action: Int) {
         runIO {
+            mDisplayWindow?.onVirtualDisplayUserInteraction()
             mAaVirtualDisplayAdapter?.onPressKey(action)
         }
     }
 
     override fun touch(event: MotionEvent) {
         runBlocking(Dispatchers.IO) {
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                mDisplayWindow?.onVirtualDisplayUserInteraction()
+            }
             mAaVirtualDisplayAdapter?.onTouch(event)
         }
     }

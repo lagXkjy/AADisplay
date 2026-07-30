@@ -281,8 +281,12 @@ class AaVirtualDisplayAdapter(
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    // KEEP_SCREEN_ON contributes STAY_AWAKE for this OWN_DISPLAY_GROUP so
+                    // Samsung/OneUI will not DOZE/OFF the VD when the phone sleeps or times out
+                    // (same class of signal VirtualDevice uses to stay BRIGHT on AA).
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                            or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                            or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                            or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
                     PixelFormat.TRANSPARENT
                 ).also {
                     it.gravity = Gravity.START or Gravity.TOP
