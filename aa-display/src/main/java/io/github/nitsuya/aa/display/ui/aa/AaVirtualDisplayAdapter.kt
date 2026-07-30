@@ -53,11 +53,18 @@ class AaVirtualDisplayAdapter(
         private const val WINDOWING_MODE_MULTI_WINDOW = 6
         private const val DISPLAY_IME_POLICY_LOCAL = 0
 
-        /** Package names to ignore in recent task list */
+        /** Package names to ignore in recent task list (also see BOUNCE_EXCLUDED_PACKAGES). */
         private val IGNORE_RECENT_PACKAGE = setOf(
             BuildConfig.APPLICATION_ID,
-            "com.android.launcher3"
+            "android",
+            "com.android.systemui",
+            "com.android.launcher3",
+            // Samsung One UI Home — phone HOME + VD SECONDARY_HOME share this package.
+            "com.sec.android.app.launcher",
         )
+
+        /** WindowConfiguration.ACTIVITY_TYPE_HOME — system desktop tasks must not be closable in UI. */
+        private const val ACTIVITY_TYPE_HOME = 2
 
         private val BLOCKED_HOME_PACKAGES = setOf(
             BuildConfig.APPLICATION_ID,
@@ -1502,17 +1509,33 @@ class AaVirtualDisplayAdapter(
     }
 
     /**
-     * Get recent task list for the specified display
-     * Filter out ignored package names and Home package app
+     * True for system Home / Secondary Home root tasks (phone One UI + VD SecondaryDisplayLauncher).
+     * These must stay out of the recent-task UI so users cannot swipe/close the desktop.
+     */
+    private fun isSystemHomeTask(taskInfo: ActivityTaskManager.RootTaskInfo): Boolean {
+        return try {
+            taskInfo.configuration.windowConfiguration.activityType == ACTIVITY_TYPE_HOME
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Get recent task list for the specified display.
+     * Hides system Home / launcher / SystemUI and the configured AADisplay home package so
+     * they cannot be mis-closed or moved between phone ↔ VD stacks.
      */
     private fun recentTaskInfo(displayId: Int): List<RecentTaskInfo> {
         val allRootTaskInfosOnDisplay = Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
         log(TAG, "RecentTask $displayId, ${allRootTaskInfosOnDisplay.size}")
         return allRootTaskInfosOnDisplay
             .map { taskInfo ->
+                if (isSystemHomeTask(taskInfo)) {
+                    return@map null
+                }
                 val topActivity = taskInfo.topActivity ?: return@map null
-                // Filter out ignored package names and Home package
-                if(IGNORE_RECENT_PACKAGE.contains(topActivity.packageName) || mHomePackage == topActivity.packageName) {
+                // Same exclusion set as bounce/reclaim: One UI Home, SystemUI, configured home, etc.
+                if (isBounceExcludedPackage(topActivity.packageName)) {
                     return@map null
                 }
 
