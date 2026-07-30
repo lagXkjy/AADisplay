@@ -3,6 +3,8 @@ package io.github.nitsuya.aa.display.xposed.hook.aa
 import android.content.ComponentName
 import android.content.Intent
 import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
@@ -52,10 +54,17 @@ object AaUiHook: AaHook() {
     private var resIdLauncherAndDashboardIconId: Int = 0
     /** Layout resource IDs that host the AA facet / rail chrome we inject into. */
     private val facetBarLayoutIds = mutableSetOf<Int>()
+    /** Full-screen rail hosts that embed facet chrome (not a separate coolwalk bar inflate). */
+    private val railHostLayoutIds = mutableSetOf<Int>()
     private var canHookLayout: Boolean = false
     private var canHookFacetBar: Boolean = false
     private var mInjectingFacetBar: Boolean = false
+    private var mCloseLauncherDashboard: Boolean = false
+    private var mAutoOpen: Boolean = false
     private val facetBarInjectedTag = Any()
+    private val mFacetEnsureHandler = Handler(Looper.getMainLooper())
+    private val FACET_ENSURE_DELAYS_MS = longArrayOf(0L, 250L, 700L, 1500L)
+    private val FACET_ENSURE_TOKEN = Any()
 
     override fun isSupportProcess(processName: String): Boolean {
         return processProjection == processName
@@ -104,6 +113,8 @@ object AaUiHook: AaHook() {
 
         resLayoutLeftResourceId = res.getIdentifier("sys_ui_layout_canonical_vertical_rail_lhd", "layout", pkg)
         resLayoutRightResourceId = res.getIdentifier("sys_ui_layout_canonical_vertical_rail_rhd", "layout", pkg)
+        if (resLayoutLeftResourceId != 0) railHostLayoutIds.add(resLayoutLeftResourceId)
+        if (resLayoutRightResourceId != 0) railHostLayoutIds.add(resLayoutRightResourceId)
 
         canHookLayout = resLayoutLeftResourceId != 0 && resLayoutRightResourceId != 0
         if (!canHookLayout) {
@@ -123,24 +134,33 @@ object AaUiHook: AaHook() {
                 "AaUiHook: skip facet-bar override, missing resources: facetIds=$facetBarLayoutIds, status=$resIdStatusBarId, launcherContainer=$resIdLauncherAndDashboardIconContainerId, launcherIcon=$resIdLauncherAndDashboardIconId"
             )
         } else {
-            log(tagName, "AaUiHook: facet layout ids=$facetBarLayoutIds")
+            log(tagName, "AaUiHook: facet layout ids=$facetBarLayoutIds railHosts=$railHostLayoutIds")
         }
     }
 
     override fun hook(config: SharedPreferences?, lpparam: XC_LoadPackage.LoadPackageParam) {
         log(tagName,  "AaUiHook: ~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+        mCloseLauncherDashboard = AADisplayConfig.CloseLauncherDashboard.get(config)
+        mAutoOpen = AADisplayConfig.AutoOpen.get(config)
         hookBaseClick()
         if (canHookLayout) {
             hookLayout()
         }
         if (canHookFacetBar) {
-            hookFacetBar(config)
+            hookFacetBar()
         }
         hookRadius(config)
     }
 
     private fun hookLayout() {
-        layoutInfoConstructor.hookAfter { param -> log(tagName, param.thisObject.toString()) }
+        layoutInfoConstructor.hookAfter { param ->
+            log(tagName, param.thisObject.toString())
+            // AA reconnect often rebuilds LayoutInfo without re-inflating coolwalk facet bar;
+            // ensure our side buttons are re-attached into the rail chrome.
+            if (canHookFacetBar) {
+                scheduleEnsureFacetBar("layoutInfo")
+            }
+        }
         layoutInfoConstructor.hookBefore { param ->
             if (param.args.size < 5) return@hookBefore
             val layoutTypeCode = layoutTypeCode(param.args[3] ?: return@hookBefore) ?: return@hookBefore
@@ -203,9 +223,7 @@ object AaUiHook: AaHook() {
         }
     }
 
-    private fun hookFacetBar(config: SharedPreferences?) {
-        val closeLauncherDashboard = AADisplayConfig.CloseLauncherDashboard.get(config)
-        val autoOpen = AADisplayConfig.AutoOpen.get(config)
+    private fun hookFacetBar() {
         findMethod(LayoutInflater::class.java) {
             name == "inflate"
             && parameterCount == 3
@@ -220,33 +238,138 @@ object AaUiHook: AaHook() {
                 return@hookAfter
             }
             val matchedById = facetBarLayoutIds.contains(layoutResId)
-            val matchedByContent = !matchedById && isFacetBarContent(resultViewGroup)
-            if (!matchedById && !matchedByContent) {
+            val matchedByContent = !matchedById && isCoolwalkFacetBarContent(resultViewGroup)
+            if (matchedById || matchedByContent) {
+                try {
+                    mInjectingFacetBar = true
+                    injectAaFacetBarReplaceResult(
+                        param = param,
+                        resultViewGroup = resultViewGroup,
+                        matchReason = if (matchedById) "layoutId=$layoutResId" else "content"
+                    )
+                } catch (e: Throwable) {
+                    log(tagName, "AaUiHook: inject facet bar failed [$layoutResId]", e)
+                } finally {
+                    mInjectingFacetBar = false
+                }
                 return@hookAfter
             }
-            try {
-                mInjectingFacetBar = true
-                injectAaFacetBar(
-                    param = param,
-                    resultViewGroup = resultViewGroup,
-                    closeLauncherDashboard = closeLauncherDashboard,
-                    autoOpen = autoOpen,
-                    matchReason = if (matchedById) "layoutId=$layoutResId" else "content"
-                )
-            } catch (e: Throwable) {
-                log(tagName, "AaUiHook: inject facet bar failed [$layoutResId]", e)
-            } finally {
-                mInjectingFacetBar = false
+            // Canonical vertical rail embeds facet chrome; reconnect often reinflates this
+            // without a separate coolwalk facet-bar inflate.
+            if (railHostLayoutIds.contains(layoutResId)) {
+                tryInjectIntoFacetColumn(resultViewGroup, "rail:$layoutResId")
             }
         }
     }
 
-    private fun isFacetBarContent(root: ViewGroup): Boolean {
-        // Canonical rail does not embed these ids; coolwalk facet bars do.
+    private fun scheduleEnsureFacetBar(reason: String) {
+        mFacetEnsureHandler.removeCallbacksAndMessages(FACET_ENSURE_TOKEN)
+        val now = android.os.SystemClock.uptimeMillis()
+        for (delayMs in FACET_ENSURE_DELAYS_MS) {
+            mFacetEnsureHandler.postAtTime(
+                { ensureFacetBarInjected("$reason-$delayMs") },
+                FACET_ENSURE_TOKEN,
+                now + delayMs
+            )
+        }
+    }
+
+    private fun ensureFacetBarInjected(reason: String) {
+        if (!canHookFacetBar || mInjectingFacetBar) return
+        try {
+            val roots = collectWindowRootViews()
+            var attempted = 0
+            for (root in roots) {
+                if (!containsFacetChrome(root)) continue
+                if (hasInjectedFacet(root)) continue
+                if (tryInjectIntoFacetColumn(root, reason)) attempted++
+            }
+            if (attempted > 0) {
+                log(tagName, "AaUiHook: ensure facet injected [$reason] count=$attempted")
+            }
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: ensure facet failed [$reason]", e)
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun collectWindowRootViews(): List<ViewGroup> {
+        return try {
+            val wmGlobalClass = Class.forName("android.view.WindowManagerGlobal")
+            val instance = wmGlobalClass.getMethod("getInstance").invoke(null) ?: return emptyList()
+            val views = try {
+                wmGlobalClass.getMethod("getWindowViews").invoke(instance) as? List<*>
+            } catch (_: Throwable) {
+                val field = wmGlobalClass.getDeclaredField("mViews").apply { isAccessible = true }
+                field.get(instance) as? List<*>
+            } ?: return emptyList()
+            views.mapNotNull { it as? ViewGroup }
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    private fun containsFacetChrome(root: ViewGroup): Boolean {
         if (root.findViewById<View>(resIdStatusBarId) == null) return false
         if (root.findViewById<View>(resIdLauncherAndDashboardIconContainerId) == null) return false
         if (root.findViewById<View>(resIdLauncherAndDashboardIconId) == null) return false
-        // Full-screen host layouts are much larger; facet chrome is a narrow bar.
+        return true
+    }
+
+    private fun hasInjectedFacet(root: ViewGroup): Boolean {
+        if (root.tag === facetBarInjectedTag) return true
+        val status = root.findViewById<View>(resIdStatusBarId) ?: return false
+        var node: View? = status
+        while (node != null) {
+            if (node.tag === facetBarInjectedTag) return true
+            node = node.parent as? View
+        }
+        return false
+    }
+
+    private fun findFacetColumn(root: ViewGroup): ViewGroup? {
+        val status = root.findViewById<View>(resIdStatusBarId) ?: return null
+        val launcherContainer = root.findViewById<View>(resIdLauncherAndDashboardIconContainerId) ?: return null
+        var node = status.parent as? ViewGroup ?: return null
+        while (true) {
+            if (launcherContainer === node || isDescendantOf(node, launcherContainer)) {
+                return node
+            }
+            if (node === root) break
+            node = node.parent as? ViewGroup ?: break
+        }
+        return null
+    }
+
+    private fun isDescendantOf(ancestor: ViewGroup, child: View): Boolean {
+        var node: View? = child
+        while (node != null) {
+            if (node === ancestor) return true
+            node = node.parent as? View
+        }
+        return false
+    }
+
+    private fun tryInjectIntoFacetColumn(root: ViewGroup, reason: String): Boolean {
+        if (mInjectingFacetBar) return false
+        if (hasInjectedFacet(root)) return false
+        val column = findFacetColumn(root) ?: return false
+        if (column.tag === facetBarInjectedTag) return false
+        return try {
+            mInjectingFacetBar = true
+            injectAaFacetBarInPlace(column, reason)
+            true
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: in-place facet inject failed [$reason]", e)
+            false
+        } finally {
+            mInjectingFacetBar = false
+        }
+    }
+
+    /** Coolwalk facet bars are narrow; full rail hosts are handled via in-place inject. */
+    private fun isCoolwalkFacetBarContent(root: ViewGroup): Boolean {
+        if (!containsFacetChrome(root)) return false
         val w = root.layoutParams?.width ?: root.measuredWidth
         val h = root.layoutParams?.height ?: root.measuredHeight
         if (w > 0 && h > 0) {
@@ -258,20 +381,41 @@ object AaUiHook: AaHook() {
         return true
     }
 
-    private fun injectAaFacetBar(
+    private fun injectAaFacetBarReplaceResult(
         param: de.robv.android.xposed.XC_MethodHook.MethodHookParam,
         resultViewGroup: ViewGroup,
-        closeLauncherDashboard: Boolean,
-        autoOpen: Boolean,
         matchReason: String
     ) {
-        val ctx = (param.thisObject as LayoutInflater).context
-        val ctx2 = CommonContextWrapper.createAppCompatContext(ctx)
-        val layoutInflater = LayoutInflater.from(ctx2)
-        val resultViewGroupParent = (resultViewGroup.parent as ViewGroup?)?.apply {
+        val parent = (resultViewGroup.parent as ViewGroup?)?.apply {
             removeView(resultViewGroup)
         }
-        if (closeLauncherDashboard) {
+        val aaFacetBar = buildAaFacetBar(resultViewGroup, parent, matchReason)
+        param.result = aaFacetBar
+    }
+
+    private fun injectAaFacetBarInPlace(facetHost: ViewGroup, reason: String) {
+        val parent = facetHost.parent as? ViewGroup
+            ?: throw IllegalStateException("facet host has no parent")
+        val index = parent.indexOfChild(facetHost)
+        val lp = facetHost.layoutParams
+        parent.removeView(facetHost)
+        val aaFacetBar = buildAaFacetBar(facetHost, parent, "inplace:$reason")
+        if (index >= 0) {
+            parent.addView(aaFacetBar, index, lp)
+        } else {
+            parent.addView(aaFacetBar, lp)
+        }
+    }
+
+    private fun buildAaFacetBar(
+        resultViewGroup: ViewGroup,
+        resultViewGroupParent: ViewGroup?,
+        matchReason: String
+    ): ConstraintLayout {
+        val ctx = resultViewGroup.context
+        val ctx2 = CommonContextWrapper.createAppCompatContext(ctx)
+        val layoutInflater = LayoutInflater.from(ctx2)
+        if (mCloseLauncherDashboard) {
             val launcherIcon = resultViewGroup.findViewById<View>(resIdLauncherAndDashboardIconId)
             if (launcherIcon != null) {
                 launcherIcon.setOnClickFinallyListener(OnClickFinallyListener {
@@ -283,7 +427,7 @@ object AaUiHook: AaHook() {
         aaFacetBar.tag = facetBarInjectedTag
         resultViewGroup.tag = facetBarInjectedTag
         log(tagName, "AaUiHook: inject facet bar ($matchReason)")
-        if (autoOpen) {
+        if (mAutoOpen) {
             aaFacetBar.post {
                 runMain {
                     delay(1000)
@@ -364,7 +508,7 @@ object AaUiHook: AaHook() {
         set.applyTo(aaFacetBar)
         resultViewGroup.visibility = View.GONE
         aaFacetBar.addView(resultViewGroup)
-        param.result = aaFacetBar
+        return aaFacetBar
     }
 
     private fun hookBaseClick() {
