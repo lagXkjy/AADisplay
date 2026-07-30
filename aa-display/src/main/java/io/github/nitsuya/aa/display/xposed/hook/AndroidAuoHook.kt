@@ -11,6 +11,7 @@ import de.robv.android.xposed.XSharedPreferences
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.util.AADisplayConfig
+import io.github.nitsuya.aa.display.util.SharedPreferencesAccess
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaBasicsHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaBtnEventHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaDpiHook
@@ -19,6 +20,7 @@ import io.github.nitsuya.aa.display.xposed.hook.aa.AaSignatureHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaUiHook
 import io.github.nitsuya.aa.display.xposed.log
 import org.luckypray.dexkit.DexKitBridge
+import java.io.File
 import kotlin.system.measureTimeMillis
 
 
@@ -41,18 +43,7 @@ object AndroidAuoHook : BaseHook() {
         val hooks = listOf(AaBasicsHook, AaSignatureHook, AaDpiHook, AaBtnEventHook, AaUiHook, AaPropsHook).filter { i -> i.isSupportProcess(processName) }
         if(hooks.isEmpty()) return
 
-        val configPreferences = XSharedPreferences(BuildConfig.APPLICATION_ID, AADisplayConfig.ConfigName)
-        val config = if (configPreferences.file.canRead()) {
-            runCatching {
-                configPreferences.reload()
-            }.onFailure { e ->
-                log(tagName, "configPreferences reload failed; continuing with cached/default values", e)
-            }
-            configPreferences
-        } else {
-            log(tagName, "configPreferences unreadable: ${configPreferences.file}; continuing with defaults")
-            null
-        }
+        val config = loadConfigPreferences()
 
         var onCreateApplication: XC_MethodHook.Unhook? = null
         onCreateApplication = findMethod(Instrumentation::class.java) {
@@ -79,6 +70,30 @@ object AndroidAuoHook : BaseHook() {
                 h.hook(config, lpparam)
             }
         }
+    }
+
+    private fun loadConfigPreferences(): SharedPreferences? {
+        // Prefer durable system mirror so AA process matches system_server after reboot.
+        try {
+            val mirror = File(SharedPreferencesAccess.HOOK_MIRROR_PATH)
+            if (mirror.exists() && mirror.canRead()) {
+                return XSharedPreferences(mirror).also { runCatching { it.reload() } }
+            }
+        } catch (e: Throwable) {
+            log(tagName, "hook mirror load failed:", e)
+        }
+
+        val configPreferences = XSharedPreferences(BuildConfig.APPLICATION_ID, AADisplayConfig.ConfigName)
+        runCatching {
+            configPreferences.reload()
+        }.onFailure { e ->
+            log(tagName, "configPreferences reload failed; continuing with cached/default values", e)
+        }
+        if (configPreferences.all.isNotEmpty()) {
+            return configPreferences
+        }
+        log(tagName, "configPreferences empty/unreadable: ${configPreferences.file}; continuing with defaults")
+        return null
     }
 }
 

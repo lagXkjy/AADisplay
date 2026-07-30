@@ -135,6 +135,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     override fun initViews() {
         config = SharedPreferencesAccess.openForHooks(this.requireContext(), AADisplayConfig.ConfigName)
         Log.i(TAG, "initViews")
+        SharedPreferencesAccess.makeReadableForHooks(requireContext(), AADisplayConfig.ConfigName)
         baseBinding.tvDisplay.surfaceTextureListener = this
         baseBinding.tvDisplay.doOnLayout {
             requestDisplay("layout")
@@ -169,8 +170,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         Log.i(TAG, "onDestroy: displayId=$displayId")
         clearDisplaySurface("destroy")
         CoreApi.onDestroyDisplay()
-        if (isControlReceiverRegistered) tryOrNull {
-            this@AaMainFragment.requireContext().unregisterReceiver(broadcastReceiver)
+        if (isControlReceiverRegistered) {
+            tryOrNull {
+                context?.unregisterReceiver(broadcastReceiver)
+            }
             isControlReceiverRegistered = false
         }
         car?.disconnect()
@@ -195,9 +198,14 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private val displayCreatedListener = object : IVirtualDisplayCreatedListener.Stub() {
         @SuppressLint("ClickableViewAccessibility")
         override fun onAvailableDisplay(displayId: Int, create: Boolean) {
-            Log.i(TAG, "onAvailableDisplay: displayId=$displayId create=$create surfaceAvailable=${baseBinding.tvDisplay.isAvailable}")
             this@AaMainFragment.displayId = displayId
             runMain {
+                // Binder callback can arrive after detach/destroy during AA reconnect races.
+                if (!isAdded || context == null || view == null) {
+                    Log.w(TAG, "onAvailableDisplay skipped: fragment not attached displayId=$displayId")
+                    return@runMain
+                }
+                Log.i(TAG, "onAvailableDisplay: displayId=$displayId create=$create surfaceAvailable=${baseBinding.tvDisplay.isAvailable}")
                 attachDisplaySurface("available")
                 setupTouchForwarding()
                 registerControlReceivers()
@@ -289,7 +297,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
 
     private fun registerControlReceivers() {
         if (isControlReceiverRegistered) return
-        ContextCompat.registerReceiver(this@AaMainFragment.requireContext(), broadcastReceiver, IntentFilter().apply {
+        val ctx = context
+        if (!isAdded || ctx == null) {
+            Log.w(TAG, "registerControlReceivers skipped: fragment not attached")
+            return
+        }
+        ContextCompat.registerReceiver(ctx, broadcastReceiver, IntentFilter().apply {
             addAction(AABroadcastConst.ACTION_SCREEN_CONTROL)
             addAction(AABroadcastConst.ACTION_STEERING_WHEEL_CONTROL)
         }, ContextCompat.RECEIVER_EXPORTED)

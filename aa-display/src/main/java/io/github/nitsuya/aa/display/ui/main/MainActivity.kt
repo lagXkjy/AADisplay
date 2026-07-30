@@ -18,6 +18,7 @@ import android.widget.Toast
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.net.toUri
 import androidx.core.view.MenuProvider
+import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputLayout
@@ -536,20 +537,26 @@ class MainActivity :
             .putString(AADisplayConfig.DelayDestroyTime.key, delay.toString())
             .commit()
 
-        val readableForHooks = SharedPreferencesAccess.makeReadableForHooks(this, AADisplayConfig.ConfigName)
-        if (!settingsSaved || !readableForHooks) {
+        if (!settingsSaved) {
             Toast.makeText(this, getString(R.string.settings_saved_pref_access_failed), Toast.LENGTH_LONG).show()
             updateSaveButtonState()
             return
         }
 
+        // Always keep local "saved*" in sync when disk write succeeds. Hook readability is separate.
         savedAutoOpen = baseBinding.switchAutoOpen.isChecked
         savedEnableOneUiSplit = baseBinding.switchEnableOneuiSplit.isChecked
         savedDisableWazeOnAa = disableWazeOnAa
         savedDisableGoogleMapsOnAa = disableGoogleMapsOnAa
         savedLauncherPackage = launcherPackage
         savedDelayDestroyTime = delay
-        Toast.makeText(this, getString(R.string.settings_saved_successfully), Toast.LENGTH_SHORT).show()
+
+        val readableForHooks = SharedPreferencesAccess.makeReadableForHooks(this, AADisplayConfig.ConfigName)
+        if (!readableForHooks) {
+            Toast.makeText(this, getString(R.string.settings_saved_pref_access_failed), Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(this, getString(R.string.settings_saved_successfully), Toast.LENGTH_SHORT).show()
+        }
         updateSaveButtonState()
     }
 

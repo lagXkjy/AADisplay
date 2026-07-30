@@ -6,15 +6,27 @@
 - Recent-task stack UI: explicit close button on each task (phone overlay and AA car panel). Outward swipe-to-remove is unchanged.
 - OneUI split-screen support on the AA virtual display (opt-in setting `EnableOneUiSplit`):
   - Enables system decorations on the virtual display so OneUI multi-window can stay active.
-  - Launching a second app while another non-Home app is foreground uses `FLAG_ACTIVITY_LAUNCH_ADJACENT` (falls back to fullscreen on failure).
+  - Sets the virtual display windowing mode to freeform and launches non-Home apps as freeform so the OneUI caption/handle bar (drag, resize, enter split) is available.
+  - Launching a second app while another non-Home app is foreground uses `FLAG_ACTIVITY_LAUNCH_ADJACENT` (falls back to freeform/fullscreen on failure).
   - Task switches prefer `setFocusedTask` while multi-window is active so split is not collapsed by `moveTaskToFront`.
   - Home/Back PiP cleanup and Home restart skip actions that would tear down split/MW layouts.
 
 ### Fixed
+- Apps opening fullscreen on the AA virtual display with no OneUI freeform caption bar (could not resize or enter split):
+  - When `EnableOneUiSplit` is on, apply `setWindowingMode(FREEFORM)` with system decors on connect/reconnect (do not force FULLSCREEN when the setting is off).
+  - Non-Home launches use `ActivityOptions.setLaunchWindowingMode(FREEFORM)`; Home/launcher stays fullscreen.
+  - After a task lands on the VD (create / move-to-front / display-changed / post-launch), force `setTaskWindowingMode(FREEFORM)` when still fullscreen so caption appears without a phone↔VD round-trip.
+- OneUI caption “split” moving the freeform app onto the phone stack:
+  - Track VD tasks and bounce unsolicited `VD → DEFAULT_DISPLAY` moves back onto the virtual display (intentional recent-task `moveTaskId` to phone is suppressed).
+  - Follow-up scan pulls paired split-stage tasks that lag behind the first move.
+- Settings appearing “lost” after reboot for hooks (especially `EnableOneUiSplit`, whose default is false):
+  - App prefs XML was already saved; SELinux blocks system_server from reading `app_data_file`.
+  - On save, copy the same `aadisplay_config.xml` to `/data/system/aadisplay_config.xml` (`system_data_file`, survives reboot; `/data/local/tmp` is wiped on many devices) and load via `XSharedPreferences(File)` when the package path is unreadable.
+- `AaMainFragment` crash (`Fragment not attached to a context`) during AA reconnect when registering control receivers after detach; skip register/unregister when detached so steering-wheel / screen-control hooks keep working.
 - OneUI split often surviving only until the first AA reconnect / display destroy (needed phone reboot):
   - AA reconnect no longer reinstalls density hooks in a way that clears the VD DPI map mid-session.
   - `ActivityRecord` density pin only rewrites when DPI actually differs (avoids fighting OneUI MW layout).
-  - Reconnect re-applies IME / system-decors / forced VD density policies.
+  - Reconnect re-applies IME / system-decors / freeform windowing / forced VD density policies.
   - `ShellManager` teardown checks binder liveness + death recipient (stops noisy `DeadObjectException` on destroy).
 - `removeTask` now uses `IActivityTaskManager.removeTask` return value, and when the last task of a package leaves the virtual display it clears the VD DPI map and package tracking.
 - Cross-display task moves between the phone stack and the AA virtual-display stack (recent-task swipe / OneUI move):
