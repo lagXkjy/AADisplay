@@ -8,21 +8,23 @@ data class RecentTaskInfo(
     var logo: Bitmap?,
     var taskId: Int,
     var label: String?,
-    var snapshot: Bitmap?
+    var snapshot: Bitmap?,
+    var packageName: String? = null
 ) : Parcelable {
     constructor(parcel: Parcel) : this(
         parcel.readParcelable(Bitmap::class.java.classLoader),
         parcel.readInt(),
         parcel.readString(),
-        parcel.readParcelable(Bitmap::class.java.classLoader)
-    ) {
-    }
+        parcel.readParcelable(Bitmap::class.java.classLoader),
+        parcel.readString()
+    )
 
     override fun writeToParcel(parcel: Parcel, flags: Int) {
         parcel.writeParcelable(logo, flags)
         parcel.writeInt(taskId)
         parcel.writeString(label)
         parcel.writeParcelable(snapshot, flags)
+        parcel.writeString(packageName)
     }
 
     override fun describeContents(): Int {
@@ -38,5 +40,4 @@ data class RecentTaskInfo(
             return arrayOfNulls(size)
         }
     }
-
 }

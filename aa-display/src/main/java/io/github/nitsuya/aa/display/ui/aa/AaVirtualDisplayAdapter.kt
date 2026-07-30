@@ -96,9 +96,17 @@ class AaVirtualDisplayAdapter(
         private const val FREEFORM_INSET_RATIO = 0.88f
         /** After split bounce/reclaim, do not force FREEFORM (would collapse OneUI split). */
         private const val SUPPRESS_ENSURE_FREEFORM_MS = 1800L
+        /** After intentional close/replace, keep reclaim from resurrecting the vacated package. */
+        private const val SUPPRESS_RECLAIM_AFTER_REPLACE_MS = 2500L
 
         private val ENSURE_FREEFORM_DELAYS_MS = longArrayOf(0L, 200L, 500L, 1000L, 1800L)
         private val RECLAIM_FOLLOWUP_DELAYS_MS = longArrayOf(0L, 400L, 1000L)
+        /** Debounce empty OneUI stage-shell cleanup (thermal abort leaves them on the VD). */
+        private const val EMPTY_SPLIT_CLEANUP_MIN_INTERVAL_MS = 400L
+        /** Require shells to stay empty this long so split-entry races are not wiped. */
+        private const val EMPTY_SPLIT_CONFIRM_MS = 600L
+        private val EMPTY_SPLIT_CLEANUP_FOLLOWUP_DELAYS_MS = longArrayOf(0L, 350L, 800L, 1400L)
+        private val EMPTY_SPLIT_CLEANUP_TOKEN = Any()
 
         /**
          * Never bounce these phone-side surfaces back onto the VD.
@@ -148,6 +156,9 @@ class AaVirtualDisplayAdapter(
     private val mLastFreeformEnsureAt = mutableMapOf<Int, Long>()
     private val mLastDisplayBounceAt = mutableMapOf<Int, Long>()
     private var mLastReclaimAt = 0L
+    private var mLastEmptySplitCleanupAt = 0L
+    /** Uptime when empty split shells were first observed; 0 = none. */
+    private var mEmptySplitShellsSeenAt = 0L
     private val mHandler = Handler(Looper.getMainLooper())
     private val mDebouncedStackReclaim = Runnable {
         reclaimVirtualDisplayTasks("stack-changed")
@@ -225,7 +236,10 @@ class AaVirtualDisplayAdapter(
         mSuppressDisplayBounceUntil = 0L
         mSuppressEnsureFreeformUntil = 0L
         mLastReclaimAt = 0L
+        mLastEmptySplitCleanupAt = 0L
+        mEmptySplitShellsSeenAt = 0L
         mHandler.removeCallbacks(mDebouncedStackReclaim)
+        mHandler.removeCallbacksAndMessages(EMPTY_SPLIT_CLEANUP_TOKEN)
         refreshLauncherPackage("connect")
         trackPackage(mLauncherPackage, 0)
         trackPackage(mHomePackage, 0)
@@ -318,7 +332,10 @@ class AaVirtualDisplayAdapter(
         mSuppressDisplayBounceUntil = 0L
         mSuppressEnsureFreeformUntil = 0L
         mLastReclaimAt = 0L
+        mLastEmptySplitCleanupAt = 0L
+        mEmptySplitShellsSeenAt = 0L
         mHandler.removeCallbacks(mDebouncedStackReclaim)
+        mHandler.removeCallbacksAndMessages(EMPTY_SPLIT_CLEANUP_TOKEN)
         trackPackage(mLauncherPackage, 0)
         trackPackage(mHomePackage, 0)
         clearForcedVirtualDisplayDensity()
@@ -514,6 +531,16 @@ class AaVirtualDisplayAdapter(
 
     fun startActivity(packageName: String, userId: Int): Boolean{
         if(mDisplayId == Display.INVALID_DISPLAY) return false
+        // OneUI caption close is broken on the VD; replace the focused split pane instead.
+        if (isOneUiSplitEnabled()
+            && isDisplayInSplitStages()
+            && packageName != mHomePackage
+            && !IGNORE_RECENT_PACKAGE.contains(packageName)
+        ) {
+            val replaced = replaceFocusedSplitSide(packageName, userId)
+            if (replaced) return true
+            log(TAG, "startActivity: replaceSplitSide failed for $packageName; falling back")
+        }
         val componentName = resolveLaunchComponent(packageName) ?: return false
         val launchAdjacent = shouldLaunchAdjacent(packageName)
         log(TAG, "startActivity: $componentName on display=$mDisplayId user=$userId adjacent=$launchAdjacent")
@@ -523,6 +550,98 @@ class AaVirtualDisplayAdapter(
             log(TAG, "startActivity adjacent failed; falling back to non-adjacent launch")
         }
         return launchActivityAsUser(componentName, userId, adjacent = false)
+    }
+
+    /**
+     * Replace the focused OneUI split pane with [packageName].
+     * Used because OneUI's caption close/apps-picker does not work on the AA virtual display.
+     */
+    private fun replaceFocusedSplitSide(packageName: String, userId: Int): Boolean {
+        val componentName = resolveLaunchComponent(packageName) ?: return false
+        val sides = getSplitAppTasksOnDisplay()
+        if (sides.isEmpty()) return false
+
+        val already = sides.firstOrNull { it.second == packageName }
+        if (already != null) {
+            log(TAG, "replaceSplitSide: $packageName already on stage task=${already.first}; focus")
+            return setFocusedTaskSafe(already.first) || moveTaskToFront(already.first)
+        }
+
+        val (victimTaskId, victimPkg) = sides.first()
+        log(
+            TAG,
+            "replaceSplitSide: remove $victimPkg#$victimTaskId then adjacent-launch $packageName"
+        )
+        dismissSplitSideForReplace(victimTaskId, victimPkg)
+        val adjacentOk = launchActivityAsUser(componentName, userId, adjacent = true)
+        if (adjacentOk) return true
+        log(TAG, "replaceSplitSide: adjacent launch failed; trying non-adjacent")
+        return launchActivityAsUser(componentName, userId, adjacent = false)
+    }
+
+    /** Close one split pane and stop reclaim from pulling that package back. */
+    private fun dismissSplitSideForReplace(taskId: Int, packageName: String) {
+        val now = SystemClock.uptimeMillis()
+        mSuppressDisplayBounceUntil = now + SUPPRESS_RECLAIM_AFTER_REPLACE_MS
+        mSuppressEnsureFreeformUntil = now + SUPPRESS_ENSURE_FREEFORM_MS
+        forgetVirtualDisplayOwnership(taskId, packageName)
+        AndroidHook.FuckAppUseApplicationContext.clearPackageVirtualDisplay(packageName)
+        untrackPackage(packageName)
+        try {
+            val removed = Instances.iActivityTaskManager.removeTask(taskId)
+            log(TAG, "dismissSplitSideForReplace: removeTask($taskId)=$removed pkg=$packageName")
+        } catch (e: Throwable) {
+            log(TAG, "dismissSplitSideForReplace removeTask failed: task=$taskId", e)
+        }
+    }
+
+    /**
+     * App tasks currently filling OneUI left/right stages (not freeform/organizer containers).
+     * Ordered top-first so index 0 is the focused pane.
+     */
+    private fun getSplitAppTasksOnDisplay(): List<Pair<Int, String>> {
+        if (mDisplayId == Display.INVALID_DISPLAY) return emptyList()
+        return try {
+            val triples = Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
+                .mapNotNull { taskInfo ->
+                    val pkg = taskInfo.topActivity?.packageName?.takeIf { it.isNotBlank() }
+                        ?: return@mapNotNull null
+                    if (isBounceExcludedPackage(pkg) || pkg == mHomePackage) return@mapNotNull null
+                    val mode = getWindowingMode(taskInfo)
+                    if (!isSplitStageMode(mode)) return@mapNotNull null
+                    Triple(taskInfo.taskId, pkg, isCreatedByOrganizer(taskInfo))
+                }
+            // Keep top-first z-order; prefer leaf app tasks over organizer stage parents.
+            val preferred = triples.filter { !it.third }.ifEmpty { triples }
+            preferred.distinctBy { it.second }.map { it.first to it.second }
+        } catch (e: Throwable) {
+            log(TAG, "getSplitAppTasksOnDisplay error:", e)
+            emptyList()
+        }
+    }
+
+    private fun isCreatedByOrganizer(taskInfo: Any): Boolean {
+        val readers: List<() -> Boolean?> = listOf(
+            {
+                taskInfo.getObjectAs("createdByOrganizer", Boolean::class.javaPrimitiveType) as? Boolean
+            },
+            {
+                taskInfo.getObjectAs("mCreatedByOrganizer", Boolean::class.javaPrimitiveType) as? Boolean
+            },
+            {
+                taskInfo.getObjectAs("createdByOrganizer", Boolean::class.java) as? Boolean
+            },
+            {
+                taskInfo.invokeMethod("isCreatedByOrganizer", args(), argTypes()) as? Boolean
+            }
+        )
+        for (read in readers) {
+            try {
+                if (read() == true) return true
+            } catch (_: Throwable) {
+            }
+        }
+        return false
     }
 
     private fun launchActivityAsUser(componentName: ComponentName, userId: Int, adjacent: Boolean): Boolean {
@@ -733,6 +852,15 @@ class AaVirtualDisplayAdapter(
     fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean): Boolean {
         if(mDisplayId == Display.INVALID_DISPLAY) return false
         val packageName = findPackageForTask(taskId)
+        // Swiping a phone task onto the VD while split: replace focused pane (caption close is dead).
+        if (isVirtualDisplay
+            && isOneUiSplitEnabled()
+            && isDisplayInSplitStages()
+            && !packageName.isNullOrBlank()
+        ) {
+            log(TAG, "moveTaskId: split active → replaceSplitSide with $packageName (task=$taskId)")
+            return startActivity(packageName, 0)
+        }
         val targetDisplayId = if (isVirtualDisplay) mDisplayId else Display.DEFAULT_DISPLAY
         log(
             TAG,
@@ -794,6 +922,12 @@ class AaVirtualDisplayAdapter(
         val packageName = findPackageForTask(taskId)
         val onVirtualDisplay = isTaskOnVirtualDisplay(taskId)
         return try {
+            // Intentional close: forget ownership first so onTaskRemoved reclaim cannot resurrect.
+            if (onVirtualDisplay) {
+                mSuppressDisplayBounceUntil =
+                    SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_AFTER_REPLACE_MS
+                forgetVirtualDisplayOwnership(taskId, packageName)
+            }
             val removed = Instances.iActivityTaskManager.removeTask(taskId)
             if (removed && onVirtualDisplay && !packageName.isNullOrBlank()) {
                 if (!hasPackageTaskOnDisplay(packageName, mDisplayId)) {
@@ -881,16 +1015,193 @@ class AaVirtualDisplayAdapter(
         }
     }
 
-    /** True when OneUI left/right (or legacy split) stages are on the VD. */
+    /**
+     * True when OneUI left/right stages still host a real app on the VD.
+     * Empty organizer shells (sz=0 after thermal / APP_DOES_NOT_SUPPORT exit) must not count —
+     * they poison freeform ensure and wrongly trigger replaceSplitSide.
+     */
     private fun isDisplayInSplitStages(): Boolean {
-        if (mDisplayId == Display.INVALID_DISPLAY) return false
-        return try {
+        return getSplitAppTasksOnDisplay().isNotEmpty()
+    }
+
+    private fun scheduleCleanupEmptySplitOrganizerTasks(reason: String) {
+        if (!isOneUiSplitEnabled() || mDisplayId == Display.INVALID_DISPLAY) return
+        mHandler.removeCallbacksAndMessages(EMPTY_SPLIT_CLEANUP_TOKEN)
+        val now = SystemClock.uptimeMillis()
+        for (delay in EMPTY_SPLIT_CLEANUP_FOLLOWUP_DELAYS_MS) {
+            val taggedReason = if (delay == 0L) reason else "$reason-$delay"
+            mHandler.postAtTime(
+                { cleanupEmptySplitOrganizerTasks(taggedReason) },
+                EMPTY_SPLIT_CLEANUP_TOKEN,
+                now + delay
+            )
+        }
+    }
+
+    /**
+     * After OneUI aborts split (SSRM overheat / APP_DOES_NOT_SUPPORT_MULTIWINDOW), stage
+     * containers often remain on the VD with no activities. That blocks freeform and new split.
+     *
+     * Shells must stay empty for [EMPTY_SPLIT_CONFIRM_MS] so an in-progress split entry
+     * (briefly empty side stage) is not destroyed.
+     */
+    private fun cleanupEmptySplitOrganizerTasks(reason: String) {
+        if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return
+        if (!isOneUiSplitEnabled()) return
+        // Live split panes — never tear down organizer tree.
+        if (getSplitAppTasksOnDisplay().isNotEmpty()) {
+            mEmptySplitShellsSeenAt = 0L
+            return
+        }
+
+        val tasks = try {
             Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
-                .any { taskInfo -> isSplitStageMode(getWindowingMode(taskInfo)) }
         } catch (e: Throwable) {
-            log(TAG, "isDisplayInSplitStages error:", e)
+            log(TAG, "cleanupEmptySplit[$reason] list failed:", e)
+            return
+        }
+
+        val zombieIds = collectEmptySplitOrganizerTaskIds(tasks)
+        if (zombieIds.isEmpty()) {
+            mEmptySplitShellsSeenAt = 0L
+            return
+        }
+
+        val now = SystemClock.uptimeMillis()
+        if (mEmptySplitShellsSeenAt == 0L) {
+            mEmptySplitShellsSeenAt = now
+            log(
+                TAG,
+                "cleanupEmptySplit[$reason]: empty organizer shells=${zombieIds.joinToString()} — confirm in ${EMPTY_SPLIT_CONFIRM_MS}ms"
+            )
+            return
+        }
+        if (now - mEmptySplitShellsSeenAt < EMPTY_SPLIT_CONFIRM_MS) return
+        if (now - mLastEmptySplitCleanupAt < EMPTY_SPLIT_CLEANUP_MIN_INTERVAL_MS) return
+        mLastEmptySplitCleanupAt = now
+
+        // Remove leaves before parents (higher ids are usually stages; parent root last).
+        var removed = 0
+        for (taskId in zombieIds.sortedDescending()) {
+            if (removeOrganizerTaskQuietly(taskId, reason)) removed++
+        }
+        mEmptySplitShellsSeenAt = 0L
+        if (removed > 0) {
+            log(TAG, "cleanupEmptySplit[$reason]: removed $removed empty organizer task(s)")
+        }
+    }
+
+    /**
+     * Empty stage shells and their StageCoordinator parent. Children may only appear in
+     * childTaskIds (not as separate RootTaskInfo entries on some OneUI builds).
+     */
+    private fun collectEmptySplitOrganizerTaskIds(
+        tasks: List<ActivityTaskManager.RootTaskInfo>
+    ): List<Int> {
+        val toRemove = linkedSetOf<Int>()
+        for (taskInfo in tasks) {
+            if (!isCreatedByOrganizer(taskInfo)) continue
+            if (taskInfo.topActivity != null) continue
+
+            if (isSplitStageMode(getWindowingMode(taskInfo))) {
+                toRemove.add(taskInfo.taskId)
+                continue
+            }
+
+            val childIds = readChildTaskIds(taskInfo)
+            if (childIds == null || childIds.isEmpty()) {
+                val mode = getWindowingMode(taskInfo)
+                if (mode == null ||
+                    mode == WINDOWING_MODE_FULLSCREEN ||
+                    mode == WINDOWING_MODE_UNDEFINED ||
+                    isSplitStageMode(mode)
+                ) {
+                    // Orphan empty organizer root (parent already lost children).
+                    toRemove.add(taskInfo.taskId)
+                }
+                continue
+            }
+
+            var allChildrenEmpty = true
+            val emptyChildren = ArrayList<Int>(childIds.size)
+            for (childId in childIds) {
+                if (taskHasAppActivity(childId, tasks)) {
+                    allChildrenEmpty = false
+                    break
+                }
+                emptyChildren.add(childId)
+            }
+            if (!allChildrenEmpty) continue
+            // Parent of only-empty children: zombie split tree (e.g. #3 → #4/#5).
+            toRemove.addAll(emptyChildren)
+            toRemove.add(taskInfo.taskId)
+        }
+        return toRemove.toList()
+    }
+
+    private fun taskHasAppActivity(
+        taskId: Int,
+        known: List<ActivityTaskManager.RootTaskInfo>
+    ): Boolean {
+        known.firstOrNull { it.taskId == taskId }?.topActivity?.let { return true }
+        val task = resolveTaskObject(taskId) ?: return false
+        val probes: List<() -> Any?> = listOf(
+            { task.invokeMethod("getTopNonFinishingActivity", args(), argTypes()) },
+            { task.invokeMethod("topRunningActivity", args(), argTypes()) },
+            { task.invokeMethod("getTopMostActivity", args(), argTypes()) },
+            { task.invokeMethod("getTopActivity", args(), argTypes()) }
+        )
+        for (probe in probes) {
+            try {
+                if (probe() != null) return true
+            } catch (_: Throwable) {
+            }
+        }
+        return false
+    }
+
+    private fun hasEmptySplitOrganizerShells(): Boolean {
+        if (mDisplayId == Display.INVALID_DISPLAY) return false
+        if (getSplitAppTasksOnDisplay().isNotEmpty()) return false
+        return try {
+            val tasks = Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
+            collectEmptySplitOrganizerTaskIds(tasks).isNotEmpty()
+        } catch (_: Throwable) {
             false
         }
+    }
+
+    private fun removeOrganizerTaskQuietly(taskId: Int, reason: String): Boolean {
+        return try {
+            // Bypass removeTask(): no VD ownership / home-restart side effects for shells.
+            mVdTaskIds.remove(taskId)
+            val ok = Instances.iActivityTaskManager.removeTask(taskId)
+            log(TAG, "cleanupEmptySplit[$reason]: removeTask($taskId)=$ok")
+            ok
+        } catch (e: Throwable) {
+            log(TAG, "cleanupEmptySplit[$reason]: removeTask($taskId) failed:", e)
+            false
+        }
+    }
+
+    private fun readChildTaskIds(taskInfo: Any): IntArray? {
+        val readers: List<() -> IntArray?> = listOf(
+            { taskInfo.getObjectAs("childTaskIds", IntArray::class.java) as? IntArray },
+            {
+                @Suppress("UNCHECKED_CAST")
+                (taskInfo.getObjectAs("childTaskIds", Array::class.java) as? Array<*>)
+                    ?.mapNotNull { (it as? Number)?.toInt() }
+                    ?.toIntArray()
+            }
+        )
+        for (read in readers) {
+            try {
+                val ids = read()
+                if (ids != null) return ids
+            } catch (_: Throwable) {
+            }
+        }
+        return null
     }
 
     private fun getMultiWindowTasksOnDisplay(): List<ActivityTaskManager.RootTaskInfo> {
@@ -948,6 +1259,15 @@ class AaVirtualDisplayAdapter(
         if (isDisplayInSplitStages()) {
             log(TAG, "ensureFreeform skipped (split stages): task=$taskId [$reason]")
             return
+        }
+        // Thermal / APP_DOES_NOT_SUPPORT exit often leaves empty stage shells that block freeform.
+        if (hasEmptySplitOrganizerShells()) {
+            scheduleCleanupEmptySplitOrganizerTasks("before-ensure:$reason")
+            cleanupEmptySplitOrganizerTasks("before-ensure:$reason")
+            if (hasEmptySplitOrganizerShells()) {
+                log(TAG, "ensureFreeform deferred (empty split shells): task=$taskId [$reason]")
+                return
+            }
         }
         if (!force && SystemClock.uptimeMillis() < mSuppressEnsureFreeformUntil) {
             log(TAG, "ensureFreeform skipped (suppress): task=$taskId [$reason]")
@@ -1054,6 +1374,20 @@ class AaVirtualDisplayAdapter(
     }
 
     private fun markVirtualDisplayOwnership(taskId: Int, packageName: String?) {
+        val info = findRootTaskInfoOnDisplay(taskId, mDisplayId)
+            ?: findRootTaskInfoOnDisplay(taskId, Display.DEFAULT_DISPLAY)
+        // Never track OneUI organizer roots/stages as owned task ids — reclaim would
+        // moveRootTaskToDisplay the whole split tree (resets ratio / fights divider).
+        if (info != null && isCreatedByOrganizer(info)) {
+            val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() }
+                ?: info.topActivity?.packageName?.trim()?.takeIf { it.isNotEmpty() }
+            if (!pkg.isNullOrBlank() && !isBounceExcludedPackage(pkg)) {
+                if (mVdPackages.add(pkg)) {
+                    log(TAG, "VD ownership mark (pkg only, skip organizer task=$taskId): pkg=$pkg")
+                }
+            }
+            return
+        }
         mVdTaskIds.add(taskId)
         val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
         if (isBounceExcludedPackage(pkg)) return
@@ -1261,6 +1595,12 @@ class AaVirtualDisplayAdapter(
                     taskInfo.getObjectAs("baseActivity", ComponentName::class.java) as? ComponentName
                 }.getOrNull()?.packageName
             if (isBounceExcludedPackage(pkg)) continue
+            // Organizer freeform/stage roots briefly appear on the phone during split entry
+            // with a child app as topActivity — bouncing them collapses/resets the ratio.
+            if (isCreatedByOrganizer(taskInfo)) {
+                mVdTaskIds.remove(taskId)
+                continue
+            }
 
             val ownedById = ownedTaskIds.contains(taskId)
             val ownedByPkg = !pkg.isNullOrBlank() && ownedPackages.contains(pkg)
@@ -1589,7 +1929,8 @@ class AaVirtualDisplayAdapter(
                     icon,
                     taskInfo.taskId,
                     label,
-                    snapshot
+                    snapshot,
+                    packageName
                 )
             }
             .filterNotNull()
@@ -1666,6 +2007,7 @@ class AaVirtualDisplayAdapter(
             }
             // Keep mVdPackages: OneUI may recreate the same package under a new taskId on phone.
             scheduleReclaimVirtualDisplayTasks("onTaskRemoved")
+            scheduleCleanupEmptySplitOrganizerTasks("onTaskRemoved")
         }
         override fun onTaskMovedToFront(taskInfo: ActivityManager.RunningTaskInfo) {
             val taskId = taskInfo.taskId
@@ -1710,6 +2052,7 @@ class AaVirtualDisplayAdapter(
         //Samsung OneUi
         override fun onActivityDismissingSplitTask(str: String?) {
             log(TAG, "onActivityDismissingSplitTask: $str")
+            scheduleCleanupEmptySplitOrganizerTasks("dismissing-split:$str")
         }
         override fun onOccludeChangeNotice(componentName: ComponentName?, z: Boolean) {}
         override fun onTaskbarIconVisibleChangeRequest(componentName: ComponentName?, z: Boolean) {}
@@ -1721,6 +2064,8 @@ class AaVirtualDisplayAdapter(
             // Do NOT ensureFreeform here: forcing FREEFORM collapses OneUI split/MW.
             // reclaimVirtualDisplayTasks itself no-ops bounce when the package is already on VD.
             scheduleReclaimVirtualDisplayTasks("windowing-mode=$i")
+            // After abort/exit, empty stage shells often remain on the VD.
+            scheduleCleanupEmptySplitOrganizerTasks("windowing-mode=$i")
         }
     }
 }

@@ -57,12 +57,20 @@ class DisplayRecyclerViewAdapter(
         }
         arrayOf(holder.binding.tvName, holder.binding.ivIcon, holder.binding.ivSnapshot).forEach {
             it.setOnClickListener {
-                CoreApi.moveTaskToFront(item.taskId)
+                val pkg = item.packageName
+                // Phone-stack tap: launch/replace onto the AA virtual display (OneUI caption
+                // close cannot swap split panes). VD-stack tap: focus that pane/task.
+                if (recyclerView.id == R.id.rv_recent_task_right && !pkg.isNullOrBlank()) {
+                    CoreApi.startActivity(pkg, 0)
+                } else {
+                    CoreApi.moveTaskToFront(item.taskId)
+                }
                 onExit()
             }
         }
         holder.binding.ibClose.setOnClickListener {
             // Stay on the stack panel so multiple tasks can be closed in sequence.
+            // removeTask forgets VD ownership so reclaim will not resurrect a closed split pane.
             removeItem(item)
             CoreApi.removeTask(item.taskId)
         }

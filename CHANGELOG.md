@@ -11,10 +11,12 @@
   - Enables system decorations on the virtual display so OneUI multi-window can stay active.
   - Sets the virtual display windowing mode to freeform and launches non-Home apps as freeform so the OneUI caption/handle bar (drag, resize, enter split) is available.
   - Launching a second app while another non-Home app is foreground uses `FLAG_ACTIVITY_LAUNCH_ADJACENT` (falls back to freeform/fullscreen on failure).
+  - While split stages are active, starting another app (recent-task phone tap / swipe-to-VD / `startActivity`) **replaces the focused pane**: remove + forget ownership + suppress reclaim + `LAUNCH_ADJACENT` (OneUI caption close is unusable on the VD).
   - Task switches prefer `setFocusedTask` while multi-window is active so split is not collapsed by `moveTaskToFront`.
   - Home/Back PiP cleanup and Home restart skip actions that would tear down split/MW layouts.
 
 ### Fixed
+- OneUI split reclaim could bounce organizer root/stage tasks (e.g. freeform task `#3`) when they briefly appeared on the phone with a child app as `topActivity`, resetting the divider ratio. Organizer tasks are no longer tracked/bounced; intentional `removeTask` forgets package ownership and suppresses reclaim so a closed pane can be replaced.
 - Recent-task stack UI could list Samsung One UI Home (`com.sec.android.app.launcher`) on both the phone stack and the AA virtual display (SECONDARY_HOME). Closing/swiping it killed the shared launcher process. Those system Home tasks (and other bounce-excluded packages) are now filtered out of the recent-task UI.
 - AA facet / side menu buttons missing on Android Auto 17.x: `AaUiHook` only matched `gh_coolwalk_vertical_facet_bar`, but canonical vertical-rail layouts often inflate other coolwalk facet hosts (or equivalent content). Now matches multiple facet layout IDs and also detects facet chrome by `status_bar` + launcher icon views, with safer null handling and inject logging.
   - When `EnableOneUiSplit` is on, apply `setWindowingMode(FREEFORM)` with system decors on connect/reconnect (do not force FULLSCREEN when the setting is off).
