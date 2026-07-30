@@ -98,6 +98,11 @@ class AaVirtualDisplayAdapter(
         private const val SUPPRESS_ENSURE_FREEFORM_MS = 1800L
         /** After intentional close/replace, keep reclaim from resurrecting the vacated package. */
         private const val SUPPRESS_RECLAIM_AFTER_REPLACE_MS = 2500L
+        /**
+         * After an app enters PiP (WINDOWING_MODE_PINNED), suppress reclaim/bounce so we do not
+         * pull the pinned window back onto the AA VD (that poisons OneUI split/freeform).
+         */
+        private const val SUPPRESS_RECLAIM_AFTER_PIP_MS = 2500L
 
         private val ENSURE_FREEFORM_DELAYS_MS = longArrayOf(0L, 200L, 500L, 1000L, 1800L)
         private val RECLAIM_FOLLOWUP_DELAYS_MS = longArrayOf(0L, 400L, 1000L)
@@ -1505,6 +1510,14 @@ class AaVirtualDisplayAdapter(
         if (!isOneUiSplitEnabled()) return
         if (newDisplayId == mDisplayId) return
         val pkg = findPackageForTask(taskId)
+        // PiP (PINNED) must stay on the phone/system display — bouncing it onto the AA VD
+        // leaves empty split shells / kills freeform caption so OneUI split stops working.
+        if (isPinnedTask(taskId)) {
+            log(TAG, "bounce skipped (pinned/PiP): task=$taskId pkg=${pkg.orEmpty()} display=$newDisplayId")
+            mVdTaskIds.remove(taskId)
+            scheduleCleanupEmptySplitOrganizerTasks("display-changed-pinned")
+            return
+        }
         val owned = mVdTaskIds.contains(taskId) ||
             (!pkg.isNullOrBlank() && mVdPackages.contains(pkg))
         if (!owned) {
@@ -1524,6 +1537,11 @@ class AaVirtualDisplayAdapter(
         if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return false
         if (SystemClock.uptimeMillis() < mSuppressDisplayBounceUntil) {
             log(TAG, "bounce skipped (suppressed): task=$taskId pkg=${packageName.orEmpty()} [$reason]")
+            return false
+        }
+        if (isPinnedTask(taskId)) {
+            log(TAG, "bounce skipped (pinned/PiP): task=$taskId pkg=${packageName.orEmpty()} [$reason]")
+            mVdTaskIds.remove(taskId)
             return false
         }
         if (isTaskOnVirtualDisplay(taskId)) {
@@ -1609,6 +1627,13 @@ class AaVirtualDisplayAdapter(
             val ownedById = ownedTaskIds.contains(taskId)
             val ownedByPkg = !pkg.isNullOrBlank() && ownedPackages.contains(pkg)
             if (!ownedById && !ownedByPkg) continue
+
+            // Never reclaim PiP windows — system places them on the phone; pulling them
+            // back onto the AA VD breaks OneUI freeform/split until reboot.
+            if (isPinnedWindowMode(taskInfo)) {
+                mVdTaskIds.remove(taskId)
+                continue
+            }
 
             // Split already on VD: only reclaim packages that are missing from the VD.
             // Divider drag must not trigger moveRootTaskToDisplay on organizer roots.
@@ -1792,6 +1817,67 @@ class AaVirtualDisplayAdapter(
         return getWindowingMode(taskInfo) == WINDOWING_MODE_PINNED
     }
 
+    private fun isPinnedTask(taskId: Int): Boolean {
+        val info = findRootTaskInfoOnDisplay(taskId, Display.DEFAULT_DISPLAY)
+            ?: findRootTaskInfoOnDisplay(taskId, mDisplayId)
+            ?: return false
+        return isPinnedWindowMode(info)
+    }
+
+    /**
+     * Video apps (e.g. 央视影音) entering PiP set WINDOWING_MODE_PINNED and often move to the
+     * phone. AADisplay must not reclaim that task; also clean empty OneUI stage shells and
+     * re-assert freeform display policies so split can still be entered afterwards.
+     */
+    private fun onVirtualDisplayActivityPinned(packageName: String?, taskId: Int) {
+        if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return
+        log(TAG, "onActivityPinned handled: pkg=${packageName.orEmpty()} task=$taskId")
+        mVdTaskIds.remove(taskId)
+        val now = SystemClock.uptimeMillis()
+        mSuppressDisplayBounceUntil = now + SUPPRESS_RECLAIM_AFTER_PIP_MS
+        // Allow remaining VD apps to regain FREEFORM caption (do not keep post-bounce suppress).
+        mSuppressEnsureFreeformUntil = 0L
+        scheduleCleanupEmptySplitOrganizerTasks("activity-pinned:${packageName.orEmpty()}")
+        cleanupEmptySplitOrganizerTasks("activity-pinned:${packageName.orEmpty()}")
+        if (isOneUiSplitEnabled()) {
+            applyVirtualDisplayPolicies("activity-pinned")
+            ensureFreeformForVirtualDisplayApps("activity-pinned")
+        }
+    }
+
+    /**
+     * After PiP exits, restore freeform on the AA VD so the OneUI caption/split handle returns.
+     */
+    private fun onVirtualDisplayActivityUnpinned() {
+        if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return
+        log(TAG, "onActivityUnpinned handled")
+        mSuppressEnsureFreeformUntil = 0L
+        scheduleCleanupEmptySplitOrganizerTasks("activity-unpinned")
+        cleanupEmptySplitOrganizerTasks("activity-unpinned")
+        if (isOneUiSplitEnabled()) {
+            applyVirtualDisplayPolicies("activity-unpinned")
+            ensureFreeformForVirtualDisplayApps("activity-unpinned")
+        }
+    }
+
+    private fun ensureFreeformForVirtualDisplayApps(reason: String) {
+        if (mDisplayId == Display.INVALID_DISPLAY || !isOneUiSplitEnabled()) return
+        if (isDisplayInSplitStages()) return
+        val tasks = try {
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
+        } catch (e: Throwable) {
+            log(TAG, "ensureFreeformForVdApps[$reason] list failed:", e)
+            return
+        }
+        for (taskInfo in tasks) {
+            val pkg = taskInfo.topActivity?.packageName ?: continue
+            if (isBounceExcludedPackage(pkg) || pkg == mHomePackage || pkg == mLauncherPackage) continue
+            if (isPinnedWindowMode(taskInfo)) continue
+            if (isCreatedByOrganizer(taskInfo)) continue
+            scheduleEnsureFreeform(taskInfo.taskId, reason, force = true)
+        }
+    }
+
     private fun injectInputEvent(event: InputEvent): Boolean {
         if (mDisplayId == Display.INVALID_DISPLAY) return false
         return try {
@@ -1950,8 +2036,12 @@ class AaVirtualDisplayAdapter(
             mHandler.removeCallbacks(mDebouncedStackReclaim)
             mHandler.postDelayed(mDebouncedStackReclaim, 120L)
         }
-        override fun onActivityPinned(packageName: String?, userId: Int, taskId: Int, stackId: Int) {}
-        override fun onActivityUnpinned() {}
+        override fun onActivityPinned(packageName: String?, userId: Int, taskId: Int, stackId: Int) {
+            mHandler.post { onVirtualDisplayActivityPinned(packageName, taskId) }
+        }
+        override fun onActivityUnpinned() {
+            mHandler.post { onVirtualDisplayActivityUnpinned() }
+        }
         override fun onActivityRestartAttempt(task: ActivityManager.RunningTaskInfo?, homeTaskVisible: Boolean, clearedTask: Boolean, wasVisible: Boolean) {}
         override fun onActivityForcedResizable(packageName: String?, taskId: Int, reason: Int) {}
         override fun onActivityDismissingDockedTask() {}
