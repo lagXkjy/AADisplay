@@ -614,34 +614,115 @@ class AaVirtualDisplayAdapter(
     }
 
     /**
-     * Launch the app corresponding to Home package name
-     * If the app is already running, bring it to front; otherwise start a new instance
+     * Launch the app corresponding to Home package name.
+     * Must land on the AA virtual display: a phone-side instance of the same package
+     * (e.g. 嘟嘟mini opened on the handset) must be moved onto the VD — plain
+     * moveTaskToFront / NEW_TASK often only resumes the phone task and the car never launches.
      */
     private fun startHomeLauncher(){
         if(mHomePackage == null) {
             log(TAG, "startHomeLauncher skipped: no launcher package")
             return
         }
-        if(mHomeTaskId != null){
-            moveTaskToFront(mHomeTaskId!!)
-        } else {
-            startActivity(mHomePackage!!, 0)
-        }
+        bringConfiguredPackageToVirtualDisplay(mHomePackage!!, trackAsHome = true)
     }
 
     /**
      * Launch the app corresponding to default launch package name
-     * Called when virtual display is created. If the app is already running, bring it to front; otherwise start a new instance
+     * Called when virtual display is created. Same display-aware path as Home.
      */
     private fun startDefaultPackage(){
         if(mLauncherPackage == null) {
             log(TAG, "startDefaultPackage skipped: no launcher package")
             return
         }
-        if(mLauncherPackageTaskId != null){
-            moveTaskToFront(mLauncherPackageTaskId!!)
-        } else {
-            startActivity(mLauncherPackage!!, 0)
+        bringConfiguredPackageToVirtualDisplay(mLauncherPackage!!, trackAsHome = false)
+    }
+
+    /**
+     * Ensure [packageName] is shown on the AA virtual display.
+     * Order: existing VD task → move phone task to VD → startActivity on VD (with reclaim).
+     */
+    private fun bringConfiguredPackageToVirtualDisplay(packageName: String, trackAsHome: Boolean) {
+        if (mDisplayId == Display.INVALID_DISPLAY) return
+        val label = if (trackAsHome) "home" else "launch"
+        fun remember(taskId: Int) {
+            if (trackAsHome) mHomeTaskId = taskId else mLauncherPackageTaskId = taskId
+        }
+        fun clearRemembered() {
+            if (trackAsHome) mHomeTaskId = null else mLauncherPackageTaskId = null
+        }
+        val cached = if (trackAsHome) mHomeTaskId else mLauncherPackageTaskId
+
+        val onVd = findPackageTaskIdOnDisplay(packageName, mDisplayId)
+            ?: cached?.takeIf { isTaskOnVirtualDisplay(it) }
+        if (onVd != null) {
+            remember(onVd)
+            log(TAG, "bringToVD[$label]: already on VD task=$onVd")
+            moveTaskToFront(onVd)
+            return
+        }
+
+        val onPhone = findPackageTaskIdOnDisplay(packageName, Display.DEFAULT_DISPLAY)
+            ?: cached?.takeIf { findRootTaskInfoOnDisplay(it, Display.DEFAULT_DISPLAY) != null }
+        if (onPhone != null) {
+            log(TAG, "bringToVD[$label]: move phone task=$onPhone onto VD")
+            if (moveConfiguredPackageTaskToVirtualDisplay(onPhone, packageName, trackAsHome)) {
+                remember(onPhone)
+                return
+            }
+            log(TAG, "bringToVD[$label]: move failed; falling back to startActivity")
+        }
+
+        clearRemembered()
+        startActivity(packageName, 0)
+        // singleTask / affinity may still resume the phone instance despite launchDisplayId.
+        mHandler.postDelayed({
+            ensureConfiguredPackageOnVirtualDisplay(packageName, trackAsHome, "$label-reclaim")
+        }, 250L)
+    }
+
+    /** moveRootTaskToDisplay for Home/default-launch without split-replace side effects. */
+    private fun moveConfiguredPackageTaskToVirtualDisplay(
+        taskId: Int,
+        packageName: String,
+        trackAsHome: Boolean
+    ): Boolean {
+        if (mDisplayId == Display.INVALID_DISPLAY) return false
+        return try {
+            // Short suppress only for our own move; Home is bounce-excluded so reclaim won't fight.
+            mSuppressDisplayBounceUntil = SystemClock.uptimeMillis() + 250L
+            Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, mDisplayId)
+            AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(packageName, mDisplayId)
+            if (!trackAsHome) {
+                markVirtualDisplayOwnership(taskId, packageName)
+                mSuppressEnsureFreeformUntil = 0L
+                scheduleEnsureFreeform(taskId, "bringToVD-launch", force = true)
+            }
+            bringTaskToFrontOnDisplay(taskId)
+            true
+        } catch (e: Throwable) {
+            log(TAG, "moveConfiguredPackageTaskToVirtualDisplay failed: task=$taskId", e)
+            false
+        }
+    }
+
+    private fun ensureConfiguredPackageOnVirtualDisplay(
+        packageName: String,
+        trackAsHome: Boolean,
+        reason: String
+    ) {
+        if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return
+        if (hasPackageTaskOnDisplay(packageName, mDisplayId)) {
+            findPackageTaskIdOnDisplay(packageName, mDisplayId)?.let { taskId ->
+                if (trackAsHome) mHomeTaskId = taskId else mLauncherPackageTaskId = taskId
+            }
+            return
+        }
+        val onPhone = findPackageTaskIdOnDisplay(packageName, Display.DEFAULT_DISPLAY) ?: return
+        log(TAG, "bringToVD[$reason]: package still on phone task=$onPhone; moving")
+        if (moveConfiguredPackageTaskToVirtualDisplay(onPhone, packageName, trackAsHome)) {
+            if (trackAsHome) mHomeTaskId = onPhone else mLauncherPackageTaskId = onPhone
         }
     }
 
@@ -2918,15 +2999,24 @@ class AaVirtualDisplayAdapter(
     }
 
     private fun hasPackageTaskOnDisplay(packageName: String, displayId: Int): Boolean {
-        if (displayId == Display.INVALID_DISPLAY) return false
+        return findPackageTaskIdOnDisplay(packageName, displayId) != null
+    }
+
+    private fun findPackageTaskIdOnDisplay(packageName: String, displayId: Int): Int? {
+        if (displayId == Display.INVALID_DISPLAY) return null
         val pkg = packageName.trim()
-        if (pkg.isEmpty()) return false
+        if (pkg.isEmpty()) return null
         return try {
-            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId).any { taskInfo ->
-                taskInfo.topActivity?.packageName == pkg
-            }
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+                .firstOrNull { taskInfo ->
+                    taskInfo.topActivity?.packageName == pkg ||
+                        runCatching {
+                            (taskInfo.getObjectAs("baseActivity", ComponentName::class.java)
+                                as? ComponentName)?.packageName
+                        }.getOrNull() == pkg
+                }?.taskId
         } catch (_: Throwable) {
-            false
+            null
         }
     }
 
@@ -3226,14 +3316,16 @@ class AaVirtualDisplayAdapter(
         override fun onTaskCreated(taskId: Int, componentName: ComponentName?) {
             val packageName = componentName?.packageName ?: return
             trackPackage(packageName, 0)
-            if(packageName == mHomePackage) {
-                mHomeTaskId = taskId
-            } else if(packageName == mLauncherPackage) {
-                mLauncherPackageTaskId = taskId
-            }
             // Launcher icon starts never pass through launchActivityAsUser FREEFORM options.
             mHandler.post {
                 if (isTaskOnVirtualDisplay(taskId)) {
+                    // Only bind Home/default-launch task ids to VD instances — a phone-side
+                    // open of the same package must not steal startHomeLauncher onto DEFAULT_DISPLAY.
+                    if (packageName == mHomePackage) {
+                        mHomeTaskId = taskId
+                    } else if (packageName == mLauncherPackage) {
+                        mLauncherPackageTaskId = taskId
+                    }
                     markVirtualDisplayOwnership(taskId, packageName)
                     markPendingInsetFreeform(packageName)
                     scheduleEnsureFreeform(taskId, "onTaskCreated", force = true)
@@ -3328,10 +3420,19 @@ class AaVirtualDisplayAdapter(
             }
             if (mDisplayId != Display.INVALID_DISPLAY && newDisplayId == mDisplayId) {
                 val pkg = findPackageForTask(taskId)
+                if (pkg == mHomePackage) {
+                    mHomeTaskId = taskId
+                } else if (pkg == mLauncherPackage) {
+                    mLauncherPackageTaskId = taskId
+                }
                 markVirtualDisplayOwnership(taskId, pkg)
                 val demote = isPendingInsetFreeform(pkg)
                 scheduleEnsureFreeform(taskId, "onTaskDisplayChanged", force = demote)
             } else if (mDisplayId != Display.INVALID_DISPLAY && newDisplayId != mDisplayId) {
+                // Home left the VD (often opened/recreated on the phone): drop the cached id so
+                // the next Home press resolves from live stacks instead of moveTaskToFront(phone).
+                if (mHomeTaskId == taskId) mHomeTaskId = null
+                if (mLauncherPackageTaskId == taskId) mLauncherPackageTaskId = null
                 maybeBounceTaskBackToVirtualDisplay(taskId, newDisplayId)
             }
         }
