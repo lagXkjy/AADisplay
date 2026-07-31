@@ -94,6 +94,12 @@ class AaVirtualDisplayAdapter(
         private const val RESIZE_MODE_SYSTEM = 0
         /** Freeform window as fraction of VD size (centered inset so caption is visible). */
         private const val FREEFORM_INSET_RATIO = 0.88f
+        /**
+         * Treat freeform as "fake fullscreen" when bounds cover more than this of the display.
+         * Caption maximize often keeps WINDOWING_MODE_FREEFORM with near-full bounds (no close
+         * affordance); without demoting, reopen stays maximized and split entry stays broken.
+         */
+        private const val FREEFORM_MAX_FILL_RATIO = 0.95f
         /** After split bounce/reclaim, do not force FREEFORM (would collapse OneUI split). */
         private const val SUPPRESS_ENSURE_FREEFORM_MS = 1800L
         /** After intentional close/replace, keep reclaim from resurrecting the vacated package. */
@@ -895,9 +901,10 @@ class AaVirtualDisplayAdapter(
             TAG,
             "moveTaskId: task=$taskId pkg=${packageName.orEmpty()} -> display=$targetDisplayId (vd=$isVirtualDisplay)"
         )
-        // Intentional recent-task swipe must not be bounced back by onTaskDisplayChanged.
-        mSuppressDisplayBounceUntil = SystemClock.uptimeMillis() + 2000L
         if (!isVirtualDisplay) {
+            // Intentional swipe to phone: do not bounce/reclaim back for a short window.
+            // Do NOT suppress when moving onto the VD — that blocks OneUI freeform→split bounce.
+            mSuppressDisplayBounceUntil = SystemClock.uptimeMillis() + 2000L
             forgetVirtualDisplayOwnership(taskId, packageName)
         }
         try {
@@ -909,8 +916,12 @@ class AaVirtualDisplayAdapter(
         if (isVirtualDisplay) {
             markVirtualDisplayOwnership(taskId, packageName)
             AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(packageName, mDisplayId)
-            // Intentional move back onto VD: always allow freeform ensure (clear split suppress).
+            // Intentional move back onto VD: allow freeform ensure + split bounce immediately.
             mSuppressEnsureFreeformUntil = 0L
+            mSuppressDisplayBounceUntil = 0L
+            // Phone↔VD can leave empty stage shells that make moveFreeformTaskToSplit → "no display".
+            cleanupEmptySplitOrganizerTasks("moveTaskId-to-vd", force = true)
+            scheduleCleanupEmptySplitOrganizerTasks("moveTaskId-to-vd")
             scheduleEnsureFreeform(taskId, "moveTaskId", force = true)
         } else {
             AndroidHook.FuckAppUseApplicationContext.clearPackageVirtualDisplay(packageName)
@@ -963,6 +974,11 @@ class AaVirtualDisplayAdapter(
                     AndroidHook.FuckAppUseApplicationContext.clearPackageVirtualDisplay(packageName)
                     untrackPackage(packageName)
                 }
+            }
+            // Caption maximize → fullscreen often leaves empty stage shells; wipe so the next
+            // freeform open can enter split without a phone↔VD round-trip.
+            if (removed && onVirtualDisplay && isOneUiSplitEnabled()) {
+                scheduleCleanupEmptySplitOrganizerTasks("removeTask")
             }
             removed
         } catch (e: Throwable){
@@ -1466,8 +1482,10 @@ class AaVirtualDisplayAdapter(
      * see our ActivityOptions). Force task windowing mode + inset bounds after the task lands
      * on the VD — same end state as the user's "move to phone then back" workaround.
      *
-     * Never touch tasks while OneUI split stages are active, and never re-shrink an already
-     * freeform window (that fights caption/divider resize and snaps the split ratio back).
+     * Never touch tasks while OneUI split stages are active. Normal freeform (user-resized)
+     * is left alone; only plain fullscreen / undefined, or (when [force]) maximized-looking
+     * freeform, are corrected — otherwise caption maximize survives close+reopen and split
+     * entry stays unavailable.
      */
     private fun ensureTaskFreeformOnVirtualDisplay(
         taskId: Int,
@@ -1483,7 +1501,9 @@ class AaVirtualDisplayAdapter(
         // Thermal / APP_DOES_NOT_SUPPORT exit often leaves empty stage shells that block freeform.
         if (hasEmptySplitOrganizerShells()) {
             scheduleCleanupEmptySplitOrganizerTasks("before-ensure:$reason")
-            cleanupEmptySplitOrganizerTasks("before-ensure:$reason")
+            // force=true (launch / intentional move-to-VD): wipe zombies immediately so caption
+            // / split can return without waiting for the empty-shell confirm delay.
+            cleanupEmptySplitOrganizerTasks("before-ensure:$reason", force = force)
             if (hasEmptySplitOrganizerShells()) {
                 log(TAG, "ensureFreeform deferred (empty split shells): task=$taskId [$reason]")
                 return
@@ -1507,17 +1527,35 @@ class AaVirtualDisplayAdapter(
 
         markVirtualDisplayOwnership(taskId, pkg)
         val mode = getWindowingMode(taskInfo)
-        // Leave split / multi-window / existing freeform alone.
-        // Only correct plain fullscreen (or unknown) into freeform + inset once.
-        if (mode != null && mode != WINDOWING_MODE_FULLSCREEN && mode != WINDOWING_MODE_UNDEFINED) {
+        // Leave split / multi-window alone.
+        if (mode != null &&
+            mode != WINDOWING_MODE_FULLSCREEN &&
+            mode != WINDOWING_MODE_UNDEFINED &&
+            mode != WINDOWING_MODE_FREEFORM
+        ) {
             return
         }
 
-        if (!setTaskWindowingModeSafe(taskId, WINDOWING_MODE_FREEFORM)) {
-            log(TAG, "ensureFreeform[$reason]: setTaskWindowingMode failed task=$taskId pkg=$pkg mode=${mode ?: "?"}")
-            return
+        var needMode = mode == null || mode == WINDOWING_MODE_FULLSCREEN || mode == WINDOWING_MODE_UNDEFINED
+        var needBounds = false
+        if (mode == WINDOWING_MODE_FREEFORM) {
+            // Only demote maximized freeform on force paths (launch / moveTaskId-to-VD).
+            // Routine onTaskMovedToFront must not fight live caption drag / user maximize.
+            if (!force) return
+            val currentBounds = getTaskBoundsSafe(taskId, taskInfo)
+            needBounds = isNearlyFullscreenBounds(currentBounds)
+            if (!needBounds) return
         }
-        val resized = resizeTaskToFreeformBounds(taskId)
+
+        if (needMode) {
+            if (!setTaskWindowingModeSafe(taskId, WINDOWING_MODE_FREEFORM)) {
+                log(TAG, "ensureFreeform[$reason]: setTaskWindowingMode failed task=$taskId pkg=$pkg mode=${mode ?: "?"}")
+                return
+            }
+            needBounds = true
+        }
+
+        val resized = if (needBounds) resizeTaskToFreeformBounds(taskId) else false
         val after = findRootTaskInfoOnDisplay(taskId, mDisplayId)?.let { getWindowingMode(it) }
         if (after == WINDOWING_MODE_FREEFORM) {
             log(
@@ -1530,6 +1568,51 @@ class AaVirtualDisplayAdapter(
                 "ensureFreeform[$reason]: still not freeform task=$taskId pkg=$pkg mode=${mode ?: "?"} after=${after ?: "?"} bounds=$resized"
             )
         }
+    }
+
+    private fun isNearlyFullscreenBounds(bounds: Rect?): Boolean {
+        if (bounds == null || bounds.isEmpty) return true
+        if (mDisplayId == Display.INVALID_DISPLAY) return false
+        return try {
+            val display = Instances.displayManager.getDisplay(mDisplayId) ?: return false
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            display.getRealMetrics(metrics)
+            val displayArea = metrics.widthPixels.toLong() * metrics.heightPixels.toLong()
+            if (displayArea <= 0L) return false
+            val taskArea = bounds.width().toLong() * bounds.height().toLong()
+            taskArea.toDouble() / displayArea.toDouble() >= FREEFORM_MAX_FILL_RATIO
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun getTaskBoundsSafe(taskId: Int, taskInfo: Any?): Rect? {
+        try {
+            val atm = Instances.iActivityTaskManager as Any
+            val fromAtm = atm.invokeMethod(
+                "getTaskBounds",
+                args(taskId),
+                argTypes(Integer.TYPE)
+            ) as? Rect
+            if (fromAtm != null && !fromAtm.isEmpty) return Rect(fromAtm)
+        } catch (_: Throwable) {
+        }
+        if (taskInfo != null) {
+            try {
+                val bounds = taskInfo.getObjectAs("bounds", Rect::class.java) as? Rect
+                if (bounds != null && !bounds.isEmpty) return Rect(bounds)
+            } catch (_: Throwable) {
+            }
+            try {
+                val conf = taskInfo.getObject("configuration") ?: return null
+                val winConf = conf.invokeMethod("getWindowConfiguration", args(), argTypes()) ?: return null
+                val bounds = winConf.invokeMethod("getBounds", args(), argTypes()) as? Rect
+                if (bounds != null && !bounds.isEmpty) return Rect(bounds)
+            } catch (_: Throwable) {
+            }
+        }
+        return null
     }
 
     private fun buildFreeformInsetBounds(): Rect? {
@@ -2271,10 +2354,11 @@ class AaVirtualDisplayAdapter(
                 mLauncherPackageTaskId = taskId
             }
             // Launcher icon starts never pass through launchActivityAsUser FREEFORM options.
+            // force=true also demotes maximized-looking freeform left from a prior session.
             mHandler.post {
                 if (isTaskOnVirtualDisplay(taskId)) {
                     markVirtualDisplayOwnership(taskId, packageName)
-                    scheduleEnsureFreeform(taskId, "onTaskCreated")
+                    scheduleEnsureFreeform(taskId, "onTaskCreated", force = true)
                 } else if (mVdPackages.contains(packageName)) {
                     // OneUI split often recreates the app task on the phone with a new taskId.
                     bounceTaskToVirtualDisplay(taskId, packageName, "onTaskCreated-phone")
