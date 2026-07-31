@@ -102,10 +102,24 @@ class AaVirtualDisplayAdapter(
         private const val FREEFORM_MAX_FILL_RATIO = 0.95f
         /**
          * Caption drag on the small AA VD can leave freeform mostly outside the display
-         * (still "visible" to WM but blank on screen). Restore when less than this fraction
-         * of the task intersects the VD.
+         * (still "visible" to WM but blank on screen). Stack-tap restore uses this threshold;
+         * auto-restore must not, or live move fights the inset snap.
          */
         private const val FREEFORM_MIN_VISIBLE_RATIO = 0.45f
+        /**
+         * OneUI caption swipe-down minimize keeps on-screen bounds but sets visible=false.
+         * Caption *move* can flicker the same flags while bounds keep changing — require this
+         * long of stable bounds before auto-unminimize, or drag looks like minimize→snap.
+         */
+        private const val FREEFORM_MINIMIZE_CONFIRM_MS = 900L
+        /** Debounce stack-changed restore past live caption/border drag event bursts. */
+        private const val FREEFORM_RESTORE_DEBOUNCE_MS = 600L
+        /**
+         * Top-corner diagonal shrink on the small AA VD is often misread by OneUI as caption
+         * swipe-down minimize. After a real width/height change, confirm unminimize faster.
+         */
+        private const val FREEFORM_RECENT_RESIZE_MS = 2500L
+        private const val FREEFORM_RESIZE_MINIMIZE_CONFIRM_MS = 220L
         /** After split bounce/reclaim, do not force FREEFORM (would collapse OneUI split). */
         private const val SUPPRESS_ENSURE_FREEFORM_MS = 1800L
         /** After intentional close/replace, keep reclaim from resurrecting the vacated package. */
@@ -126,6 +140,15 @@ class AaVirtualDisplayAdapter(
         private const val EMPTY_SPLIT_CONFIRM_MS = 600L
         private val EMPTY_SPLIT_CLEANUP_FOLLOWUP_DELAYS_MS = longArrayOf(0L, 350L, 800L, 1400L)
         private val EMPTY_SPLIT_CLEANUP_TOKEN = Any()
+        /**
+         * One side closed / failed replace: OneUI on the AA VD often leaves the survivor in
+         * `multi-window` + an empty opposite stage (half-width zombie). Wait past mid-entry
+         * empty-side races, then tear the empty shell and force FREEFORM on the survivor.
+         */
+        private const val ASYMMETRIC_SPLIT_CONFIRM_MS = 1200L
+        private const val ASYMMETRIC_SPLIT_MIN_INTERVAL_MS = 500L
+        private val ASYMMETRIC_SPLIT_FOLLOWUP_DELAYS_MS = longArrayOf(0L, 500L, 1000L, 1600L, 2400L)
+        private val ASYMMETRIC_SPLIT_TOKEN = Any()
 
         /**
          * Never bounce these phone-side surfaces back onto the VD.
@@ -182,10 +205,24 @@ class AaVirtualDisplayAdapter(
      */
     private val mPendingInsetFreeformPkgs = mutableMapOf<String, Long>()
     private val mLastDisplayBounceAt = mutableMapOf<Int, Long>()
+    /**
+     * Auto-unminimize candidates: taskId → (firstSeenUptime, boundsFingerprint).
+     * Bounds changing resets the timer so live caption/border drag is not treated as minimize.
+     */
+    private val mMinimizeConfirmAt = mutableMapOf<Int, Pair<Long, String>>()
+    /** Last observed freeform width/height — size change marks a resize (vs caption move). */
+    private val mLastFreeformSize = mutableMapOf<Int, Pair<Int, Int>>()
+    /** Uptime of last width/height change per task (diagonal/edge resize). */
+    private val mLastResizeAt = mutableMapOf<Int, Long>()
     private var mLastReclaimAt = 0L
     private var mLastEmptySplitCleanupAt = 0L
     /** Uptime when empty split shells were first observed; 0 = none. */
     private var mEmptySplitShellsSeenAt = 0L
+    /** Uptime when one-app + empty-opposite-stage was first observed; 0 = none. */
+    private var mAsymmetricSplitSeenAt = 0L
+    private var mLastAsymmetricSplitCollapseAt = 0L
+    /** Fingerprint of the asymmetric layout under observation (reset when layout changes). */
+    private var mAsymmetricSplitFingerprint: String? = null
     /**
      * ATM display ids that are missing from DisplayManager (orphaned TaskDisplayAreas left after
      * a prior AA VD / split abort). OneUI StageCoordinator trees stuck here cause
@@ -198,6 +235,10 @@ class AaVirtualDisplayAdapter(
     }
     private val mDebouncedRestoreHiddenFreeform = Runnable {
         restoreHiddenFreeformTasksOnVirtualDisplay("stack-changed")
+    }
+    /** Keep Home/fullscreen from stealing focus while OneUI split stages own the VD. */
+    private val mDebouncedSplitFocusGuard = Runnable {
+        maintainSplitForegroundFocus("stack-changed")
     }
     var mDisplayId = Display.INVALID_DISPLAY
     var mDensityDpi: Int = 0
@@ -271,15 +312,23 @@ class AaVirtualDisplayAdapter(
         mPendingInsetFreeformPkgs.clear()
         mLastFreeformRelaunchAt.clear()
         mLastDisplayBounceAt.clear()
+        mMinimizeConfirmAt.clear()
+        mLastFreeformSize.clear()
+        mLastResizeAt.clear()
         mSuppressDisplayBounceUntil = 0L
         mSuppressEnsureFreeformUntil = 0L
         mLastReclaimAt = 0L
         mLastEmptySplitCleanupAt = 0L
         mEmptySplitShellsSeenAt = 0L
+        mAsymmetricSplitSeenAt = 0L
+        mLastAsymmetricSplitCollapseAt = 0L
+        mAsymmetricSplitFingerprint = null
         mSuspectOrphanDisplayIds.clear()
         mHandler.removeCallbacks(mDebouncedStackReclaim)
         mHandler.removeCallbacks(mDebouncedRestoreHiddenFreeform)
+        mHandler.removeCallbacks(mDebouncedSplitFocusGuard)
         mHandler.removeCallbacksAndMessages(EMPTY_SPLIT_CLEANUP_TOKEN)
+        mHandler.removeCallbacksAndMessages(ASYMMETRIC_SPLIT_TOKEN)
         refreshLauncherPackage("connect")
         trackPackage(mLauncherPackage, 0)
         trackPackage(mHomePackage, 0)
@@ -344,6 +393,7 @@ class AaVirtualDisplayAdapter(
         Instances.iActivityTaskManager.registerTaskStackListener(mTaskStackListener)
         // Phone-side empty split stages (left by PiP / aborted MW) block OneUI freeform→split.
         scheduleCleanupEmptySplitOrganizerTasks("connect")
+        scheduleCollapseAsymmetricSplit("connect")
         // When virtual display is created, launch default package first (if configured)
         if(mLauncherPackage != null) {
             startDefaultPackage()
@@ -368,6 +418,7 @@ class AaVirtualDisplayAdapter(
             log(TAG, "onReconnected display policies failed:", e)
         }
         scheduleCleanupEmptySplitOrganizerTasks("reconnect")
+        scheduleCollapseAsymmetricSplit("reconnect")
     }
 
     fun onDestroy() {
@@ -384,15 +435,23 @@ class AaVirtualDisplayAdapter(
         mPendingInsetFreeformPkgs.clear()
         mLastFreeformRelaunchAt.clear()
         mLastDisplayBounceAt.clear()
+        mMinimizeConfirmAt.clear()
+        mLastFreeformSize.clear()
+        mLastResizeAt.clear()
         mSuppressDisplayBounceUntil = 0L
         mSuppressEnsureFreeformUntil = 0L
         mLastReclaimAt = 0L
         mLastEmptySplitCleanupAt = 0L
         mEmptySplitShellsSeenAt = 0L
+        mAsymmetricSplitSeenAt = 0L
+        mLastAsymmetricSplitCollapseAt = 0L
+        mAsymmetricSplitFingerprint = null
         mSuspectOrphanDisplayIds.clear()
         mHandler.removeCallbacks(mDebouncedStackReclaim)
         mHandler.removeCallbacks(mDebouncedRestoreHiddenFreeform)
+        mHandler.removeCallbacks(mDebouncedSplitFocusGuard)
         mHandler.removeCallbacksAndMessages(EMPTY_SPLIT_CLEANUP_TOKEN)
+        mHandler.removeCallbacksAndMessages(ASYMMETRIC_SPLIT_TOKEN)
         trackPackage(mLauncherPackage, 0)
         trackPackage(mHomePackage, 0)
         clearForcedVirtualDisplayDensity()
@@ -1173,6 +1232,173 @@ class AaVirtualDisplayAdapter(
         }
     }
 
+    private fun scheduleCollapseAsymmetricSplit(reason: String) {
+        if (!isOneUiSplitEnabled() || mDisplayId == Display.INVALID_DISPLAY) return
+        mHandler.removeCallbacksAndMessages(ASYMMETRIC_SPLIT_TOKEN)
+        val now = SystemClock.uptimeMillis()
+        for (delay in ASYMMETRIC_SPLIT_FOLLOWUP_DELAYS_MS) {
+            val taggedReason = if (delay == 0L) reason else "$reason-$delay"
+            mHandler.postAtTime(
+                { collapseAsymmetricSplitOnVirtualDisplay(taggedReason) },
+                ASYMMETRIC_SPLIT_TOKEN,
+                now + delay
+            )
+        }
+    }
+
+    private data class AsymmetricSplitState(
+        val survivorTaskId: Int,
+        val survivorPkg: String,
+        val emptyShellTaskIds: List<Int>
+    )
+
+    /**
+     * OneUI on the AA VD often fails to collapse when one split pane is closed: the survivor
+     * stays `multi-window`/`stage=main|side` at half width with an empty opposite stage shell.
+     * Empty-shell cleanup skips this case (a real split app is still present) and ensureFreeform
+     * refuses MULTI_WINDOW — so without this path the layout stays a zombie forever.
+     *
+     * Confirm for [ASYMMETRIC_SPLIT_CONFIRM_MS] so mid-entry (briefly empty side) is not collapsed.
+     * Abort while AppsEdge chooser is up on the phone (user still picking the second app).
+     */
+    private fun collapseAsymmetricSplitOnVirtualDisplay(reason: String, force: Boolean = false) {
+        if (mIsDestroying && !force) return
+        if (!isOneUiSplitEnabled() || mDisplayId == Display.INVALID_DISPLAY) return
+
+        val state = detectAsymmetricSplitOnVirtualDisplay()
+        if (state == null) {
+            clearAsymmetricSplitObservation()
+            return
+        }
+        if (isSplitChooserActiveOnPhone()) {
+            // Mid-entry: leave empty opposite stage alone while user picks the second app.
+            clearAsymmetricSplitObservation()
+            return
+        }
+
+        val fingerprint =
+            "${state.survivorTaskId}:${state.survivorPkg}:${state.emptyShellTaskIds.sorted().joinToString()}"
+        val now = SystemClock.uptimeMillis()
+        if (!force) {
+            if (mAsymmetricSplitFingerprint != fingerprint) {
+                mAsymmetricSplitFingerprint = fingerprint
+                mAsymmetricSplitSeenAt = now
+                log(
+                    TAG,
+                    "asymmetricSplit[$reason]: survivor=${state.survivorPkg}#${state.survivorTaskId} " +
+                        "empty=${state.emptyShellTaskIds.joinToString()} — confirm in ${ASYMMETRIC_SPLIT_CONFIRM_MS}ms"
+                )
+                return
+            }
+            if (mAsymmetricSplitSeenAt == 0L ||
+                now - mAsymmetricSplitSeenAt < ASYMMETRIC_SPLIT_CONFIRM_MS
+            ) {
+                return
+            }
+            if (now - mLastAsymmetricSplitCollapseAt < ASYMMETRIC_SPLIT_MIN_INTERVAL_MS) return
+        }
+        mLastAsymmetricSplitCollapseAt = now
+        clearAsymmetricSplitObservation()
+
+        var removed = 0
+        for (taskId in state.emptyShellTaskIds.sortedDescending()) {
+            if (removeOrganizerTaskQuietly(taskId, "asymmetric:$reason")) removed++
+        }
+
+        // ensureFreeform leaves MULTI_WINDOW alone — force the survivor out explicitly.
+        markPendingInsetFreeform(state.survivorPkg)
+        markVirtualDisplayOwnership(state.survivorTaskId, state.survivorPkg)
+        setTaskWindowingModeSafe(state.survivorTaskId, WINDOWING_MODE_FREEFORM)
+        var after = findRootTaskInfoOnDisplay(state.survivorTaskId, mDisplayId)
+        var afterMode = after?.let { getWindowingMode(it) }
+        if (afterMode != WINDOWING_MODE_FREEFORM) {
+            val relaunched = relaunchTaskAsFreeform(
+                state.survivorTaskId,
+                state.survivorPkg,
+                "asymmetric:$reason"
+            )
+            if (!relaunched) {
+                setTaskWindowingModeSafe(state.survivorTaskId, WINDOWING_MODE_FULLSCREEN)
+                setTaskWindowingModeSafe(state.survivorTaskId, WINDOWING_MODE_FREEFORM)
+            }
+            after = findRootTaskInfoOnDisplay(state.survivorTaskId, mDisplayId)
+                ?: findRootTaskInfoOnDisplay(state.survivorTaskId, Display.DEFAULT_DISPLAY)
+            afterMode = after?.let { getWindowingMode(it) }
+        }
+        resizeTaskToFreeformBounds(state.survivorTaskId)
+        // Package-scoped retries: relaunch may recreate the task id.
+        scheduleEnsureFreeformForPackage(state.survivorPkg, "asymmetric-collapse:$reason")
+        scheduleCleanupEmptySplitOrganizerTasks("after-asymmetric:$reason")
+
+        log(
+            TAG,
+            "asymmetricSplit[$reason]: collapsed survivor=${state.survivorPkg}#${state.survivorTaskId} " +
+                "removedEmpty=$removed afterMode=${afterMode ?: "?"}"
+        )
+    }
+
+    private fun clearAsymmetricSplitObservation() {
+        mAsymmetricSplitSeenAt = 0L
+        mAsymmetricSplitFingerprint = null
+    }
+
+    /**
+     * Exactly one real split-stage app on the AA VD plus at least one empty opposite stage shell.
+     */
+    private fun detectAsymmetricSplitOnVirtualDisplay(): AsymmetricSplitState? {
+        if (mDisplayId == Display.INVALID_DISPLAY) return null
+        val splitApps = getSplitAppTasksOnDisplay()
+        if (splitApps.size != 1) return null
+        val (survivorTaskId, survivorPkg) = splitApps.first()
+
+        val tasks = try {
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
+        } catch (e: Throwable) {
+            log(TAG, "detectAsymmetricSplit list failed:", e)
+            return null
+        }
+
+        val emptyShells = linkedSetOf<Int>()
+        fun considerEmptyStage(taskId: Int, info: Any?) {
+            if (taskId == survivorTaskId) return
+            if (taskHasAppActivity(taskId, tasks)) return
+            val mode = info?.let { getWindowingMode(it) }
+                ?: resolveTaskObject(taskId)?.let { getWindowingMode(it) }
+            if (!isSplitStageMode(mode)) return
+            emptyShells.add(taskId)
+            val childIds = info?.let { readChildTaskIds(it) } ?: return
+            childIds.forEach { childId ->
+                if (childId != survivorTaskId && !taskHasAppActivity(childId, tasks)) {
+                    emptyShells.add(childId)
+                }
+            }
+        }
+
+        for (info in tasks) {
+            considerEmptyStage(info.taskId, info)
+            // Organizer parent may only expose empty opposite stages via childTaskIds.
+            if (isCreatedByOrganizer(info) || getWindowingMode(info) == WINDOWING_MODE_FREEFORM) {
+                readChildTaskIds(info)?.forEach { childId ->
+                    if (childId == survivorTaskId || taskHasAppActivity(childId, tasks)) return@forEach
+                    val child = tasks.firstOrNull { it.taskId == childId }
+                    considerEmptyStage(childId, child)
+                }
+            }
+        }
+        if (emptyShells.isEmpty()) return null
+        return AsymmetricSplitState(survivorTaskId, survivorPkg, emptyShells.toList())
+    }
+
+    /** True when OneUI AppsEdge / split chooser is up on the phone (mid split-entry). */
+    private fun isSplitChooserActiveOnPhone(): Boolean {
+        return try {
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(Display.DEFAULT_DISPLAY)
+                .any { info -> isSplitChooserPackage(info.topActivity?.packageName) }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     /**
      * Displays to scan for zombie StageCoordinator trees: AA VD, phone, tracked orphans,
      * plus any ATM display that hosts organizer/split stages (discovers ghost TDAs).
@@ -1486,6 +1712,151 @@ class AaVirtualDisplayAdapter(
         }
     }
 
+    private fun moveTaskToBackSafe(taskId: Int): Boolean {
+        val am = Instances.activityManager as Any
+        val atm = Instances.iActivityTaskManager as Any
+        val attempts: List<() -> Boolean> = listOf(
+            {
+                am.invokeMethod(
+                    "moveTaskToBack",
+                    args(taskId),
+                    argTypes(Integer.TYPE)
+                ) as? Boolean ?: true
+            },
+            {
+                atm.invokeMethod(
+                    "moveTaskToBack",
+                    args(taskId),
+                    argTypes(Integer.TYPE)
+                ) as? Boolean ?: true
+            },
+            {
+                atm.invokeMethod(
+                    "moveTaskTreeToBack",
+                    args(taskId),
+                    argTypes(Integer.TYPE)
+                )
+                true
+            },
+        )
+        for (attempt in attempts) {
+            try {
+                if (attempt()) return true
+            } catch (_: Throwable) {
+            }
+        }
+        log(TAG, "moveTaskToBack failed: task=$taskId")
+        return false
+    }
+
+    /**
+     * While OneUI split stages are on the AA VD, the configured Home / fullscreen launcher often
+     * stays resumed underneath and steals focus. That:
+     *  - hides/disables Shell's StageCoordinatorSplitDivider (gap shows Home through the 8px seam)
+     *  - leaves ratio stuck near 50/50 because divider drag never reaches a live SplitLayout
+     *
+     * Push Home behind always while split is up. Re-focus a split pane only when Home actually
+     * owns focus / climbs above the split tree — never during normal divider drag.
+     */
+    private fun maintainSplitForegroundFocus(reason: String) {
+        if (!isOneUiSplitEnabled() || mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return
+        val splitApps = getSplitAppTasksOnDisplay()
+        if (splitApps.isEmpty()) return
+
+        val homeTasks = mutableListOf<Pair<Int, String>>()
+        var homeAboveSplit = false
+        try {
+            val roots = Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
+            val firstSplitIdx = roots.indexOfFirst { info ->
+                val mode = getWindowingMode(info)
+                isSplitStageMode(mode) ||
+                    (mode == WINDOWING_MODE_FREEFORM && isCreatedByOrganizer(info))
+            }
+            roots.forEachIndexed { index, info ->
+                val pkg = info.topActivity?.packageName ?: return@forEachIndexed
+                if (pkg != mHomePackage && pkg != mLauncherPackage) return@forEachIndexed
+                val mode = getWindowingMode(info)
+                if (mode != null && isSplitStageMode(mode)) return@forEachIndexed
+                homeTasks.add(info.taskId to pkg)
+                if (firstSplitIdx < 0 || index < firstSplitIdx) homeAboveSplit = true
+            }
+        } catch (e: Throwable) {
+            log(TAG, "splitFocusGuard[$reason] scan failed:", e)
+            return
+        }
+
+        if (homeTasks.isEmpty()) return
+
+        var pushedHome = false
+        for ((taskId, pkg) in homeTasks) {
+            if (moveTaskToBackSafe(taskId)) {
+                pushedHome = true
+                log(TAG, "splitFocusGuard[$reason]: moveTaskToBack homeish=$pkg#$taskId")
+            }
+        }
+
+        val focusedIsHome = isFocusedRootHomeOnVirtualDisplay()
+        if (homeAboveSplit || focusedIsHome) {
+            val focusId = splitApps.first().first
+            if (setFocusedTaskSafe(focusId)) {
+                log(
+                    TAG,
+                    "splitFocusGuard[$reason]: focus split task=$focusId pkg=${splitApps.first().second} homeAbove=$homeAboveSplit focusedHome=$focusedIsHome"
+                )
+            }
+        } else if (pushedHome) {
+            log(TAG, "splitFocusGuard[$reason]: pushed home behind split (focus unchanged)")
+        }
+    }
+
+    /** True when the display-focused root task on the AA VD is the configured Home/launcher. */
+    private fun isFocusedRootHomeOnVirtualDisplay(): Boolean {
+        if (mDisplayId == Display.INVALID_DISPLAY) return false
+        val readers: List<() -> Any?> = listOf(
+            {
+                val atm = Instances.iActivityTaskManager as Any
+                atm.invokeMethod("getFocusedRootTaskInfo", args(), argTypes())
+            },
+            {
+                val atm = Instances.iActivityTaskManager as Any
+                atm.invokeMethod(
+                    "getRootTaskInfoOnDisplay",
+                    args(mDisplayId),
+                    argTypes(Integer.TYPE)
+                )
+            },
+        )
+        for (read in readers) {
+            try {
+                val info = read() ?: continue
+                val displayId = try {
+                    info.getObjectAs("displayId", Integer.TYPE) as? Int
+                        ?: info.getObjectAs("displayId", Int::class.java) as? Int
+                } catch (_: Throwable) {
+                    null
+                }
+                if (displayId != null && displayId != mDisplayId) continue
+                val pkg = try {
+                    (info.getObjectAs("topActivity", ComponentName::class.java) as? ComponentName)
+                        ?.packageName
+                } catch (_: Throwable) {
+                    null
+                } ?: continue
+                if (pkg == mHomePackage || pkg == mLauncherPackage) return true
+            } catch (_: Throwable) {
+            }
+        }
+        return false
+    }
+
+    private fun scheduleSplitFocusGuard(reason: String) {
+        if (!isOneUiSplitEnabled()) return
+        mHandler.removeCallbacks(mDebouncedSplitFocusGuard)
+        mHandler.postDelayed(mDebouncedSplitFocusGuard, 80L)
+        // One more pass after Shell settles (Home often steals resume a beat later).
+        mHandler.postDelayed({ maintainSplitForegroundFocus("$reason-late") }, 350L)
+    }
+
     private fun scheduleEnsureFreeform(taskId: Int, reason: String, force: Boolean = false) {
         if (!isOneUiSplitEnabled()) return
         for (delay in ENSURE_FREEFORM_DELAYS_MS) {
@@ -1611,11 +1982,9 @@ class AaVirtualDisplayAdapter(
         var needBounds = false
         val currentBounds = getTaskBoundsSafe(taskId, taskInfo)
         if (mode == WINDOWING_MODE_FREEFORM) {
-            // Caption minimize / drag-off-screen: always restore (not a user maximize).
-            if (isTaskMinimized(taskInfo) ||
-                (currentBounds != null && !currentBounds.isEmpty && isMostlyOffDisplay(currentBounds))
-            ) {
-                restoreHiddenFreeformIfNeeded(taskId, reason, userRequested = false)
+            // Caption minimize may leave isMinimized / visible=false; restore path confirms
+            // stable on-screen bounds so live caption/border drag is not snapped.
+            if (restoreHiddenFreeformIfNeeded(taskId, reason, userRequested = false)) {
                 return
             }
             // Mid-session user maximize: leave alone once pending inset expired.
@@ -1706,9 +2075,17 @@ class AaVirtualDisplayAdapter(
      * OneUI ignores [setTaskWindowingMode] for many VD fullscreen tasks. Re-start from recents
      * (or re-deliver the activity) with FREEFORM launch options — verified on device via
      * `am start --windowingMode 5 --display <vd>`.
+     *
+     * @param launchBounds when non-null, use these instead of the centered inset (minimize
+     *   restore must keep the pre-minimize frame so caption move is not snapped to center).
      */
-    private fun relaunchTaskAsFreeform(taskId: Int, packageName: String, reason: String): Boolean {
-        val bounds = buildFreeformInsetBounds()
+    private fun relaunchTaskAsFreeform(
+        taskId: Int,
+        packageName: String,
+        reason: String,
+        launchBounds: Rect? = null
+    ): Boolean {
+        val bounds = launchBounds?.takeUnless { it.isEmpty } ?: buildFreeformInsetBounds()
         val options = try {
             ActivityOptions.makeBasic().apply {
                 launchDisplayId = mDisplayId
@@ -1728,7 +2105,7 @@ class AaVirtualDisplayAdapter(
                 }
                 if (bounds != null) {
                     try {
-                        launchBounds = bounds
+                        this.launchBounds = bounds
                     } catch (_: Throwable) {
                     }
                 }
@@ -1882,10 +2259,15 @@ class AaVirtualDisplayAdapter(
     }
 
     /**
-     * Undo OneUI freeform caption minimize / drag-off-screen on the AA VD.
+     * Undo OneUI freeform caption minimize / (on stack tap) drag-off-screen on the AA VD.
      * Verified: `am start --windowingMode 5` unminimizes; `am task resize` restores off-screen.
      *
-     * @param userRequested stack tap — also restores freeform that is simply not visible when
+     * Auto path: true caption minimize only — on-screen bounds + (isMinimized or notVisible),
+     * confirmed stable so live caption/border *move* (bounds changing, OneUI may flicker
+     * minimize/visible) is not treated as hide. Relaunch keeps existing bounds (do not snap
+     * to inset — that made move look like minimize).
+     *
+     * @param userRequested stack tap — also restores mostly-off / not-visible freeform when
      *   the `isMinimized` field is missing from RootTaskInfo.
      */
     private fun restoreHiddenFreeformIfNeeded(
@@ -1905,27 +2287,63 @@ class AaVirtualDisplayAdapter(
 
         val minimized = isTaskMinimized(taskInfo)
         val bounds = getTaskBoundsSafe(taskId, taskInfo)
+        noteFreeformBoundsObservation(taskId, bounds)
         val off = bounds != null && !bounds.isEmpty && isMostlyOffDisplay(bounds)
-        // On the AA VD, freeform is always-on-top; visible=false almost always means caption
-        // minimize/stash (isMinimized may be missing from RootTaskInfo).
         val notVisible = isFreeformNotVisible(taskInfo)
-        if (!minimized && !off && !notVisible) return false
+        val shouldRestore = if (userRequested) {
+            minimized || off || notVisible
+        } else {
+            // True swipe-down minimize keeps bounds on-screen. Mostly-off is caption move/stash.
+            // RootTaskInfo often lacks isMinimized — notVisible + on-screen is the proxy, but only
+            // after bounds stay put (live drag flickers visible while moving).
+            // Diagonal/edge resize on the tiny AA VD is often mis-classified by OneUI as minimize;
+            // after a real w/h change, confirm much sooner so shrink does not stick minimized.
+            val confirmMs = if (wasRecentlyResized(taskId)) {
+                FREEFORM_RESIZE_MINIMIZE_CONFIRM_MS
+            } else {
+                FREEFORM_MINIMIZE_CONFIRM_MS
+            }
+            isConfirmedCaptionMinimize(taskId, minimized, notVisible, off, bounds, confirmMs)
+        }
+        if (!shouldRestore) return false
 
         log(
             TAG,
-            "restoreHiddenFreeform[$reason]: task=$taskId pkg=$pkg minimized=$minimized offDisplay=$off notVisible=$notVisible userRequested=$userRequested bounds=$bounds"
+            "restoreHiddenFreeform[$reason]: task=$taskId pkg=$pkg minimized=$minimized offDisplay=$off notVisible=$notVisible userRequested=$userRequested recentResize=${wasRecentlyResized(taskId)} bounds=$bounds"
         )
         markVirtualDisplayOwnership(taskId, pkg)
+        mMinimizeConfirmAt.remove(taskId)
 
+        val clamped = bounds?.let { clampBoundsToDisplay(it) }
+        val keepBounds = clamped != null && !clamped.isEmpty &&
+            !(clamped.let { isMostlyOffDisplay(it) })
         var ok = false
-        if (minimized || notVisible) {
+        if (minimized || notVisible || userRequested) {
             // moveTaskToFront alone leaves isMinimized=true; relaunch with FREEFORM unstashes.
-            ok = relaunchTaskAsFreeform(taskId, pkg, "restore-$reason")
+            // Pass current on-screen bounds so we do not snap back to centered inset.
+            ok = relaunchTaskAsFreeform(
+                taskId,
+                pkg,
+                "restore-$reason",
+                launchBounds = if (keepBounds) clamped else null
+            )
         }
-        ok = resizeTaskToFreeformBounds(taskId) || ok
-        if (!ok) {
-            ok = relaunchTaskAsFreeform(taskId, pkg, "restore-$reason-fallback")
-            resizeTaskToFreeformBounds(taskId)
+        // Snap to inset only when bounds are gone / mostly-off (stack tap or broken minimize).
+        if (!keepBounds && (minimized || userRequested || notVisible)) {
+            ok = resizeTaskToFreeformBounds(taskId) || ok
+        } else if (keepBounds && clamped != null && bounds != null && clamped != bounds) {
+            // OneUI may leave freeform taller/wider than the VD after corner resize; clamp in place.
+            ok = resizeTaskToBounds(taskId, clamped) || ok
+        }
+        if (!ok && (minimized || userRequested || notVisible)) {
+            ok = relaunchTaskAsFreeform(
+                taskId,
+                pkg,
+                "restore-$reason-fallback",
+                launchBounds = if (keepBounds) clamped else null
+            )
+            if (!keepBounds) resizeTaskToFreeformBounds(taskId)
+            else if (clamped != null) resizeTaskToBounds(taskId, clamped)
         }
         try {
             Instances.activityManager.moveTaskToFront(taskId, 0)
@@ -1933,6 +2351,92 @@ class AaVirtualDisplayAdapter(
         }
         setFocusedTaskSafe(taskId)
         return ok
+    }
+
+    private fun noteFreeformBoundsObservation(taskId: Int, bounds: Rect?) {
+        if (bounds == null || bounds.isEmpty) return
+        val w = bounds.width()
+        val h = bounds.height()
+        val prev = mLastFreeformSize[taskId]
+        if (prev != null && (prev.first != w || prev.second != h)) {
+            mLastResizeAt[taskId] = SystemClock.uptimeMillis()
+        }
+        mLastFreeformSize[taskId] = w to h
+    }
+
+    private fun wasRecentlyResized(taskId: Int): Boolean {
+        val at = mLastResizeAt[taskId] ?: return false
+        return SystemClock.uptimeMillis() - at < FREEFORM_RECENT_RESIZE_MS
+    }
+
+    /**
+     * Auto-unminimize gate: require on-screen freeform that looks minimized, with bounds
+     * unchanged for [confirmMs]. Live caption/border drag changes bounds (and may flicker
+     * isMinimized/visible) — resetting the timer avoids snap/relaunch.
+     */
+    private fun isConfirmedCaptionMinimize(
+        taskId: Int,
+        minimized: Boolean,
+        notVisible: Boolean,
+        off: Boolean,
+        bounds: Rect?,
+        confirmMs: Long = FREEFORM_MINIMIZE_CONFIRM_MS
+    ): Boolean {
+        if (off) {
+            mMinimizeConfirmAt.remove(taskId)
+            return false
+        }
+        if (!minimized && !notVisible) {
+            mMinimizeConfirmAt.remove(taskId)
+            return false
+        }
+        if (bounds == null || bounds.isEmpty) {
+            // No bounds to track — only trust an explicit minimize flag.
+            return minimized
+        }
+        val fp = "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"
+        val now = SystemClock.uptimeMillis()
+        val prev = mMinimizeConfirmAt[taskId]
+        if (prev == null || prev.second != fp) {
+            mMinimizeConfirmAt[taskId] = now to fp
+            // Stack may go quiet after minimize — re-check once bounds have had time to stay put.
+            mHandler.postDelayed({
+                if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return@postDelayed
+                restoreHiddenFreeformIfNeeded(taskId, "minimize-confirm", userRequested = false)
+            }, confirmMs + 80L)
+            return false
+        }
+        return now - prev.first >= confirmMs
+    }
+
+    /** Keep freeform launch/restore frames inside the AA VD (OneUI corner-resize can overrun). */
+    private fun clampBoundsToDisplay(bounds: Rect): Rect? {
+        if (bounds.isEmpty || mDisplayId == Display.INVALID_DISPLAY) return null
+        return try {
+            val display = Instances.displayManager.getDisplay(mDisplayId) ?: return null
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            display.getRealMetrics(metrics)
+            val dw = metrics.widthPixels
+            val dh = metrics.heightPixels
+            if (dw <= 0 || dh <= 0) return null
+            val out = Rect(bounds)
+            if (out.width() > dw) {
+                out.left = 0
+                out.right = dw
+            }
+            if (out.height() > dh) {
+                out.top = 0
+                out.bottom = dh
+            }
+            if (out.left < 0) out.offset(-out.left, 0)
+            if (out.top < 0) out.offset(0, -out.top)
+            if (out.right > dw) out.offset(dw - out.right, 0)
+            if (out.bottom > dh) out.offset(0, dh - out.bottom)
+            if (out.isEmpty) null else out
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun getTaskBoundsSafe(taskId: Int, taskInfo: Any?): Rect? {
@@ -1986,6 +2490,11 @@ class AaVirtualDisplayAdapter(
 
     private fun resizeTaskToFreeformBounds(taskId: Int): Boolean {
         val bounds = buildFreeformInsetBounds() ?: return false
+        return resizeTaskToBounds(taskId, bounds)
+    }
+
+    private fun resizeTaskToBounds(taskId: Int, bounds: Rect): Boolean {
+        if (bounds.isEmpty) return false
         val atm = Instances.iActivityTaskManager as Any
         try {
             atm.invokeMethod(
@@ -2010,7 +2519,7 @@ class AaVirtualDisplayAdapter(
             task.invokeMethod("setBounds", args(bounds), argTypes(Rect::class.java))
             true
         } catch (e: Throwable) {
-            log(TAG, "resizeTaskToFreeformBounds($taskId) failed:", e)
+            log(TAG, "resizeTaskToBounds($taskId) failed:", e)
             false
         }
     }
@@ -2686,13 +3195,18 @@ class AaVirtualDisplayAdapter(
         override fun onTaskStackChanged() {
             if (!isOneUiSplitEnabled() || mIsDestroying) return
             // Divider drag fires this continuously. Reclaiming while split stages are up
-            // fights the layout and can reset the ratio.
-            if (isDisplayInSplitStages()) return
+            // fights the layout and can reset the ratio — but Home stealing focus still
+            // needs a light guard so the Shell divider stays live.
+            if (isDisplayInSplitStages()) {
+                scheduleCollapseAsymmetricSplit("stack-changed")
+                scheduleSplitFocusGuard("stack-changed")
+                return
+            }
             mHandler.removeCallbacks(mDebouncedStackReclaim)
             mHandler.postDelayed(mDebouncedStackReclaim, 120L)
-            // Caption swipe-down minimize / drag-off-screen: auto-restore on the AA VD.
+            // Caption swipe-down minimize only (debounce past live caption/border drag).
             mHandler.removeCallbacks(mDebouncedRestoreHiddenFreeform)
-            mHandler.postDelayed(mDebouncedRestoreHiddenFreeform, 180L)
+            mHandler.postDelayed(mDebouncedRestoreHiddenFreeform, FREEFORM_RESTORE_DEBOUNCE_MS)
         }
         override fun onActivityPinned(packageName: String?, userId: Int, taskId: Int, stackId: Int) {
             mHandler.post { onVirtualDisplayActivityPinned(packageName, taskId) }
@@ -2740,6 +3254,9 @@ class AaVirtualDisplayAdapter(
             mLastFreeformEnsureAt.remove(taskId)
             mLastFreeformRelaunchAt.remove(taskId)
             mLastDisplayBounceAt.remove(taskId)
+            mMinimizeConfirmAt.remove(taskId)
+            mLastFreeformSize.remove(taskId)
+            mLastResizeAt.remove(taskId)
             if(mIsDestroying) {
                 if(mHomeTaskId == taskId) {
                     mHomeTaskId = null
@@ -2762,6 +3279,7 @@ class AaVirtualDisplayAdapter(
             // Keep mVdPackages: OneUI may recreate the same package under a new taskId on phone.
             scheduleReclaimVirtualDisplayTasks("onTaskRemoved")
             scheduleCleanupEmptySplitOrganizerTasks("onTaskRemoved")
+            scheduleCollapseAsymmetricSplit("onTaskRemoved")
         }
         override fun onTaskMovedToFront(taskInfo: ActivityManager.RunningTaskInfo) {
             val taskId = taskInfo.taskId
@@ -2769,6 +3287,16 @@ class AaVirtualDisplayAdapter(
             mHandler.post {
                 if (isTaskOnVirtualDisplay(taskId)) {
                     markVirtualDisplayOwnership(taskId, pkg)
+                    if (isDisplayInSplitStages()) {
+                        scheduleCollapseAsymmetricSplit("onTaskMovedToFront")
+                        // Home/fullscreen often jumps in front of stages and kills the divider.
+                        if (pkg == mHomePackage || pkg == mLauncherPackage) {
+                            maintainSplitForegroundFocus("onTaskMovedToFront-home")
+                        } else {
+                            scheduleSplitFocusGuard("onTaskMovedToFront")
+                        }
+                        return@post
+                    }
                     val demote = isPendingInsetFreeform(pkg)
                     scheduleEnsureFreeform(taskId, "onTaskMovedToFront", force = demote)
                 } else if (!pkg.isNullOrBlank() &&
@@ -2821,6 +3349,7 @@ class AaVirtualDisplayAdapter(
         override fun onActivityDismissingSplitTask(str: String?) {
             log(TAG, "onActivityDismissingSplitTask: $str")
             scheduleCleanupEmptySplitOrganizerTasks("dismissing-split:$str")
+            scheduleCollapseAsymmetricSplit("dismissing-split:$str")
         }
         override fun onOccludeChangeNotice(componentName: ComponentName?, z: Boolean) {}
         override fun onTaskbarIconVisibleChangeRequest(componentName: ComponentName?, z: Boolean) {}
@@ -2832,8 +3361,13 @@ class AaVirtualDisplayAdapter(
             // Do NOT broadly ensureFreeform here: forcing FREEFORM collapses OneUI split/MW.
             scheduleReclaimVirtualDisplayTasks("windowing-mode=$i")
             scheduleCleanupEmptySplitOrganizerTasks("windowing-mode=$i")
+            if (isDisplayInSplitStages()) {
+                scheduleCollapseAsymmetricSplit("windowing-mode=$i")
+                scheduleSplitFocusGuard("windowing-mode=$i")
+                return
+            }
             // Close→reopen / launch pending: OneUI may restore maximized after our first ensure.
-            if (!isDisplayInSplitStages() && mPendingInsetFreeformPkgs.isNotEmpty()) {
+            if (mPendingInsetFreeformPkgs.isNotEmpty()) {
                 val pendingPkgs = mPendingInsetFreeformPkgs.keys.toList().filter { isPendingInsetFreeform(it) }
                 if (pendingPkgs.isNotEmpty()) {
                     mHandler.post {
