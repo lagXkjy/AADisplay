@@ -27,7 +27,6 @@ Production-ready fork of [Nitsuya/AADisplay](https://github.com/Nitsuya/AADispla
 3. Reboot device.
 4. Open AADisplay and configure:
     - Auto Open
-    - Disable Waze on AA
     - Disable Google Maps on AA
     - Default Launch Package
     - Delay Destroy Time

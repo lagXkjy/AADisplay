@@ -31,7 +31,6 @@ import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
 import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.util.GoogleMapsOnAaManager
 import io.github.nitsuya.aa.display.util.SharedPreferencesAccess
-import io.github.nitsuya.aa.display.util.WazeOnAaManager
 import io.github.nitsuya.template.bases.getAttr
 
 class MainActivity :
@@ -75,7 +74,6 @@ class MainActivity :
     private var savedDelayDestroyTime: Int = 180
     private var savedAutoOpen: Boolean = false
     private var savedEnableOneUiSplit: Boolean = false
-    private var savedDisableWazeOnAa: Boolean = false
     private var savedDisableGoogleMapsOnAa: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -174,10 +172,6 @@ class MainActivity :
             updateSaveButtonState()
         }
 
-        baseBinding.switchDisableWazeOnAa.setOnCheckedChangeListener { _, _ ->
-            updateSaveButtonState()
-        }
-
         baseBinding.switchDisableGoogleMapsOnAa.setOnCheckedChangeListener { _, _ ->
             updateSaveButtonState()
         }
@@ -240,13 +234,11 @@ class MainActivity :
     private fun refreshSettingControls() {
         savedAutoOpen = AADisplayConfig.AutoOpen.get(appConfig)
         savedEnableOneUiSplit = AADisplayConfig.EnableOneUiSplit.get(appConfig)
-        savedDisableWazeOnAa = AADisplayConfig.DisableWazeOnAa.get(appConfig)
         savedDisableGoogleMapsOnAa = AADisplayConfig.DisableGoogleMapsOnAa.get(appConfig)
         savedLauncherPackage = AADisplayConfig.LauncherPackage.get(appConfig)?.trim().orEmpty()
         savedDelayDestroyTime = AADisplayConfig.DelayDestroyTime.get(appConfig)
         baseBinding.switchAutoOpen.isChecked = savedAutoOpen
         baseBinding.switchEnableOneuiSplit.isChecked = savedEnableOneUiSplit
-        baseBinding.switchDisableWazeOnAa.isChecked = savedDisableWazeOnAa
         baseBinding.switchDisableGoogleMapsOnAa.isChecked = savedDisableGoogleMapsOnAa
 
         detectLauncherEnvironment()
@@ -506,17 +498,7 @@ class MainActivity :
 
         val launcherPackage = resolveSelectedLauncherPackage() ?: return
         val delay = resolveSelectedDelaySeconds() ?: return
-        val disableWazeOnAa = baseBinding.switchDisableWazeOnAa.isChecked
         val disableGoogleMapsOnAa = baseBinding.switchDisableGoogleMapsOnAa.isChecked
-        if (disableWazeOnAa != savedDisableWazeOnAa) {
-            val applied = WazeOnAaManager.apply(disableWazeOnAa)
-            if (!applied) {
-                Toast.makeText(this, getString(R.string.disable_waze_on_aa_apply_failed), Toast.LENGTH_SHORT).show()
-                baseBinding.switchDisableWazeOnAa.isChecked = savedDisableWazeOnAa
-                updateSaveButtonState()
-                return
-            }
-        }
         if (disableGoogleMapsOnAa != savedDisableGoogleMapsOnAa) {
             val applied = GoogleMapsOnAaManager.apply(disableGoogleMapsOnAa)
             if (!applied) {
@@ -530,7 +512,6 @@ class MainActivity :
         val settingsSaved = appConfig.edit()
             .putBoolean(AADisplayConfig.AutoOpen.key, baseBinding.switchAutoOpen.isChecked)
             .putBoolean(AADisplayConfig.EnableOneUiSplit.key, baseBinding.switchEnableOneuiSplit.isChecked)
-            .putBoolean(AADisplayConfig.DisableWazeOnAa.key, disableWazeOnAa)
             .putBoolean(AADisplayConfig.DisableGoogleMapsOnAa.key, disableGoogleMapsOnAa)
             .putString(AADisplayConfig.LauncherPackage.key, launcherPackage)
             .putString(AADisplayConfig.HomePackage.key, launcherPackage)
@@ -546,7 +527,6 @@ class MainActivity :
         // Always keep local "saved*" in sync when disk write succeeds. Hook readability is separate.
         savedAutoOpen = baseBinding.switchAutoOpen.isChecked
         savedEnableOneUiSplit = baseBinding.switchEnableOneuiSplit.isChecked
-        savedDisableWazeOnAa = disableWazeOnAa
         savedDisableGoogleMapsOnAa = disableGoogleMapsOnAa
         savedLauncherPackage = launcherPackage
         savedDelayDestroyTime = delay
@@ -572,13 +552,11 @@ class MainActivity :
     private fun hasPendingChanges(): Boolean {
         val currentAutoOpen = baseBinding.switchAutoOpen.isChecked
         val currentEnableOneUiSplit = baseBinding.switchEnableOneuiSplit.isChecked
-        val currentDisableWazeOnAa = baseBinding.switchDisableWazeOnAa.isChecked
         val currentDisableGoogleMapsOnAa = baseBinding.switchDisableGoogleMapsOnAa.isChecked
         val currentLauncher = resolveSelectedLauncherPackage()
         val currentDelay = resolveSelectedDelaySeconds()
         return currentAutoOpen != savedAutoOpen ||
             currentEnableOneUiSplit != savedEnableOneUiSplit ||
-            currentDisableWazeOnAa != savedDisableWazeOnAa ||
             currentDisableGoogleMapsOnAa != savedDisableGoogleMapsOnAa ||
             currentLauncher != savedLauncherPackage ||
             currentDelay != savedDelayDestroyTime

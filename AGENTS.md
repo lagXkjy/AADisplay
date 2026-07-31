@@ -34,13 +34,13 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | 目录 | 职责 |
 |------|------|
 | `xposed/` | `XposedInit`、Binder 桥、`CoreManager` / `CoreManagerService` |
-| `xposed/hook/` | 系统 / 通用 / Waze 钩子 |
+| `xposed/hook/` | 系统 / 通用钩子 |
 | `xposed/hook/aa/` | Android Auto 专用钩子（`Aa*Hook`） |
 | `ui/main/` | 手机端设置（`MainActivity`） |
 | `ui/aa/` | 车机投影 Activity / Fragment / VirtualDisplay 适配 |
 | `ui/window/` | 手机端悬浮窗与任务列表 |
 | `service/` | `AaActivityService`、`ShellManagerService` |
-| `util/` | 配置、Maps/Waze 开关、广播常量等 |
+| `util/` | 配置、Maps 开关、广播常量等 |
 | `model/` | 最近任务等模型 |
 
 Vendored 基座（**非必要不改**）：
@@ -73,7 +73,6 @@ flowchart LR
 |------|------|
 | `packageName == "android"` 且 `appInfo == null` | `AndroidHook`（system_server：VirtualDisplay、Binder 桥等） |
 | `com.google.android.projection.gearhead` | `AndroidAuoHook`（再按进程分发 `Aa*Hook`） |
-| `com.waze` | `OtherHook` + `WazeHook` |
 | 本模块 / uid 1000 等 | 跳过 |
 | 其余普通应用 | `OtherHook` |
 
@@ -102,7 +101,7 @@ flowchart LR
 
 ### LSPosed scope
 
-见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`、`com.waze`、`com.autonavi.amapauto`、`com.ss.squarehome2`。改 scope 会影响模块生效范围，勿随意删改。
+见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`、`com.autonavi.amapauto`、`com.ss.squarehome2`。改 scope 会影响模块生效范围，勿随意删改。
 
 ## 4. 构建与验证
 
@@ -125,7 +124,7 @@ flowchart LR
 1. 安装 APK
 2. LSPosed 启用模块：至少 **System Framework** + **Android Auto**
 3. 重启设备
-4. 打开 AADisplay 配置（Auto Open、Default Launch Package、Delay Destroy、Maps/Waze 等）
+4. 打开 AADisplay 配置（Auto Open、Default Launch Package、Delay Destroy、Maps 等）
 5. 连接 Android Auto，验证虚拟显示、触控、任务切换、断开后延迟销毁
 
 改 AA 钩子后：对照目标 gearhead 版本；确认 DexKit 解析仍命中；查阅 `CHANGELOG.md` / `RELEASE_NOTES_*` 中的稳定性约束（如 display profile lock、TaskView）。
@@ -172,11 +171,10 @@ flowchart LR
 
 注意 CHANGELOG 中的 **display profile lock**、**Delay Destroy Time**、TaskView 稳定性相关行为，避免重引入重连闪烁或过早销毁。
 
-### Maps / Waze 在 AA 上的开关
+### Maps 在 AA 上的开关
 
 - `util/GoogleMapsOnAaManager.kt`
-- `util/WazeOnAaManager.kt`
-- 配置项：`DisableGoogleMapsOnAa` / `DisableWazeOnAa`
+- 配置项：`DisableGoogleMapsOnAa`
 
 与 `AaUiHook` 等 UI 钩子职责分离，勿混写。
 
