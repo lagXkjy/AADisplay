@@ -1480,8 +1480,21 @@ class AaVirtualDisplayAdapter(
                         log(TAG, "phone-steal skipped (split entry/MW): $tagged")
                         return@postAtTime
                     }
-                    relocateEmptyPhoneSplitShellsToVirtualDisplay(tagged)
-                    cleanupPhoneEmptySplitShellsOnly(tagged)
+                    val moved = relocateEmptyPhoneSplitShellsToVirtualDisplay(tagged)
+                    val vdHasShell = hasIdleSplitShellOnVirtualDisplay()
+                    // Never kill phone shells unless VD already has a StageCoordinator.
+                    // Kill-without-steal leaves zero shells → moveFreeformTaskToSplit "no display".
+                    if (moved > 0 || vdHasShell) {
+                        cleanupPhoneEmptySplitShellsOnly(tagged)
+                    } else {
+                        log(
+                            TAG,
+                            "phone-steal: skip phone kill (moved=$moved vdShell=$vdHasShell) [$tagged]"
+                        )
+                    }
+                    if (vdHasShell || moved > 0) {
+                        scheduleExpandSplitShellToFullDisplay(tagged)
+                    }
                 },
                 PHONE_EMPTY_SPLIT_STEAL_TOKEN,
                 now + delay
@@ -1666,7 +1679,11 @@ class AaVirtualDisplayAdapter(
             return 0
         }
         val roots = findEmptyPhoneSplitStageRoots()
-        if (roots.isEmpty()) return 0
+        if (roots.isEmpty()) {
+            log(TAG, "relocatePhoneSplit[$reason]: no phone empty stage roots")
+            return 0
+        }
+        log(TAG, "relocatePhoneSplit[$reason]: candidates=${roots.joinToString()} -> vd=$mDisplayId")
 
         var moved = 0
         val now = SystemClock.uptimeMillis()
@@ -1675,33 +1692,88 @@ class AaVirtualDisplayAdapter(
         // the car stays blank until they tap the task).
         mSuppressDisplayBounceUntil = now + 300L
         for (rootId in roots) {
-            try {
-                Instances.iActivityTaskManager.moveRootTaskToDisplay(rootId, mDisplayId)
-            } catch (e: Throwable) {
-                log(TAG, "relocatePhoneSplit[$reason]: moveRootTaskToDisplay($rootId) failed:", e)
+            if (!moveRootTaskToDisplaySafe(rootId, mDisplayId, reason)) {
+                log(TAG, "relocatePhoneSplit[$reason]: root=$rootId still on phone after move")
                 continue
             }
-            val taskObj = resolveTaskObject(rootId)
-            val onVd = findRootTaskInfoOnDisplay(rootId, mDisplayId) != null ||
-                (taskObj != null && readTaskDisplayId(taskObj) == mDisplayId) ||
-                try {
-                    Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
-                        .any { it.taskId == rootId || readChildTaskIds(it)?.contains(rootId) == true }
-                } catch (_: Throwable) {
-                    false
-                }
-            val stillOnPhone = findRootTaskInfoOnDisplay(rootId, Display.DEFAULT_DISPLAY) != null
-            if (onVd || !stillOnPhone) {
-                moved++
-                log(TAG, "relocatePhoneSplit[$reason]: moved root=$rootId -> vd=$mDisplayId")
-            } else {
-                log(TAG, "relocatePhoneSplit[$reason]: root=$rootId still on phone after move")
-            }
+            moved++
+            log(TAG, "relocatePhoneSplit[$reason]: moved root=$rootId -> vd=$mDisplayId")
         }
         if (moved > 0) {
             mEmptySplitShellsSeenAt = 0L
         }
         return moved
+    }
+
+    /**
+     * `IActivityTaskManager.moveRootTaskToDisplay` often no-ops for OneUI fullscreen
+     * StageCoordinator on the phone; `cmd activity display move-stack` succeeds.
+     */
+    private fun moveRootTaskToDisplaySafe(taskId: Int, displayId: Int, reason: String): Boolean {
+        fun onTarget(): Boolean {
+            if (findRootTaskInfoOnDisplay(taskId, displayId) != null) return true
+            val taskObj = resolveTaskObject(taskId)
+            if (taskObj != null && readTaskDisplayId(taskObj) == displayId) return true
+            return try {
+                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+                    .any { it.taskId == taskId || readChildTaskIds(it)?.contains(taskId) == true }
+            } catch (_: Throwable) {
+                false
+            }
+        }
+        fun stillOnPhone(): Boolean =
+            findRootTaskInfoOnDisplay(taskId, Display.DEFAULT_DISPLAY) != null
+
+        try {
+            Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, displayId)
+            if (onTarget() || !stillOnPhone()) return true
+        } catch (e: Throwable) {
+            log(TAG, "relocatePhoneSplit[$reason]: moveRootTaskToDisplay($taskId) failed:", e)
+        }
+
+        // Same path as `cmd activity display move-stack <id> <display>` (works when binder no-ops).
+        try {
+            val proc = Runtime.getRuntime().exec(
+                arrayOf("cmd", "activity", "display", "move-stack", taskId.toString(), displayId.toString())
+            )
+            val code = proc.waitFor()
+            if (code == 0 && (onTarget() || !stillOnPhone())) {
+                log(TAG, "relocatePhoneSplit[$reason]: move-stack cmd ok task=$taskId -> $displayId")
+                return true
+            }
+            log(TAG, "relocatePhoneSplit[$reason]: move-stack cmd exit=$code task=$taskId")
+        } catch (e: Throwable) {
+            log(TAG, "relocatePhoneSplit[$reason]: move-stack cmd failed task=$taskId:", e)
+        }
+        return onTarget()
+    }
+
+    /** True when the AA VD already hosts an idle (or live) StageCoordinator / split stages. */
+    private fun hasIdleSplitShellOnVirtualDisplay(): Boolean {
+        if (mDisplayId == Display.INVALID_DISPLAY) return false
+        if (isDisplayInSplitStages()) return true
+        return try {
+            val tasks = Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
+            for (info in tasks) {
+                val node = resolveTaskObject(info.taskId) ?: info
+                val kids = readChildTaskIds(node) ?: readChildTaskIds(info) ?: continue
+                if (kids.size < 2 && !kids.any { kid ->
+                        val c = resolveTaskObject(kid) ?: return@any false
+                        isSplitStageMode(getWindowingMode(c)) || hasSplitStageConfig(c)
+                    }
+                ) {
+                    continue
+                }
+                if (isCreatedByOrganizer(node) || isCreatedByOrganizer(info) ||
+                    getWindowingMode(node) == WINDOWING_MODE_FREEFORM
+                ) {
+                    return true
+                }
+            }
+            false
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     /**
@@ -1739,6 +1811,32 @@ class AaVirtualDisplayAdapter(
             val organizerParent = isCreatedByOrganizer(node) || isCreatedByOrganizer(info)
             if (stageChildren >= 1 || (organizerParent && childIds.size >= 2)) {
                 roots += info.taskId
+            }
+        }
+        // Align with cleanup detection: fullscreen phone `#3` is sometimes missed above when
+        // RootTaskInfo lies about organizer/children, but collectEmpty* still finds the tree.
+        if (roots.isEmpty()) {
+            val zombieIds = collectEmptySplitOrganizerTaskIdsOnDisplay(
+                Display.DEFAULT_DISPLAY,
+                "find-phone-roots",
+                treatChooserAsEmpty = true
+            )
+            for (id in zombieIds) {
+                val node = resolveTaskObject(id) ?: continue
+                val kids = readChildTaskIds(node) ?: continue
+                val splitKids = kids.count { kid ->
+                    val c = resolveTaskObject(kid) ?: return@count false
+                    isSplitStageMode(getWindowingMode(c)) || hasSplitStageConfig(c) ||
+                        isCreatedByOrganizer(c)
+                }
+                if (splitKids >= 1 || kids.size >= 2) {
+                    roots += id
+                } else {
+                    readParentOrRootTaskId(node)?.takeIf { it > 0 && it != id }?.let { roots += it }
+                }
+            }
+            if (roots.isNotEmpty()) {
+                log(TAG, "findEmptyPhoneSplitStageRoots: fallback roots=${roots.joinToString()}")
             }
         }
         return roots.toList()
