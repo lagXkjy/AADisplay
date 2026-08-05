@@ -36,4 +36,5 @@
     <string name="settings_saved_pref_access_failed">Settings saved, but hook preference access could not be verified</string>
     <string name="controller_open_menu">Open controller menu</string>
     <string name="controller_hide_menu">Hide controller menu</string>
+    <string name="cleanup_split_shells">Clean split shells</string>
 </resources>

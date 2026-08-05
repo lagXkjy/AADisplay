@@ -61,6 +61,7 @@ object AaUiHook: AaHook() {
     private var mInjectingFacetBar: Boolean = false
     private var mCloseLauncherDashboard: Boolean = false
     private var mAutoOpen: Boolean = false
+    private var mEnableOneUiSplit: Boolean = false
     private val facetBarInjectedTag = Any()
     private val mFacetEnsureHandler = Handler(Looper.getMainLooper())
     private val FACET_ENSURE_DELAYS_MS = longArrayOf(0L, 250L, 700L, 1500L)
@@ -142,6 +143,7 @@ object AaUiHook: AaHook() {
         log(tagName,  "AaUiHook: ~~~~~~~~~~~~~~~~~~~~~~~~~~~")
         mCloseLauncherDashboard = AADisplayConfig.CloseLauncherDashboard.get(config)
         mAutoOpen = AADisplayConfig.AutoOpen.get(config)
+        mEnableOneUiSplit = AADisplayConfig.EnableOneUiSplit.get(config)
         hookBaseClick()
         if (canHookLayout) {
             hookLayout()
@@ -488,6 +490,18 @@ object AaUiHook: AaHook() {
                 setPadding(0, 5, 0, 5)
             },
         )
+        if (mEnableOneUiSplit) {
+            bottomIds += createBtn(R.drawable.ic_aa_clean_44) {
+                contentDescription = ctx2.getString(R.string.cleanup_split_shells)
+                val intentClick = Intent().apply {
+                    action = AABroadcastConst.ACTION_CLEANUP_SPLIT_SHELLS
+                }
+                setOnClickListener {
+                    ctx.sendBroadcast(intentClick)
+                }
+                setPadding(0, 5, 0, 5)
+            }
+        }
         arrayListOf(resIdStatusBarId, resIdLauncherAndDashboardIconContainerId).forEach { vId ->
             val view = resultViewGroup.findViewById<View>(vId) ?: return@forEach
             (view.parent as ViewGroup?)?.removeView(view)

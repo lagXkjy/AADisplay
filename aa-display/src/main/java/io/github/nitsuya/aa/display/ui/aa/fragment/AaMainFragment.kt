@@ -74,6 +74,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         }
         override fun onReceive(context: Context?, intent: Intent) {
             when(intent.action){
+                AABroadcastConst.ACTION_CLEANUP_SPLIT_SHELLS -> {
+                    CoreApi.cleanupSplitShells()
+                }
                 AABroadcastConst.ACTION_SCREEN_CONTROL -> {
                     when(val action = intent.getIntExtra(AABroadcastConst.EXTRA_ACTION, 0)){
                         KeyEvent.KEYCODE_FEATURED_APP_1 -> carManager.startCarTelecom()
@@ -305,6 +308,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         ContextCompat.registerReceiver(ctx, broadcastReceiver, IntentFilter().apply {
             addAction(AABroadcastConst.ACTION_SCREEN_CONTROL)
             addAction(AABroadcastConst.ACTION_STEERING_WHEEL_CONTROL)
+            addAction(AABroadcastConst.ACTION_CLEANUP_SPLIT_SHELLS)
         }, ContextCompat.RECEIVER_EXPORTED)
         isControlReceiverRegistered = true
     }

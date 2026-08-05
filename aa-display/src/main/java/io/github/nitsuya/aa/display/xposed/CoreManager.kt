@@ -99,6 +99,10 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.removeTask(taskId)
     }
 
+    override fun cleanupSplitShells() {
+        getService()?.cleanupSplitShells()
+    }
+
     override fun pressKey(action: Int) {
         getService()?.pressKey(action)
     }

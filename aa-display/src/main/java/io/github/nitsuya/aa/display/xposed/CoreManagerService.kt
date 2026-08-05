@@ -313,6 +313,22 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
         }
     }
 
+    override fun cleanupSplitShells() {
+        runIO {
+            val adapter = mAaVirtualDisplayAdapter
+            if (adapter == null) {
+                runMain { TipUtil.showToast("分屏壳清理：无显示会话") }
+                return@runIO
+            }
+            val removed = adapter.forceCleanupAllSplitShells("manual")
+            runMain {
+                TipUtil.showToast(
+                    if (removed > 0) "已清理 ${removed} 个分屏壳" else "没有可清理的分屏壳"
+                )
+            }
+        }
+    }
+
     override fun pressKey(action: Int) {
         runIO {
             mDisplayWindow?.onVirtualDisplayUserInteraction()
