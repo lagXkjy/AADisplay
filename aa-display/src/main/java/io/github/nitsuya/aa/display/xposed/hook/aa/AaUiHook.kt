@@ -64,8 +64,14 @@ object AaUiHook: AaHook() {
     private var mEnableOneUiSplit: Boolean = false
     private val facetBarInjectedTag = Any()
     private val mFacetEnsureHandler = Handler(Looper.getMainLooper())
-    private val FACET_ENSURE_DELAYS_MS = longArrayOf(0L, 250L, 700L, 1500L)
+    /**
+     * Soft reconnect (no USB replug) often rebuilds LayoutInfo before GhFacetBar chrome
+     * is attached; keep probing past the first 1.5s window.
+     */
+    private val FACET_ENSURE_DELAYS_MS = longArrayOf(0L, 250L, 700L, 1500L, 3000L, 5000L, 8000L)
+    private val FACET_ENSURE_POLL_MS = 400L
     private val FACET_ENSURE_TOKEN = Any()
+    private var mFacetEnsureDeadlineMs = 0L
 
     override fun isSupportProcess(processName: String): Boolean {
         return processProjection == processName
@@ -150,6 +156,7 @@ object AaUiHook: AaHook() {
         }
         if (canHookFacetBar) {
             hookFacetBar()
+            hookFacetWindowAttach()
         }
         hookRadius(config)
     }
@@ -259,38 +266,90 @@ object AaUiHook: AaHook() {
             // Canonical vertical rail embeds facet chrome; reconnect often reinflates this
             // without a separate coolwalk facet-bar inflate.
             if (railHostLayoutIds.contains(layoutResId)) {
-                tryInjectIntoFacetColumn(resultViewGroup, "rail:$layoutResId")
+                if (!tryInjectIntoFacetColumn(resultViewGroup, "rail:$layoutResId")) {
+                    scheduleEnsureFacetBar("rail:$layoutResId")
+                }
             }
+        }
+    }
+
+    /**
+     * Soft reconnect can attach GhFacetBar after LayoutInfo ensure delays have already
+     * scanned empty roots. Re-arm when a window with facet chrome appears.
+     */
+    private fun hookFacetWindowAttach() {
+        try {
+            findMethod(Class.forName("android.view.WindowManagerGlobal")) {
+                name == "addView" && parameterCount >= 1
+            }.hookAfter { param ->
+                if (!canHookFacetBar || mInjectingFacetBar) return@hookAfter
+                val root = param.args[0] as? ViewGroup ?: return@hookAfter
+                root.post {
+                    if (!canHookFacetBar || mInjectingFacetBar) return@post
+                    if (!containsFacetChrome(root) || hasInjectedFacet(root)) return@post
+                    scheduleEnsureFacetBar("windowAttach")
+                }
+            }
+            log(tagName, "AaUiHook: hooked WindowManagerGlobal.addView for facet ensure")
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: hook WindowManagerGlobal.addView failed", e)
         }
     }
 
     private fun scheduleEnsureFacetBar(reason: String) {
         mFacetEnsureHandler.removeCallbacksAndMessages(FACET_ENSURE_TOKEN)
         val now = android.os.SystemClock.uptimeMillis()
+        // Keep a short tail after the last fixed kick so a late GhFacetBar can still attach.
+        mFacetEnsureDeadlineMs = now + FACET_ENSURE_DELAYS_MS.last() + 2_000L
+        // Immediate + delayed kicks; unfinished work continues via a single poll chain.
         for (delayMs in FACET_ENSURE_DELAYS_MS) {
             mFacetEnsureHandler.postAtTime(
-                { ensureFacetBarInjected("$reason-$delayMs") },
+                { ensureFacetBarInjected(reason, delayMs) },
                 FACET_ENSURE_TOKEN,
                 now + delayMs
             )
         }
     }
 
-    private fun ensureFacetBarInjected(reason: String) {
+    private fun ensureFacetBarInjected(reason: String, delayMs: Long = -1L) {
         if (!canHookFacetBar || mInjectingFacetBar) return
+        val label = if (delayMs >= 0) "$reason-$delayMs" else reason
         try {
             val roots = collectWindowRootViews()
+            if (roots.any { hasInjectedFacet(it) }) {
+                mFacetEnsureHandler.removeCallbacksAndMessages(FACET_ENSURE_TOKEN)
+                return
+            }
             var attempted = 0
             for (root in roots) {
                 if (!containsFacetChrome(root)) continue
                 if (hasInjectedFacet(root)) continue
-                if (tryInjectIntoFacetColumn(root, reason)) attempted++
+                if (tryInjectIntoFacetColumn(root, label)) attempted++
             }
             if (attempted > 0) {
-                log(tagName, "AaUiHook: ensure facet injected [$reason] count=$attempted")
+                log(tagName, "AaUiHook: ensure facet injected [$label] count=$attempted")
+                mFacetEnsureHandler.removeCallbacksAndMessages(FACET_ENSURE_TOKEN)
+                return
+            }
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now < mFacetEnsureDeadlineMs) {
+                // Only the poll leg schedules the next tick to avoid N parallel chains.
+                if (delayMs < 0 || delayMs == FACET_ENSURE_DELAYS_MS.last()) {
+                    mFacetEnsureHandler.postAtTime(
+                        { ensureFacetBarInjected("$reason-poll") },
+                        FACET_ENSURE_TOKEN,
+                        now + FACET_ENSURE_POLL_MS
+                    )
+                }
+            } else if (delayMs == FACET_ENSURE_DELAYS_MS.last() || reason.endsWith("-poll")) {
+                log(
+                    tagName,
+                    "AaUiHook: ensure facet still missing [$label] roots=${roots.size} " +
+                        "chrome=${roots.count { containsFacetChrome(it) }}"
+                )
             }
         } catch (e: Throwable) {
-            log(tagName, "AaUiHook: ensure facet failed [$reason]", e)
+            log(tagName, "AaUiHook: ensure facet failed [$label]", e)
         }
     }
 

@@ -8,6 +8,7 @@ import android.view.Display
 import com.github.kyuubiran.ezxhelper.utils.*
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.xposed.BridgeService
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
@@ -113,7 +114,391 @@ object AndroidHook : BaseHook() {
             }
         }
 
+        // Samsung OneUI: moveFreeformTaskToSplitLocked hard-rejects displayId != 0 with
+        // "failed, no display". Caption freeform on the AA VD always hits that path when the
+        // phone top fullscreen task is Home. Bypass for the live AA virtual display and notify
+        // the task organizer directly; also resolve stage roots on the AA VD TDA.
+        hookOneUiFreeformToSplitOnVirtualDisplay()
+    }
 
+    /**
+     * Allow OneUI caption freeform→split when the freeform task (and StageCoordinator shells)
+     * live on the AA virtual display instead of [Display.DEFAULT_DISPLAY].
+     */
+    private fun hookOneUiFreeformToSplitOnVirtualDisplay() {
+        try {
+            findMethod("com.android.server.wm.MultiTaskingController") {
+                name == "moveFreeformTaskToSplitLocked" && parameterCount == 2
+            }.hookBefore { param ->
+                val task = param.args[0] ?: return@hookBefore
+                val vdId = CoreManagerService.getDisplayId()
+                if (vdId == Display.INVALID_DISPLAY) return@hookBefore
+                val displayId = readTaskDisplayId(task) ?: return@hookBefore
+                if (displayId != vdId) return@hookBefore
+
+                val inFreeform = try {
+                    task.invokeMethod("inFreeformWindowingMode", args(), argTypes()) as? Boolean
+                } catch (_: Throwable) {
+                    null
+                } == true
+                val supportsSplit = try {
+                    task.invokeMethod("supportsSplitScreenWindowingMode", args(), argTypes()) as? Boolean
+                } catch (_: Throwable) {
+                    null
+                } != false
+                val dex = try {
+                    task.invokeMethod("isDexMode", args(), argTypes()) as? Boolean
+                } catch (_: Throwable) {
+                    false
+                } == true
+                if (!inFreeform || !supportsSplit || dex) {
+                    log(
+                        tagName,
+                        "AA VD freeform→split skip: freeform=$inFreeform support=$supportsSplit dex=$dex task=$task"
+                    )
+                    return@hookBefore
+                }
+
+                val options = param.args.getOrNull(1)
+                var position = 0
+                var reparentCell = false
+                if (options != null) {
+                    try {
+                        position = options.invokeMethod("getSplitPosition", args(), argTypes()) as? Int ?: 0
+                    } catch (_: Throwable) {
+                    }
+                    try {
+                        reparentCell =
+                            options.invokeMethod("needToReparentCell", args(), argTypes()) as? Boolean
+                                ?: false
+                    } catch (_: Throwable) {
+                    }
+                }
+
+                val toc = resolveTaskOrganizerController(param.thisObject) ?: run {
+                    log(tagName, "AA VD freeform→split: TaskOrganizerController missing")
+                    return@hookBefore
+                }
+                // Stock moveFreeformTaskToSplitByTaskId only sets withRecentAllApps when the
+                // *phone* top fullscreen is Home. Otherwise it falls into this Locked path with
+                // false — StageCoordinator then startTask()s into a stage and auto-pairs any other
+                // FREEFORM on the VD (Default Launch 嘟嘟mini → main/left, caption app → side/right).
+                // Force AppsEdge (withRecentAllApps=true) and park companions so main/left stays
+                // the freeform app and side opens the chooser.
+                val splitTaskId = readTaskId(task)
+                val parked = parkCompanionFreeformsForSplit(param.thisObject, task, displayId)
+                if (splitTaskId > 0) {
+                    CoreManagerService.onFreeformToSplitCompanionsParked(splitTaskId, parked)
+                }
+                try {
+                    toc.invokeMethod(
+                        "onFreeformToSplitRequested",
+                        args(task, true, position, reparentCell),
+                        argTypes(
+                            task.javaClass,
+                            Boolean::class.javaPrimitiveType!!,
+                            Int::class.javaPrimitiveType!!,
+                            Boolean::class.javaPrimitiveType!!
+                        )
+                    )
+                    log(
+                        tagName,
+                        "AA VD freeform→split: organizer notified display=$displayId pos=$position " +
+                            "withAllApps=true task=$task parked=${parked.size}"
+                    )
+                    param.abortMethod()
+                } catch (e: Throwable) {
+                    log(tagName, "AA VD freeform→split organizer call failed:", e)
+                }
+            }
+            log(tagName, "hooked MultiTaskingController.moveFreeformTaskToSplitLocked for AA VD")
+        } catch (e: Throwable) {
+            log(tagName, "hook moveFreeformTaskToSplitLocked failed:", e)
+        }
+
+        try {
+            findMethod("com.android.server.wm.TaskOrganizerController") {
+                name == "onSplitLayoutChangeRequested" &&
+                    parameterCount == 1 &&
+                    parameterTypes[0].name == "android.os.Bundle"
+            }.hookBefore { param ->
+                val vdId = CoreManagerService.getDisplayId()
+                if (vdId == Display.INVALID_DISPLAY) return@hookBefore
+                val toc = param.thisObject
+                val bundle = param.args[0] ?: return@hookBefore
+                val atm = toc.getObjectOrNull("mService") ?: return@hookBefore
+                val rwc = atm.getObjectOrNull("mRootWindowContainer") ?: return@hookBefore
+
+                val defaultRoot = try {
+                    val defaultTda = rwc.invokeMethod(
+                        "getDefaultTaskDisplayArea",
+                        args(),
+                        argTypes()
+                    )
+                    defaultTda?.invokeMethod("getRootMainStageTask", args(), argTypes())
+                } catch (_: Throwable) {
+                    null
+                }
+                if (defaultRoot != null) return@hookBefore
+
+                val vdRoot = findRootMainStageOnDisplay(rwc, vdId) ?: run {
+                    log(tagName, "onSplitLayoutChangeRequested: no stage root on phone or VD=$vdId")
+                    return@hookBefore
+                }
+
+                try {
+                    val runningInfoClass = loadClass("android.app.ActivityManager\$RunningTaskInfo")
+                    val info = runningInfoClass.getDeclaredConstructor().newInstance()
+                    vdRoot.invokeMethod(
+                        "fillTaskInfo",
+                        args(info),
+                        argTypes(loadClass("android.app.TaskInfo"))
+                    )
+                    toc.putObject("mTmpTaskInfo", info)
+                    val organizer = vdRoot.getObjectOrNull("mTaskOrganizer")
+                    if (organizer == null) {
+                        log(tagName, "onSplitLayoutChangeRequested: stage root has no organizer")
+                        return@hookBefore
+                    }
+                    organizer.invokeMethod(
+                        "onSplitLayoutChangeRequested",
+                        args(info, bundle),
+                        argTypes(
+                            loadClass("android.app.ActivityManager\$RunningTaskInfo"),
+                            loadClass("android.os.Bundle")
+                        )
+                    )
+                    toc.putObject("mTmpTaskInfo", null)
+                    log(tagName, "onSplitLayoutChangeRequested: delivered via AA VD=$vdId root=$vdRoot")
+                    param.abortMethod()
+                } catch (e: Throwable) {
+                    try {
+                        toc.putObject("mTmpTaskInfo", null)
+                    } catch (_: Throwable) {
+                    }
+                    log(tagName, "onSplitLayoutChangeRequested VD path failed:", e)
+                }
+            }
+            log(tagName, "hooked TaskOrganizerController.onSplitLayoutChangeRequested for AA VD")
+        } catch (e: Throwable) {
+            log(tagName, "hook onSplitLayoutChangeRequested failed:", e)
+        }
+    }
+
+    private fun readTaskDisplayId(task: Any): Int? {
+        return try {
+            val dc = task.invokeMethod("getDisplayContent", args(), argTypes()) ?: return null
+            dc.invokeMethod("getDisplayId", args(), argTypes()) as? Int
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun readTaskId(task: Any): Int {
+        try {
+            (task.invokeMethod("getTaskId", args(), argTypes()) as? Int)
+                ?.takeIf { it > 0 }
+                ?.let { return it }
+        } catch (_: Throwable) {
+        }
+        try {
+            return task.getObjectAs("mTaskId", Int::class.javaPrimitiveType) as? Int ?: -1
+        } catch (_: Throwable) {
+            return -1
+        }
+    }
+
+    /**
+     * Move other FREEFORM leaf tasks off the AA VD onto the phone before freeform→split.
+     * Uses the local ATMS (lock already held) — not the binder stub — to avoid deadlock.
+     *
+     * @return parked (taskId to package) pairs for ownership/reclaim suppress.
+     */
+    private fun parkCompanionFreeformsForSplit(
+        multiTaskingController: Any,
+        keepTask: Any,
+        vdDisplayId: Int
+    ): List<Pair<Int, String>> {
+        val keepId = readTaskId(keepTask)
+        val atm = resolveActivityTaskManager(multiTaskingController) ?: return emptyList()
+        val tda = try {
+            val rwc = atm.getObjectOrNull("mRootWindowContainer") ?: return emptyList()
+            val dc = rwc.invokeMethod(
+                "getDisplayContent",
+                args(vdDisplayId),
+                argTypes(Int::class.javaPrimitiveType!!)
+            ) ?: return emptyList()
+            dc.invokeMethod("getDefaultTaskDisplayArea", args(), argTypes())
+        } catch (_: Throwable) {
+            null
+        } ?: return emptyList()
+
+        val candidates = mutableListOf<Pair<Int, String>>()
+        val childCount = try {
+            tda.invokeMethod("getChildCount", args(), argTypes()) as? Int ?: 0
+        } catch (_: Throwable) {
+            0
+        }
+        for (i in 0 until childCount) {
+            val child = try {
+                tda.invokeMethod("getChildAt", args(i), argTypes(Int::class.javaPrimitiveType!!))
+            } catch (_: Throwable) {
+                null
+            } ?: continue
+            collectParkableFreeformLeaves(child, keepId, candidates)
+        }
+
+        if (candidates.isEmpty()) return emptyList()
+
+        val parked = mutableListOf<Pair<Int, String>>()
+        for ((taskId, pkg) in candidates.distinctBy { it.first }) {
+            if (moveRootTaskToDisplayLocal(atm, taskId, Display.DEFAULT_DISPLAY)) {
+                parked.add(taskId to pkg)
+                log(tagName, "AA VD freeform→split: parked companion task=$taskId pkg=$pkg -> phone")
+            } else {
+                log(tagName, "AA VD freeform→split: park failed task=$taskId pkg=$pkg")
+            }
+        }
+        return parked
+    }
+
+    private fun collectParkableFreeformLeaves(
+        node: Any,
+        keepId: Int,
+        out: MutableList<Pair<Int, String>>
+    ) {
+        val taskId = readTaskId(node)
+        if (taskId <= 0 || taskId == keepId) return
+
+        val createdByOrganizer = try {
+            node.getObjectAs("mCreatedByOrganizer", Boolean::class.javaPrimitiveType) as? Boolean
+        } catch (_: Throwable) {
+            null
+        } == true
+        if (createdByOrganizer) {
+            // Walk stage children — do not move StageCoordinator shells themselves.
+            val n = try {
+                node.invokeMethod("getChildCount", args(), argTypes()) as? Int ?: 0
+            } catch (_: Throwable) {
+                0
+            }
+            for (i in 0 until n) {
+                val child = try {
+                    node.invokeMethod(
+                        "getChildAt",
+                        args(i),
+                        argTypes(Int::class.javaPrimitiveType!!)
+                    )
+                } catch (_: Throwable) {
+                    null
+                } ?: continue
+                collectParkableFreeformLeaves(child, keepId, out)
+            }
+            return
+        }
+
+        val inFreeform = try {
+            node.invokeMethod("inFreeformWindowingMode", args(), argTypes()) as? Boolean
+        } catch (_: Throwable) {
+            null
+        } == true
+        if (!inFreeform) return
+
+        val activityType = try {
+            node.invokeMethod("getActivityType", args(), argTypes()) as? Int
+        } catch (_: Throwable) {
+            null
+        }
+        // ACTIVITY_TYPE_HOME = 2 — keep secondary home under the split.
+        if (activityType == 2) return
+
+        val pkg = readTopPackage(node) ?: return
+        if (pkg == "com.android.systemui" ||
+            pkg == "com.samsung.android.app.appsedge" ||
+            pkg == BuildConfig.APPLICATION_ID
+        ) {
+            return
+        }
+        out.add(taskId to pkg)
+    }
+
+    private fun readTopPackage(task: Any): String? {
+        try {
+            val top = task.invokeMethod("getTopNonFinishingActivity", args(), argTypes())
+                ?: task.invokeMethod("getTopActivity", args(), argTypes())
+            val name = top?.invokeMethod("getPackageName", args(), argTypes()) as? String
+            if (!name.isNullOrBlank()) return name
+        } catch (_: Throwable) {
+        }
+        try {
+            val intent = task.getObjectOrNull("intent") ?: task.getObjectOrNull("mIntent")
+            val cmp = intent?.invokeMethod("getComponent", args(), argTypes())
+            val name = cmp?.invokeMethod("getPackageName", args(), argTypes()) as? String
+            if (!name.isNullOrBlank()) return name
+        } catch (_: Throwable) {
+        }
+        return null
+    }
+
+    private fun resolveActivityTaskManager(multiTaskingController: Any): Any? {
+        try {
+            multiTaskingController.getObjectOrNull("mAtm")?.let { return it }
+        } catch (_: Throwable) {
+        }
+        try {
+            val wm = multiTaskingController.getObjectOrNull("mWm") ?: return null
+            return wm.getObjectOrNull("mAtmService")
+        } catch (_: Throwable) {
+            return null
+        }
+    }
+
+    private fun moveRootTaskToDisplayLocal(atm: Any, taskId: Int, displayId: Int): Boolean {
+        return try {
+            atm.invokeMethod(
+                "moveRootTaskToDisplay",
+                args(taskId, displayId),
+                argTypes(Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!)
+            )
+            true
+        } catch (e: Throwable) {
+            log(tagName, "moveRootTaskToDisplayLocal($taskId -> $displayId) failed:", e)
+            false
+        }
+    }
+
+    private fun resolveTaskOrganizerController(multiTaskingController: Any): Any? {
+        try {
+            multiTaskingController.getObjectOrNull("mAtm")
+                ?.getObjectOrNull("mTaskOrganizerController")
+                ?.let { return it }
+        } catch (_: Throwable) {
+        }
+        try {
+            val wm = multiTaskingController.getObjectOrNull("mWm") ?: return null
+            val atm = wm.getObjectOrNull("mAtmService") ?: return null
+            return atm.getObjectOrNull("mTaskOrganizerController")
+        } catch (_: Throwable) {
+            return null
+        }
+    }
+
+    private fun findRootMainStageOnDisplay(rwc: Any, displayId: Int): Any? {
+        return try {
+            val dc = rwc.invokeMethod(
+                "getDisplayContent",
+                args(displayId),
+                argTypes(Int::class.javaPrimitiveType!!)
+            ) ?: return null
+            val tda = try {
+                dc.invokeMethod("getDefaultTaskDisplayArea", args(), argTypes())
+            } catch (_: Throwable) {
+                null
+            } ?: return null
+            tda.invokeMethod("getRootMainStageTask", args(), argTypes())
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     object Power {

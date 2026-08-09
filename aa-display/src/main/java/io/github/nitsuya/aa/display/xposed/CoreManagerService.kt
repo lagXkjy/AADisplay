@@ -177,6 +177,17 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
         fun getDensityDpi(): Int{
             return mAaVirtualDisplayAdapter?.mDensityDpi ?: 0
         }
+
+        /**
+         * After [AndroidHook] parks other freeform companions onto the phone for caption-split,
+         * suppress reclaim and forget VD ownership so they are not bounced back mid AppsEdge.
+         */
+        fun onFreeformToSplitCompanionsParked(
+            splitTaskId: Int,
+            parked: List<Pair<Int, String>>
+        ) {
+            mAaVirtualDisplayAdapter?.onFreeformToSplitCompanionsParked(splitTaskId, parked)
+        }
     }
 
     override fun getVersionName(): String {

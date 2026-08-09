@@ -16,3 +16,8 @@ local.properties
 key.jks
 *.keystore
 *.jks
+# Local jadx / decompile scratch (do not ship)
+jadx-*.zip
+/tools/jadx/
+/tools/jadx-home/
+/tools/jadx-out/
