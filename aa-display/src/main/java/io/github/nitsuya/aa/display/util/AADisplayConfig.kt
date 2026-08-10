@@ -16,6 +16,13 @@ sealed class AADisplayConfig<T>(val key: String) {
     object HomePackage: StringConfig("HomePackage", null)
     object AutoOpen: BooleanConfig("AutoOpen", true)
     object EnableOneUiSplit: BooleanConfig("EnableOneUiSplit", true)
+    /** On new AA VD session, restore last stable OneUI split pair instead of Default Launch. */
+    object RestoreLastSplit: BooleanConfig("RestoreLastSplit", true)
+    /** Snapshot keys (also mirrored under /data/system/aadisplay_last_split.properties). */
+    object LastSplitLeftPackage: StringConfig("LastSplitLeftPackage", null)
+    object LastSplitRightPackage: StringConfig("LastSplitRightPackage", null)
+    object LastSplitPrimaryRatio: StringConfig("LastSplitPrimaryRatio", null)
+    object LastSplitDisplayLandscape: BooleanConfig("LastSplitDisplayLandscape", true)
     object DisableGoogleMapsOnAa: BooleanConfig("DisableGoogleMapsOnAa", true)
     object VirtualDisplayDpi: IntConfig("VirtualDisplayDpi", 0)
     object AndroidAutoDpi: IntConfig("AndroidAutoDpi", 0)
@@ -37,7 +44,15 @@ sealed class AADisplayConfig<T>(val key: String) {
         } ?: defValue
     }
     abstract class BooleanConfig(key: String, private val defValue: Boolean = false): AADisplayConfig<Boolean>(key){
-        override fun get(config: SharedPreferences?): Boolean = config?.getBoolean(key, defValue) ?: defValue
+        override fun get(config: SharedPreferences?): Boolean {
+            if (config == null) return defValue
+            if (config.contains(key)) return config.getBoolean(key, defValue)
+            // Device prefs may still carry the older AutoRestoreLastSplit key.
+            if (key == "RestoreLastSplit" && config.contains("AutoRestoreLastSplit")) {
+                return config.getBoolean("AutoRestoreLastSplit", defValue)
+            }
+            return defValue
+        }
     }
     abstract class IntConfig(key: String, private val defValue: Int = 0): AADisplayConfig<Int>(key){
         private val defValueStr = defValue.toString()

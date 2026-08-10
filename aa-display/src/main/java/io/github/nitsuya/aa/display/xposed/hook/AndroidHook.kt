@@ -285,6 +285,457 @@ object AndroidHook : BaseHook() {
         }
     }
 
+    @Volatile
+    private var cachedAtmService: Any? = null
+
+    /**
+     * Programmatic freeform→split for Restore Last Split: notify the organizer with
+     * `withRecentAllApps=false` so StageCoordinator auto-pairs other FREEFORM companions on the
+     * AA VD (no AppsEdge). Does **not** park companions — both apps must already be freeform on VD.
+     *
+     * Bypasses [moveFreeformTaskToSplitLocked] (caption path always forces withAllApps=true).
+     */
+    fun requestFreeformToSplitForRestore(taskId: Int): Boolean {
+        if (taskId <= 0) return false
+        if (!isReadyForSystemHooks()) {
+            log(tagName, "restore freeform→split: system hooks not ready")
+            return false
+        }
+        val vdId = CoreManagerService.getDisplayId()
+        if (vdId == Display.INVALID_DISPLAY) {
+            log(tagName, "restore freeform→split: no AA VD")
+            return false
+        }
+        return try {
+            val atm = resolveLocalAtmService() ?: run {
+                log(tagName, "restore freeform→split: ATMS missing")
+                return false
+            }
+            val task = resolveTaskById(atm, taskId) ?: run {
+                log(tagName, "restore freeform→split: task=$taskId not found")
+                return false
+            }
+            val displayId = readTaskDisplayId(task)
+            if (displayId != vdId) {
+                log(tagName, "restore freeform→split: task=$taskId on display=$displayId want=$vdId")
+                return false
+            }
+            val toc = atm.getObjectOrNull("mTaskOrganizerController") ?: run {
+                log(tagName, "restore freeform→split: TaskOrganizerController missing")
+                return false
+            }
+            val lock = atm.getObjectOrNull("mGlobalLock")
+            val invoke = {
+                toc.invokeMethod(
+                    "onFreeformToSplitRequested",
+                    args(task, false, 0, false),
+                    argTypes(
+                        task.javaClass,
+                        Boolean::class.javaPrimitiveType!!,
+                        Int::class.javaPrimitiveType!!,
+                        Boolean::class.javaPrimitiveType!!
+                    )
+                )
+            }
+            if (lock != null) {
+                synchronized(lock) { invoke() }
+            } else {
+                invoke()
+            }
+            log(tagName, "restore freeform→split: organizer notified task=$taskId display=$vdId withAllApps=false")
+            true
+        } catch (e: Throwable) {
+            log(tagName, "restore freeform→split failed task=$taskId:", e)
+            false
+        }
+    }
+
+    /**
+     * Force windowing mode on the live system_server [Task] (LocalServices ATMS).
+     * Binder [IActivityTaskManager.setTaskWindowingMode] often no-ops on OneUI AA VD
+     * (task stays mode=fullscreen with inset bounds), which blocks freeform→split TOC.
+     */
+    fun forceTaskWindowingModeOnVd(taskId: Int, mode: Int): Boolean {
+        if (taskId <= 0 || !isReadyForSystemHooks()) return false
+        return try {
+            val atm = resolveLocalAtmService() ?: return false
+            val task = resolveTaskById(atm, taskId) ?: return false
+            val vdId = CoreManagerService.getDisplayId()
+            if (vdId == Display.INVALID_DISPLAY) return false
+            if (readTaskDisplayId(task) != vdId) return false
+            val lock = atm.getObjectOrNull("mGlobalLock")
+            val apply = {
+                try {
+                    task.invokeMethod(
+                        "setWindowingMode",
+                        args(mode, false),
+                        argTypes(Int::class.javaPrimitiveType!!, Boolean::class.javaPrimitiveType!!)
+                    )
+                } catch (_: Throwable) {
+                    task.invokeMethod(
+                        "setWindowingMode",
+                        args(mode),
+                        argTypes(Int::class.javaPrimitiveType!!)
+                    )
+                }
+            }
+            if (lock != null) {
+                synchronized(lock) { apply() }
+            } else {
+                apply()
+            }
+            val after = try {
+                task.invokeMethod("getWindowingMode", args(), argTypes()) as? Int
+            } catch (_: Throwable) {
+                null
+            }
+            val ok = after == mode
+            log(tagName, "forceWindowingMode task=$taskId mode=$mode after=${after ?: "?"} ok=$ok")
+            ok
+        } catch (e: Throwable) {
+            log(tagName, "forceWindowingMode failed task=$taskId mode=$mode:", e)
+            false
+        }
+    }
+
+    /** True when [taskId] is multi-window / split-stage on the AA VD (local ATMS walk). */
+    fun isTaskInSplitStageOnVd(taskId: Int): Boolean {
+        if (taskId <= 0 || !isReadyForSystemHooks()) return false
+        return try {
+            val atm = resolveLocalAtmService() ?: return false
+            val task = resolveTaskById(atm, taskId) ?: return false
+            val vdId = CoreManagerService.getDisplayId()
+            if (vdId == Display.INVALID_DISPLAY) return false
+            if (readTaskDisplayId(task) != vdId) return false
+            taskInSplitStage(task)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** Both packages appear as split-stage leaves on the AA VD. */
+    fun arePackagesInSplitOnVd(leftPackage: String, rightPackage: String): Boolean {
+        if (leftPackage.isBlank() || rightPackage.isBlank()) return false
+        if (!isReadyForSystemHooks()) return false
+        return try {
+            val found = collectSplitPackagesOnVd()
+            found.contains(leftPackage) && found.contains(rightPackage)
+        } catch (e: Throwable) {
+            log(tagName, "arePackagesInSplitOnVd failed:", e)
+            false
+        }
+    }
+
+    fun isPackageInSplitOnVd(packageName: String): Boolean {
+        if (packageName.isBlank() || !isReadyForSystemHooks()) return false
+        return try {
+            collectSplitPackagesOnVd().contains(packageName)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * OneUI stage shell task ids (main/left, side/right) on the AA VD — for divider ratio resize.
+     */
+    fun findSplitStageTaskIdsOnVd(): Pair<Int, Int>? {
+        if (!isReadyForSystemHooks()) return null
+        return try {
+            val atm = resolveLocalAtmService() ?: return null
+            val vdId = CoreManagerService.getDisplayId()
+            if (vdId == Display.INVALID_DISPLAY) return null
+            var leftStage: Int? = null
+            var rightStage: Int? = null
+            val rwc = atm.getObjectOrNull("mRootWindowContainer") ?: return null
+            val dc = rwc.invokeMethod(
+                "getDisplayContent",
+                args(vdId),
+                argTypes(Int::class.javaPrimitiveType!!)
+            ) ?: return null
+            val tda = dc.invokeMethod("getDefaultTaskDisplayArea", args(), argTypes()) ?: return null
+            fun walk(node: Any, depth: Int) {
+                if (depth > 8) return
+                if (taskInSplitStage(node)) {
+                    val id = readTaskId(node)
+                    if (id > 0) {
+                        val stage = readStageSide(node)
+                        // Only stage shells (empty top package). Resizing leaves breaks the divider.
+                        val isShell = readTopPackage(node).isNullOrBlank()
+                        if (isShell) {
+                            when (stage) {
+                                "main", "left" -> leftStage = id
+                                "side", "right" -> rightStage = id
+                            }
+                        }
+                    }
+                }
+                val childCount = try {
+                    node.invokeMethod("getChildCount", args(), argTypes()) as? Int ?: 0
+                } catch (_: Throwable) {
+                    0
+                }
+                for (i in 0 until childCount) {
+                    val child = try {
+                        node.invokeMethod(
+                            "getChildAt",
+                            args(i),
+                            argTypes(Int::class.javaPrimitiveType!!)
+                        )
+                    } catch (_: Throwable) {
+                        null
+                    } ?: continue
+                    walk(child, depth + 1)
+                }
+            }
+            walk(tda, 0)
+            val l = leftStage
+            val r = rightStage
+            if (l != null && r != null && l != r) l to r else null
+        } catch (e: Throwable) {
+            log(tagName, "findSplitStageTaskIdsOnVd failed:", e)
+            null
+        }
+    }
+
+    private fun collectSplitPackagesOnVd(): Set<String> {
+        val found = mutableSetOf<String>()
+        val atm = resolveLocalAtmService() ?: return found
+        val vdId = CoreManagerService.getDisplayId()
+        if (vdId == Display.INVALID_DISPLAY) return found
+        val rwc = atm.getObjectOrNull("mRootWindowContainer") ?: return found
+        val dc = rwc.invokeMethod(
+            "getDisplayContent",
+            args(vdId),
+            argTypes(Int::class.javaPrimitiveType!!)
+        ) ?: return found
+        val tda = dc.invokeMethod("getDefaultTaskDisplayArea", args(), argTypes()) ?: return found
+        fun walk(node: Any, depth: Int) {
+            if (depth > 8) return
+            if (taskInSplitStage(node)) {
+                readTopPackage(node)?.let { found.add(it) }
+            }
+            val childCount = try {
+                node.invokeMethod("getChildCount", args(), argTypes()) as? Int ?: 0
+            } catch (_: Throwable) {
+                0
+            }
+            for (i in 0 until childCount) {
+                val child = try {
+                    node.invokeMethod(
+                        "getChildAt",
+                        args(i),
+                        argTypes(Int::class.javaPrimitiveType!!)
+                    )
+                } catch (_: Throwable) {
+                    null
+                } ?: continue
+                walk(child, depth + 1)
+            }
+        }
+        walk(tda, 0)
+        return found
+    }
+
+    private fun readStageSide(task: Any): String? {
+        try {
+            val cfg = task.invokeMethod("getRequestedOverrideConfiguration", args(), argTypes())
+                ?: task.getObjectOrNull("mTaskInfo")?.getObjectOrNull("configuration")
+            val winCfg = cfg?.getObjectOrNull("windowConfiguration")
+            val stage = winCfg?.invokeMethod("getStageConfig", args(), argTypes())
+            val name = stage?.toString()?.lowercase().orEmpty()
+            if (name.contains("main") || name.contains("left")) return "main"
+            if (name.contains("side") || name.contains("right")) return "side"
+            // Numeric stage config on OneUI: 1=main, 2=side often
+            val num = stage as? Int
+            if (num == 1) return "main"
+            if (num == 2) return "side"
+        } catch (_: Throwable) {
+        }
+        return null
+    }
+
+    private fun taskInSplitStage(task: Any): Boolean {
+        try {
+            val mode = task.invokeMethod("getWindowingMode", args(), argTypes()) as? Int
+            // WINDOWING_MODE_MULTI_WINDOW=6, SPLIT_SCREEN_PRIMARY=3, SECONDARY=4
+            if (mode == 6 || mode == 3 || mode == 4) return true
+        } catch (_: Throwable) {
+        }
+        try {
+            val cfg = task.invokeMethod("getRequestedOverrideConfiguration", args(), argTypes())
+                ?: task.getObjectOrNull("mTaskInfo")?.getObjectOrNull("configuration")
+            val winCfg = cfg?.getObjectOrNull("windowConfiguration")
+            val stage = winCfg?.invokeMethod("getStageConfig", args(), argTypes()) as? Int
+            if (stage != null && stage != 0) return true
+        } catch (_: Throwable) {
+        }
+        return false
+    }
+
+    /**
+     * Real [com.android.server.wm.ActivityTaskManagerService] in system_server.
+     * Must **not** use [android.app.IActivityTaskManager] binder stub — `anyTaskForId` /
+     * `mTaskOrganizerController` are local-only.
+     */
+    private fun resolveLocalAtmService(): Any? {
+        cachedAtmService?.let { return it }
+        val cl = systemServerClassLoader ?: return null
+
+        // 1) LocalServices → ActivityTaskManagerInternal → enclosing ATMS
+        try {
+            val localServices = cl.loadClass("com.android.server.LocalServices")
+            val atmInternalClass = cl.loadClass("com.android.server.wm.ActivityTaskManagerInternal")
+            val getService = localServices.getDeclaredMethod("getService", Class::class.java)
+            val atmInternal = getService.invoke(null, atmInternalClass)
+            if (atmInternal != null) {
+                unwrapAtmFromInternal(atmInternal)?.let {
+                    cachedAtmService = it
+                    return it
+                }
+            }
+        } catch (e: Throwable) {
+            log(tagName, "resolveLocalAtmService LocalServices failed:", e)
+        }
+
+        // 2) WindowManagerInternal → mService / mAtmService
+        try {
+            val localServices = cl.loadClass("com.android.server.LocalServices")
+            val wmiClass = cl.loadClass("com.android.server.wm.WindowManagerInternal")
+            val getService = localServices.getDeclaredMethod("getService", Class::class.java)
+            val wmi = getService.invoke(null, wmiClass)
+            if (wmi != null) {
+                val wm = unwrapEnclosingOrField(wmi, "mService", "this\$0")
+                val atm = wm?.getObjectOrNull("mAtmService")
+                if (atm != null) {
+                    cachedAtmService = atm
+                    return atm
+                }
+            }
+        } catch (e: Throwable) {
+            log(tagName, "resolveLocalAtmService WMI failed:", e)
+        }
+
+        log(tagName, "resolveLocalAtmService: no local ATMS")
+        return null
+    }
+
+    private fun unwrapAtmFromInternal(atmInternal: Any): Any? {
+        unwrapEnclosingOrField(atmInternal, "mService", "this\$0")?.let { return it }
+        try {
+            atmInternal.invokeMethod("getService", args(), argTypes())?.let { return it }
+        } catch (_: Throwable) {
+        }
+        // Some OEMs: LocalService is a static nested class holding ATMS in mAtmService.
+        try {
+            atmInternal.getObjectOrNull("mAtmService")?.let { return it }
+        } catch (_: Throwable) {
+        }
+        return null
+    }
+
+    private fun unwrapEnclosingOrField(obj: Any, vararg fieldNames: String): Any? {
+        for (name in fieldNames) {
+            try {
+                obj.getObjectOrNull(name)?.let { return it }
+            } catch (_: Throwable) {
+            }
+            var clazz: Class<*>? = obj.javaClass
+            while (clazz != null) {
+                try {
+                    val f = clazz.getDeclaredField(name)
+                    f.isAccessible = true
+                    f.get(obj)?.let { return it }
+                } catch (_: Throwable) {
+                }
+                clazz = clazz.superclass
+            }
+        }
+        return null
+    }
+
+    private fun resolveTaskById(atm: Any, taskId: Int): Any? {
+        val attempts: List<() -> Any?> = listOf(
+            {
+                atm.invokeMethod(
+                    "anyTaskForId",
+                    args(taskId, 2),
+                    argTypes(Integer.TYPE, Integer.TYPE)
+                )
+            },
+            {
+                atm.invokeMethod(
+                    "anyTaskForId",
+                    args(taskId),
+                    argTypes(Integer.TYPE)
+                )
+            },
+            {
+                atm.invokeMethod(
+                    "anyTaskForId",
+                    args(taskId, false),
+                    argTypes(Integer.TYPE, java.lang.Boolean.TYPE)
+                )
+            },
+            {
+                // MATCH_ATTACHED_TASK_ONLY = 0 on AOSP
+                atm.invokeMethod(
+                    "anyTaskForId",
+                    args(taskId, 0),
+                    argTypes(Integer.TYPE, Integer.TYPE)
+                )
+            }
+        )
+        for (attempt in attempts) {
+            try {
+                attempt()?.let { return it }
+            } catch (_: Throwable) {
+            }
+        }
+        // Fallback: walk AA VD TaskDisplayArea children.
+        return findTaskOnDisplayArea(atm, taskId)
+    }
+
+    private fun findTaskOnDisplayArea(atm: Any, taskId: Int): Any? {
+        return try {
+            val vdId = CoreManagerService.getDisplayId()
+            if (vdId == Display.INVALID_DISPLAY) return null
+            val rwc = atm.getObjectOrNull("mRootWindowContainer") ?: return null
+            val dc = rwc.invokeMethod(
+                "getDisplayContent",
+                args(vdId),
+                argTypes(Int::class.javaPrimitiveType!!)
+            ) ?: return null
+            val tda = dc.invokeMethod("getDefaultTaskDisplayArea", args(), argTypes()) ?: return null
+            fun walk(node: Any, depth: Int): Any? {
+                if (depth > 8) return null
+                val id = readTaskId(node)
+                if (id == taskId) return node
+                val childCount = try {
+                    node.invokeMethod("getChildCount", args(), argTypes()) as? Int ?: 0
+                } catch (_: Throwable) {
+                    0
+                }
+                for (i in 0 until childCount) {
+                    val child = try {
+                        node.invokeMethod(
+                            "getChildAt",
+                            args(i),
+                            argTypes(Int::class.javaPrimitiveType!!)
+                        )
+                    } catch (_: Throwable) {
+                        null
+                    } ?: continue
+                    walk(child, depth + 1)?.let { return it }
+                }
+                return null
+            }
+            walk(tda, 0)
+        } catch (e: Throwable) {
+            log(tagName, "findTaskOnDisplayArea($taskId) failed:", e)
+            null
+        }
+    }
+
     private fun readTaskDisplayId(task: Any): Int? {
         return try {
             val dc = task.invokeMethod("getDisplayContent", args(), argTypes()) ?: return null
@@ -319,6 +770,11 @@ object AndroidHook : BaseHook() {
         keepTask: Any,
         vdDisplayId: Int
     ): List<Pair<Int, String>> {
+        // Cache ATMS from MultiTaskingController for restore path.
+        try {
+            resolveActivityTaskManager(multiTaskingController)?.let { cachedAtmService = it }
+        } catch (_: Throwable) {
+        }
         val keepId = readTaskId(keepTask)
         val atm = resolveActivityTaskManager(multiTaskingController) ?: return emptyList()
         val tda = try {

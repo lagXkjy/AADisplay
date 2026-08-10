@@ -74,6 +74,7 @@ class MainActivity :
     private var savedDelayDestroyTime: Int = 180
     private var savedAutoOpen: Boolean = false
     private var savedEnableOneUiSplit: Boolean = false
+    private var savedRestoreLastSplit: Boolean = false
     private var savedDisableGoogleMapsOnAa: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -172,6 +173,10 @@ class MainActivity :
             updateSaveButtonState()
         }
 
+        baseBinding.switchRestoreLastSplit.setOnCheckedChangeListener { _, _ ->
+            updateSaveButtonState()
+        }
+
         baseBinding.switchDisableGoogleMapsOnAa.setOnCheckedChangeListener { _, _ ->
             updateSaveButtonState()
         }
@@ -234,11 +239,13 @@ class MainActivity :
     private fun refreshSettingControls() {
         savedAutoOpen = AADisplayConfig.AutoOpen.get(appConfig)
         savedEnableOneUiSplit = AADisplayConfig.EnableOneUiSplit.get(appConfig)
+        savedRestoreLastSplit = AADisplayConfig.RestoreLastSplit.get(appConfig)
         savedDisableGoogleMapsOnAa = AADisplayConfig.DisableGoogleMapsOnAa.get(appConfig)
         savedLauncherPackage = AADisplayConfig.LauncherPackage.get(appConfig)?.trim().orEmpty()
         savedDelayDestroyTime = AADisplayConfig.DelayDestroyTime.get(appConfig)
         baseBinding.switchAutoOpen.isChecked = savedAutoOpen
         baseBinding.switchEnableOneuiSplit.isChecked = savedEnableOneUiSplit
+        baseBinding.switchRestoreLastSplit.isChecked = savedRestoreLastSplit
         baseBinding.switchDisableGoogleMapsOnAa.isChecked = savedDisableGoogleMapsOnAa
 
         detectLauncherEnvironment()
@@ -512,6 +519,7 @@ class MainActivity :
         val settingsSaved = appConfig.edit()
             .putBoolean(AADisplayConfig.AutoOpen.key, baseBinding.switchAutoOpen.isChecked)
             .putBoolean(AADisplayConfig.EnableOneUiSplit.key, baseBinding.switchEnableOneuiSplit.isChecked)
+            .putBoolean(AADisplayConfig.RestoreLastSplit.key, baseBinding.switchRestoreLastSplit.isChecked)
             .putBoolean(AADisplayConfig.DisableGoogleMapsOnAa.key, disableGoogleMapsOnAa)
             .putString(AADisplayConfig.LauncherPackage.key, launcherPackage)
             .putString(AADisplayConfig.HomePackage.key, launcherPackage)
@@ -527,6 +535,7 @@ class MainActivity :
         // Always keep local "saved*" in sync when disk write succeeds. Hook readability is separate.
         savedAutoOpen = baseBinding.switchAutoOpen.isChecked
         savedEnableOneUiSplit = baseBinding.switchEnableOneuiSplit.isChecked
+        savedRestoreLastSplit = baseBinding.switchRestoreLastSplit.isChecked
         savedDisableGoogleMapsOnAa = disableGoogleMapsOnAa
         savedLauncherPackage = launcherPackage
         savedDelayDestroyTime = delay
@@ -552,11 +561,13 @@ class MainActivity :
     private fun hasPendingChanges(): Boolean {
         val currentAutoOpen = baseBinding.switchAutoOpen.isChecked
         val currentEnableOneUiSplit = baseBinding.switchEnableOneuiSplit.isChecked
+        val currentRestoreLastSplit = baseBinding.switchRestoreLastSplit.isChecked
         val currentDisableGoogleMapsOnAa = baseBinding.switchDisableGoogleMapsOnAa.isChecked
         val currentLauncher = resolveSelectedLauncherPackage()
         val currentDelay = resolveSelectedDelaySeconds()
         return currentAutoOpen != savedAutoOpen ||
             currentEnableOneUiSplit != savedEnableOneUiSplit ||
+            currentRestoreLastSplit != savedRestoreLastSplit ||
             currentDisableGoogleMapsOnAa != savedDisableGoogleMapsOnAa ||
             currentLauncher != savedLauncherPackage ||
             currentDelay != savedDelayDestroyTime

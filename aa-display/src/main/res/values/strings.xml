@@ -14,6 +14,8 @@
     <string name="auto_open_summary">Automatically open app when Android Auto is connected</string>
     <string name="enable_oneui_split_title">OneUI Split Screen</string>
     <string name="enable_oneui_split_summary">Enable OneUI freeform/multi-window on the AA virtual display (caption bar for drag, resize, and split). Launch a second app into split; while split, open another app from recent tasks (phone side) to replace the focused pane. Requires OneUI (and often Force activities to be resizable).</string>
+    <string name="restore_last_split_title">Restore Last Split</string>
+    <string name="restore_last_split_summary">When Android Auto connects and creates a new virtual display, restore the last stable OneUI split pair and ratio instead of only opening Default Launch. Requires OneUI Split Screen.</string>
     <string name="disable_google_maps_on_aa_title">Disable Google Maps on AA</string>
     <string name="disable_google_maps_on_aa_summary">This will keep Google Maps on your device, not AA</string>
     <string name="disable_google_maps_on_aa_apply_failed">Failed to apply Disable Google Maps on AA setting</string>

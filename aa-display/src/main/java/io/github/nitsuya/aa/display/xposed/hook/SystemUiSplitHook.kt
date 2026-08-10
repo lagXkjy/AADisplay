@@ -58,8 +58,30 @@ object SystemUiSplitHook : BaseHook() {
                 rebindStageCoordinator(param.thisObject, targetDisplay, taskId)
             }
             log(tagName, "hooked StageCoordinator.onFreeformToSplitRequested")
+
+            // OneUI often delivers freeform→split via onSplitLayoutChangeRequested first
+            // (TaskOrganizerInfo with mFreeformToSplitTaskId). Rebind here so companion
+            // auto-pair searches the AA VD, not phone display 0.
+            findAllMethods(stageClass) {
+                name == "onSplitLayoutChangeRequested"
+            }.hookBefore { param ->
+                val info = param.args.getOrNull(0) ?: return@hookBefore
+                val freeformTaskId = readIntProp(
+                    info,
+                    "getFreeformToSplitTaskId",
+                    "mFreeformToSplitTaskId"
+                ) ?: return@hookBefore
+                if (freeformTaskId <= 0) return@hookBefore
+                val targetDisplay = resolveTargetDisplayId()
+                if (targetDisplay == Display.INVALID_DISPLAY) {
+                    log(tagName, "onSplitLayoutChangeRequested(freeform→split): no AA VD")
+                    return@hookBefore
+                }
+                rebindStageCoordinator(param.thisObject, targetDisplay, freeformTaskId)
+            }
+            log(tagName, "hooked StageCoordinator.onSplitLayoutChangeRequested for freeform→split")
         } catch (e: Throwable) {
-            log(tagName, "hook onFreeformToSplitRequested failed:", e)
+            log(tagName, "hook StageCoordinator freeform→split failed:", e)
         }
 
         try {
