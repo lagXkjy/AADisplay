@@ -20,7 +20,8 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.WindowControllerBinding
 import io.github.nitsuya.aa.display.databinding.WindowMirrorBinding
-import io.github.nitsuya.aa.display.ui.aa.AaVirtualDisplayAdapter
+import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
+import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
@@ -40,7 +41,7 @@ import kotlin.math.sqrt
 
 class DisplayWindow(
       private val mContext: Context
-    , private val displayAdapter: AaVirtualDisplayAdapter
+    , private val displayAdapter: SplitDisplayController
     , private var mDisplayWidth: Int
     , private var mDisplayHeight: Int
     , private var mDensityDpi: Int
@@ -88,11 +89,7 @@ class DisplayWindow(
 
     private val isSupportInteractive = RomUtil.isMiui()
     private val mVirtualDisplayId: Int
-        get() = try {
-            displayAdapter.mVirtualDisplay.display.displayId
-        } catch (_: Throwable) {
-            Display.INVALID_DISPLAY
-        }
+        get() = displayAdapter.primaryDisplayId
     private var mKeepAwakeJob: Job? = null
     private var mLastTouchKeepAwakeAt = 0L
     private var mMiuiReceiverRegistered = false
@@ -347,9 +344,6 @@ class DisplayWindow(
             ibBack.setOnClickListener {
                 displayAdapter.onPressKey(KeyEvent.KEYCODE_BACK)
             }
-            ibHome.setOnClickListener {
-                displayAdapter.startLauncher()
-            }
             ibRecentTask.setOnClickListener { v ->
                 val tapCount = v.getTag(R.id.tap_count) as? Int ?: 0
                 v.setTag(R.id.tap_count,   tapCount + 1)
@@ -366,23 +360,31 @@ class DisplayWindow(
                 }
             }
             tvVirtualDisplayInfo.text = "$mDisplayWidth*$mDisplayHeight,$mDensityDpi"
+            val phoneAdapter = DisplayRecyclerViewAdapter(rvRecentTaskRight) {
+                hideRecentTask()
+            }
+            val primaryAdapter = DisplayRecyclerViewAdapter(rvRecentTaskLeft) {
+                hideRecentTask()
+            }
+            val secondaryAdapter = DisplayRecyclerViewAdapter(rvRecentTaskCenter) {
+                hideRecentTask()
+            }
+            primaryAdapter.otherAdapter = phoneAdapter
+            secondaryAdapter.otherAdapter = phoneAdapter
+            phoneAdapter.otherAdapter = primaryAdapter
             rvRecentTaskLeft.apply {
                 layoutManager = LinearLayoutManager(context)
-                adapter = DisplayRecyclerViewAdapter(this) {
-                    hideRecentTask()
-                }
+                adapter = primaryAdapter
+            }
+            rvRecentTaskCenter.apply {
+                layoutManager = LinearLayoutManager(context)
+                adapter = secondaryAdapter
             }
             rvRecentTaskRight.apply {
                 layoutManager = LinearLayoutManager(context)
-                adapter = DisplayRecyclerViewAdapter(this){
-                    hideRecentTask()
-                }.apply {
-                    otherAdapter = (rvRecentTaskLeft.adapter as DisplayRecyclerViewAdapter).also {
-                        it.otherAdapter = this@apply
-                    }
-                }
+                adapter = phoneAdapter
             }
-            arrayOf(rvRecentTaskLeft, rvRecentTaskRight).forEach {
+            arrayOf(rvRecentTaskLeft, rvRecentTaskCenter, rvRecentTaskRight).forEach {
                 it.setOnTouchListener { v, event ->
                     when(event.action) {
                         MotionEvent.ACTION_DOWN -> {
@@ -403,26 +405,32 @@ class DisplayWindow(
         }
         updateDipslaySize()
         mMirrorBinding?.apply {
-            svMirror.setOnTouchListener { _, event ->
-                val newEvent = rewriteMotionEvent(
-                    source = event,
-                    divideCoordsBy = mDisplayRatio,
-                )
-                displayAdapter.onTouch(newEvent)
-                newEvent.recycle()
-                true
-            }
-            svMirror.holder.addCallback(object: SurfaceHolder.Callback {
-                override fun surfaceCreated(holder: SurfaceHolder) {
-                    displayAdapter.addMirror(svMirror.surfaceControl)
-                }
-                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-                override fun surfaceDestroyed(holder: SurfaceHolder) {
-                    displayAdapter.removeMirror(svMirror.surfaceControl)
-                }
-            })
+            bindMirrorSurface(svMirrorPrimary, SplitPane.PRIMARY)
+            bindMirrorSurface(svMirrorSecondary, SplitPane.SECONDARY)
         }
         showController()
+    }
+
+    private fun bindMirrorSurface(surfaceView: SurfaceView, pane: Int) {
+        surfaceView.setOnTouchListener { _, event ->
+            val newEvent = rewriteMotionEvent(
+                source = event,
+                divideCoordsBy = mDisplayRatio,
+            )
+            displayAdapter.setFocusedPane(pane)
+            displayAdapter.onTouchPane(pane, newEvent)
+            newEvent.recycle()
+            true
+        }
+        surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                displayAdapter.addMirrorPane(pane, surfaceView.surfaceControl)
+            }
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                displayAdapter.removeMirrorPane(pane, surfaceView.surfaceControl)
+            }
+        })
     }
 
     private fun initLayoutParams() {
@@ -463,6 +471,10 @@ class DisplayWindow(
         }
     }
 
+    fun onSplitRatioChanged() {
+        updateDipslaySize()
+    }
+
     private fun updateDipslaySize(){
         mControllerBinding?.apply {
             ibMirrorDisplay.visibility = View.VISIBLE
@@ -470,11 +482,48 @@ class DisplayWindow(
         mDisplayRatio = Instances.windowManager.currentWindowMetrics.bounds.let {
             (it.width().toFloat() / mDisplayWidth).coerceAtMost(it.height().toFloat() / mDisplayHeight)
         }
+        val ratio = SplitPane.clampRatio(displayAdapter.mRatio)
+        val gap = (6 * mContext.resources.displayMetrics.density).toInt()
+        val sideBySide = displayAdapter.isSideBySide
         mMirrorBinding?.apply {
-            svMirror.holder.setFixedSize(mDisplayWidth, mDisplayHeight)
-            svMirror.updateLayoutParams{
-                width = (mDisplayWidth * mDisplayRatio).toInt()
-                height = (mDisplayHeight * mDisplayRatio).toInt()
+            llMirrorSplit.orientation =
+                if (sideBySide) android.widget.LinearLayout.HORIZONTAL
+                else android.widget.LinearLayout.VERTICAL
+            vMirrorDivider.updateLayoutParams {
+                if (sideBySide) {
+                    width = gap
+                    height = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                } else {
+                    width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                    height = gap
+                }
+            }
+            if (sideBySide) {
+                val primaryW = ((mDisplayWidth - gap) * ratio).toInt().coerceAtLeast(1)
+                val secondaryW = (mDisplayWidth - gap - primaryW).coerceAtLeast(1)
+                svMirrorPrimary.holder.setFixedSize(primaryW, mDisplayHeight)
+                svMirrorSecondary.holder.setFixedSize(secondaryW, mDisplayHeight)
+                svMirrorPrimary.updateLayoutParams {
+                    width = (primaryW * mDisplayRatio).toInt()
+                    height = (mDisplayHeight * mDisplayRatio).toInt()
+                }
+                svMirrorSecondary.updateLayoutParams {
+                    width = (secondaryW * mDisplayRatio).toInt()
+                    height = (mDisplayHeight * mDisplayRatio).toInt()
+                }
+            } else {
+                val primaryH = ((mDisplayHeight - gap) * ratio).toInt().coerceAtLeast(1)
+                val secondaryH = (mDisplayHeight - gap - primaryH).coerceAtLeast(1)
+                svMirrorPrimary.holder.setFixedSize(mDisplayWidth, primaryH)
+                svMirrorSecondary.holder.setFixedSize(mDisplayWidth, secondaryH)
+                svMirrorPrimary.updateLayoutParams {
+                    width = (mDisplayWidth * mDisplayRatio).toInt()
+                    height = (primaryH * mDisplayRatio).toInt()
+                }
+                svMirrorSecondary.updateLayoutParams {
+                    width = (mDisplayWidth * mDisplayRatio).toInt()
+                    height = (secondaryH * mDisplayRatio).toInt()
+                }
             }
         }
     }
@@ -632,7 +681,8 @@ class DisplayWindow(
             runIO {
                 displayAdapter.getRecentTask().also {recentTask ->
                     runMain {
-                        (rvRecentTaskLeft.adapter as DisplayRecyclerViewAdapter)?.setItems(recentTask.virtualDisplay)
+                        (rvRecentTaskLeft.adapter as DisplayRecyclerViewAdapter)?.setItems(recentTask.primaryDisplay)
+                        (rvRecentTaskCenter.adapter as DisplayRecyclerViewAdapter)?.setItems(recentTask.secondaryDisplay)
                         (rvRecentTaskRight.adapter as DisplayRecyclerViewAdapter)?.setItems(recentTask.mainDisplay)
                     }
                 }
@@ -644,6 +694,7 @@ class DisplayWindow(
             llRecentTask.visibility = View.GONE
             vHeightUmbrella1.visibility = View.VISIBLE
             (rvRecentTaskLeft.adapter as DisplayRecyclerViewAdapter)?.clearItem()
+            (rvRecentTaskCenter.adapter as DisplayRecyclerViewAdapter)?.clearItem()
             (rvRecentTaskRight.adapter as DisplayRecyclerViewAdapter)?.clearItem()
         }
     }

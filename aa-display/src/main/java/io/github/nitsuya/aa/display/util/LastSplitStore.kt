@@ -9,13 +9,8 @@ import java.io.FileOutputStream
 import java.util.Properties
 
 /**
- * Durable OneUI split snapshot written from system_server ([AaVirtualDisplayAdapter]).
- * App prefs / XSharedPreferences are not writable from system_server; this file lives under
- * `/data/system` like the hook mirror. Also mirrored into [Settings.Global] for easy verification.
- *
- * Settings.Global is the source of truth for restore: a root-owned / unwritable properties file
- * (e.g. after `adb shell su` touch) would otherwise shadow forever and quick-restore keeps the
- * stale pair.
+ * Durable custom-split snapshot written from system_server ([SplitDisplayController]).
+ * Settings.Global is the source of truth; file under `/data/system` is best-effort.
  */
 object LastSplitStore {
     private const val TAG = "AADisplay_LastSplitStore"
@@ -25,24 +20,21 @@ object LastSplitStore {
     const val SETTINGS_RIGHT = "aadisplay_last_split_right"
     const val SETTINGS_RATIO = "aadisplay_last_split_ratio"
     const val SETTINGS_LANDSCAPE = "aadisplay_last_split_landscape"
+    const val SETTINGS_SIDE_BY_SIDE = "aadisplay_last_split_side_by_side"
 
     data class Snapshot(
         val leftPackage: String,
         val rightPackage: String,
         val primaryRatio: Float,
         val landscape: Boolean,
+        val sideBySide: Boolean = landscape,
     )
 
     fun load(contentResolver: ContentResolver? = null): Snapshot? {
-        // Prefer Settings — system_server can always update it; the file may be root-owned 0644.
         loadFromSettings(contentResolver)?.let { return it }
         return loadFromFile()
     }
 
-    /**
-     * Always mirrors [Settings.Global]. File write is best-effort (may fail if the path is
-     * root-owned); restore reads Settings first.
-     */
     fun save(
         snapshot: Snapshot,
         contentResolver: ContentResolver? = null,
@@ -50,7 +42,6 @@ object LastSplitStore {
     ): Boolean {
         val settingsOk = saveToSettings(snapshot, contentResolver)
         val fileOk = saveToFile(snapshot)
-        // mirrorSettings kept for call-site compatibility; Settings is always written now.
         if (!settingsOk && mirrorSettings) {
             Log.w(TAG, "settings save failed (mirror requested)")
         }
@@ -67,7 +58,8 @@ object LastSplitStore {
                 left = props.getProperty(AADisplayConfig.LastSplitLeftPackage.key),
                 right = props.getProperty(AADisplayConfig.LastSplitRightPackage.key),
                 ratio = props.getProperty(AADisplayConfig.LastSplitPrimaryRatio.key),
-                landscape = props.getProperty(AADisplayConfig.LastSplitDisplayLandscape.key)
+                landscape = props.getProperty(AADisplayConfig.LastSplitDisplayLandscape.key),
+                sideBySide = props.getProperty("LastSplitSideBySide"),
             )
         } catch (e: Throwable) {
             Log.w(TAG, "load file failed", e)
@@ -82,7 +74,8 @@ object LastSplitStore {
                 left = Settings.Global.getString(cr, SETTINGS_LEFT),
                 right = Settings.Global.getString(cr, SETTINGS_RIGHT),
                 ratio = Settings.Global.getString(cr, SETTINGS_RATIO),
-                landscape = Settings.Global.getString(cr, SETTINGS_LANDSCAPE)
+                landscape = Settings.Global.getString(cr, SETTINGS_LANDSCAPE),
+                sideBySide = Settings.Global.getString(cr, SETTINGS_SIDE_BY_SIDE),
             )
         } catch (e: Throwable) {
             Log.w(TAG, "load settings failed", e)
@@ -94,14 +87,16 @@ object LastSplitStore {
         left: String?,
         right: String?,
         ratio: String?,
-        landscape: String?
+        landscape: String?,
+        sideBySide: String?,
     ): Snapshot? {
         val l = left?.trim().orEmpty()
         val r = right?.trim().orEmpty()
         if (l.isEmpty() || r.isEmpty() || l == r) return null
         val ratioVal = ratio?.toFloatOrNull()?.takeIf { it in 0.15f..0.85f } ?: 0.5f
         val landscapeVal = landscape?.toBooleanStrictOrNull() ?: true
-        return Snapshot(l, r, ratioVal, landscapeVal)
+        val sideBySideVal = sideBySide?.toBooleanStrictOrNull() ?: landscapeVal
+        return Snapshot(l, r, ratioVal, landscapeVal, sideBySideVal)
     }
 
     private fun saveToFile(snapshot: Snapshot): Boolean {
@@ -116,13 +111,13 @@ object LastSplitStore {
             AADisplayConfig.LastSplitDisplayLandscape.key,
             snapshot.landscape.toString()
         )
+        props.setProperty("LastSplitSideBySide", snapshot.sideBySide.toString())
         val file = File(PATH)
         fun writeOnce(): Boolean {
             file.parentFile?.mkdirs()
             FileOutputStream(file).use { out ->
-                props.store(out, "AADisplay last OneUI split snapshot")
+                props.store(out, "AADisplay last custom split snapshot")
             }
-            // Owner (system) read/write; others read — never leave a root-only file if we created it.
             file.setReadable(true, false)
             file.setWritable(true, true)
             return true
@@ -136,7 +131,6 @@ object LastSplitStore {
             )
             true
         } catch (e: Throwable) {
-            // Common failure: prior adb/root created root:root 0644 — system_server cannot overwrite.
             Log.w(TAG, "file save failed, retry after delete", e)
             try {
                 if (file.exists() && !file.delete()) {
@@ -144,11 +138,6 @@ object LastSplitStore {
                     return false
                 }
                 writeOnce()
-                Log.i(
-                    TAG,
-                    "file saved after delete left=${snapshot.leftPackage} " +
-                        "right=${snapshot.rightPackage}"
-                )
                 true
             } catch (e2: Throwable) {
                 Log.w(TAG, "file save failed", e2)
@@ -164,6 +153,7 @@ object LastSplitStore {
             Settings.Global.putString(cr, SETTINGS_RIGHT, snapshot.rightPackage)
             Settings.Global.putString(cr, SETTINGS_RATIO, snapshot.primaryRatio.toString())
             Settings.Global.putString(cr, SETTINGS_LANDSCAPE, snapshot.landscape.toString())
+            Settings.Global.putString(cr, SETTINGS_SIDE_BY_SIDE, snapshot.sideBySide.toString())
             Log.i(
                 TAG,
                 "settings saved left=${snapshot.leftPackage} right=${snapshot.rightPackage}"

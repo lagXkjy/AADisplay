@@ -12,11 +12,8 @@ sealed class AADisplayConfig<T>(val key: String) {
 
     abstract fun get(config: SharedPreferences?): T
 
-    object LauncherPackage: StringConfig("LauncherPackage", null)
-    object HomePackage: StringConfig("HomePackage", null)
     object AutoOpen: BooleanConfig("AutoOpen", true)
-    object EnableOneUiSplit: BooleanConfig("EnableOneUiSplit", true)
-    /** On new AA VD session, restore last stable OneUI split pair instead of Default Launch. */
+    /** On new dual-VD session, restore the last custom split pair and ratio. */
     object RestoreLastSplit: BooleanConfig("RestoreLastSplit", true)
     /** Snapshot keys (also mirrored under /data/system/aadisplay_last_split.properties). */
     object LastSplitLeftPackage: StringConfig("LastSplitLeftPackage", null)

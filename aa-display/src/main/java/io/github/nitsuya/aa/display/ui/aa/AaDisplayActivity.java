@@ -48,6 +48,11 @@ public class AaDisplayActivity extends CarActivity {
     public void onResume() {
         super.onResume();
         Log.i(TAG, "onResume");
+        try {
+            // Keep in sync with AABroadcastConst.ACTION_AA_DISPLAY_SHOWN
+            sendBroadcast(new android.content.Intent("aa.display.action.AA_DISPLAY_SHOWN"));
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override

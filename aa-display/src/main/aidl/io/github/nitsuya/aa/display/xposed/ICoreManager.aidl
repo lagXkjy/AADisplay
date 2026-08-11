@@ -12,26 +12,39 @@ interface ICoreManager {
     int getUid();
     long getBuildTime();
 
-    void onCreateDisplay(int with, int height, int densityDpi, in Surface surface, IVirtualDisplayCreatedListener listener);
-    void setDisplaySurface(in Surface surface);
+    /** Create dual-pane virtual displays for custom split. [ratio] is primary fraction (0.2..0.8). */
+    void onCreateSplitDisplay(
+        int width,
+        int height,
+        int densityDpi,
+        float ratio,
+        in Surface primarySurface,
+        in Surface secondarySurface,
+        IVirtualDisplayCreatedListener listener
+    );
+    void setPaneSurface(int pane, in Surface surface);
+    void setSplitRatio(float ratio);
+    float getSplitRatio();
+    /** Package currently owned by [pane], or null/empty when vacant. */
+    String getPanePackage(int pane);
+    void setFocusedPane(int pane);
     void onDestroyDisplay();
 
-    void startLauncher();
     void startActivity(String packageName, int userId);
+    void startActivityOnPane(String packageName, int userId, int pane);
     void startTaskId(int taskId, String packageName, int userId);
     void moveTaskId(int taskId, boolean isVirtualDisplay);
     void moveTaskToFront(int taskId);
     void moveSecondTaskToFront();
     void removeTask(int taskId);
-    void cleanupSplitShells();
     void restoreLastSplit();
     void pressKey(int action);
-    void touch(in MotionEvent motionEvent);
+    void touchPane(int pane, in MotionEvent motionEvent);
     void toggleDisplayPower();
     void displayPower(boolean displayPower);
 
-    void addMirror(in SurfaceControl surfaceControl);
-    void removeMirror(in SurfaceControl surfaceControl);
+    void addMirrorPane(int pane, in SurfaceControl surfaceControl);
+    void removeMirrorPane(int pane, in SurfaceControl surfaceControl);
 
     RecentTask getRecentTask();
 

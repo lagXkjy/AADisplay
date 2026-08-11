@@ -1,16 +1,27 @@
 package io.github.nitsuya.aa.display.ui.aa.fragment
 
 import android.annotation.SuppressLint
-import android.content.*
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.graphics.SurfaceTexture
 import android.os.SystemClock
 import android.support.car.Car
 import android.support.car.CarConnectionCallback
 import android.util.Log
-import android.view.*
+import android.view.Display
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.Surface
+import android.view.TextureView
+import android.view.View
+import android.widget.LinearLayout
 import androidx.core.content.ContextCompat
 import androidx.core.view.InputDeviceCompat
 import androidx.core.view.doOnLayout
+import androidx.core.view.isVisible
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import com.google.android.gms.car.CarFirstPartyManager
 import com.topjohnwu.superuser.Shell
@@ -18,8 +29,11 @@ import io.github.duzhaokun123.template.bases.BaseFragment
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.databinding.FragmentAaMainBinding
 import io.github.nitsuya.aa.display.ui.aa.AaDisplayActivityKt
+import io.github.nitsuya.aa.display.ui.aa.split.SplitAppPickerController
+import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.AADisplayConfig
+import io.github.nitsuya.aa.display.util.LastSplitStore
 import io.github.nitsuya.aa.display.util.SharedPreferencesAccess
 import io.github.nitsuya.aa.display.util.getGmsCarFirstPartyManager
 import io.github.nitsuya.aa.display.util.rewriteMotionEvent
@@ -28,34 +42,39 @@ import io.github.nitsuya.aa.display.util.startCarTelecom
 import io.github.nitsuya.aa.display.xposed.IVirtualDisplayCreatedListener
 import io.github.nitsuya.template.bases.runMain
 
-
-class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding::class.java), TextureView.SurfaceTextureListener {
+class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding::class.java) {
     companion object {
         private const val TAG = "AADisplay_AaMainFragment"
     }
 
     private var displayId: Int = Display.INVALID_DISPLAY
-    private var repairDownTime = Long.MIN_VALUE
+    private var repairDownTimePrimary = Long.MIN_VALUE
+    private var repairDownTimeSecondary = Long.MIN_VALUE
     private var isForeground = false
     private var isDisplayCreateRequested = false
     private var isControlReceiverRegistered = false
-    private var displaySurface: Surface? = null
+    private var primarySurface: Surface? = null
+    private var secondarySurface: Surface? = null
+    private var splitRatio: Float = SplitPane.DEFAULT_RATIO
     private lateinit var config: SharedPreferences
+    private lateinit var appPicker: SplitAppPickerController
+    private val paneHasApp = booleanArrayOf(false, false)
 
-    private var car:Car? = null
+    private var car: Car? = null
     private var carManager: CarFirstPartyManager? = null
-    private val carConnectionCallback = object: CarConnectionCallback(){
+    private val carConnectionCallback = object : CarConnectionCallback() {
         override fun onConnected(car: Car) {
-            if(carManager == null) {
+            if (carManager == null) {
                 carManager = car.getGmsCarFirstPartyManager()
             }
         }
+
         override fun onDisconnected(car: Car) {
             carManager = null
         }
     }
 
-    fun startActivity(){
+    fun startActivity() {
         carManager.startCarAaDisplay()
     }
 
@@ -66,35 +85,41 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 CoreApi.displayPower(true)
                 tryOrNull {
                     Shell.cmd(
-                        it.let {
-                            it.replace("\${DisplayId}", (if(displayId == Display.INVALID_DISPLAY) Display.DEFAULT_DISPLAY else displayId).toString())
-                        }
+                        it.replace(
+                            "\${DisplayId}",
+                            (if (displayId == Display.INVALID_DISPLAY) Display.DEFAULT_DISPLAY else displayId).toString()
+                        )
                     ).exec()
                 }
             }
         }
+
         override fun onReceive(context: Context?, intent: Intent) {
-            when(intent.action){
-                AABroadcastConst.ACTION_CLEANUP_SPLIT_SHELLS -> {
-                    CoreApi.cleanupSplitShells()
+            when (intent.action) {
+                AABroadcastConst.ACTION_OPEN_SPLIT_PICKER -> {
+                    val pane = intent.getIntExtra(
+                        AABroadcastConst.EXTRA_PANE,
+                        SplitPane.PRIMARY
+                    )
+                    appPicker.show(pane)
                 }
-                AABroadcastConst.ACTION_RESTORE_LAST_SPLIT -> {
-                    CoreApi.restoreLastSplit()
+                AABroadcastConst.ACTION_SPLIT_STATE_CHANGED -> {
+                    // Occupancy only — never re-apply ratio/weights from broadcasts.
+                    syncPaneOccupancyFromService()
                 }
                 AABroadcastConst.ACTION_SCREEN_CONTROL -> {
-                    when(val action = intent.getIntExtra(AABroadcastConst.EXTRA_ACTION, 0)){
+                    when (val action = intent.getIntExtra(AABroadcastConst.EXTRA_ACTION, 0)) {
                         KeyEvent.KEYCODE_FEATURED_APP_1 -> carManager.startCarTelecom()
                         KeyEvent.KEYCODE_SEARCH -> startVoiceAssist()
                         KeyEvent.KEYCODE_POWER -> CoreApi.toggleDisplayPower()
                         else -> {
-                            if(!isForeground){
+                            if (!isForeground) {
                                 carManager.startCarAaDisplay()
                                 return
                             }
-                            when(action){
+                            when (action) {
                                 KeyEvent.KEYCODE_DEMO_APP_1 -> CoreApi.moveSecondTaskToFront()
                                 KeyEvent.KEYCODE_BACK -> CoreApi.pressKey(action)
-                                KeyEvent.KEYCODE_HOME -> CoreApi.startLauncher()
                                 KeyEvent.KEYCODE_APP_SWITCH -> runMain {
                                     AaDisplayActivityKt.showRecentTask(this@AaMainFragment.parentFragmentManager)
                                 }
@@ -106,33 +131,30 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     val action = intent.getIntExtra(AABroadcastConst.EXTRA_ACTION, 0)
                     when (intent.getIntExtra(AABroadcastConst.EXTRA_TYPE, 0)) {
                         0 -> {
-                            when(action){
-                                KeyEvent.KEYCODE_SEARCH                /* 84*/ -> startVoiceAssist()
-                                KeyEvent.KEYCODE_MEDIA_NEXT            /* 87*/,
-                                KeyEvent.KEYCODE_MEDIA_PREVIOUS        /* 88*/,
-                                KeyEvent.KEYCODE_HEADSETHOOK           /* 79*/,
-                                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE      /* 85*/,
-                                KeyEvent.KEYCODE_MEDIA_STOP            /* 86*/,
-                                KeyEvent.KEYCODE_MEDIA_REWIND          /* 89*/,
-                                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD    /* 90*/,
-                                KeyEvent.KEYCODE_MUTE                  /* 91*/,
-                                KeyEvent.KEYCODE_MEDIA_PLAY            /*126*/,
-                                KeyEvent.KEYCODE_MEDIA_PAUSE           /*127*/,
-                                KeyEvent.KEYCODE_MEDIA_RECORD          /*130*/-> CoreApi.pressKey(action)
+                            when (action) {
+                                KeyEvent.KEYCODE_SEARCH,
+                                KeyEvent.KEYCODE_MEDIA_NEXT,
+                                KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                                KeyEvent.KEYCODE_HEADSETHOOK,
+                                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                                KeyEvent.KEYCODE_MEDIA_STOP,
+                                KeyEvent.KEYCODE_MEDIA_REWIND,
+                                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+                                KeyEvent.KEYCODE_MUTE,
+                                KeyEvent.KEYCODE_MEDIA_PLAY,
+                                KeyEvent.KEYCODE_MEDIA_PAUSE,
+                                KeyEvent.KEYCODE_MEDIA_RECORD -> CoreApi.pressKey(action)
                                 else -> CoreApi.toast("方控[$action]未设置")
                             }
                         }
                         1 -> {
-                            when(action){
-                                KeyEvent.KEYCODE_SEARCH              /* 84*/ -> startVoiceAssist()
-                                KeyEvent.KEYCODE_MEDIA_REWIND         /* 89*/ -> CoreApi.startLauncher()
-                                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD   /* 90*/ -> CoreApi.moveSecondTaskToFront()
+                            when (action) {
+                                KeyEvent.KEYCODE_SEARCH -> startVoiceAssist()
+                                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> CoreApi.moveSecondTaskToFront()
                                 else -> CoreApi.toast("方控长按[$action]未设置")
                             }
                         }
-                        2 -> {
-                            CoreApi.toast("方控双击[$action]未设置")
-                        }
+                        2 -> CoreApi.toast("方控双击[$action]未设置")
                     }
                 }
             }
@@ -143,8 +165,24 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         config = SharedPreferencesAccess.openForHooks(this.requireContext(), AADisplayConfig.ConfigName)
         Log.i(TAG, "initViews")
         SharedPreferencesAccess.makeReadableForHooks(requireContext(), AADisplayConfig.ConfigName)
-        baseBinding.tvDisplay.surfaceTextureListener = this
-        baseBinding.tvDisplay.doOnLayout {
+        appPicker = SplitAppPickerController(baseBinding).also {
+            it.onAppPicked = { pane, _ ->
+                paneHasApp[pane] = true
+                updateEmptyOverlays()
+                // Confirm with system_server after launch settles.
+                scheduleOccupancySync(400L)
+            }
+        }
+
+        LastSplitStore.load(requireContext().contentResolver)?.primaryRatio?.let {
+            splitRatio = SplitPane.clampRatio(it)
+        }
+        applySplitLayoutWeights(splitRatio)
+        setupDivider()
+        setupPaneSurfaces()
+        setupEmptyPaneClicks()
+
+        baseBinding.splitContainer.doOnLayout {
             requestDisplay("layout")
         }
 
@@ -158,7 +196,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         super.onResume()
         isForeground = true
         if (this::config.isInitialized) {
-            baseBinding.tvDisplay.post {
+            baseBinding.splitContainer.post {
                 if (displayId == Display.INVALID_DISPLAY) {
                     isDisplayCreateRequested = false
                 }
@@ -175,123 +213,330 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "onDestroy: displayId=$displayId")
-        clearDisplaySurface("destroy")
+        clearDisplaySurfaces("destroy")
         CoreApi.onDestroyDisplay()
+        displayId = Display.INVALID_DISPLAY
+        isDisplayCreateRequested = false
+        lastCreateWidth = 0
+        lastCreateHeight = 0
+        lastCreateDpi = 0
+        appliedRatio = Float.NaN
+        appliedSideBySide = null
         if (isControlReceiverRegistered) {
-            tryOrNull {
-                context?.unregisterReceiver(broadcastReceiver)
-            }
+            tryOrNull { context?.unregisterReceiver(broadcastReceiver) }
             isControlReceiverRegistered = false
         }
         car?.disconnect()
         car = null
     }
 
-    override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-        Log.i(TAG, "onSurfaceTextureAvailable: ${width}x$height")
-        requestDisplay("surface-available")
+    private var appliedRatio: Float = Float.NaN
+    private var appliedSideBySide: Boolean? = null
+    private var lastCreateWidth = 0
+    private var lastCreateHeight = 0
+    private var lastCreateDpi = 0
+    private var dividerDragging = false
+
+    private fun setupDivider() {
+        baseBinding.splitDivider.apply {
+            sideBySide = resources.configuration.orientation !=
+                android.content.res.Configuration.ORIENTATION_PORTRAIT
+            setRatio(splitRatio)
+            onRatioChanged = { ratio ->
+                dividerDragging = true
+                splitRatio = ratio
+                applySplitLayoutWeights(ratio)
+                CoreApi.setSplitRatio(ratio)
+            }
+            onRatioSettled = { ratio ->
+                splitRatio = ratio
+                applySplitLayoutWeights(ratio)
+                CoreApi.setSplitRatio(ratio)
+                dividerDragging = false
+                // One occupancy sync after settle (restore / remote may have launched apps).
+                baseBinding.root.postDelayed({ syncPaneOccupancyFromService() }, 300L)
+            }
+            onStackClick = {
+                runMain {
+                    AaDisplayActivityKt.showRecentTask(this@AaMainFragment.parentFragmentManager)
+                }
+            }
+        }
     }
-    override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
-        Log.i(TAG, "onSurfaceTextureSizeChanged: ${width}x$height")
-        requestDisplay("surface-size")
+
+    private fun applySplitLayoutWeights(ratio: Float) {
+        val sideBySide = baseBinding.splitContainer.width >= baseBinding.splitContainer.height
+            || baseBinding.splitContainer.width == 0
+        if (appliedSideBySide == sideBySide &&
+            !appliedRatio.isNaN() &&
+            kotlin.math.abs(appliedRatio - ratio) < 0.001f
+        ) {
+            return
+        }
+        appliedRatio = ratio
+        appliedSideBySide = sideBySide
+        baseBinding.splitContainer.orientation =
+            if (sideBySide) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        baseBinding.splitDivider.sideBySide = sideBySide
+        val dividerLp = baseBinding.splitDivider.layoutParams as LinearLayout.LayoutParams
+        if (sideBySide) {
+            dividerLp.width = (SplitPane.DIVIDER_DP * resources.displayMetrics.density).toInt()
+            dividerLp.height = LinearLayout.LayoutParams.MATCH_PARENT
+        } else {
+            dividerLp.width = LinearLayout.LayoutParams.MATCH_PARENT
+            dividerLp.height = (SplitPane.DIVIDER_DP * resources.displayMetrics.density).toInt()
+        }
+        baseBinding.splitDivider.layoutParams = dividerLp
+
+        val primaryLp = baseBinding.panePrimary.layoutParams as LinearLayout.LayoutParams
+        val secondaryLp = baseBinding.paneSecondary.layoutParams as LinearLayout.LayoutParams
+        if (sideBySide) {
+            primaryLp.width = 0
+            primaryLp.height = LinearLayout.LayoutParams.MATCH_PARENT
+            secondaryLp.width = 0
+            secondaryLp.height = LinearLayout.LayoutParams.MATCH_PARENT
+        } else {
+            primaryLp.width = LinearLayout.LayoutParams.MATCH_PARENT
+            primaryLp.height = 0
+            secondaryLp.width = LinearLayout.LayoutParams.MATCH_PARENT
+            secondaryLp.height = 0
+        }
+        primaryLp.weight = ratio
+        secondaryLp.weight = 1f - ratio
+        baseBinding.panePrimary.layoutParams = primaryLp
+        baseBinding.paneSecondary.layoutParams = secondaryLp
+        baseBinding.splitDivider.setRatio(ratio)
+        baseBinding.splitDivider.invalidate()
     }
-    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-        Log.i(TAG, "onSurfaceTextureDestroyed")
-        clearDisplaySurface("surface-destroyed")
-        return true
+
+    private fun setupPaneSurfaces() {
+        bindTexture(baseBinding.tvDisplayPrimary, SplitPane.PRIMARY) { surface ->
+            primarySurface = surface
+        }
+        bindTexture(baseBinding.tvDisplaySecondary, SplitPane.SECONDARY) { surface ->
+            secondarySurface = surface
+        }
+        setupTouchForwarding(baseBinding.tvDisplayPrimary, SplitPane.PRIMARY) { repairDownTimePrimary = it }
+        setupTouchForwarding(baseBinding.tvDisplaySecondary, SplitPane.SECONDARY) { repairDownTimeSecondary = it }
     }
-    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
+
+    private fun bindTexture(
+        textureView: TextureView,
+        pane: Int,
+        onSurface: (Surface?) -> Unit,
+    ) {
+        textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                Log.i(TAG, "pane=$pane surface available ${width}x$height")
+                val s = Surface(surface)
+                onSurface(s)
+                if (displayId != Display.INVALID_DISPLAY) {
+                    CoreApi.setPaneSurface(pane, s)
+                }
+                requestDisplay("surface-$pane")
+            }
+
+            override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+                // Do NOT requestDisplay here: weight/ratio changes resize TextureViews and would
+                // reconnect/resize VDs in a feedback loop (visible as constant jitter).
+            }
+
+            override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                Log.i(TAG, "pane=$pane surface destroyed")
+                CoreApi.setPaneSurface(pane, null)
+                onSurface(null)
+                return true
+            }
+
+            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
+        }
+    }
+
+    private fun setupEmptyPaneClicks() {
+        baseBinding.tvEmptyPrimary.setOnClickListener { appPicker.show(SplitPane.PRIMARY) }
+        baseBinding.tvEmptySecondary.setOnClickListener { appPicker.show(SplitPane.SECONDARY) }
+        updateEmptyOverlays()
+    }
+
+    private fun updateEmptyOverlays() {
+        baseBinding.tvEmptyPrimary.isVisible = !paneHasApp[SplitPane.PRIMARY]
+        baseBinding.tvEmptySecondary.isVisible = !paneHasApp[SplitPane.SECONDARY]
+    }
+
+    /** Sync empty overlays from system_server; never mutates local divider ratio. */
+    private fun syncPaneOccupancyFromService() {
+        if (!isAdded || view == null || dividerDragging) return
+        for (pane in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
+            val pkg = tryOrNull { CoreApi.getPanePackage(pane) }?.trim().orEmpty()
+            paneHasApp[pane] = pkg.isNotEmpty()
+        }
+        updateEmptyOverlays()
+    }
+
+    /** Apply remote ratio only once after create/restore (not on every broadcast). */
+    private fun applyRemoteRatioOnce() {
+        if (!isAdded || view == null || dividerDragging) return
+        val ratio = tryOrNull { CoreApi.splitRatio }?.takeIf { it > 0f } ?: return
+        val clamped = SplitPane.clampRatio(ratio)
+        if (!appliedRatio.isNaN() && kotlin.math.abs(appliedRatio - clamped) < 0.01f) return
+        splitRatio = clamped
+        applySplitLayoutWeights(clamped)
+    }
 
     private val displayCreatedListener = object : IVirtualDisplayCreatedListener.Stub() {
-        @SuppressLint("ClickableViewAccessibility")
         override fun onAvailableDisplay(displayId: Int, create: Boolean) {
             this@AaMainFragment.displayId = displayId
             runMain {
-                // Binder callback can arrive after detach/destroy during AA reconnect races.
                 if (!isAdded || context == null || view == null) {
-                    Log.w(TAG, "onAvailableDisplay skipped: fragment not attached displayId=$displayId")
+                    Log.w(TAG, "onAvailableDisplay skipped: fragment not attached")
                     return@runMain
                 }
-                Log.i(TAG, "onAvailableDisplay: displayId=$displayId create=$create surfaceAvailable=${baseBinding.tvDisplay.isAvailable}")
-                attachDisplaySurface("available")
-                setupTouchForwarding()
+                Log.i(TAG, "onAvailableDisplay: displayId=$displayId create=$create")
+                primarySurface?.let { CoreApi.setPaneSurface(SplitPane.PRIMARY, it) }
+                secondarySurface?.let { CoreApi.setPaneSurface(SplitPane.SECONDARY, it) }
                 registerControlReceivers()
+                // Occupancy settles after restore / pane launches; retry a few times.
+                scheduleOccupancySync(0L)
+                scheduleOccupancySync(700L)
+                scheduleOccupancySync(1800L)
+                if (create) {
+                    applyRemoteRatioOnce()
+                    baseBinding.root.postDelayed({ applyRemoteRatioOnce() }, 700L)
+                }
             }
         }
+    }
+
+    private fun scheduleOccupancySync(delayMs: Long) {
+        baseBinding.root.postDelayed({
+            applyRemoteRatioOnce()
+            syncPaneOccupancyFromService()
+        }, delayMs)
     }
 
     private fun requestDisplay(reason: String) {
         if (!this::config.isInitialized) return
-
-        val displayWidth = baseBinding.tvDisplay.width
-        val displayHeight = baseBinding.tvDisplay.height
+        val displayWidth = baseBinding.splitContainer.width
+        val displayHeight = baseBinding.splitContainer.height
         val displayDpi = AADisplayConfig.VirtualDisplayDpi.get(config).let {
-            if(it <= 50) resources.displayMetrics.densityDpi
-            else it
+            if (it <= 50) resources.displayMetrics.densityDpi else it
         }
-        Log.i(TAG, "requestDisplay[$reason]: ${displayWidth}x$displayHeight,$displayDpi available=${baseBinding.tvDisplay.isAvailable} requested=$isDisplayCreateRequested display=$displayId")
-        if (displayWidth <= 0 || displayHeight <= 0) {
-            Log.e(TAG, "requestDisplay[$reason] skipped: invalid TextureView size ${displayWidth}x$displayHeight")
+        Log.i(
+            TAG,
+            "requestDisplay[$reason]: ${displayWidth}x$displayHeight,$displayDpi " +
+                "requested=$isDisplayCreateRequested display=$displayId"
+        )
+        if (displayWidth <= 0 || displayHeight <= 0) return
+        if (primarySurface == null || secondarySurface == null) {
+            Log.i(TAG, "requestDisplay[$reason] waiting for both surfaces")
             return
         }
-
-        val texture = baseBinding.tvDisplay.surfaceTexture
-        if (!baseBinding.tvDisplay.isAvailable || texture == null) {
-            Log.i(TAG, "requestDisplay[$reason] waiting for TextureView surface")
-            return
-        }
-
-        val surface = getOrCreateDisplaySurface(texture)
         if (isDisplayCreateRequested && displayId == Display.INVALID_DISPLAY) {
             Log.i(TAG, "requestDisplay[$reason] skipped: create already pending")
             return
         }
-
+        // Soft-reconnect only when profile actually changed; skip identical repeats.
+        if (displayId != Display.INVALID_DISPLAY &&
+            displayWidth == lastCreateWidth &&
+            displayHeight == lastCreateHeight &&
+            displayDpi == lastCreateDpi
+        ) {
+            Log.i(TAG, "requestDisplay[$reason] skipped: profile unchanged")
+            return
+        }
+        if (displayId == Display.INVALID_DISPLAY) {
+            applySplitLayoutWeights(splitRatio)
+        }
+        lastCreateWidth = displayWidth
+        lastCreateHeight = displayHeight
+        lastCreateDpi = displayDpi
         isDisplayCreateRequested = true
-        CoreApi.onCreateDisplay(displayWidth, displayHeight, displayDpi, surface, displayCreatedListener)
+        CoreApi.onCreateSplitDisplay(
+            displayWidth,
+            displayHeight,
+            displayDpi,
+            splitRatio,
+            primarySurface,
+            secondarySurface,
+            displayCreatedListener
+        )
     }
 
-    private fun attachDisplaySurface(reason: String): Boolean {
-        val texture = baseBinding.tvDisplay.surfaceTexture
-        if (!baseBinding.tvDisplay.isAvailable || texture == null) {
-            Log.i(TAG, "attachDisplaySurface[$reason] skipped: TextureView surface unavailable")
-            return false
-        }
-        val surface = getOrCreateDisplaySurface(texture)
-        Log.i(TAG, "attachDisplaySurface[$reason]: display=$displayId surface=true")
-        CoreApi.setDisplaySurface(surface)
-        return true
-    }
-
-    private fun getOrCreateDisplaySurface(texture: SurfaceTexture): Surface {
-        return displaySurface ?: Surface(texture).also {
-            displaySurface = it
-            Log.i(TAG, "created display Surface")
-        }
-    }
-
-    private fun clearDisplaySurface(reason: String) {
-        Log.i(TAG, "clearDisplaySurface[$reason]: display=$displayId surface=${displaySurface != null}")
-        CoreApi.setDisplaySurface(null)
-        displaySurface?.release()
-        displaySurface = null
+    private fun clearDisplaySurfaces(reason: String) {
+        Log.i(TAG, "clearDisplaySurfaces[$reason]")
+        CoreApi.setPaneSurface(SplitPane.PRIMARY, null)
+        CoreApi.setPaneSurface(SplitPane.SECONDARY, null)
+        primarySurface?.release()
+        secondarySurface?.release()
+        primarySurface = null
+        secondarySurface = null
     }
 
     @SuppressLint("ClickableViewAccessibility")
-    private fun setupTouchForwarding() {
-        baseBinding.tvDisplay.setOnTouchListener { _, e ->
+    private fun setupTouchForwarding(
+        textureView: TextureView,
+        pane: Int,
+        setDownTime: (Long) -> Unit,
+    ) {
+        val touchSlop = android.view.ViewConfiguration.get(textureView.context).scaledTouchSlop
+        val longPressTimeout = android.view.ViewConfiguration.getLongPressTimeout().toLong()
+        var downX = 0f
+        var downY = 0f
+        var longPressFired = false
+        val longPressRunnable = Runnable {
+            longPressFired = true
+            // Cancel the in-progress gesture on the VD before opening the picker.
+            val down = if (pane == SplitPane.PRIMARY) repairDownTimePrimary else repairDownTimeSecondary
+            val cancel = MotionEvent.obtain(
+                down,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_CANCEL,
+                downX,
+                downY,
+                0,
+            )
+            cancel.source = InputDeviceCompat.SOURCE_TOUCHSCREEN
+            CoreApi.touchPane(pane, cancel)
+            cancel.recycle()
+            appPicker.show(pane)
+        }
+        textureView.setOnTouchListener { v, e ->
             val uptimeMillis = SystemClock.uptimeMillis()
-            if (e.action == MotionEvent.ACTION_DOWN) {
-                repairDownTime = uptimeMillis
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    longPressFired = false
+                    downX = e.x
+                    downY = e.y
+                    setDownTime(uptimeMillis)
+                    CoreApi.setFocusedPane(pane)
+                    v.removeCallbacks(longPressRunnable)
+                    v.postDelayed(longPressRunnable, longPressTimeout)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!longPressFired) {
+                        val dx = e.x - downX
+                        val dy = e.y - downY
+                        if (dx * dx + dy * dy > touchSlop * touchSlop) {
+                            v.removeCallbacks(longPressRunnable)
+                        }
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.removeCallbacks(longPressRunnable)
+                }
             }
+            if (longPressFired) {
+                return@setOnTouchListener true
+            }
+            val down = if (pane == SplitPane.PRIMARY) repairDownTimePrimary else repairDownTimeSecondary
             val newEvent = rewriteMotionEvent(
                 source = e,
-                downTime = repairDownTime,
+                downTime = down,
                 eventTime = uptimeMillis,
                 preserveMeta = false,
                 sourceOverride = InputDeviceCompat.SOURCE_TOUCHSCREEN,
             )
-            CoreApi.touch(newEvent)
+            CoreApi.touchPane(pane, newEvent)
             newEvent.recycle()
             true
         }
@@ -300,15 +545,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private fun registerControlReceivers() {
         if (isControlReceiverRegistered) return
         val ctx = context
-        if (!isAdded || ctx == null) {
-            Log.w(TAG, "registerControlReceivers skipped: fragment not attached")
-            return
-        }
+        if (!isAdded || ctx == null) return
         ContextCompat.registerReceiver(ctx, broadcastReceiver, IntentFilter().apply {
             addAction(AABroadcastConst.ACTION_SCREEN_CONTROL)
             addAction(AABroadcastConst.ACTION_STEERING_WHEEL_CONTROL)
-            addAction(AABroadcastConst.ACTION_CLEANUP_SPLIT_SHELLS)
-            addAction(AABroadcastConst.ACTION_RESTORE_LAST_SPLIT)
+            addAction(AABroadcastConst.ACTION_OPEN_SPLIT_PICKER)
+            addAction(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED)
         }, ContextCompat.RECEIVER_EXPORTED)
         isControlReceiverRegistered = true
     }

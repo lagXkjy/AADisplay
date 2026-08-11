@@ -101,7 +101,7 @@ flowchart LR
 
 ### LSPosed scope
 
-见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`、`com.autonavi.amapauto`、`com.ss.squarehome2`。改 scope 会影响模块生效范围，勿随意删改。
+见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`、`com.autonavi.amapauto`。改 scope 会影响模块生效范围，勿随意删改。
 
 ## 4. 构建与验证
 
@@ -124,8 +124,8 @@ flowchart LR
 1. 安装 APK
 2. LSPosed 启用模块：至少 **System Framework** + **Android Auto**
 3. 重启设备
-4. 打开 AADisplay 配置（Auto Open、Default Launch Package、Delay Destroy、Maps 等）
-5. 连接 Android Auto，验证虚拟显示、触控、任务切换、断开后延迟销毁
+4. 打开 AADisplay 配置（Auto Open、Restore Last Split、Delay Destroy、Maps 等）
+5. 连接 Android Auto，验证双屏分屏、触控、任务切换、断开后延迟销毁
 
 改 AA 钩子后：对照目标 gearhead 版本；确认 DexKit 解析仍命中；查阅 `CHANGELOG.md` / `RELEASE_NOTES_*` 中的稳定性约束（如 display profile lock、TaskView）。
 

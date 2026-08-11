@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceControl
 import io.github.nitsuya.aa.display.model.RecentTask
+import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
@@ -47,36 +48,64 @@ object CoreManager : ICoreManager, DeathRecipient {
         return getService()?.buildTime ?: 0
     }
 
-    override fun onCreateDisplay(with: Int, height: Int, densityDpi: Int, surface: Surface?, listener: IVirtualDisplayCreatedListener) {
+    override fun onCreateSplitDisplay(
+        width: Int,
+        height: Int,
+        densityDpi: Int,
+        ratio: Float,
+        primarySurface: Surface?,
+        secondarySurface: Surface?,
+        listener: IVirtualDisplayCreatedListener
+    ) {
         val remote = getService()
         if (remote == null) {
-            Log.e(TAG, "onCreateDisplay skipped; service unavailable: ${with}x$height,$densityDpi surface=${surface != null}")
+            Log.e(
+                TAG,
+                "onCreateSplitDisplay skipped; service unavailable: ${width}x$height,$densityDpi"
+            )
             return
         }
-        Log.i(TAG, "onCreateDisplay: ${with}x$height,$densityDpi surface=${surface != null}")
-        remote.onCreateDisplay(with, height, densityDpi, surface, listener)
+        Log.i(TAG, "onCreateSplitDisplay: ${width}x$height,$densityDpi ratio=$ratio")
+        remote.onCreateSplitDisplay(
+            width, height, densityDpi, ratio, primarySurface, secondarySurface, listener
+        )
     }
 
-    override fun setDisplaySurface(surface: Surface?) {
+    override fun setPaneSurface(pane: Int, surface: Surface?) {
         val remote = getService()
         if (remote == null) {
-            Log.e(TAG, "setDisplaySurface skipped; service unavailable: surface=${surface != null}")
+            Log.e(TAG, "setPaneSurface skipped; service unavailable pane=$pane")
             return
         }
-        Log.i(TAG, "setDisplaySurface: surface=${surface != null}")
-        remote.setDisplaySurface(surface)
+        remote.setPaneSurface(pane, surface)
+    }
+
+    override fun setSplitRatio(ratio: Float) {
+        getService()?.setSplitRatio(ratio)
+    }
+
+    override fun getSplitRatio(): Float {
+        return getService()?.splitRatio ?: SplitPane.DEFAULT_RATIO
+    }
+
+    override fun getPanePackage(pane: Int): String? {
+        return getService()?.getPanePackage(pane)
+    }
+
+    override fun setFocusedPane(pane: Int) {
+        getService()?.setFocusedPane(pane)
     }
 
     override fun onDestroyDisplay() {
         getService()?.onDestroyDisplay()
     }
 
-    override fun startLauncher() {
-        getService()?.startLauncher()
-    }
-
     override fun startActivity(packageName: String, userId: Int) {
         getService()?.startActivity(packageName, userId)
+    }
+
+    override fun startActivityOnPane(packageName: String, userId: Int, pane: Int) {
+        getService()?.startActivityOnPane(packageName, userId, pane)
     }
 
     override fun startTaskId(taskId: Int, packageName: String, userId: Int) {
@@ -95,12 +124,8 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.moveSecondTaskToFront()
     }
 
-    override fun removeTask(taskId: Int){
+    override fun removeTask(taskId: Int) {
         getService()?.removeTask(taskId)
-    }
-
-    override fun cleanupSplitShells() {
-        getService()?.cleanupSplitShells()
     }
 
     override fun restoreLastSplit() {
@@ -111,8 +136,8 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.pressKey(action)
     }
 
-    override fun touch(motionEvent: MotionEvent) {
-        getService()?.touch(motionEvent)
+    override fun touchPane(pane: Int, motionEvent: MotionEvent) {
+        getService()?.touchPane(pane, motionEvent)
     }
 
     override fun toggleDisplayPower() {
@@ -123,27 +148,27 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.displayPower(displayPower)
     }
 
-    override fun addMirror(surfaceControl: SurfaceControl) {
-        getService()?.addMirror(surfaceControl)
+    override fun addMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
+        getService()?.addMirrorPane(pane, surfaceControl)
     }
 
-    override fun removeMirror(surfaceControl: SurfaceControl){
-        getService()?.removeMirror(surfaceControl)
+    override fun removeMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
+        getService()?.removeMirrorPane(pane, surfaceControl)
     }
 
     override fun getRecentTask(): RecentTask? {
         return getService()?.recentTask
     }
 
-    override fun testCode(action: String){
+    override fun testCode(action: String) {
         getService()?.testCode(action)
     }
 
-    override fun toast(msg: String){
+    override fun toast(msg: String) {
         getService()?.toast(msg)
     }
 
-    override fun printLog(tag: String, msg: String){
+    override fun printLog(tag: String, msg: String) {
         getService()?.printLog(tag, msg)
     }
 

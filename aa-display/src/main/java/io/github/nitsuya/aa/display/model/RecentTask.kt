@@ -5,30 +5,29 @@ import android.os.Parcelable
 
 data class RecentTask(
     val mainDisplay: List<RecentTaskInfo>,
-    val virtualDisplay: List<RecentTaskInfo>
+    val primaryDisplay: List<RecentTaskInfo>,
+    val secondaryDisplay: List<RecentTaskInfo>,
 ) : Parcelable {
+    /** Combined virtual-display tasks (primary + secondary). */
+    val virtualDisplay: List<RecentTaskInfo>
+        get() = primaryDisplay + secondaryDisplay
+
     constructor(parcel: Parcel) : this(
         parcel.createTypedArrayList(RecentTaskInfo)!!,
-        parcel.createTypedArrayList(RecentTaskInfo)!!
-    ) {
-    }
+        parcel.createTypedArrayList(RecentTaskInfo)!!,
+        parcel.createTypedArrayList(RecentTaskInfo)!!,
+    )
 
     override fun writeToParcel(parcel: Parcel, flags: Int) {
         parcel.writeTypedList(mainDisplay)
-        parcel.writeTypedList(virtualDisplay)
+        parcel.writeTypedList(primaryDisplay)
+        parcel.writeTypedList(secondaryDisplay)
     }
 
-    override fun describeContents(): Int {
-        return 0
-    }
+    override fun describeContents(): Int = 0
 
     companion object CREATOR : Parcelable.Creator<RecentTask> {
-        override fun createFromParcel(parcel: Parcel): RecentTask {
-            return RecentTask(parcel)
-        }
-
-        override fun newArray(size: Int): Array<RecentTask?> {
-            return arrayOfNulls(size)
-        }
+        override fun createFromParcel(parcel: Parcel): RecentTask = RecentTask(parcel)
+        override fun newArray(size: Int): Array<RecentTask?> = arrayOfNulls(size)
     }
 }

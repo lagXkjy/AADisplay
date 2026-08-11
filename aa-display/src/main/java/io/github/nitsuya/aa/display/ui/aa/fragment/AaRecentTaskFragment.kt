@@ -1,7 +1,7 @@
 package io.github.nitsuya.aa.display.ui.aa.fragment
 
 import android.view.MotionEvent
-import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.LinearLayoutManager
 import io.github.duzhaokun123.template.bases.BaseFragment
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
@@ -18,24 +18,37 @@ class AaRecentTaskFragment: BaseFragment<FragmentAaRecentTaskBinding>(FragmentAa
     }
 
     override fun initViews() {
+        val phoneAdapter = DisplayRecyclerViewAdapter(baseBinding.rvRecentTaskRight) {
+            AaDisplayActivityKt.hideRecentTask(parentFragmentManager)
+        }
+        val primaryAdapter = DisplayRecyclerViewAdapter(baseBinding.rvRecentTaskLeft) {
+            AaDisplayActivityKt.hideRecentTask(parentFragmentManager)
+        }
+        val secondaryAdapter = DisplayRecyclerViewAdapter(baseBinding.rvRecentTaskCenter) {
+            AaDisplayActivityKt.hideRecentTask(parentFragmentManager)
+        }
+        primaryAdapter.otherAdapter = phoneAdapter
+        secondaryAdapter.otherAdapter = phoneAdapter
+        phoneAdapter.otherAdapter = primaryAdapter
+
         baseBinding.rvRecentTaskLeft.apply {
-            layoutManager = GridLayoutManager(context, 2)
-            adapter = DisplayRecyclerViewAdapter(this){
-                AaDisplayActivityKt.hideRecentTask(parentFragmentManager)
-            }
+            layoutManager = LinearLayoutManager(context)
+            adapter = primaryAdapter
+        }
+        baseBinding.rvRecentTaskCenter.apply {
+            layoutManager = LinearLayoutManager(context)
+            adapter = secondaryAdapter
         }
         baseBinding.rvRecentTaskRight.apply {
-            layoutManager = GridLayoutManager(context, 2)
-            adapter = DisplayRecyclerViewAdapter(this){
-                AaDisplayActivityKt.hideRecentTask(parentFragmentManager)
-            }.apply {
-                otherAdapter = (baseBinding.rvRecentTaskLeft.adapter as DisplayRecyclerViewAdapter).also {
-                    it.otherAdapter = this@apply
-                }
-            }
+            layoutManager = LinearLayoutManager(context)
+            adapter = phoneAdapter
         }
 
-        arrayOf(baseBinding.rvRecentTaskLeft, baseBinding.rvRecentTaskRight).forEach {
+        arrayOf(
+            baseBinding.rvRecentTaskLeft,
+            baseBinding.rvRecentTaskCenter,
+            baseBinding.rvRecentTaskRight,
+        ).forEach {
             it.setOnTouchListener { v, event ->
                 when(event.action) {
                     MotionEvent.ACTION_DOWN -> {
@@ -60,12 +73,14 @@ class AaRecentTaskFragment: BaseFragment<FragmentAaRecentTaskBinding>(FragmentAa
         runIO {
             CoreApi.recentTask?.also { recentTask ->
                 runMain {
-                    (baseBinding.rvRecentTaskLeft.adapter as DisplayRecyclerViewAdapter)?.setItems(recentTask.virtualDisplay)
-                    (baseBinding.rvRecentTaskRight.adapter as DisplayRecyclerViewAdapter)?.setItems(recentTask.mainDisplay)
+                    (baseBinding.rvRecentTaskLeft.adapter as DisplayRecyclerViewAdapter)
+                        .setItems(recentTask.primaryDisplay)
+                    (baseBinding.rvRecentTaskCenter.adapter as DisplayRecyclerViewAdapter)
+                        .setItems(recentTask.secondaryDisplay)
+                    (baseBinding.rvRecentTaskRight.adapter as DisplayRecyclerViewAdapter)
+                        .setItems(recentTask.mainDisplay)
                 }
             }
         }
     }
-
-
 }

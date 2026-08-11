@@ -12,22 +12,17 @@
     <string name="menu_github">GitHub</string>
     <string name="auto_open_title">Auto Open</string>
     <string name="auto_open_summary">Automatically open app when Android Auto is connected</string>
-    <string name="enable_oneui_split_title">OneUI Split Screen</string>
-    <string name="enable_oneui_split_summary">Enable OneUI freeform/multi-window on the AA virtual display (caption bar for drag, resize, and split). Launch a second app into split; while split, open another app from recent tasks (phone side) to replace the focused pane. Requires OneUI (and often Force activities to be resizable).</string>
     <string name="restore_last_split_title">Restore Last Split</string>
-    <string name="restore_last_split_summary">When Android Auto connects and creates a new virtual display, restore the last stable OneUI split pair and ratio instead of only opening Default Launch. Requires OneUI Split Screen.</string>
+    <string name="restore_last_split_summary">When Android Auto connects and creates a new dual virtual display session, restore the last custom split pair and ratio.</string>
+    <string name="split_empty_pane">Tap to choose an app</string>
+    <string name="split_pick_app">Choose app</string>
+    <string name="split_picker_close">Close</string>
+    <string name="split_picker_recent">Recent</string>
+    <string name="split_picker_all">All apps</string>
+    <string name="split_stack_button">Show recent tasks</string>
     <string name="disable_google_maps_on_aa_title">Disable Google Maps on AA</string>
     <string name="disable_google_maps_on_aa_summary">This will keep Google Maps on your device, not AA</string>
     <string name="disable_google_maps_on_aa_apply_failed">Failed to apply Disable Google Maps on AA setting</string>
-    <string name="default_launch_package_title">Default Launch Package</string>
-    <string name="default_launch_package_summary">App package launched when AADisplay starts</string>
-    <string name="default_launch_package_empty">Default Launch Package is required</string>
-    <string name="default_home_detected">Default Home Launcher: %1$s</string>
-    <string name="default_home_unknown">Default Home Launcher: Not detected</string>
-    <string name="launcher_list_missing">No launcher packages detected on this device</string>
-    <string name="single_launcher_warning">Only one launcher is installed. Using the same launcher as your default home launcher can cause a fatal crash. Install a second launcher first.</string>
-    <string name="package_same_error">You cannot set the Default Launch Package to the same as your device\'s Default (Launcher) Home app</string>
-    <string name="package_validation_ok">Launch package is safe to use</string>
     <string name="save_settings">Save</string>
     <string name="delay_destroy_time_title">Delay Destroy Time</string>
     <string name="delay_destroy_time_invalid">Select a valid Delay Destroy Time</string>
@@ -38,6 +33,4 @@
     <string name="settings_saved_pref_access_failed">Settings saved, but hook preference access could not be verified</string>
     <string name="controller_open_menu">Open controller menu</string>
     <string name="controller_hide_menu">Hide controller menu</string>
-    <string name="cleanup_split_shells">Clean split shells</string>
-    <string name="quick_restore_split">Restore last split</string>
 </resources>

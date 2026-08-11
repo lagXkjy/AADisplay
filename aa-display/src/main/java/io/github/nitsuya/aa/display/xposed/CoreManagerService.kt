@@ -1,13 +1,18 @@
 package io.github.nitsuya.aa.display.xposed
 
 import android.annotation.SuppressLint
-import android.content.*
-import android.os.*
-import android.view.*
+import android.content.Context
+import android.content.ContextParams
+import android.os.Process
+import android.view.Display
+import android.view.MotionEvent
+import android.view.Surface
+import android.view.SurfaceControl
 import de.robv.android.xposed.XSharedPreferences
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
-import io.github.nitsuya.aa.display.ui.aa.AaVirtualDisplayAdapter
+import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
+import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplayWindow
 import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.util.SharedPreferencesAccess
@@ -15,10 +20,11 @@ import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.template.bases.runIO
 import io.github.nitsuya.template.bases.runMain
 import io.github.qauxv.ui.CommonContextWrapper
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import java.io.File
 
-class CoreManagerService private constructor(): ICoreManager.Stub() {
+class CoreManagerService private constructor() : ICoreManager.Stub() {
     companion object {
         const val TAG = "CoreManagerService"
 
@@ -37,11 +43,6 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
                 systemContextHost = value.createContext(value.params ?: ContextParams.Builder().build())
             }
 
-        /**
-         * Same keys as the app settings page. Prefer package XSharedPreferences; if SELinux blocks
-         * app_data_file, fall back to the XML copy published by [SharedPreferencesAccess.publishHookMirror].
-         * Retries while null so a mirror published later in the same boot is picked up.
-         */
         @Volatile
         private var configHolder: XSharedPreferences? = null
 
@@ -55,15 +56,10 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
             }
 
         private fun loadConfigPreferences(): XSharedPreferences? {
-            // 1) Durable system mirror (survives reboot; system_server can read).
             loadMirrorPreferences()?.let { return it }
-
-            // 2) Package path / LSPosed path (may work in some processes).
             try {
                 val pkgPrefs = XSharedPreferences(BuildConfig.APPLICATION_ID, AADisplayConfig.ConfigName)
                 runCatching { pkgPrefs.reload() }
-                // Do not require file.canRead(): SELinux often lies for app_data_file, while reload
-                // may still succeed via LSPosed. Prefer non-empty content.
                 if (pkgPrefs.all.isNotEmpty()) {
                     return pkgPrefs
                 }
@@ -92,8 +88,9 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
         }
 
         private var mDisplayWindow: DisplayWindow? = null
-        private var mAaVirtualDisplayAdapter: AaVirtualDisplayAdapter? = null
+        private var mSplitController: SplitDisplayController? = null
         private var mDisplayCreateInProgress = false
+
         private data class DisplayProfile(
             val width: Int,
             val height: Int,
@@ -102,6 +99,7 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
             val isLandscape: Boolean
                 get() = width >= height
         }
+
         private var mLockedDisplayProfile: DisplayProfile? = null
 
         private fun sanitizeDisplayProfile(width: Int, height: Int, densityDpi: Int): DisplayProfile {
@@ -112,11 +110,6 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
             )
         }
 
-        /**
-         * Lock profile per active AA display session.
-         * - New display session: (re)learn from current size.
-         * - Reconnect within same session: keep locked size unless orientation flips.
-         */
         private fun resolveDisplayProfile(
             width: Int,
             height: Int,
@@ -149,6 +142,22 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
                 return candidate
             }
             if (current != candidate) {
+                // Soft reconnect often briefly reports the pre-rail-reclaim size (e.g. 720)
+                // after we already grew to full HU (800). Allow monotonic grow so split panes
+                // fill the reclaimed gutter; keep lock on shrink/jitter to avoid flicker.
+                val grew =
+                    current.isLandscape == candidate.isLandscape &&
+                        candidate.width >= current.width &&
+                        candidate.height >= current.height &&
+                        (candidate.width > current.width || candidate.height > current.height)
+                if (grew) {
+                    mLockedDisplayProfile = candidate
+                    log(
+                        TAG,
+                        "displayProfile relocked(grow): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
+                    )
+                    return candidate
+                }
                 log(
                     TAG,
                     "displayProfile keep-locked(reconnect): locked=${current.width}*${current.height},${current.densityDpi}, incoming=${candidate.width}*${candidate.height},${candidate.densityDpi}"
@@ -170,66 +179,73 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
             Instances.init(systemContext)
         }
 
-        fun getDisplayId(): Int{
-            return mAaVirtualDisplayAdapter?.mDisplayId ?: Display.INVALID_DISPLAY
+        /** Primary pane display id (legacy callers). */
+        fun getDisplayId(): Int {
+            return mSplitController?.primaryDisplayId ?: Display.INVALID_DISPLAY
         }
 
-        fun getDensityDpi(): Int{
-            return mAaVirtualDisplayAdapter?.mDensityDpi ?: 0
+        fun isAaVirtualDisplay(displayId: Int): Boolean {
+            return mSplitController?.isAaVirtualDisplay(displayId) == true
         }
 
-        /**
-         * After [AndroidHook] parks other freeform companions onto the phone for caption-split,
-         * suppress reclaim and forget VD ownership so they are not bounced back mid AppsEdge.
-         */
-        fun onFreeformToSplitCompanionsParked(
-            splitTaskId: Int,
-            parked: List<Pair<Int, String>>
-        ) {
-            mAaVirtualDisplayAdapter?.onFreeformToSplitCompanionsParked(splitTaskId, parked)
+        fun getDensityDpi(): Int {
+            return mSplitController?.mDensityDpi ?: 0
         }
     }
 
-    override fun getVersionName(): String {
-        return BuildConfig.VERSION_NAME
-    }
+    override fun getVersionName(): String = BuildConfig.VERSION_NAME
 
-    override fun getVersionCode(): Int {
-        return BuildConfig.VERSION_CODE
-    }
+    override fun getVersionCode(): Int = BuildConfig.VERSION_CODE
 
-    override fun getUid(): Int {
-        return Process.myUid()
-    }
+    override fun getUid(): Int = Process.myUid()
 
-    override fun getBuildTime(): Long {
-        return BuildConfig.BUILD_TIME
-    }
+    override fun getBuildTime(): Long = BuildConfig.BUILD_TIME
 
-    override fun onCreateDisplay(width: Int, height: Int, densityDpi: Int, surface: Surface?, listener: IVirtualDisplayCreatedListener){
+    override fun onCreateSplitDisplay(
+        width: Int,
+        height: Int,
+        densityDpi: Int,
+        ratio: Float,
+        primarySurface: Surface?,
+        secondarySurface: Surface?,
+        listener: IVirtualDisplayCreatedListener
+    ) {
         runMain {
             log(
                 TAG,
-                "onCreateDisplay request: ${width}x$height,$densityDpi surface=${surface != null} existing=${mAaVirtualDisplayAdapter != null}"
+                "onCreateSplitDisplay: ${width}x$height,$densityDpi ratio=$ratio " +
+                    "existing=${mSplitController != null}"
             )
             val profile = resolveDisplayProfile(
                 width = width,
                 height = height,
                 densityDpi = densityDpi,
-                newSession = mAaVirtualDisplayAdapter == null
+                newSession = mSplitController == null
             )
-            mAaVirtualDisplayAdapter?.apply {
-                onReconnected(profile.width, profile.height, profile.densityDpi)
-                setSurface(surface)
-                mDisplayWindow?.onResume(profile.width, profile.height)
-                listener.onAvailableDisplay(this.mDisplayId, false)
+            mSplitController?.apply {
+                val sizeChanged =
+                    profile.width != mWidth ||
+                        profile.height != mHeight ||
+                        profile.densityDpi != mDensityDpi
+                if (sizeChanged) {
+                    onReconnected(profile.width, profile.height, profile.densityDpi)
+                }
+                setPaneSurface(SplitPane.PRIMARY, primarySurface)
+                setPaneSurface(SplitPane.SECONDARY, secondarySurface)
+                // Ratio is owned by divider drag / restore — do not push AA's echo back
+                // unless it meaningfully differs (avoids resize thrash).
+                val clamped = SplitPane.clampRatio(ratio)
+                if (kotlin.math.abs(clamped - mRatio) >= 0.01f) {
+                    setSplitRatio(clamped)
+                }
+                if (sizeChanged) {
+                    mDisplayWindow?.onResume(profile.width, profile.height)
+                }
+                listener.onAvailableDisplay(primaryDisplayId, false)
                 return@runMain
             }
             if (mDisplayCreateInProgress) {
-                logDebug(
-                    TAG,
-                    "onCreateDisplay ignored: display create already in progress for ${profile.width}x${profile.height},${profile.densityDpi}"
-                )
+                logDebug(TAG, "onCreateSplitDisplay ignored: create already in progress")
                 return@runMain
             }
             config?.apply {
@@ -237,10 +253,18 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
                 logDebug(TAG, "config loaded: keys=${this.all.size}")
             }
             mDisplayCreateInProgress = true
-            AaVirtualDisplayAdapter(systemContext, config){
+            SplitDisplayController(systemContext, config) {
                 try {
-                    mAaVirtualDisplayAdapter = this
-                    onConnected(profile.width, profile.height, profile.densityDpi, surface){ displayId ->
+                    mSplitController = this
+                    onSplitLayoutChanged = { mDisplayWindow?.onSplitRatioChanged() }
+                    onConnected(
+                        profile.width,
+                        profile.height,
+                        profile.densityDpi,
+                        SplitPane.clampRatio(ratio),
+                        primarySurface,
+                        secondarySurface,
+                    ) { displayId ->
                         listener.onAvailableDisplay(displayId, true)
                     }
                     mDisplayWindow?.onDestroyPromptly()
@@ -258,108 +282,92 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
         }
     }
 
-    override fun setDisplaySurface(surface: Surface?){
+    override fun setPaneSurface(pane: Int, surface: Surface?) {
         runMain {
-            log(TAG, "setDisplaySurface: surface=${surface != null}, display=${mAaVirtualDisplayAdapter?.mDisplayId ?: Display.INVALID_DISPLAY}")
-            mAaVirtualDisplayAdapter?.setSurface(surface)
+            log(TAG, "setPaneSurface pane=$pane surface=${surface != null}")
+            mSplitController?.setPaneSurface(pane, surface)
         }
     }
 
-    override fun onDestroyDisplay(){
+    override fun setSplitRatio(ratio: Float) {
+        runMain {
+            mSplitController?.setSplitRatio(ratio)
+            // Mirror refresh is driven by controller.onSplitLayoutChanged after a real resize.
+        }
+    }
+
+    override fun getSplitRatio(): Float {
+        return mSplitController?.mRatio ?: SplitPane.DEFAULT_RATIO
+    }
+
+    override fun getPanePackage(pane: Int): String? {
+        return mSplitController?.getPanePackage(pane)
+    }
+
+    override fun setFocusedPane(pane: Int) {
+        mSplitController?.setFocusedPane(pane)
+    }
+
+    override fun onDestroyDisplay() {
         runMain {
             mDisplayWindow?.onDestroy {
-                mAaVirtualDisplayAdapter?.onDestroy()
+                mSplitController?.onDestroy()
                 mDisplayWindow = null
-                mAaVirtualDisplayAdapter = null
+                mSplitController = null
                 mDisplayCreateInProgress = false
                 clearDisplayProfileLock()
             }
         }
     }
 
-    override fun startLauncher() {
-        runIO {
-            mAaVirtualDisplayAdapter?.run {
-                startLauncher()
-            }
-        }
+    override fun startActivity(packageName: String, userId: Int) {
+        runIO { mSplitController?.startActivity(packageName, userId) }
     }
 
-    override fun startActivity(packageName: String, userId: Int) {
-        runIO {
-            mAaVirtualDisplayAdapter?.run {
-                startActivity(packageName, userId)
-            }
-        }
+    override fun startActivityOnPane(packageName: String, userId: Int, pane: Int) {
+        runIO { mSplitController?.startActivityOnPane(packageName, userId, pane) }
     }
 
     override fun startTaskId(taskId: Int, packageName: String, userId: Int) {
-        runIO {
-            mAaVirtualDisplayAdapter?.startTaskId(taskId, packageName, userId)
-        }
+        runIO { mSplitController?.startTaskId(taskId, packageName, userId) }
     }
 
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
-        runIO {
-            mAaVirtualDisplayAdapter?.moveTaskId(taskId, isVirtualDisplay)
-        }
+        // Controller marshals onto its handler; keep off the Binder thread.
+        runIO { mSplitController?.moveTaskId(taskId, isVirtualDisplay) }
     }
 
     override fun moveTaskToFront(taskId: Int) {
-        runIO {
-            mAaVirtualDisplayAdapter?.moveTaskToFront(taskId)
-        }
+        runIO { mSplitController?.moveTaskToFront(taskId) }
     }
 
     override fun moveSecondTaskToFront() {
-        runIO {
-            mAaVirtualDisplayAdapter?.moveSecondTaskToFront()
-        }
+        runIO { mSplitController?.moveSecondTaskToFront() }
     }
 
     @SuppressLint("MissingPermission")
-    override fun removeTask(taskId: Int){
-        runIO {
-            mAaVirtualDisplayAdapter?.removeTask(taskId)
-        }
-    }
-
-    override fun cleanupSplitShells() {
-        runIO {
-            val adapter = mAaVirtualDisplayAdapter
-            if (adapter == null) {
-                runMain { TipUtil.showToast("分屏壳清理：无显示会话") }
-                return@runIO
-            }
-            val removed = adapter.forceCleanupAllSplitShells("manual")
-            runMain {
-                TipUtil.showToast(
-                    if (removed > 0) "已清理 ${removed} 个分屏壳" else "没有可清理的分屏壳"
-                )
-            }
-        }
+    override fun removeTask(taskId: Int) {
+        runIO { mSplitController?.removeTask(taskId) }
     }
 
     override fun restoreLastSplit() {
         runIO {
-            val adapter = mAaVirtualDisplayAdapter
-            if (adapter == null) {
+            val controller = mSplitController
+            if (controller == null) {
                 runMain { TipUtil.showToast("快捷分屏：无显示会话") }
                 return@runIO
             }
-            val result = adapter.requestRestoreLastSplitManual()
+            val result = controller.requestRestoreLastSplitManual()
             runMain {
                 TipUtil.showToast(
                     when (result) {
-                        AaVirtualDisplayAdapter.ManualRestoreResult.Started ->
+                        SplitDisplayController.ManualRestoreResult.Started ->
                             "正在恢复上次分屏…"
-                        AaVirtualDisplayAdapter.ManualRestoreResult.NoDisplay ->
+                        SplitDisplayController.ManualRestoreResult.NoDisplay ->
                             "快捷分屏：无显示会话"
-                        AaVirtualDisplayAdapter.ManualRestoreResult.SplitOff ->
-                            "快捷分屏：请先开启 OneUI 分屏"
-                        AaVirtualDisplayAdapter.ManualRestoreResult.NoSnapshot ->
+                        SplitDisplayController.ManualRestoreResult.NoSnapshot ->
                             "快捷分屏：没有可恢复的分屏记录"
-                        AaVirtualDisplayAdapter.ManualRestoreResult.PackageUnavailable ->
+                        SplitDisplayController.ManualRestoreResult.PackageUnavailable ->
                             "快捷分屏：左右应用不可用"
                     }
                 )
@@ -370,65 +378,49 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
     override fun pressKey(action: Int) {
         runIO {
             mDisplayWindow?.onVirtualDisplayUserInteraction()
-            mAaVirtualDisplayAdapter?.onPressKey(action)
+            mSplitController?.onPressKey(action)
         }
     }
 
-    override fun touch(event: MotionEvent) {
-        // Inject on the Binder thread — avoid per-MOVE runBlocking/IO hop latency.
+    override fun touchPane(pane: Int, event: MotionEvent) {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            runIO {
-                mDisplayWindow?.onVirtualDisplayUserInteraction()
-            }
+            runIO { mDisplayWindow?.onVirtualDisplayUserInteraction() }
+            mSplitController?.setFocusedPane(pane)
         }
-        mAaVirtualDisplayAdapter?.onTouch(event)
+        mSplitController?.onTouchPane(pane, event)
     }
-
 
     override fun toggleDisplayPower() {
-        runIO {
-            mDisplayWindow?.toggleDisplayPower()
-        }
+        runIO { mDisplayWindow?.toggleDisplayPower() }
     }
 
     override fun displayPower(displayPower: Boolean) {
-        runIO {
-            mDisplayWindow?.toggleDisplayPower(displayPower)
-        }
+        runIO { mDisplayWindow?.toggleDisplayPower(displayPower) }
     }
 
-    override fun addMirror(surfaceControl: SurfaceControl) {
-        runIO {
-            mAaVirtualDisplayAdapter?.addMirror(surfaceControl)
-        }
+    override fun addMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
+        runIO { mSplitController?.addMirrorPane(pane, surfaceControl) }
     }
 
-    override fun removeMirror(surfaceControl: SurfaceControl){
-        runIO {
-            mAaVirtualDisplayAdapter?.removeMirror(surfaceControl)
-        }
+    override fun removeMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
+        runIO { mSplitController?.removeMirrorPane(pane, surfaceControl) }
     }
 
     override fun getRecentTask(): RecentTask {
-        return runBlocking(Dispatchers.IO){
-            mAaVirtualDisplayAdapter?.getRecentTask() ?: RecentTask(emptyList(), emptyList())
+        return runBlocking(Dispatchers.IO) {
+            mSplitController?.getRecentTask() ?: RecentTask(emptyList(), emptyList(), emptyList())
         }
     }
 
     @SuppressLint("RestrictedApi")
-    override fun testCode(action: String){
-
+    override fun testCode(action: String) {
     }
 
-    override fun toast(msg: String){
-        runMain {
-            TipUtil.showToast(msg)
-        }
+    override fun toast(msg: String) {
+        runMain { TipUtil.showToast(msg) }
     }
 
-    override fun printLog(tag: String, msg: String){
-        runIO {
-            log(tag, msg)
-        }
+    override fun printLog(tag: String, msg: String) {
+        runIO { log(tag, msg) }
     }
 }

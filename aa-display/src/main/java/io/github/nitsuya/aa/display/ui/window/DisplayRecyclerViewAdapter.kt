@@ -43,7 +43,8 @@ class DisplayRecyclerViewAdapter(
         holder.binding.ivIcon.setImageBitmap(item.logo)
         holder.binding.tvName.text = "${item.label} [${item.taskId}]"
 
-        if(recyclerView.id == R.id.rv_recent_task_left){
+        if(recyclerView.id == R.id.rv_recent_task_left ||
+            recyclerView.id == R.id.rv_recent_task_center){
             ConstraintSet().apply {
                 clone(holder.binding.clItem)
                 constrainPercentWidth(R.id.iv_snapshot,0.8f)
@@ -58,8 +59,8 @@ class DisplayRecyclerViewAdapter(
         arrayOf(holder.binding.tvName, holder.binding.ivIcon, holder.binding.ivSnapshot).forEach {
             it.setOnClickListener {
                 val pkg = item.packageName
-                // Phone-stack tap: launch/replace onto the AA virtual display (OneUI caption
-                // close cannot swap split panes). VD-stack tap: focus that pane/task.
+                // Phone-stack tap: launch onto the focused AA split pane.
+                // VD-stack tap: focus that task.
                 if (recyclerView.id == R.id.rv_recent_task_right && !pkg.isNullOrBlank()) {
                     CoreApi.startActivity(pkg, 0)
                 } else {
@@ -70,7 +71,7 @@ class DisplayRecyclerViewAdapter(
         }
         holder.binding.ibClose.setOnClickListener {
             // Stay on the stack panel so multiple tasks can be closed in sequence.
-            // removeTask forgets VD ownership so reclaim will not resurrect a closed split pane.
+            // removeTask forgets VD ownership so reclaim will not resurrect the closed app.
             removeItem(item)
             CoreApi.removeTask(item.taskId)
         }
@@ -128,7 +129,8 @@ class DisplayRecyclerViewAdapter(
         override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
             val item = items.get(viewHolder.layoutPosition)
             removeItem(item)
-            if(recyclerView.id == R.id.rv_recent_task_left){
+            if(recyclerView.id == R.id.rv_recent_task_left ||
+                recyclerView.id == R.id.rv_recent_task_center){
                 if (direction == ItemTouchHelper.LEFT) {
                     CoreApi.removeTask(item.taskId)
                 } else if (direction == ItemTouchHelper.RIGHT) {
