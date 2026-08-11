@@ -239,10 +239,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 android.content.res.Configuration.ORIENTATION_PORTRAIT
             setRatio(splitRatio)
             onRatioChanged = { ratio ->
+                // Drag: update LinearLayout weights only. Live CoreApi.setSplitRatio →
+                // VirtualDisplay.resize + freezeDisplayRotation costs 600–900ms/call on
+                // system_server main and visibly jitters both panes.
                 dividerDragging = true
                 splitRatio = ratio
                 applySplitLayoutWeights(ratio)
-                CoreApi.setSplitRatio(ratio)
             }
             onRatioSettled = { ratio ->
                 splitRatio = ratio

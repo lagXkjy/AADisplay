@@ -77,7 +77,8 @@ class SplitDisplayController(
         const val TAG = "AADisplay_SplitDisplayController"
         private const val ACTIVITY_TYPE_HOME = 2
         private const val SNAPSHOT_DEBOUNCE_MS = 2500L
-        private const val RESIZE_THROTTLE_MS = 48L
+        /** VD resize + freezeDisplayRotation is expensive; keep drag/reconnect from flooding. */
+        private const val RESIZE_THROTTLE_MS = 120L
         private const val RECLAIM_DEBOUNCE_MS = 200L
         private const val SUPPRESS_RECLAIM_MS = 2000L
         /** Longer suppress after restore so reclaim cannot overwrite panes during settle. */
@@ -188,6 +189,8 @@ class SplitDisplayController(
     private val ENSURE_TOKEN = Any()
     private val VERIFY_RESTORE_TOKEN = Any()
     private var mLastResizeAt = 0L
+    /** Displays already freeze-locked to ROTATION_0; skip re-freeze on resize (OEM walks all DCs). */
+    private val mOrientationLockedDisplays = HashSet<Int>()
     private var mPersistFirstScheduledAt = 0L
     private val mDebouncedReclaim = Runnable { reclaimOwnedPackages("stack") }
     private val mDebouncedPersist = Runnable {
@@ -389,6 +392,7 @@ class SplitDisplayController(
             log(TAG, "onDestroy snapshot failed:", e)
         }
         mIsDestroying = true
+        mOrientationLockedDisplays.clear()
         mHandler.removeCallbacks(mDebouncedReclaim)
         mHandler.removeCallbacks(mDebouncedPersist)
         mHandler.removeCallbacks(mPendingResize)
@@ -820,6 +824,11 @@ class SplitDisplayController(
      */
     private fun lockPaneDisplayOrientation(displayId: Int, reason: String) {
         if (displayId == Display.INVALID_DISPLAY) return
+        // Samsung freezeDisplayRotation re-walks every DisplayContent; during drag-ratio
+        // resize this alone was 600–900ms on system_server main. Keep lock sticky.
+        if (reason.startsWith("resize-") && mOrientationLockedDisplays.contains(displayId)) {
+            return
+        }
         val iwm = Instances.iWindowManager
         val identity = Binder.clearCallingIdentity()
         try {
@@ -841,6 +850,7 @@ class SplitDisplayController(
                     without != null -> without.invoke(iwm, displayId, Surface.ROTATION_0)
                     else -> error("no freezeDisplayRotation")
                 }
+                mOrientationLockedDisplays.add(displayId)
             }.onFailure {
                 logDebug(TAG, "freezeDisplayRotation unavailable: ${it.message}")
             }
