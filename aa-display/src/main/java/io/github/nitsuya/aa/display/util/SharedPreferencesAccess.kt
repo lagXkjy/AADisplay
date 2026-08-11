@@ -60,6 +60,16 @@ object SharedPreferencesAccess {
             return false
         }
 
+        val mirror = File(HOOK_MIRROR_PATH)
+        // Skip root Shell when mirror already matches source (length + mtime).
+        if (mirror.exists() && mirror.canRead() &&
+            mirror.length() == source.length() &&
+            mirror.lastModified() >= source.lastModified()
+        ) {
+            Log.i(TAG, "publishHookMirror skip: already current (${mirror.length()} bytes)")
+            return true
+        }
+
         return try {
             // Ensure root shell (blocks until ready).
             val shell = Shell.getShell()
@@ -71,7 +81,6 @@ object SharedPreferencesAccess {
             val cp = Shell.cmd("cp ${source.absolutePath} $HOOK_MIRROR_PATH").exec()
             val chmod = Shell.cmd("chmod 644 $HOOK_MIRROR_PATH").exec()
             Shell.cmd("chcon u:object_r:system_data_file:s0 $HOOK_MIRROR_PATH").exec()
-            val mirror = File(HOOK_MIRROR_PATH)
             val ok = mirror.exists() && mirror.canRead() && mirror.length() > 0
             if (!ok) {
                 Log.w(TAG, "publishHookMirror failed: cp=${cp.isSuccess} chmod=${chmod.isSuccess} exists=${mirror.exists()}")

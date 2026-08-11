@@ -106,7 +106,7 @@ object AaUiHook: AaHook() {
      * Keep attempts few and spaced so a successful start can cancel before the next retry
      * (repeated start recreates/refocuses CarActivity and feels janky).
      */
-    private val AUTO_OPEN_DELAYS_MS = longArrayOf(1200L, 4000L, 8000L)
+    private val AUTO_OPEN_DELAYS_MS = longArrayOf(400L, 4000L, 8000L)
     private val AUTO_OPEN_TOKEN = Any()
     /** Uptime of the last armed Auto Open session; used to debounce LayoutInfo storms. */
     private var mAutoOpenSessionAtMs = 0L

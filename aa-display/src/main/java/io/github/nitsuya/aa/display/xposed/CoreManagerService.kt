@@ -250,7 +250,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             mDisplayCreateInProgress = true
             SplitDisplayController(systemContext, config) {
                 try {
-                    mSplitController = this
+                    val controller = this
+                    mSplitController = controller
                     onSplitLayoutChanged = { mDisplayWindow?.onSplitRatioChanged() }
                     onConnected(
                         profile.width,
@@ -261,15 +262,19 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                         secondarySurface,
                     ) { displayId ->
                         listener.onAvailableDisplay(displayId, true)
+                        // Phone overlay is not needed for AA first frame; inflate after callback.
+                        runMain {
+                            if (mSplitController !== controller) return@runMain
+                            mDisplayWindow?.onDestroyPromptly()
+                            mDisplayWindow = DisplayWindow(
+                                CommonContextWrapper.createAppCompatContext(systemContext),
+                                controller,
+                                profile.width,
+                                profile.height,
+                                profile.densityDpi
+                            )
+                        }
                     }
-                    mDisplayWindow?.onDestroyPromptly()
-                    mDisplayWindow = DisplayWindow(
-                        CommonContextWrapper.createAppCompatContext(systemContext),
-                        this,
-                        profile.width,
-                        profile.height,
-                        profile.densityDpi
-                    )
                 } finally {
                     mDisplayCreateInProgress = false
                 }
@@ -419,3 +424,4 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runIO { log(tag, msg) }
     }
 }
+

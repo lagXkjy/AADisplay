@@ -101,7 +101,14 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 }
                 AABroadcastConst.ACTION_SPLIT_STATE_CHANGED -> {
                     // Occupancy only — never re-apply ratio/weights from broadcasts.
-                    syncPaneOccupancyFromService()
+                    // Prefer extras from system_server to avoid sync getPanePackage Binder hits.
+                    val primary = intent.getStringExtra(AABroadcastConst.EXTRA_PRIMARY_PACKAGE)
+                    val secondary = intent.getStringExtra(AABroadcastConst.EXTRA_SECONDARY_PACKAGE)
+                    if (primary != null || secondary != null) {
+                        applyOccupancyFromPackages(primary.orEmpty(), secondary.orEmpty())
+                    } else {
+                        syncPaneOccupancyFromService()
+                    }
                 }
                 AABroadcastConst.ACTION_SCREEN_CONTROL -> {
                     when (val action = intent.getIntExtra(AABroadcastConst.EXTRA_ACTION, 0)) {
@@ -160,7 +167,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     override fun initViews() {
         config = SharedPreferencesAccess.openForHooks(this.requireContext(), AADisplayConfig.ConfigName)
         Log.i(TAG, "initViews")
-        SharedPreferencesAccess.makeReadableForHooks(requireContext(), AADisplayConfig.ConfigName)
+        // Do NOT call makeReadableForHooks here: Shell.getShell()+cp blocks AA main thread
+        // for hundreds of ms–seconds. Mirror is published when settings are saved.
         appPicker = SplitAppPickerController(baseBinding).also {
             it.onAppPicked = { pane, _ ->
                 paneHasApp[pane] = true
@@ -371,6 +379,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         updateEmptyOverlays()
     }
 
+    private fun applyOccupancyFromPackages(primaryPkg: String, secondaryPkg: String) {
+        if (!isAdded || view == null || dividerDragging) return
+        paneHasApp[SplitPane.PRIMARY] = primaryPkg.trim().isNotEmpty()
+        paneHasApp[SplitPane.SECONDARY] = secondaryPkg.trim().isNotEmpty()
+        updateEmptyOverlays()
+    }
+
     /** Apply remote ratio only once after create/restore (not on every broadcast). */
     private fun applyRemoteRatioOnce() {
         if (!isAdded || view == null || dividerDragging) return
@@ -393,10 +408,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 primarySurface?.let { CoreApi.setPaneSurface(SplitPane.PRIMARY, it) }
                 secondarySurface?.let { CoreApi.setPaneSurface(SplitPane.SECONDARY, it) }
                 registerControlReceivers()
-                // Occupancy settles after restore / pane launches; retry a few times.
+                // Occupancy settles after restore / pane launches; light Binder retries only.
                 scheduleOccupancySync(0L)
-                scheduleOccupancySync(700L)
-                scheduleOccupancySync(1800L)
+                scheduleOccupancySync(900L)
                 if (create) {
                     applyRemoteRatioOnce()
                     baseBinding.root.postDelayed({ applyRemoteRatioOnce() }, 700L)
@@ -407,7 +421,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
 
     private fun scheduleOccupancySync(delayMs: Long) {
         baseBinding.root.postDelayed({
-            applyRemoteRatioOnce()
             syncPaneOccupancyFromService()
         }, delayMs)
     }

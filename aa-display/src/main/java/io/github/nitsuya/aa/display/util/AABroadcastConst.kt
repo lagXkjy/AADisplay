@@ -12,5 +12,8 @@ interface AABroadcastConst {
         const val EXTRA_ACTION = "aa.display.extra.ACTION"
         const val EXTRA_TYPE = "aa.display.extra.TYPE"
         const val EXTRA_PANE = "aa.display.extra.PANE"
+        /** Optional package names so AA can update empty overlays without Binder round-trips. */
+        const val EXTRA_PRIMARY_PACKAGE = "aa.display.extra.PRIMARY_PACKAGE"
+        const val EXTRA_SECONDARY_PACKAGE = "aa.display.extra.SECONDARY_PACKAGE"
     }
 }

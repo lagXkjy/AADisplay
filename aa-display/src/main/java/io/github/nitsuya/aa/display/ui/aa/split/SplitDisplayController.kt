@@ -273,15 +273,22 @@ class SplitDisplayController(
                 "ratio=$mRatio sideBySide=$isSideBySide"
         )
 
-        applyPolicies(SplitPane.PRIMARY, "connect")
-        applyPolicies(SplitPane.SECONDARY, "connect")
-        addKeepAwakeOverlay(SplitPane.PRIMARY)
-        addKeepAwakeOverlay(SplitPane.SECONDARY)
-
         try {
             Instances.iActivityTaskManager.registerTaskStackListener(mTaskStackListener)
         } catch (e: Throwable) {
             log(TAG, "registerTaskStackListener failed:", e)
+        }
+
+        // Notify AA first so TextureViews bind; policies/freeze are expensive on Samsung
+        // (~600–900ms each freezeDisplayRotation) and must not delay first frame.
+        onCreated(primaryDisplayId)
+
+        mHandler.post {
+            if (mIsDestroying) return@post
+            applyPolicies(SplitPane.PRIMARY, "connect")
+            applyPolicies(SplitPane.SECONDARY, "connect")
+            addKeepAwakeOverlay(SplitPane.PRIMARY)
+            addKeepAwakeOverlay(SplitPane.SECONDARY)
         }
 
         if (shouldRestoreLastSplitOnConnect()) {
@@ -291,7 +298,6 @@ class SplitDisplayController(
         } else {
             notifySplitStateChanged()
         }
-        onCreated(primaryDisplayId)
     }
 
     fun onReconnected(width: Int, height: Int, densityDpi: Int) {
@@ -921,10 +927,11 @@ class SplitDisplayController(
 
     private fun scheduleRestoreLastSplit(manual: Boolean) {
         mHandler.removeCallbacksAndMessages(RESTORE_TOKEN)
-        mHandler.postDelayed({
-            if (mIsDestroying) return@postDelayed
+        // Next frame — no artificial 400ms wait before launching restored apps.
+        mHandler.postAtTime({
+            if (mIsDestroying) return@postAtTime
             restoreLastSplitNow(manual)
-        }, RESTORE_TOKEN, 400L)
+        }, RESTORE_TOKEN, SystemClock.uptimeMillis())
     }
 
     private fun restoreLastSplitNow(manual: Boolean) {
@@ -1046,7 +1053,18 @@ class SplitDisplayController(
 
     private fun notifySplitStateChangedImmediate() {
         try {
-            context.sendBroadcast(Intent(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED))
+            context.sendBroadcast(
+                Intent(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED).apply {
+                    putExtra(
+                        AABroadcastConst.EXTRA_PRIMARY_PACKAGE,
+                        mPanePackages[SplitPane.PRIMARY].orEmpty()
+                    )
+                    putExtra(
+                        AABroadcastConst.EXTRA_SECONDARY_PACKAGE,
+                        mPanePackages[SplitPane.SECONDARY].orEmpty()
+                    )
+                }
+            )
         } catch (e: Throwable) {
             logDebug(TAG, "notifySplitStateChanged failed: ${e.message}")
         }
