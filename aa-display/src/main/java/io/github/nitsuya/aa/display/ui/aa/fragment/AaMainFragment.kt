@@ -74,10 +74,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         }
     }
 
-    fun startActivity() {
-        carManager.startCarAaDisplay()
-    }
-
     private val broadcastReceiver = object : BroadcastReceiver() {
         val voiceAssistShell by lazy { AADisplayConfig.VoiceAssistShell.get(config) }
         fun startVoiceAssist() {

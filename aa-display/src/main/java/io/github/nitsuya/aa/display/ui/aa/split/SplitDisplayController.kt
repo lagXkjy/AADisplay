@@ -132,10 +132,6 @@ class SplitDisplayController(
     val secondaryDisplayId: Int
         get() = mSecondary?.display?.displayId ?: Display.INVALID_DISPLAY
 
-    /** Legacy accessor used by density / keep-awake paths — primary pane. */
-    val mDisplayId: Int
-        get() = primaryDisplayId
-
     private var mPrimary: VirtualDisplay? = null
     private var mSecondary: VirtualDisplay? = null
     private var mPrimarySurface: Surface? = null
@@ -1040,11 +1036,7 @@ class SplitDisplayController(
 
     private fun notifySplitStateChangedImmediate() {
         try {
-            context.sendBroadcast(
-                Intent(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED).apply {
-                    putExtra(AABroadcastConst.EXTRA_RATIO, mRatio)
-                }
-            )
+            context.sendBroadcast(Intent(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED))
         } catch (e: Throwable) {
             logDebug(TAG, "notifySplitStateChanged failed: ${e.message}")
         }

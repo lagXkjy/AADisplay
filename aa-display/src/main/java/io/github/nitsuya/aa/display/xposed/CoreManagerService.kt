@@ -179,11 +179,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             Instances.init(systemContext)
         }
 
-        /** Primary pane display id (legacy callers). */
-        fun getDisplayId(): Int {
-            return mSplitController?.primaryDisplayId ?: Display.INVALID_DISPLAY
-        }
-
         fun isAaVirtualDisplay(displayId: Int): Boolean {
             return mSplitController?.isAaVirtualDisplay(displayId) == true
         }

@@ -25,20 +25,17 @@ import com.github.kyuubiran.ezxhelper.init.InitFields
 import com.github.kyuubiran.ezxhelper.utils.argTypes
 import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.getIdByName
-import com.github.kyuubiran.ezxhelper.utils.getObjectOrNull
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import com.github.kyuubiran.ezxhelper.utils.loadClass
 import com.github.kyuubiran.ezxhelper.utils.staticMethod
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import de.robv.android.xposed.callbacks.XCallback
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.service.AaActivityService
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
-import io.github.nitsuya.aa.display.xposed.hook.abortMethod
 import io.github.nitsuya.aa.display.xposed.log
 import io.github.nitsuya.aa.display.xposed.logDebug
 import io.github.qauxv.ui.CommonContextWrapper
@@ -245,7 +242,6 @@ object AaUiHook: AaHook() {
         }
         mAutoOpen = AADisplayConfig.AutoOpen.get(config)
         log(tagName, "AaUiHook: AutoOpen=$mAutoOpen startMethod=${startMethod?.name}")
-        hookBaseClick()
         // Zero rail-column dimens first so LayoutInfo / VD allocation sees full HU width.
         hookRailWidthDimens()
         hookVirtualDisplaySizing()
@@ -1394,43 +1390,6 @@ object AaUiHook: AaHook() {
         return aaFacetBar
     }
 
-    private fun hookBaseClick() {
-        try {
-            findMethod(View::class.java) {
-                name == "setOnLongClickListener"
-                && parameterCount == 1
-                && parameterTypes[0] == View.OnLongClickListener::class.java
-            }.hookBefore(XCallback.PRIORITY_LOWEST) {
-                if (it.args[0] is FinallyListener) return@hookBefore
-                val view = it.thisObject as View
-                if (!view.hasOnLongClickListeners() || (view.getObjectOrNull("mListenerInfo")?.getObjectOrNull("mOnLongClickListener") is FinallyListener).not()) {
-                    return@hookBefore
-                }
-                view.setOnOriLongClickListener(it.args[0] as View.OnLongClickListener)
-                it.abortMethod()
-            }
-        } catch (e: Throwable) {
-            log(tagName, "hook View.setOnLongClickListener", e)
-        }
-        try {
-            findMethod(View::class.java) {
-                name == "setOnClickListener"
-                && parameterCount == 1
-                && parameterTypes[0] == View.OnClickListener::class.java
-            }.hookBefore(XCallback.PRIORITY_LOWEST) {
-                if (it.args[0] is FinallyListener) return@hookBefore
-                val view = it.thisObject as View
-                if (!view.hasOnClickListeners() || (view.getObjectOrNull("mListenerInfo")?.getObjectOrNull("mOnClickListener") is FinallyListener).not()) {
-                    return@hookBefore
-                }
-                view.setOnOriClickListener(it.args[0] as View.OnClickListener)
-                it.abortMethod()
-            }
-        } catch (e: Throwable) {
-            log(tagName, "hook View.setOnClickListener", e)
-        }
-    }
-
     private fun hookRadius(config: SharedPreferences?) {
         if(!AADisplayConfig.ForceRightAngle.get(config)){
             return
@@ -1459,21 +1418,5 @@ object AaUiHook: AaHook() {
         } catch (e: Throwable) {
             log(tagName, "ProjectionWindowDecorationParams", e)
         }
-    }
-
-    interface FinallyListener
-    private fun interface OnClickFinallyListener: View.OnClickListener, FinallyListener
-    private fun interface OnLongClickFinallyListener: View.OnLongClickListener, FinallyListener
-    private fun View.setOnClickFinallyListener(l: OnClickFinallyListener) = this.setOnClickListener(l)
-    private fun View.setOnLongClickFinallyListener(l: OnLongClickFinallyListener) = this.setOnLongClickListener(l)
-    private fun View.setOnOriClickListener(l: View.OnClickListener) = this.setTag(R.id.ori_click_listener, l)
-    private fun View.setOnOriLongClickListener(l: View.OnLongClickListener) = this.setTag(R.id.ori_long_click_listener, l)
-    private fun View.performOriClick() {
-        val clickListener = this.getTag(R.id.ori_click_listener) as View.OnClickListener? ?: return
-        clickListener.onClick(this)
-    }
-    private fun View.performOriLongClick(): Boolean {
-        val clickListener = this.getTag(R.id.ori_long_click_listener) as View.OnLongClickListener? ?: return false
-        return clickListener.onLongClick(this)
     }
 }

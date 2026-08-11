@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **Dead-code slim after dual-VD split:** drop unused `ic_aa_*` drawables, empty `styles`/`attrs`, never-registered `CoreBroadcastReceiver`, unused `GenericMotionView`, orphaned `CloseLauncherDashboard` / `EXTRA_RATIO`, no-op `AaUiHook` click-hijack (`hookBaseClick` / `FinallyListener`), and legacy aliases (`mDisplayId`, `getDisplayId`, unused activity/power wrappers). Docs point at `SplitDisplayController` instead of removed `AaVirtualDisplayAdapter`.
 - **Slim AA rail + divider stack + all launchable apps:** keep AA on the vertical-rail layout family; reclaim the left black gutter by collapsing the rail/facet chain and expanding content siblings (not just hiding icons). Long-press a live pane to replace its app. OneUI-style thin divider with three-dot handle (tap opens recent tasks, drag adjusts ratio). Recent-task stack is three columns (primary pane / secondary pane / phone). App picker lists all MAIN/LAUNCHER apps including non-resizeable; add `QUERY_ALL_PACKAGES` + launcher `<queries>` for package visibility. Exit AADisplay via disconnect or phone controls (rail launcher is hidden).
 
 ### Fixed

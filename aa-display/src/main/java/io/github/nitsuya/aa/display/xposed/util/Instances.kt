@@ -3,21 +3,16 @@ package io.github.nitsuya.aa.display.xposed.util
 import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.ActivityManagerHidden
-import android.app.IActivityManager
 import android.app.IActivityTaskManager
-import android.app.NotificationManager
 import android.content.Context
-import android.content.pm.IPackageManager
 import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
 import android.hardware.input.IInputManager
 import android.os.PowerManager
 import android.os.PowerManagerHidden
 import android.os.ServiceManager
-import android.os.UserManager
 import android.view.IWindowManager
 import android.view.WindowManager
-import com.android.internal.statusbar.IStatusBarService
 import dev.rikka.tools.refine.Refine
 
 @SuppressLint("StaticFieldLeak")

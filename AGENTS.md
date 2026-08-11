@@ -59,7 +59,7 @@ flowchart LR
   AaDisplayActivity --> CoreApi
   CoreApi --> CoreManager
   CoreManager -->|"PMS bridge AADD"| CoreManagerService
-  CoreManagerService --> AaVirtualDisplayAdapter
+  CoreManagerService --> SplitDisplayController
   CoreManagerService --> DisplayWindow
   AndroidAuoHook --> AaHooks
 ```
@@ -166,8 +166,8 @@ flowchart LR
 优先阅读：
 
 - `xposed/CoreManagerService.kt`
-- `ui/aa/AaVirtualDisplayAdapter.kt`
-- `ui/aa/fragment/AaMainFragment.kt`（`onCreateDisplay` / Surface / touch）
+- `ui/aa/split/SplitDisplayController.kt`（双 VD 创建 / 分屏 / Surface / 任务）
+- `ui/aa/fragment/AaMainFragment.kt`（Surface / touch / 分屏 UI）
 
 注意 CHANGELOG 中的 **display profile lock**、**Delay Destroy Time**、TaskView 稳定性相关行为，避免重引入重连闪烁或过早销毁。
 

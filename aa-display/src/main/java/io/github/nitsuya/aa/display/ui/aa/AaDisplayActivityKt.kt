@@ -14,10 +14,6 @@ object AaDisplayActivityKt {
         CoreApi.pressKey(action)
     }
 
-    fun toggleDisplayPower(){
-        CoreApi.toggleDisplayPower()
-    }
-
     fun toast(msg: String){
         CoreApi.toast(msg)
     }

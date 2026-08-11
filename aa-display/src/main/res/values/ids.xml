@@ -5,6 +5,4 @@
     <item name="drag_last_y" type="id" />
     <item name="drag_distance" type="id" />
     <item name="tap_count" type="id" />
-    <item name="ori_click_listener" type="id" />
-    <item name="ori_long_click_listener" type="id" />
 </resources>
