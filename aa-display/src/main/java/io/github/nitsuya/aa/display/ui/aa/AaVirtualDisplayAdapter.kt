@@ -302,6 +302,8 @@ class AaVirtualDisplayAdapter(
      * Cleared whenever roots are found / moved.
      */
     private val mEmptySplitRootsMissUntil = android.util.SparseLongArray()
+    /** Rate-limit freeform recovery that force-wipes empty StageCoordinator shells. */
+    private var mLastFreeformSplitShellRecoveryAt = 0L
     private var mLastSplitFocusGuardLogAt = 0L
     /**
      * While restoring the last OneUI split pair: force freeform launches (no adjacent / AppsEdge),
@@ -446,6 +448,7 @@ class AaVirtualDisplayAdapter(
         mLastExpandSplitShellKickAt = 0L
         mAsymmetricSplitArmedUntil = 0L
         mEmptySplitRootsMissUntil.clear()
+        mLastFreeformSplitShellRecoveryAt = 0L
         mLastSplitFocusGuardLogAt = 0L
         mRestoringLastSplit = false
         mRestoreLastSplitManual = false
@@ -599,6 +602,7 @@ class AaVirtualDisplayAdapter(
         mLastExpandSplitShellKickAt = 0L
         mAsymmetricSplitArmedUntil = 0L
         mEmptySplitRootsMissUntil.clear()
+        mLastFreeformSplitShellRecoveryAt = 0L
         mLastSplitFocusGuardLogAt = 0L
         mRestoringLastSplit = false
         mRestoreLastSplitManual = false
@@ -2413,6 +2417,7 @@ class AaVirtualDisplayAdapter(
             try {
                 val vdTasks = Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
                 for (info in vdTasks) {
+                    if (isSplitOrganizerOrStageTask(info.taskId) || isCreatedByOrganizer(info)) continue
                     val pkg = info.topActivity?.packageName?.takeIf { it.isNotBlank() } ?: continue
                     if (pkg == mHomePackage || pkg == mLauncherPackage) continue
                     if (isBounceExcludedPackage(pkg) || IGNORE_RECENT_PACKAGE.contains(pkg)) continue
@@ -2490,14 +2495,21 @@ class AaVirtualDisplayAdapter(
             reason == "destroy" ||
             reason.contains("manual") ||
             reason.contains("orphan") ||
+            reason.contains("freeform-recovery") ||
             reason == "phone-steal:connect" ||
             reason == "phone-steal:reconnect" ||
             reason.startsWith("phone-steal:after-manual") ||
             reason.startsWith("phone-steal:orphan") ||
-            reason.startsWith("after-manual")
+            reason.startsWith("phone-steal:after-freeform-recovery") ||
+            reason.startsWith("after-manual") ||
+            reason.startsWith("after-freeform-recovery")
     }
 
     private fun noteEmptySplitRootsMiss(displayId: Int) {
+        // Do NOT extend an active miss window. before-ensure / stack storms call this on every
+        // miss; refreshing now+700ms permanently blinds phone-steal while empty `#3→#4/#5`
+        // occupy DEFAULT_DISPLAY and block freeform→split ("no display" / mode stuck at 1).
+        if (isEmptySplitRootsMissCached(displayId)) return
         mEmptySplitRootsMissUntil.put(
             displayId,
             SystemClock.uptimeMillis() + EMPTY_SPLIT_ROOTS_MISS_CACHE_MS
@@ -2875,15 +2887,19 @@ class AaVirtualDisplayAdapter(
             for (info in tasks) {
                 val node = resolveTaskObject(info.taskId) ?: info
                 val kids = readChildTaskIds(node) ?: readChildTaskIds(info) ?: continue
-                if (kids.size < 2 && !kids.any { kid ->
-                        val c = resolveTaskObject(kid) ?: return@any false
-                        isSplitStageMode(getWindowingMode(c)) || hasSplitStageConfig(c)
-                    }
-                ) {
-                    continue
+                val childLooksLikeStage = kids.any { kid ->
+                    val c = resolveTaskObject(kid) ?: return@any false
+                    isSplitStageMode(getWindowingMode(c)) || hasSplitStageConfig(c) ||
+                        isCreatedByOrganizer(c)
                 }
+                // OneUI often reports idle `#3` as fullscreen (not freeform) with `#4/#5` kids.
+                if (kids.size >= 2 && !isHomeishRootTask(node) && !isHomeishRootTask(info)) {
+                    return true
+                }
+                if (!childLooksLikeStage && kids.size < 2) continue
                 if (isCreatedByOrganizer(node) || isCreatedByOrganizer(info) ||
-                    getWindowingMode(node) == WINDOWING_MODE_FREEFORM
+                    getWindowingMode(node) == WINDOWING_MODE_FREEFORM ||
+                    childLooksLikeStage
                 ) {
                     return true
                 }
@@ -3594,7 +3610,21 @@ class AaVirtualDisplayAdapter(
             val topPkg = taskInfo.topActivity?.packageName
             if (topPkg != null) {
                 // Live app in this root — leave it. Chooser-only counts as empty when requested.
-                if (!(treatChooserAsEmpty && isSplitChooserPackage(topPkg))) continue
+                // Exception: OneUI often stamps a stale app topActivity on StageCoordinator `#3`
+                // while `#4/#5` are empty — that must still count as an empty shell tree.
+                if (!(treatChooserAsEmpty && isSplitChooserPackage(topPkg))) {
+                    val node = resolveTaskObject(taskInfo.taskId) ?: taskInfo
+                    val childIds = readChildTaskIds(node) ?: readChildTaskIds(taskInfo)
+                    val emptyStageTree = childIds != null && childIds.isNotEmpty() &&
+                        childIds.all { !taskHasAppActivity(it, tasks, treatChooserAsEmpty) } &&
+                        (isZombieSplitChildTree(childIds, tasks, treatChooserAsEmpty) ||
+                            childIds.any { id ->
+                                val c = resolveTaskObject(id) ?: tasks.firstOrNull { it.taskId == id }
+                                c != null &&
+                                    (isSplitStageMode(getWindowingMode(c)) || hasSplitStageConfig(c))
+                            })
+                    if (!emptyStageTree) continue
+                }
             }
 
             val mode = getWindowingMode(taskInfo)
@@ -4453,6 +4483,16 @@ class AaVirtualDisplayAdapter(
         try {
             Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(mDisplayId)
                 .forEach { info ->
+                    // OneUI often stamps a stale app topActivity on StageCoordinator `#3`.
+                    // Never schedule ensureFreeform on organizer/stage roots — that demotes the
+                    // split shell to inset FREEFORM and poisons caption/restore split.
+                    if (isSplitOrganizerOrStageTask(info.taskId) || isCreatedByOrganizer(info)) {
+                        logDebug(
+                            TAG,
+                            "recoverFreeform skip organizer/stage task=${info.taskId} [$reason]"
+                        )
+                        return@forEach
+                    }
                     val pkg = info.topActivity?.packageName?.takeIf { it.isNotBlank() } ?: return@forEach
                     if (pkg == mHomePackage || pkg == mLauncherPackage) return@forEach
                     if (isBounceExcludedPackage(pkg) || IGNORE_RECENT_PACKAGE.contains(pkg)) return@forEach
@@ -4761,7 +4801,58 @@ class AaVirtualDisplayAdapter(
                 TAG,
                 "ensureFreeform[$reason]: still not freeform task=$taskId pkg=$pkg mode=${mode ?: "?"} after=${afterMode ?: "?"} bounds=$resized nearFull=$afterStillMax"
             )
+            // Empty `#3→#4/#5` on phone/VD makes OneUI reject FREEFORM forever (caption/split die).
+            recoverFreeformBlockedByEmptySplitShells(taskId, pkg, reason)
         }
+    }
+
+    /**
+     * When setTaskWindowingMode / local ATMS force / relaunch all leave the app at mode=1,
+     * empty StageCoordinator shells (phone or "healthy idle" on the VD) are usually occupying
+     * global main/side stages. Wipe them and retry FREEFORM once (rate-limited).
+     */
+    private fun recoverFreeformBlockedByEmptySplitShells(
+        taskId: Int,
+        pkg: String,
+        reason: String
+    ) {
+        if (!isOneUiSplitEnabled() || mDisplayId == Display.INVALID_DISPLAY) return
+        if (isDisplayInSplitStages()) return
+        if (shouldSuppressPhoneSplitShellMutation()) return
+        if (reason.contains("freeform-recovery") || reason.contains("after-freeform-recovery")) return
+        val now = SystemClock.uptimeMillis()
+        if (now - mLastFreeformSplitShellRecoveryAt < 2500L) return
+
+        // Miss-cache may still be blinding DEFAULT_DISPLAY after before-ensure storms.
+        mEmptySplitRootsMissUntil.clear()
+        val phoneRoots = findEmptySplitStageRootsOnDisplay(
+            Display.DEFAULT_DISPLAY,
+            "freeform-recovery"
+        )
+        val vdIdle = hasIdleSplitShellOnVirtualDisplay()
+        val vdEmpty = hasEmptySplitOrganizerShells()
+        if (phoneRoots.isEmpty() && !vdIdle && !vdEmpty) return
+
+        mLastFreeformSplitShellRecoveryAt = now
+        log(
+            TAG,
+            "ensureFreeform recovery: wipe empty split shells phone=${phoneRoots.joinToString()} " +
+                "vdIdle=$vdIdle vdEmpty=$vdEmpty task=$taskId pkg=$pkg [$reason]"
+        )
+        // force=true + non-before-ensure reason also wipes "healthy idle" VD shells — needed
+        // when those idle stages make FREEFORM mode changes no-op.
+        cleanupEmptySplitOrganizerTasks("freeform-recovery:$reason", force = true)
+        for (id in phoneRoots.sortedDescending()) {
+            removeOrganizerTaskQuietly(id, "freeform-recovery:$reason", forceAlways = true)
+        }
+
+        setTaskWindowingModeSafe(taskId, WINDOWING_MODE_FULLSCREEN)
+        setTaskWindowingModeSafe(taskId, WINDOWING_MODE_FREEFORM)
+        AndroidHook.forceTaskWindowingModeOnVd(taskId, WINDOWING_MODE_FREEFORM)
+        relaunchTaskAsFreeform(taskId, pkg, "freeform-recovery:$reason")
+        resizeTaskToFreeformBounds(taskId)
+        scheduleEnsureFreeform(taskId, "after-freeform-recovery:$reason", force = true)
+        schedulePhoneEmptySplitSteal("after-freeform-recovery:$reason")
     }
 
     /**
@@ -5235,6 +5326,10 @@ class AaVirtualDisplayAdapter(
     /**
      * StageCoordinator / stage shells (`#3→#4/#5`). RootTaskInfo often omits
      * `createdByOrganizer`; resolve the live Task so reclaim does not treat them as owned apps.
+     *
+     * OneUI also stamps a stale app [topActivity] on the organizer root while it is FREEFORM
+     * with `#4/#5` children. Matching only `createdByOrganizer` / stage-mode then misses `#3`,
+     * and [ensureTaskFreeformOnVirtualDisplay] demotes the shell (poisons freeform→split).
      */
     private fun isSplitOrganizerOrStageTask(taskId: Int): Boolean {
         if (taskId <= 0) return false
@@ -5249,11 +5344,47 @@ class AaVirtualDisplayAdapter(
         ) {
             return true
         }
-        val kids = readChildTaskIds(target) ?: (info?.let { readChildTaskIds(it) }) ?: return false
-        if (kids.size < 2) return false
-        return kids.any { kid ->
+        val kids = readChildTaskIds(target) ?: info?.let { readChildTaskIds(it) }
+        // IntArray? has no isNullOrEmpty() in this Kotlin — check explicitly.
+        if (kids == null || kids.isEmpty()) return false
+        // Any multi-window / stage-config child ⇒ this is an organizer (or stage) root.
+        val childLooksLikeStage = kids.any { kid ->
             val c = resolveTaskObject(kid) ?: return@any false
             isSplitStageMode(getWindowingMode(c)) || hasSplitStageConfig(c) || isCreatedByOrganizer(c)
+        }
+        if (childLooksLikeStage) return true
+        // LIVE / aborting split: FREEFORM or FULLSCREEN `#3` with ≥2 children (stage shells or
+        // app leaves). Same heuristic as empty-shell cleanup — do not require createdByOrganizer.
+        if (kids.size >= 2 && !isHomeishRootTask(target) && (info == null || !isHomeishRootTask(info))) {
+            return true
+        }
+        return false
+    }
+
+    /** Home / launcher roots — must not be mistaken for StageCoordinator multi-child trees. */
+    private fun isHomeishRootTask(taskInfo: Any): Boolean {
+        if (taskInfo is ActivityTaskManager.RootTaskInfo && isSystemHomeTask(taskInfo)) {
+            return true
+        }
+        val pkg = try {
+            (taskInfo as? ActivityTaskManager.RootTaskInfo)?.topActivity?.packageName
+                ?: (taskInfo.getObjectAs("topActivity", ComponentName::class.java) as? ComponentName)
+                    ?.packageName
+        } catch (_: Throwable) {
+            null
+        }
+        if (pkg != null &&
+            (pkg == mHomePackage || pkg == mLauncherPackage || isBounceExcludedPackage(pkg))
+        ) {
+            return true
+        }
+        return try {
+            val conf = taskInfo.invokeMethod("getConfiguration", args(), argTypes()) ?: return false
+            val winConf = conf.invokeMethod("getWindowConfiguration", args(), argTypes()) ?: return false
+            val activityType = winConf.invokeMethod("getActivityType", args(), argTypes()) as? Int
+            activityType == ACTIVITY_TYPE_HOME
+        } catch (_: Throwable) {
+            false
         }
     }
 
@@ -5784,10 +5915,9 @@ class AaVirtualDisplayAdapter(
                 // Never treat StageCoordinator / stage shells as the app task — OneUI often
                 // leaves a stale top/baseActivity on `#3`, and reclaim-missing then bounces the
                 // whole split tree (aborts caption freeform→split).
-                if (matches(info) &&
-                    !isCreatedByOrganizer(info) &&
-                    !isSplitOrganizerOrStageTask(taskId)
-                ) {
+                val organizer =
+                    isCreatedByOrganizer(info) || isSplitOrganizerOrStageTask(taskId)
+                if (matches(info) && !organizer) {
                     return taskId
                 }
                 val childIds = readChildTaskIds(info)
@@ -5798,8 +5928,8 @@ class AaVirtualDisplayAdapter(
                         ?: return@forEach
                     walk(child, depth + 1)?.let { return it }
                 }
-                // Organizer whose topActivity is the app (OneUI sometimes reports that way).
-                if (matches(info)) return taskId
+                // Do NOT fall back to the organizer itself when topActivity matches the app —
+                // that returned `#3` for Douyin and ensureFreeform demoted the split shell.
                 return null
             }
             for (info in tasks) {
@@ -5957,7 +6087,7 @@ class AaVirtualDisplayAdapter(
             val pkg = taskInfo.topActivity?.packageName ?: continue
             if (isBounceExcludedPackage(pkg) || pkg == mHomePackage || pkg == mLauncherPackage) continue
             if (isPinnedWindowMode(taskInfo)) continue
-            if (isCreatedByOrganizer(taskInfo)) continue
+            if (isCreatedByOrganizer(taskInfo) || isSplitOrganizerOrStageTask(taskInfo.taskId)) continue
             scheduleEnsureFreeform(taskInfo.taskId, reason, force = true)
         }
     }
