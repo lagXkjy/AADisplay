@@ -497,6 +497,99 @@ object AndroidHook : BaseHook() {
         }
     }
 
+    /**
+     * App leaves currently filling OneUI main/left + side/right on the AA VD, ordered left→right.
+     * Uses local ATMS tree walk — RootTaskInfo/`getOrderedSplitSides` often miss nested #4/#5 leaves.
+     * Skips AppsEdge / system chooser packages so mid-entry never poisons the last-split snapshot.
+     */
+    fun findOrderedSplitAppSidesOnVd(): List<Pair<Int, String>> {
+        if (!isReadyForSystemHooks()) return emptyList()
+        return try {
+            val atm = resolveLocalAtmService() ?: return emptyList()
+            val vdId = CoreManagerService.getDisplayId()
+            if (vdId == Display.INVALID_DISPLAY) return emptyList()
+            val rwc = atm.getObjectOrNull("mRootWindowContainer") ?: return emptyList()
+            val dc = rwc.invokeMethod(
+                "getDisplayContent",
+                args(vdId),
+                argTypes(Int::class.javaPrimitiveType!!)
+            ) ?: return emptyList()
+            val tda = dc.invokeMethod("getDefaultTaskDisplayArea", args(), argTypes())
+                ?: return emptyList()
+            var left: Pair<Int, String>? = null
+            var right: Pair<Int, String>? = null
+            val unordered = mutableListOf<Pair<Int, String>>()
+            fun isChooserOrSystem(pkg: String): Boolean {
+                if (pkg.isEmpty()) return true
+                if (pkg == "com.samsung.android.app.appsedge" ||
+                    pkg.startsWith("com.samsung.android.app.appsedge.")
+                ) {
+                    return true
+                }
+                if (pkg == "com.sec.android.app.launcher" ||
+                    pkg == "com.android.systemui" ||
+                    pkg == "android"
+                ) {
+                    return true
+                }
+                return false
+            }
+            fun considerSide(current: Pair<Int, String>?, id: Int, pkg: String): Pair<Int, String>? {
+                if (isChooserOrSystem(pkg)) return current
+                // Prefer a real app over a previously captured chooser (should not happen after filter).
+                if (current == null || isChooserOrSystem(current.second)) return id to pkg
+                return current
+            }
+            fun walk(node: Any, depth: Int) {
+                if (depth > 8) return
+                if (taskInSplitStage(node)) {
+                    val pkg = readTopPackage(node)?.trim().orEmpty()
+                    val id = readTaskId(node)
+                    if (pkg.isNotEmpty() && id > 0 && !isChooserOrSystem(pkg)) {
+                        when (readStageSide(node)) {
+                            "main", "left" -> left = considerSide(left, id, pkg)
+                            "side", "right" -> right = considerSide(right, id, pkg)
+                            else -> unordered.add(id to pkg)
+                        }
+                    }
+                }
+                val childCount = try {
+                    node.invokeMethod("getChildCount", args(), argTypes()) as? Int ?: 0
+                } catch (_: Throwable) {
+                    0
+                }
+                for (i in 0 until childCount) {
+                    val child = try {
+                        node.invokeMethod(
+                            "getChildAt",
+                            args(i),
+                            argTypes(Int::class.javaPrimitiveType!!)
+                        )
+                    } catch (_: Throwable) {
+                        null
+                    } ?: continue
+                    walk(child, depth + 1)
+                }
+            }
+            walk(tda, 0)
+            val l = left
+            val r = right
+            if (l != null && r != null && l.second != r.second) {
+                return listOf(l, r)
+            }
+            // Stage tags missing — keep first two distinct real packages.
+            unordered
+                .filter { !isChooserOrSystem(it.second) }
+                .distinctBy { it.second }
+                .take(2)
+                .takeIf { it.size == 2 && it[0].second != it[1].second }
+                ?: emptyList()
+        } catch (e: Throwable) {
+            log(tagName, "findOrderedSplitAppSidesOnVd failed:", e)
+            emptyList()
+        }
+    }
+
     private fun collectSplitPackagesOnVd(): Set<String> {
         val found = mutableSetOf<String>()
         val atm = resolveLocalAtmService() ?: return found

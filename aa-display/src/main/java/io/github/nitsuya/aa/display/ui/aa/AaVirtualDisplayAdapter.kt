@@ -200,10 +200,18 @@ class AaVirtualDisplayAdapter(
         private const val RESTORE_RATIO_AFTER_EXPAND_MS = 450L
         /** Keep restored AA split from being dismissed by Default Launch / bounce. */
         private const val PROTECT_RESTORED_SPLIT_MS = 45_000L
-        /** Debounce snapshot writes; divider drag fires stack-changed continuously. */
-        private const val LAST_SPLIT_SNAPSHOT_DEBOUNCE_MS = 3500L
+        /** Trailing quiet window before snapshot write (divider drag / focus-guard storms). */
+        private const val LAST_SPLIT_SNAPSHOT_DEBOUNCE_MS = 2500L
+        /**
+         * Cap how long continuous stack-changed can postpone a snapshot. Home (e.g. 嘟嘟mini)
+         * often sits fullscreen on the VD and focus-guard keeps firing — pure trailing debounce
+         * never settled, so new split pairs were never saved and quick-restore kept the old pair.
+         */
+        private const val LAST_SPLIT_SNAPSHOT_MAX_WAIT_MS = 8000L
         /** Ignore tiny ratio jitter so we do not rewrite the snapshot file. */
         private const val LAST_SPLIT_RATIO_WRITE_EPSILON = 0.03f
+        /** After pane replace, force a snapshot once Shell has settled. */
+        private const val LAST_SPLIT_AFTER_REPLACE_MS = 1800L
 
         /**
          * Never bounce these phone-side surfaces back onto the VD.
@@ -321,7 +329,12 @@ class AaVirtualDisplayAdapter(
     /** After Restore Last Split succeeds, ignore phone Default Launch / bounce that dismisses VD split. */
     private var mProtectRestoredSplitUntil = 0L
     private var mLastPersistedSplitFingerprint: String? = null
-    private val mDebouncedPersistLastSplit = Runnable { persistLastSplitSnapshotIfStable() }
+    /** Uptime when the current trailing-debounce persist window first opened. */
+    private var mPersistSplitFirstScheduledAt = 0L
+    private val mDebouncedPersistLastSplit = Runnable {
+        mPersistSplitFirstScheduledAt = 0L
+        persistLastSplitSnapshotIfStable()
+    }
     /** Short cache — stack/cleanup paths call split detection dozens of times per second. */
     private var mSplitAppsCacheAt = 0L
     private var mSplitAppsCacheDisplayId = Display.INVALID_DISPLAY
@@ -442,6 +455,7 @@ class AaVirtualDisplayAdapter(
         mHandler.removeCallbacks(mDebouncedRestoreHiddenFreeform)
         mHandler.removeCallbacks(mDebouncedSplitFocusGuard)
         mHandler.removeCallbacks(mDebouncedPersistLastSplit)
+        mPersistSplitFirstScheduledAt = 0L
         mHandler.removeCallbacksAndMessages(EMPTY_SPLIT_CLEANUP_TOKEN)
         mHandler.removeCallbacksAndMessages(EXPAND_SPLIT_SHELL_KICK_TOKEN)
         mHandler.removeCallbacksAndMessages(ASYMMETRIC_SPLIT_TOKEN)
@@ -594,6 +608,7 @@ class AaVirtualDisplayAdapter(
         mHandler.removeCallbacks(mDebouncedRestoreHiddenFreeform)
         mHandler.removeCallbacks(mDebouncedSplitFocusGuard)
         mHandler.removeCallbacks(mDebouncedPersistLastSplit)
+        mPersistSplitFirstScheduledAt = 0L
         mHandler.removeCallbacksAndMessages(EMPTY_SPLIT_CLEANUP_TOKEN)
         mHandler.removeCallbacksAndMessages(EXPAND_SPLIT_SHELL_KICK_TOKEN)
         mHandler.removeCallbacksAndMessages(ASYMMETRIC_SPLIT_TOKEN)
@@ -1181,8 +1196,14 @@ class AaVirtualDisplayAdapter(
                 if (attempt + 1 < RESTORE_LAST_SPLIT_MAX_ATTEMPTS) {
                     restoreEnterSplit(snap, leftNow, rightNow, attempt + 1)
                 } else if (mRestoreTocNotified) {
-                    // Split often already formed; detection lagged. Do NOT start Default Launch.
-                    finishRestoreLastSplit(snap, "ok-undetected")
+                    // TOC ran but pair never entered split stages — do NOT treat as success.
+                    // Claiming ok-undetected used to arm 45s protect while apps stayed fullscreen,
+                    // which blocked ensureFreeform / caption split until soft reboot.
+                    if (isRestorePairInSplit(snap, leftNow, rightNow)) {
+                        finishRestoreLastSplit(snap, "ok-late")
+                    } else {
+                        failRestoreLastSplit("split-not-formed-after-toc")
+                    }
                 } else {
                     failRestoreLastSplit("split-not-formed")
                 }
@@ -1219,6 +1240,12 @@ class AaVirtualDisplayAdapter(
             "restoreLastSplit done[$reason] left=${snap.leftPackage} right=${snap.rightPackage} " +
                 "protect=${PROTECT_RESTORED_SPLIT_MS}ms"
         )
+        // RootTaskInfo walk often still returns sides=0 right after TOC; ATMS fallback + delay.
+        mHandler.postDelayed({
+            if (!mIsDestroying) {
+                persistLastSplitSnapshotIfStable(force = true, mirrorSettings = true)
+            }
+        }, LAST_SPLIT_AFTER_REPLACE_MS)
     }
 
     private fun clearRestoreLastSplitState() {
@@ -1232,14 +1259,41 @@ class AaVirtualDisplayAdapter(
     }
 
     private fun failRestoreLastSplit(reason: String) {
-        // If TOC already ran, never overlay Default Launch on a possibly-formed split.
+        // TOC ran but pair is not actually in split — recover freeform, do not arm 45s protect.
         if (mRestoreTocNotified) {
-            log(TAG, "restoreLastSplit failed: $reason after TOC — keep split, no Default Launch")
+            val stillSplit = LastSplitStore.load(context.contentResolver)?.let { snap ->
+                val leftId = mRestoreSplitLeftTaskId ?: 0
+                val rightId = mRestoreSplitRightTaskId ?: 0
+                isRestorePairInSplit(snap, leftId, rightId)
+            } == true
+            if (stillSplit) {
+                log(TAG, "restoreLastSplit failed: $reason after TOC — keep split, no Default Launch")
+                val snap = LastSplitStore.load(context.contentResolver)
+                if (snap != null) {
+                    finishRestoreLastSplit(snap, "ok-after-$reason")
+                } else {
+                    clearRestoreLastSplitState()
+                }
+                return
+            }
+            log(TAG, "restoreLastSplit failed: $reason after TOC — no split formed, recover freeform")
+            val leftPkg = mRestoreFullscreenPackage
             val snap = LastSplitStore.load(context.contentResolver)
-            if (snap != null) {
-                finishRestoreLastSplit(snap, "ok-after-$reason")
-            } else {
-                clearRestoreLastSplitState()
+            val wasManual = mRestoreLastSplitManual
+            clearRestoreLastSplitState()
+            mProtectRestoredSplitUntil = 0L
+            mSuppressEnsureFreeformUntil = 0L
+            mSuppressDisplayBounceUntil = 0L
+            // Drop empty shells left by a failed TOC so caption freeform→split can work again.
+            scheduleCleanupEmptySplitOrganizerTasks("restore-fail:$reason")
+            listOfNotNull(snap?.leftPackage, snap?.rightPackage, leftPkg)
+                .distinct()
+                .forEach { pkg ->
+                    markPendingInsetFreeform(pkg)
+                    scheduleEnsureFreeformForPackage(pkg, "restore-fail")
+                }
+            if (wasManual) {
+                TipUtil.showToast("快捷分屏恢复失败")
             }
             return
         }
@@ -1351,13 +1405,19 @@ class AaVirtualDisplayAdapter(
     /**
      * Split app tasks ordered left→right (or top→bottom) by bounds — not focus order.
      * Never shells out to dumpsys (that stalls system_server / AA VD).
+     * Falls back to local ATMS walk when RootTaskInfo nesting hides stage leaves.
      */
     private fun getOrderedSplitSides(): List<Pair<Int, String>> {
         val sides = getSplitAppTasksOnDisplay()
-        if (sides.size < 2) return sides
+        val resolved = if (sides.size >= 2) {
+            sides
+        } else {
+            AndroidHook.findOrderedSplitAppSidesOnVd().ifEmpty { sides }
+        }
+        if (resolved.size < 2) return resolved
         val full = buildFullDisplayBounds()
         val landscape = full == null || full.width() >= full.height()
-        return sides.sortedBy { (taskId, _) ->
+        return resolved.sortedBy { (taskId, _) ->
             val bounds = getTaskBoundsSafe(taskId, null) ?: return@sortedBy Int.MAX_VALUE
             if (landscape) bounds.left else bounds.top
         }
@@ -1365,8 +1425,22 @@ class AaVirtualDisplayAdapter(
 
     private fun schedulePersistLastSplitSnapshot() {
         if (mRestoringLastSplit || mIsDestroying || !isOneUiSplitEnabled()) return
+        val now = SystemClock.uptimeMillis()
+        val pending = mHandler.hasCallbacks(mDebouncedPersistLastSplit)
+        if (!pending || mPersistSplitFirstScheduledAt <= 0L) {
+            mPersistSplitFirstScheduledAt = now
+        }
         mHandler.removeCallbacks(mDebouncedPersistLastSplit)
-        mHandler.postDelayed(mDebouncedPersistLastSplit, LAST_SPLIT_SNAPSHOT_DEBOUNCE_MS)
+        val waited = (now - mPersistSplitFirstScheduledAt).coerceAtLeast(0L)
+        val delay = if (waited >= LAST_SPLIT_SNAPSHOT_MAX_WAIT_MS) {
+            0L
+        } else {
+            minOf(
+                LAST_SPLIT_SNAPSHOT_DEBOUNCE_MS,
+                LAST_SPLIT_SNAPSHOT_MAX_WAIT_MS - waited
+            )
+        }
+        mHandler.postDelayed(mDebouncedPersistLastSplit, delay)
     }
 
     private fun persistLastSplitSnapshotIfStable(
@@ -1374,13 +1448,33 @@ class AaVirtualDisplayAdapter(
         mirrorSettings: Boolean = false,
     ) {
         if ((!force && mIsDestroying) || mRestoringLastSplit || !isOneUiSplitEnabled()) return
-        if (isSplitChooserActiveOnPhone()) return
+        // Force (destroy / pane-replace) must still write — phone AppsEdge must not block it.
+        if (!force && isSplitChooserActiveOnPhone()) {
+            logDebug(TAG, "lastSplit snapshot skip: AppsEdge active")
+            return
+        }
+        // Fresh walk — 100ms cache can hide a just-replaced pane.
+        mSplitAppsCacheAt = 0L
         val sides = getOrderedSplitSides()
-        if (sides.size != 2) return
-        val full = buildFullDisplayBounds() ?: return
-        val landscape = full.width() >= full.height()
+        if (sides.size != 2) {
+            log(TAG, "lastSplit snapshot skip: sides=${sides.size} force=$force $sides")
+            return
+        }
         val (leftId, leftPkg) = sides[0]
         val (_, rightPkg) = sides[1]
+        // Never persist AppsEdge / launcher as a split pane (mid freeform→split entry).
+        if (isBounceExcludedPackage(leftPkg) || isBounceExcludedPackage(rightPkg) ||
+            isSplitChooserPackage(leftPkg) || isSplitChooserPackage(rightPkg)
+        ) {
+            log(TAG, "lastSplit snapshot skip: chooser/system pane $leftPkg|$rightPkg")
+            return
+        }
+        val full = buildFullDisplayBounds()
+        if (full == null) {
+            logDebug(TAG, "lastSplit snapshot skip: no display bounds")
+            return
+        }
+        val landscape = full.width() >= full.height()
         val leftBounds = getTaskBoundsSafe(leftId, null)
         val ratio = if (leftBounds != null && !leftBounds.isEmpty && full.width() > 0 && full.height() > 0) {
             if (landscape) {
@@ -1409,6 +1503,11 @@ class AaVirtualDisplayAdapter(
         val fingerprint =
             "$leftPkg|$rightPkg|${String.format(java.util.Locale.US, "%.3f", ratio)}|$landscape"
         if (!force && fingerprint == mLastPersistedSplitFingerprint) return
+        val prevPairKey = prev?.split('|')?.takeIf { it.size >= 4 }?.let {
+            "${it[0]}|${it[1]}|${it[3]}"
+        }
+        val pairChanged = prevPairKey == null || prevPairKey != pairKey
+        val doMirror = mirrorSettings || pairChanged
         val saved = LastSplitStore.save(
             LastSplitStore.Snapshot(
                 leftPackage = leftPkg,
@@ -1417,11 +1516,14 @@ class AaVirtualDisplayAdapter(
                 landscape = landscape
             ),
             contentResolver = context.contentResolver,
-            mirrorSettings = mirrorSettings,
+            // Pair changes should mirror Settings too — quick-restore verification + file fallback.
+            mirrorSettings = doMirror,
         )
         if (saved) {
             mLastPersistedSplitFingerprint = fingerprint
-            log(TAG, "lastSplit snapshot saved $fingerprint mirror=$mirrorSettings")
+            log(TAG, "lastSplit snapshot saved $fingerprint mirror=$doMirror")
+        } else {
+            log(TAG, "lastSplit snapshot save failed $fingerprint")
         }
     }
 
@@ -1569,9 +1671,20 @@ class AaVirtualDisplayAdapter(
         )
         dismissSplitSideForReplace(victimTaskId, victimPkg)
         val adjacentOk = launchActivityAsUser(componentName, userId, adjacent = true)
-        if (adjacentOk) return true
-        log(TAG, "replaceSplitSide: adjacent launch failed; trying non-adjacent")
-        return launchActivityAsUser(componentName, userId, adjacent = false)
+        val launched = if (adjacentOk) {
+            true
+        } else {
+            log(TAG, "replaceSplitSide: adjacent launch failed; trying non-adjacent")
+            launchActivityAsUser(componentName, userId, adjacent = false)
+        }
+        if (launched) {
+            // Do not wait for trailing debounce — focus-guard storms can starve it.
+            mHandler.postDelayed({
+                if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return@postDelayed
+                persistLastSplitSnapshotIfStable(force = true, mirrorSettings = true)
+            }, LAST_SPLIT_AFTER_REPLACE_MS)
+        }
+        return launched
     }
 
     /** Close one split pane and stop reclaim from pulling that package back. */
@@ -4561,6 +4674,10 @@ class AaVirtualDisplayAdapter(
         if (needMode) {
             if (!setTaskWindowingModeSafe(taskId, WINDOWING_MODE_FREEFORM)) {
                 log(TAG, "ensureFreeform[$reason]: setTaskWindowingMode failed task=$taskId pkg=$pkg mode=${mode ?: "?"}")
+                // Binder ATM often no-ops on OneUI AA VD — force via local ATMS Task.
+                if (AndroidHook.forceTaskWindowingModeOnVd(taskId, WINDOWING_MODE_FREEFORM)) {
+                    log(TAG, "ensureFreeform[$reason]: local ATMS forced FREEFORM task=$taskId pkg=$pkg")
+                }
                 // Still push inset bounds — OneUI may accept bounds before mode sticks.
                 needBounds = true
             } else {
@@ -4601,6 +4718,7 @@ class AaVirtualDisplayAdapter(
             if (afterMode != WINDOWING_MODE_FREEFORM && canRelaunch) {
                 setTaskWindowingModeSafe(taskId, WINDOWING_MODE_FULLSCREEN)
                 setTaskWindowingModeSafe(taskId, WINDOWING_MODE_FREEFORM)
+                AndroidHook.forceTaskWindowingModeOnVd(taskId, WINDOWING_MODE_FREEFORM)
                 resized = resizeTaskToFreeformBounds(taskId) || resized
                 log(TAG, "ensureFreeform[$reason]: mode-toggle fallback task=$taskId pkg=$pkg")
                 afterInfo = findRootTaskInfoOnDisplay(taskId, mDisplayId)
@@ -4608,6 +4726,19 @@ class AaVirtualDisplayAdapter(
                 afterBounds = getTaskBoundsSafe(taskId, afterInfo)
                 afterStillMax =
                     afterBounds != null && !afterBounds.isEmpty && isNearlyFullscreenBounds(afterBounds)
+            }
+        }
+
+        // Final local ATMS force — covers inset-but-still-mode-1 (caption/split entry needs mode=5).
+        if (afterMode != WINDOWING_MODE_FREEFORM) {
+            if (AndroidHook.forceTaskWindowingModeOnVd(taskId, WINDOWING_MODE_FREEFORM)) {
+                resized = resizeTaskToFreeformBounds(taskId) || resized
+                afterInfo = findRootTaskInfoOnDisplay(taskId, mDisplayId)
+                afterMode = afterInfo?.let { getWindowingMode(it) }
+                afterBounds = getTaskBoundsSafe(taskId, afterInfo)
+                afterStillMax =
+                    afterBounds != null && !afterBounds.isEmpty && isNearlyFullscreenBounds(afterBounds)
+                log(TAG, "ensureFreeform[$reason]: local ATMS final FREEFORM task=$taskId pkg=$pkg")
             }
         }
 

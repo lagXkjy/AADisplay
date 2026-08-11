@@ -12,6 +12,10 @@ import java.util.Properties
  * Durable OneUI split snapshot written from system_server ([AaVirtualDisplayAdapter]).
  * App prefs / XSharedPreferences are not writable from system_server; this file lives under
  * `/data/system` like the hook mirror. Also mirrored into [Settings.Global] for easy verification.
+ *
+ * Settings.Global is the source of truth for restore: a root-owned / unwritable properties file
+ * (e.g. after `adb shell su` touch) would otherwise shadow forever and quick-restore keeps the
+ * stale pair.
  */
 object LastSplitStore {
     private const val TAG = "AADisplay_LastSplitStore"
@@ -30,26 +34,27 @@ object LastSplitStore {
     )
 
     fun load(contentResolver: ContentResolver? = null): Snapshot? {
-        loadFromFile()?.let { return it }
-        return loadFromSettings(contentResolver)
+        // Prefer Settings — system_server can always update it; the file may be root-owned 0644.
+        loadFromSettings(contentResolver)?.let { return it }
+        return loadFromFile()
     }
 
     /**
-     * @param mirrorSettings Settings.Global is relatively expensive (sync + notify).
-     * Prefer file-only on the hot path; mirror on destroy / rare updates.
+     * Always mirrors [Settings.Global]. File write is best-effort (may fail if the path is
+     * root-owned); restore reads Settings first.
      */
     fun save(
         snapshot: Snapshot,
         contentResolver: ContentResolver? = null,
         mirrorSettings: Boolean = false,
     ): Boolean {
+        val settingsOk = saveToSettings(snapshot, contentResolver)
         val fileOk = saveToFile(snapshot)
-        val settingsOk = if (mirrorSettings) {
-            saveToSettings(snapshot, contentResolver)
-        } else {
-            false
+        // mirrorSettings kept for call-site compatibility; Settings is always written now.
+        if (!settingsOk && mirrorSettings) {
+            Log.w(TAG, "settings save failed (mirror requested)")
         }
-        return fileOk || settingsOk
+        return settingsOk || fileOk
     }
 
     private fun loadFromFile(): Snapshot? {
@@ -100,24 +105,30 @@ object LastSplitStore {
     }
 
     private fun saveToFile(snapshot: Snapshot): Boolean {
-        return try {
-            val props = Properties()
-            props.setProperty(AADisplayConfig.LastSplitLeftPackage.key, snapshot.leftPackage)
-            props.setProperty(AADisplayConfig.LastSplitRightPackage.key, snapshot.rightPackage)
-            props.setProperty(
-                AADisplayConfig.LastSplitPrimaryRatio.key,
-                snapshot.primaryRatio.toString()
-            )
-            props.setProperty(
-                AADisplayConfig.LastSplitDisplayLandscape.key,
-                snapshot.landscape.toString()
-            )
-            val file = File(PATH)
+        val props = Properties()
+        props.setProperty(AADisplayConfig.LastSplitLeftPackage.key, snapshot.leftPackage)
+        props.setProperty(AADisplayConfig.LastSplitRightPackage.key, snapshot.rightPackage)
+        props.setProperty(
+            AADisplayConfig.LastSplitPrimaryRatio.key,
+            snapshot.primaryRatio.toString()
+        )
+        props.setProperty(
+            AADisplayConfig.LastSplitDisplayLandscape.key,
+            snapshot.landscape.toString()
+        )
+        val file = File(PATH)
+        fun writeOnce(): Boolean {
             file.parentFile?.mkdirs()
             FileOutputStream(file).use { out ->
                 props.store(out, "AADisplay last OneUI split snapshot")
             }
+            // Owner (system) read/write; others read — never leave a root-only file if we created it.
             file.setReadable(true, false)
+            file.setWritable(true, true)
+            return true
+        }
+        return try {
+            writeOnce()
             Log.i(
                 TAG,
                 "file saved left=${snapshot.leftPackage} right=${snapshot.rightPackage} " +
@@ -125,8 +136,24 @@ object LastSplitStore {
             )
             true
         } catch (e: Throwable) {
-            Log.w(TAG, "file save failed", e)
-            false
+            // Common failure: prior adb/root created root:root 0644 — system_server cannot overwrite.
+            Log.w(TAG, "file save failed, retry after delete", e)
+            try {
+                if (file.exists() && !file.delete()) {
+                    Log.w(TAG, "could not delete unwritable $PATH")
+                    return false
+                }
+                writeOnce()
+                Log.i(
+                    TAG,
+                    "file saved after delete left=${snapshot.leftPackage} " +
+                        "right=${snapshot.rightPackage}"
+                )
+                true
+            } catch (e2: Throwable) {
+                Log.w(TAG, "file save failed", e2)
+                false
+            }
         }
     }
 
