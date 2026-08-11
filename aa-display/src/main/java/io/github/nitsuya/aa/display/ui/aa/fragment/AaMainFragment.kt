@@ -22,6 +22,7 @@ import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.util.SharedPreferencesAccess
 import io.github.nitsuya.aa.display.util.getGmsCarFirstPartyManager
+import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.util.startCarAaDisplay
 import io.github.nitsuya.aa.display.util.startCarTelecom
 import io.github.nitsuya.aa.display.xposed.IVirtualDisplayCreatedListener
@@ -283,18 +284,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             if (e.action == MotionEvent.ACTION_DOWN) {
                 repairDownTime = uptimeMillis
             }
-            val pointerCoords: Array<MotionEvent.PointerCoords?> = arrayOfNulls(e.pointerCount)
-            val pointerProperties: Array<MotionEvent.PointerProperties?> = arrayOfNulls(e.pointerCount)
-            for (i in 0 until e.pointerCount) {
-                pointerCoords[i] = MotionEvent.PointerCoords().apply {
-                    e.getPointerCoords(i, this)
-                }
-                pointerProperties[i] = MotionEvent.PointerProperties().apply {
-                    e.getPointerProperties(i, this)
-                }
-            }
-            val newEvent = MotionEvent.obtain(repairDownTime, uptimeMillis, e.action, e.pointerCount, pointerProperties, pointerCoords,0,0,1.0f,1.0f,0,0,0,0)
-            newEvent.source = InputDeviceCompat.SOURCE_TOUCHSCREEN
+            val newEvent = rewriteMotionEvent(
+                source = e,
+                downTime = repairDownTime,
+                eventTime = uptimeMillis,
+                preserveMeta = false,
+                sourceOverride = InputDeviceCompat.SOURCE_TOUCHSCREEN,
+            )
             CoreApi.touch(newEvent)
             newEvent.recycle()
             true

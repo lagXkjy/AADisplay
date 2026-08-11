@@ -374,7 +374,7 @@ class AaVirtualDisplayAdapter(
     }
     private var mServiceConnection = object: ServiceConnection {
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
-            log(TAG, "ShellManagerService connected: $name")
+            logDebug(TAG, "ShellManagerService connected: $name")
             tryOrNull { mShellManager?.asBinder()?.unlinkToDeath(mShellDeathRecipient, 0) }
             mShellManager = IShellManager.Stub.asInterface(service)
             try {
@@ -392,7 +392,7 @@ class AaVirtualDisplayAdapter(
             }
         }
         override fun onServiceDisconnected(name: ComponentName) {
-            log(TAG, "ShellManagerService disconnected: $name")
+            logDebug(TAG, "ShellManagerService disconnected: $name")
             tryOrNull { mShellManager?.asBinder()?.unlinkToDeath(mShellDeathRecipient, 0) }
             mShellManager = null
         }
@@ -407,15 +407,15 @@ class AaVirtualDisplayAdapter(
             , mServiceConnection
             , AppCompatActivity.BIND_AUTO_CREATE
         )
-        log(TAG, "bind ShellManagerService requested=$bound")
+        logDebug(TAG, "bind ShellManagerService requested=$bound")
     }
 
     fun setSurface(surface: Surface?){
         if (!::mVirtualDisplay.isInitialized) {
-            log(TAG, "setSurface ignored before virtual display init: surface=${surface != null}")
+            logDebug(TAG, "setSurface ignored before virtual display init: surface=${surface != null}")
             return
         }
-        log(TAG, "setSurface: surface=${surface != null}, display=$mDisplayId")
+        logDebug(TAG, "setSurface: surface=${surface != null}, display=$mDisplayId")
         mVirtualDisplay.surface = surface
     }
 
@@ -681,7 +681,7 @@ class AaVirtualDisplayAdapter(
                 SystemUiSplitHook.SETTINGS_VD_DISPLAY_ID,
                 value
             )
-            log(TAG, "publish VD displayId[$reason]=$value")
+            logDebug(TAG, "publish VD displayId[$reason]=$value")
         } catch (e: Throwable) {
             log(TAG, "publish VD displayId[$reason] failed:", e)
         }
@@ -715,12 +715,12 @@ class AaVirtualDisplayAdapter(
         if (action == KeyEvent.KEYCODE_BACK) {
             // Match Home-button behavior: if back navigation returns to home and a PiP task is left
             // pinned, remove it so the launcher view is clean. Never touch OneUI split/MW tasks.
-            Handler(Looper.getMainLooper()).post {
+            mHandler.post {
                 if (!shouldPreserveMultiWindowLayout()) {
                     clearPinnedTasksIfHomeFront("back")
                 }
             }
-            Handler(Looper.getMainLooper()).postDelayed({
+            mHandler.postDelayed({
                 if (!shouldPreserveMultiWindowLayout()) {
                     clearPinnedTasksIfHomeFront("back-delay")
                 }
@@ -791,7 +791,7 @@ class AaVirtualDisplayAdapter(
         // Clean up pinned tasks on the AA virtual display so Home returns to a normal state.
         // Only clears WINDOWING_MODE_PINNED; split/MW tasks are never removed here.
         clearPinnedTasksOnDisplay("home")
-        Handler(Looper.getMainLooper()).postDelayed({
+        mHandler.postDelayed({
             clearPinnedTasksOnDisplay("home-delay")
         }, 350L)
     }
@@ -804,7 +804,7 @@ class AaVirtualDisplayAdapter(
      */
     private fun startHomeLauncher(){
         if(mHomePackage == null) {
-            log(TAG, "startHomeLauncher skipped: no launcher package")
+            logDebug(TAG, "startHomeLauncher skipped: no launcher package")
             return
         }
         bringConfiguredPackageToVirtualDisplay(mHomePackage!!, trackAsHome = true)
@@ -816,7 +816,7 @@ class AaVirtualDisplayAdapter(
      */
     private fun startDefaultPackage(){
         if(mLauncherPackage == null) {
-            log(TAG, "startDefaultPackage skipped: no launcher package")
+            logDebug(TAG, "startDefaultPackage skipped: no launcher package")
             return
         }
         bringConfiguredPackageToVirtualDisplay(mLauncherPackage!!, trackAsHome = false)
@@ -825,20 +825,20 @@ class AaVirtualDisplayAdapter(
     /** Snapshot + packages resolvable; does not check [AADisplayConfig.RestoreLastSplit]. */
     private fun canRestoreLastSplitFromSnapshot(): Boolean {
         if (!isOneUiSplitEnabled()) {
-            log(TAG, "restoreLastSplit skip: OneUI split off")
+            logDebug(TAG, "restoreLastSplit skip: OneUI split off")
             return false
         }
         val snap = LastSplitStore.load(context.contentResolver)
         if (snap == null) {
-            log(TAG, "restoreLastSplit skip: no snapshot at ${LastSplitStore.PATH}")
+            logDebug(TAG, "restoreLastSplit skip: no snapshot at ${LastSplitStore.PATH}")
             return false
         }
         if (resolveLaunchComponent(snap.leftPackage) == null) {
-            log(TAG, "restoreLastSplit skip: left unavailable ${snap.leftPackage}")
+            logDebug(TAG, "restoreLastSplit skip: left unavailable ${snap.leftPackage}")
             return false
         }
         if (resolveLaunchComponent(snap.rightPackage) == null) {
-            log(TAG, "restoreLastSplit skip: right unavailable ${snap.rightPackage}")
+            logDebug(TAG, "restoreLastSplit skip: right unavailable ${snap.rightPackage}")
             return false
         }
         return true
@@ -851,7 +851,7 @@ class AaVirtualDisplayAdapter(
             // Legacy / manually written key seen on some devices.
             (config?.getBoolean("AutoRestoreLastSplit", false) == true)
         if (!restoreEnabled) {
-            log(TAG, "restoreLastSplit skip: setting off")
+            logDebug(TAG, "restoreLastSplit skip: setting off")
             return false
         }
         return true
@@ -871,16 +871,16 @@ class AaVirtualDisplayAdapter(
      */
     fun requestRestoreLastSplitManual(): ManualRestoreResult {
         if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) {
-            log(TAG, "restoreLastSplit manual: no display session")
+            logDebug(TAG, "restoreLastSplit manual: no display session")
             return ManualRestoreResult.NoDisplay
         }
         if (!isOneUiSplitEnabled()) {
-            log(TAG, "restoreLastSplit manual: OneUI split off")
+            logDebug(TAG, "restoreLastSplit manual: OneUI split off")
             return ManualRestoreResult.SplitOff
         }
         val snap = LastSplitStore.load(context.contentResolver)
         if (snap == null) {
-            log(TAG, "restoreLastSplit manual: no snapshot")
+            logDebug(TAG, "restoreLastSplit manual: no snapshot")
             return ManualRestoreResult.NoSnapshot
         }
         if (resolveLaunchComponent(snap.leftPackage) == null ||
@@ -1021,7 +1021,7 @@ class AaVirtualDisplayAdapter(
         val wantFullscreen = packageName == mRestoreFullscreenPackage
         val onVd = findPackageTaskIdOnDisplay(packageName, mDisplayId)
         if (onVd != null) {
-            log(TAG, "restoreBring: already on VD $packageName#$onVd")
+            logDebug(TAG, "restoreBring: already on VD $packageName#$onVd")
             markVirtualDisplayOwnership(onVd, packageName)
             moveTaskToFront(onVd)
             if (wantFullscreen) {
@@ -1149,7 +1149,7 @@ class AaVirtualDisplayAdapter(
             setTaskWindowingModeSafe(leftNow, WINDOWING_MODE_FULLSCREEN)
         }
         if (!mRestoreTocNotified && !isTaskInSplitStage(rightNow) && !isTaskReadyForRestoreToc(rightNow)) {
-            log(TAG, "restoreLastSplit wait-freeform right=$rightNow attempt=$attempt")
+            logDebug(TAG, "restoreLastSplit wait-freeform right=$rightNow attempt=$attempt")
             scheduleEnsureFreeformOnce(rightNow, "restore-enter-right")
             AndroidHook.forceTaskWindowingModeOnVd(rightNow, WINDOWING_MODE_FREEFORM)
             if (attempt + 1 < RESTORE_LAST_SPLIT_MAX_ATTEMPTS) {
@@ -1320,7 +1320,7 @@ class AaVirtualDisplayAdapter(
         val full = buildFullDisplayBounds() ?: return
         val landscape = full.width() >= full.height()
         if (landscape != snap.landscape) {
-            log(TAG, "restoreLastSplit ratio skipped: orientation mismatch saved=${snap.landscape} now=$landscape")
+            logDebug(TAG, "restoreLastSplit ratio skipped: orientation mismatch saved=${snap.landscape} now=$landscape")
             return
         }
         val leftLeaf = pinnedLeftId?.takeIf { it > 0 }
@@ -1457,7 +1457,7 @@ class AaVirtualDisplayAdapter(
         mSplitAppsCacheAt = 0L
         val sides = getOrderedSplitSides()
         if (sides.size != 2) {
-            log(TAG, "lastSplit snapshot skip: sides=${sides.size} force=$force $sides")
+            logDebug(TAG, "lastSplit snapshot skip: sides=${sides.size} force=$force $sides")
             return
         }
         val (leftId, leftPkg) = sides[0]
@@ -1466,7 +1466,7 @@ class AaVirtualDisplayAdapter(
         if (isBounceExcludedPackage(leftPkg) || isBounceExcludedPackage(rightPkg) ||
             isSplitChooserPackage(leftPkg) || isSplitChooserPackage(rightPkg)
         ) {
-            log(TAG, "lastSplit snapshot skip: chooser/system pane $leftPkg|$rightPkg")
+            logDebug(TAG, "lastSplit snapshot skip: chooser/system pane $leftPkg|$rightPkg")
             return
         }
         val full = buildFullDisplayBounds()
@@ -1546,7 +1546,7 @@ class AaVirtualDisplayAdapter(
             ?: cached?.takeIf { isTaskOnVirtualDisplay(it) }
         if (onVd != null) {
             remember(onVd)
-            log(TAG, "bringToVD[$label]: already on VD task=$onVd")
+            logDebug(TAG, "bringToVD[$label]: already on VD task=$onVd")
             moveTaskToFront(onVd)
             if (!trackAsHome) {
                 markVirtualDisplayOwnership(onVd, packageName)
@@ -1660,7 +1660,7 @@ class AaVirtualDisplayAdapter(
 
         val already = sides.firstOrNull { it.second == packageName }
         if (already != null) {
-            log(TAG, "replaceSplitSide: $packageName already on stage task=${already.first}; focus")
+            logDebug(TAG, "replaceSplitSide: $packageName already on stage task=${already.first}; focus")
             return setFocusedTaskSafe(already.first) || moveTaskToFront(already.first)
         }
 
@@ -1697,7 +1697,7 @@ class AaVirtualDisplayAdapter(
         untrackPackage(packageName)
         try {
             val removed = Instances.iActivityTaskManager.removeTask(taskId)
-            log(TAG, "dismissSplitSideForReplace: removeTask($taskId)=$removed pkg=$packageName")
+            logDebug(TAG, "dismissSplitSideForReplace: removeTask($taskId)=$removed pkg=$packageName")
         } catch (e: Throwable) {
             log(TAG, "dismissSplitSideForReplace removeTask failed: task=$taskId", e)
         }
@@ -2011,7 +2011,7 @@ class AaVirtualDisplayAdapter(
         val configured = AADisplayConfig.LauncherPackage.get(config)
         val resolved = resolveLauncherPackage(configured)
         if (mLauncherPackage != resolved) {
-            log(TAG, "launcher[$reason]: configured=${configured.orEmpty()}, resolved=${resolved.orEmpty()}")
+            logDebug(TAG, "launcher[$reason]: configured=${configured.orEmpty()}, resolved=${resolved.orEmpty()}")
         }
         mLauncherPackage = resolved
         mHomePackage = resolved
@@ -2341,7 +2341,7 @@ class AaVirtualDisplayAdapter(
      */
     fun forceCleanupAllSplitShells(reason: String = "manual"): Int {
         if (!isOneUiSplitEnabled()) {
-            log(TAG, "forceCleanupAllSplitShells[$reason]: skipped (OneUI split off)")
+            logDebug(TAG, "forceCleanupAllSplitShells[$reason]: skipped (OneUI split off)")
             return 0
         }
         mEmptySplitShellsSeenAt = 0L
@@ -3386,7 +3386,7 @@ class AaVirtualDisplayAdapter(
                 val kids = readChildTaskIds(info) ?: task?.let { readChildTaskIds(it) }
                 "#${info.taskId} mode=$mode org=$orgInfo/$orgTask kids=${kids?.joinToString() ?: "-"}"
             }
-            log(TAG, "forceCleanup[$reason]: display=$displayId collected=0 roots=${tasks.size} [$summary]")
+            logDebug(TAG, "forceCleanup[$reason]: display=$displayId collected=0 roots=${tasks.size} [$summary]")
         }
         return ids
     }
@@ -3789,7 +3789,7 @@ class AaVirtualDisplayAdapter(
                 log(TAG, "cleanupEmptySplit[$reason]: removeTask($taskId) failed:", e)
                 false
             }
-            log(TAG, "cleanupEmptySplit[$reason]: removeTask($taskId)=$ok")
+            logDebug(TAG, "cleanupEmptySplit[$reason]: removeTask($taskId)=$ok")
             if (!organizerTaskStillPresent(taskId)) return true
 
             // ATM.removeTask often returns true while leaving mIsRemovalRequested shells on
@@ -3868,14 +3868,14 @@ class AaVirtualDisplayAdapter(
         for (write in writers) {
             try {
                 if (write() && !isTaskRemovalRequested(taskId)) {
-                    log(TAG, "clearTaskRemovalRequested: task=$taskId")
+                    logDebug(TAG, "clearTaskRemovalRequested: task=$taskId")
                     return
                 }
             } catch (_: Throwable) {
             }
         }
         if (isTaskRemovalRequested(taskId)) {
-            log(TAG, "clearTaskRemovalRequested: still set task=$taskId")
+            logDebug(TAG, "clearTaskRemovalRequested: still set task=$taskId")
         }
     }
 
@@ -3887,7 +3887,7 @@ class AaVirtualDisplayAdapter(
         }
         val task = resolveTaskObject(taskId)
         if (task == null) {
-            log(TAG, "cleanupEmptySplit[$reason]: force-remove($taskId) already gone after move")
+            logDebug(TAG, "cleanupEmptySplit[$reason]: force-remove($taskId) already gone after move")
             return true
         }
         val attempts: List<Pair<String, () -> Unit>> = listOf(
@@ -4467,7 +4467,7 @@ class AaVirtualDisplayAdapter(
 
     private fun cancelPendingEnsureFreeform(reason: String) {
         mEnsureFreeformEpoch++
-        log(TAG, "ensureFreeform cancelled epoch=$mEnsureFreeformEpoch [$reason]")
+        logDebug(TAG, "ensureFreeform cancelled epoch=$mEnsureFreeformEpoch [$reason]")
     }
 
     private fun scheduleEnsureFreeformOnce(taskId: Int, reason: String) {
@@ -5279,7 +5279,7 @@ class AaVirtualDisplayAdapter(
                 ?: info?.topActivity?.packageName?.trim()?.takeIf { it.isNotEmpty() }
             if (!pkg.isNullOrBlank() && !isBounceExcludedPackage(pkg)) {
                 if (mVdPackages.add(pkg)) {
-                    log(TAG, "VD ownership mark (pkg only, skip organizer task=$taskId): pkg=$pkg")
+                    logDebug(TAG, "VD ownership mark (pkg only, skip organizer task=$taskId): pkg=$pkg")
                 }
             }
             return
@@ -5288,7 +5288,7 @@ class AaVirtualDisplayAdapter(
         val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
         if (isBounceExcludedPackage(pkg)) return
         if (mVdPackages.add(pkg)) {
-            log(TAG, "VD ownership mark: pkg=$pkg task=$taskId")
+            logDebug(TAG, "VD ownership mark: pkg=$pkg task=$taskId")
         }
     }
 
@@ -5413,7 +5413,7 @@ class AaVirtualDisplayAdapter(
         // PiP (PINNED) must stay on the phone/system display — bouncing it onto the AA VD
         // leaves empty split shells / kills freeform caption so OneUI split stops working.
         if (isPinnedTask(taskId)) {
-            log(TAG, "bounce skipped (pinned/PiP): task=$taskId pkg=${pkg.orEmpty()} display=$newDisplayId")
+            logDebug(TAG, "bounce skipped (pinned/PiP): task=$taskId pkg=${pkg.orEmpty()} display=$newDisplayId")
             mVdTaskIds.remove(taskId)
             scheduleCleanupEmptySplitOrganizerTasks("display-changed-pinned")
             return
@@ -5436,11 +5436,11 @@ class AaVirtualDisplayAdapter(
     private fun bounceTaskToVirtualDisplay(taskId: Int, packageName: String?, reason: String): Boolean {
         if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return false
         if (SystemClock.uptimeMillis() < mSuppressDisplayBounceUntil) {
-            log(TAG, "bounce skipped (suppressed): task=$taskId pkg=${packageName.orEmpty()} [$reason]")
+            logDebug(TAG, "bounce skipped (suppressed): task=$taskId pkg=${packageName.orEmpty()} [$reason]")
             return false
         }
         if (isPinnedTask(taskId)) {
-            log(TAG, "bounce skipped (pinned/PiP): task=$taskId pkg=${packageName.orEmpty()} [$reason]")
+            logDebug(TAG, "bounce skipped (pinned/PiP): task=$taskId pkg=${packageName.orEmpty()} [$reason]")
             mVdTaskIds.remove(taskId)
             return false
         }
@@ -5448,7 +5448,7 @@ class AaVirtualDisplayAdapter(
         // `#3` on the phone; reclaim used to moveRootTaskToDisplay(#3) and abort caption-split.
         if (isSplitOrganizerOrStageTask(taskId)) {
             mVdTaskIds.remove(taskId)
-            log(TAG, "bounce skipped (organizer/stage): task=$taskId pkg=${packageName.orEmpty()} [$reason]")
+            logDebug(TAG, "bounce skipped (organizer/stage): task=$taskId pkg=${packageName.orEmpty()} [$reason]")
             return false
         }
         // Leaf tasks under an active StageCoordinator are not ATM "root" tasks — bouncing them
@@ -5457,13 +5457,13 @@ class AaVirtualDisplayAdapter(
             (getSplitAppTasksOnDisplay().any { it.second == packageName } ||
                 AndroidHook.isPackageInSplitOnVd(packageName))
         ) {
-            log(TAG, "bounce skipped (already in split): task=$taskId pkg=$packageName [$reason]")
+            logDebug(TAG, "bounce skipped (already in split): task=$taskId pkg=$packageName [$reason]")
             return false
         }
         if (SystemClock.uptimeMillis() < mProtectRestoredSplitUntil &&
             (packageName == mLauncherPackage || packageName == mHomePackage)
         ) {
-            log(TAG, "bounce skipped (restore protect launcher): task=$taskId pkg=$packageName [$reason]")
+            logDebug(TAG, "bounce skipped (restore protect launcher): task=$taskId pkg=$packageName [$reason]")
             return false
         }
         if (isTaskOnVirtualDisplay(taskId)) {
@@ -5690,7 +5690,7 @@ class AaVirtualDisplayAdapter(
             null
         }
         if (binder == null || !binder.isBinderAlive || !binder.pingBinder()) {
-            log(TAG, "$op skipped: ShellManager binder dead")
+            logDebug(TAG, "$op skipped: ShellManager binder dead")
             mShellManager = null
             return
         }
@@ -5964,6 +5964,9 @@ class AaVirtualDisplayAdapter(
 
     private fun injectInputEvent(event: InputEvent): Boolean {
         if (mDisplayId == Display.INVALID_DISPLAY) return false
+        // touch() runs on the Binder thread for MOVE latency; IMS checks getCallingUid(),
+        // which is the AA app while the transaction is active — clear so system can inject.
+        val identity = Binder.clearCallingIdentity()
         return try {
             event.invokeMethod("setDisplayId", args(mDisplayId), argTypes(Integer.TYPE))
             val result = Instances.iInputManager.injectInputEvent(event, 0)
@@ -5974,6 +5977,8 @@ class AaVirtualDisplayAdapter(
         } catch (e: Throwable) {
             log(TAG, "injectInputEvent exception:", e)
             false
+        } finally {
+            Binder.restoreCallingIdentity(identity)
         }
     }
 
@@ -6097,7 +6102,7 @@ class AaVirtualDisplayAdapter(
                     }
                 }
 
-                log(TAG, "RecentTask: $packageName, ${taskInfo.taskId}, snapshot:${snapshot != null}")
+                logDebug(TAG, "RecentTask: $packageName, ${taskInfo.taskId}, snapshot:${snapshot != null}")
 
                 RecentTaskInfo(
                     icon,
@@ -6198,7 +6203,7 @@ class AaVirtualDisplayAdapter(
                 mHomeTaskId = null
                 // Do not restart Home while OneUI split/MW is active — that collapses the layout.
                 if (shouldPreserveMultiWindowLayout()) {
-                    log(TAG, "onTaskRemoved: skip startHomeLauncher while multi-window active, task=$taskId")
+                    logDebug(TAG, "onTaskRemoved: skip startHomeLauncher while multi-window active, task=$taskId")
                 } else {
                     startHomeLauncher()
                 }
@@ -6301,7 +6306,7 @@ class AaVirtualDisplayAdapter(
             log(TAG, "onActivityDismissingSplitTask: $str")
             val now = SystemClock.uptimeMillis()
             if (now < mProtectRestoredSplitUntil) {
-                log(TAG, "dismissing-split ignored (restore protect): $str")
+                logDebug(TAG, "dismissing-split ignored (restore protect): $str")
                 scheduleSplitFocusGuard("dismissing-protect")
                 scheduleExpandSplitShellToFullDisplay("dismissing-protect")
                 return
@@ -6311,7 +6316,7 @@ class AaVirtualDisplayAdapter(
                 isDisplayInSplitStages()
             ) {
                 // Default Launch waking on phone must not tear down a healthy AA VD split.
-                log(TAG, "dismissing-split ignored (launcher vs VD split): $str")
+                logDebug(TAG, "dismissing-split ignored (launcher vs VD split): $str")
                 scheduleSplitFocusGuard("dismissing-launcher")
                 return
             }

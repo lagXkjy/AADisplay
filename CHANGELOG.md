@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **Perf / maintain:** display pipeline — demote remaining hot-path skip/routine adapter logs to `logDebug` (no LSPosed/`XposedBridge` IO); `CoreManagerService.touch` injects on the Binder thread without per-MOVE `runBlocking` (with `clearCallingIdentity` so IMS still sees system uid — Binder-thread inject without it threw `INJECT_EVENTS` and broke divider drag / all VD touch); reuse adapter `mHandler` instead of ad-hoc `Handler(Looper.getMainLooper())`; shared `rewriteMotionEvent` for AA + phone mirror touch rewrite; create-path config dump is key-count only. OneUI split/reclaim/restore behavior unchanged.
 - **Perf:** cut system_server hitching from OneUI split connect/stack storms — hot-path no-ops (`no empty stage roots`, phone-steal skips, ensureFreeform skips, windowing-mode chatter) no longer write LSPosed/`XposedBridge` logs; empty StageCoordinator miss cached ~700ms; phone-steal orphan discovery skipped when no suspect TDAs; `stack-changed`/`windowing-mode` coalesce expand + asymmetric follow-up re-arms (kick instead of reset 0..7s/0..2.4s chains every event). Behavior of steal/cleanup/restore unchanged.
 - Default settings: `EnableOneUiSplit` and `DisableGoogleMapsOnAa` now default to `true` (fresh installs / missing prefs keys).
 

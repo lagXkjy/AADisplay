@@ -226,7 +226,7 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
                 return@runMain
             }
             if (mDisplayCreateInProgress) {
-                log(
+                logDebug(
                     TAG,
                     "onCreateDisplay ignored: display create already in progress for ${profile.width}x${profile.height},${profile.densityDpi}"
                 )
@@ -234,7 +234,7 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
             }
             config?.apply {
                 reload()
-                log(TAG, "config: ${this.all.map { "${it.key}=${it.value}[${it.value?.javaClass?.name}]" }.joinToString() }")
+                logDebug(TAG, "config loaded: keys=${this.all.size}")
             }
             mDisplayCreateInProgress = true
             AaVirtualDisplayAdapter(systemContext, config){
@@ -375,12 +375,13 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
     }
 
     override fun touch(event: MotionEvent) {
-        runBlocking(Dispatchers.IO) {
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+        // Inject on the Binder thread — avoid per-MOVE runBlocking/IO hop latency.
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            runIO {
                 mDisplayWindow?.onVirtualDisplayUserInteraction()
             }
-            mAaVirtualDisplayAdapter?.onTouch(event)
         }
+        mAaVirtualDisplayAdapter?.onTouch(event)
     }
 
 

@@ -22,6 +22,7 @@ import io.github.nitsuya.aa.display.databinding.WindowControllerBinding
 import io.github.nitsuya.aa.display.databinding.WindowMirrorBinding
 import io.github.nitsuya.aa.display.ui.aa.AaVirtualDisplayAdapter
 import io.github.nitsuya.aa.display.util.AADisplayConfig
+import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.TipUtil
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
@@ -403,21 +404,10 @@ class DisplayWindow(
         updateDipslaySize()
         mMirrorBinding?.apply {
             svMirror.setOnTouchListener { _, event ->
-                val pointerCoords: Array<MotionEvent.PointerCoords?> = arrayOfNulls(event.pointerCount)
-                val pointerProperties: Array<MotionEvent.PointerProperties?> = arrayOfNulls(event.pointerCount)
-                val oldCoords = MotionEvent.PointerCoords()
-                for (i in 0 until event.pointerCount) {
-                    val pointerProperty = MotionEvent.PointerProperties()
-                    event.getPointerCoords(i, oldCoords)
-                    event.getPointerProperties(i, pointerProperty)
-                    pointerCoords[i] = MotionEvent.PointerCoords()
-                    pointerCoords[i]!!.apply {
-                        x = oldCoords.x / mDisplayRatio
-                        y = oldCoords.y / mDisplayRatio
-                    }
-                    pointerProperties[i] = pointerProperty
-                }
-                val newEvent = MotionEvent.obtain(event.downTime, event.eventTime, event.action, event.pointerCount, pointerProperties, pointerCoords, event.metaState, event.buttonState, event.xPrecision, event.yPrecision, event.deviceId, event.edgeFlags, event.source, event.flags)
+                val newEvent = rewriteMotionEvent(
+                    source = event,
+                    divideCoordsBy = mDisplayRatio,
+                )
                 displayAdapter.onTouch(newEvent)
                 newEvent.recycle()
                 true
