@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -358,10 +359,10 @@ class SplitDisplayController(
     fun getPanePackage(pane: Int): String? {
         if (!SplitPane.isValid(pane)) return null
         // Prefer live ATMS top so AA empty overlays match reality after external closes.
-        // Never wipe bookkeeping on a fully empty/failed query during settle — AA Binder
-        // callers often see a transient empty ATMS walk that used to clear mPanePackages.
-        // Samsung (and others) place SecondaryDisplayLauncher on vacant VDs; that chrome
-        // is not a user app — treat it as vacant so "Tap to choose" can appear.
+        // During settle, keep bookkeeping through transient empty ATMS walks.
+        // Outside settle: no user-app top (fully empty OR only SecondaryDisplayLauncher /
+        // systemui chrome) → vacant. OWN_CONTENT_ONLY VDs often stay fully empty after
+        // an app closes; previously that path kept stale mPanePackages and hid "Tap to choose".
         val displayId = displayIdFor(pane)
         if (displayId != null && displayId != Display.INVALID_DISPLAY) {
             val identity = Binder.clearCallingIdentity()
@@ -377,13 +378,12 @@ class SplitDisplayController(
                     if (mPanePackages[pane] != topPkg) mPanePackages[pane] = topPkg
                     return topPkg
                 }
-                val hasAnyTop = tasks.any { it.topActivity != null }
                 val settling = SystemClock.uptimeMillis() < mSuppressReclaimUntil
-                if (hasAnyTop && !settling) {
-                    // Only launcher/systemui chrome left → vacant for split UI.
-                    if (mPanePackages[pane] != null) mPanePackages[pane] = null
-                    return null
+                if (settling) {
+                    return mPanePackages[pane]
                 }
+                if (mPanePackages[pane] != null) mPanePackages[pane] = null
+                return null
             } finally {
                 Binder.restoreCallingIdentity(identity)
             }
@@ -536,7 +536,10 @@ class SplitDisplayController(
     fun startActivityOnPane(packageName: String, userId: Int, pane: Int): Boolean {
         if (!SplitPane.isValid(pane)) return false
         val displayId = displayIdFor(pane) ?: return false
-        val component = resolveLaunchComponent(packageName) ?: return false
+        val component = resolveLaunchComponent(packageName) ?: run {
+            log(TAG, "startActivityOnPane: no launcher for $packageName")
+            return false
+        }
         // Replace existing task on this pane when launching a different package.
         val previous = mPanePackages[pane]
         if (!previous.isNullOrBlank() && previous != packageName) {
@@ -545,13 +548,52 @@ class SplitDisplayController(
             // Drop ownership so reclaim cannot pull the old app onto the other/focused pane.
             releaseOwnershipIfUnused(previous)
         }
-        val ok = launchOnDisplay(component, userId, displayId)
+        // If this package already has a *live* root task (phone / other pane), relocate it.
+        // NEW_TASK + launchDisplayId alone often no-ops on Samsung and leaves the car pane
+        // unchanged — looks like "picker click did nothing" (seen with alook.browser.dlna).
+        // Empty/zombie tasks (Activities=[], sz=0 after force-stop/close) must not win:
+        // bringTaskToFront on them is a no-op and blocks relaunch.
+        val existing = findLivePackageTaskAnywhere(packageName)
+        val ok = if (existing != null) {
+            val (taskId, fromDisplay) = existing
+            if (fromDisplay == displayId) {
+                bringTaskToFront(taskId)
+            } else {
+                vacateOtherPanesHolding(packageName, keepPane = pane)
+                val moved = try {
+                    Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, displayId)
+                    AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(
+                        packageName,
+                        displayId
+                    )
+                    log(TAG, "startActivityOnPane relocate $packageName#$taskId $fromDisplay->$displayId")
+                    bringTaskToFront(taskId)
+                    true
+                } catch (e: Throwable) {
+                    log(TAG, "startActivityOnPane relocate failed:", e)
+                    false
+                }
+                if (!moved) {
+                    removePackageTasksEverywhere(packageName)
+                    launchOnDisplay(component, userId, displayId)
+                } else {
+                    true
+                }
+            }
+        } else {
+            // Sweep affinity zombies so Samsung NEW_TASK reuse cannot revive an empty root.
+            removePackageTasksEverywhere(packageName)
+            launchOnDisplay(component, userId, displayId)
+        }
         if (ok) {
             mPanePackages[pane] = packageName
             mFocusedPane = pane
             markOwnership(packageName, displayId)
             schedulePersistSnapshot()
             notifySplitStateChanged()
+            log(TAG, "startActivityOnPane ok pkg=$packageName pane=$pane display=$displayId")
+        } else {
+            log(TAG, "startActivityOnPane failed pkg=$packageName pane=$pane display=$displayId")
         }
         return ok
     }
@@ -1094,7 +1136,9 @@ class SplitDisplayController(
                         action = Intent.ACTION_MAIN
                         addCategory(Intent.CATEGORY_LAUNCHER)
                         putExtra("displayId", displayId)
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        // MULTIPLE_TASK: force a new root on the target VD when an old task
+                        // still exists elsewhere; otherwise OEM task reuse ignores launchDisplayId.
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
                     },
                     ActivityOptions.makeBasic().apply {
                         launchDisplayId = displayId
@@ -1122,8 +1166,12 @@ class SplitDisplayController(
         val pkg = packageName.trim().takeIf { it.isNotEmpty() } ?: return null
         return try {
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(pkg)
-            val ri = context.packageManager.resolveActivity(intent, 0) ?: return null
-            ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
+            val pm = context.packageManager
+            val ri = pm.resolveActivity(intent, PackageManager.MATCH_ALL)
+                ?: pm.queryIntentActivities(intent, PackageManager.MATCH_ALL).firstOrNull()
+                ?: return null
+            val ai = ri.activityInfo ?: return null
+            ComponentName(ai.packageName, ai.name)
         } catch (_: Throwable) {
             null
         }
@@ -1294,25 +1342,70 @@ class SplitDisplayController(
         return findPackageTaskOnDisplay(packageName, displayId) != null
     }
 
-    private fun findPackageTaskOnDisplay(packageName: String, displayId: Int): Int? {
+    private fun findPackageTaskOnDisplay(
+        packageName: String,
+        displayId: Int,
+        liveOnly: Boolean = true,
+    ): Int? {
+        if (displayId == Display.INVALID_DISPLAY) return null
         val tasks = tryOrNull {
             Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
         }.orEmpty()
         return tasks.firstOrNull { info ->
-            info.topActivity?.packageName == packageName ||
-                runCatching {
-                    (info as Any).getObjectAs("baseActivity", ComponentName::class.java) as? ComponentName
-                }.getOrNull()?.packageName == packageName
+            taskInfoMatchesPackage(info, packageName, requireTop = liveOnly)
         }?.taskId
     }
 
+    /** Prefer AA VD tasks, then the phone default display. Live activities only. */
+    private fun findLivePackageTaskAnywhere(packageName: String): Pair<Int, Int>? {
+        for (displayId in listOf(primaryDisplayId, secondaryDisplayId, Display.DEFAULT_DISPLAY)) {
+            if (displayId == Display.INVALID_DISPLAY) continue
+            val taskId = findPackageTaskOnDisplay(packageName, displayId, liveOnly = true) ?: continue
+            return taskId to displayId
+        }
+        return null
+    }
+
+    /**
+     * @param requireTop when true, only match tasks with a live topActivity (ignore empty
+     * zombies that still expose baseActivity / affinity after close).
+     */
+    private fun taskInfoMatchesPackage(
+        info: ActivityTaskManager.RootTaskInfo,
+        packageName: String,
+        requireTop: Boolean = false,
+    ): Boolean {
+        if (info.topActivity?.packageName == packageName) return true
+        if (requireTop) return false
+        val base = runCatching {
+            (info as Any).getObjectAs("baseActivity", ComponentName::class.java) as? ComponentName
+        }.getOrNull()
+        return base?.packageName == packageName
+    }
+
+    private fun vacateOtherPanesHolding(packageName: String, keepPane: Int) {
+        for (p in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
+            if (p == keepPane) continue
+            if (mPanePackages[p] != packageName) continue
+            mPanePackages[p] = null
+            displayIdFor(p)?.let { removeChromeTasksOnDisplay(it) }
+        }
+    }
+
+    private fun removePackageTasksEverywhere(packageName: String) {
+        for (displayId in listOf(primaryDisplayId, secondaryDisplayId, Display.DEFAULT_DISPLAY)) {
+            if (displayId == Display.INVALID_DISPLAY) continue
+            removePackageTasksOnDisplay(packageName, displayId)
+        }
+    }
+
     private fun removePackageTasksOnDisplay(packageName: String, displayId: Int) {
+        if (displayId == Display.INVALID_DISPLAY) return
         val tasks = tryOrNull {
             Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
         }.orEmpty()
-        tasks.filter {
-            it.topActivity?.packageName == packageName
-        }.forEach { task ->
+        // Match top or base so empty affinity zombies are removed before relaunch.
+        tasks.filter { taskInfoMatchesPackage(it, packageName, requireTop = false) }.forEach { task ->
             tryOrNull { Instances.iActivityTaskManager.removeTask(task.taskId) }
         }
     }

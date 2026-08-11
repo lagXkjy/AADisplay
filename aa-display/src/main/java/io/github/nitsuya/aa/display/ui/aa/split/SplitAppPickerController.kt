@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import android.util.Log
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -32,11 +33,16 @@ data class SplitAppEntry(
 class SplitAppPickerController(
     private val binding: FragmentAaMainBinding,
 ) {
+    companion object {
+        private const val TAG = "AADisplay_AppPicker"
+        private fun logPicker(msg: String) = Log.i(TAG, msg)
+    }
     private var targetPane: Int = SplitPane.PRIMARY
     private val mainHandler = Handler(Looper.getMainLooper())
     private val loadExecutor = Executors.newSingleThreadExecutor()
     private val loadGeneration = AtomicInteger(0)
     private val adapter = Adapter { entry ->
+        logPicker("pick pane=$targetPane pkg=${entry.packageName} label=${entry.label}")
         CoreApi.startActivityOnPane(entry.packageName, 0, targetPane)
         hide()
         onAppPicked?.invoke(targetPane, entry.packageName)
@@ -189,6 +195,8 @@ class SplitAppPickerController(
                     val b = (holder as VH).b
                     b.tvLabel.text = row.entry.label
                     b.ivIcon.setImageDrawable(row.entry.icon)
+                    b.root.isClickable = true
+                    b.root.isFocusable = true
                     b.root.setOnClickListener { onClick(row.entry) }
                 }
             }

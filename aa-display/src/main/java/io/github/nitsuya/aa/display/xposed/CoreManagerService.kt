@@ -218,23 +218,20 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 newSession = mSplitController == null
             )
             mSplitController?.apply {
-                val sizeChanged =
-                    profile.width != mWidth ||
-                        profile.height != mHeight ||
-                        profile.densityDpi != mDensityDpi
-                if (sizeChanged) {
-                    onReconnected(profile.width, profile.height, profile.densityDpi)
-                }
+                // Soft reconnect must always cancel Delay Destroy. When profile was
+                // keep-locked (e.g. incoming 720 vs locked 800), sizeChanged was false and
+                // onResume was skipped — countdown kept running and released the VDs while
+                // AA TextureViews stayed up → black panes with operable divider/picker.
+                mDisplayWindow?.onResume(profile.width, profile.height)
                 setPaneSurface(SplitPane.PRIMARY, primarySurface)
                 setPaneSurface(SplitPane.SECONDARY, secondarySurface)
+                // Always kick resize/policies/ensure after surface rebind (null→live).
+                onReconnected(profile.width, profile.height, profile.densityDpi)
                 // Ratio is owned by divider drag / restore — do not push AA's echo back
                 // unless it meaningfully differs (avoids resize thrash).
                 val clamped = SplitPane.clampRatio(ratio)
                 if (kotlin.math.abs(clamped - mRatio) >= 0.01f) {
                     setSplitRatio(clamped)
-                }
-                if (sizeChanged) {
-                    mDisplayWindow?.onResume(profile.width, profile.height)
                 }
                 listener.onAvailableDisplay(primaryDisplayId, false)
                 return@runMain
