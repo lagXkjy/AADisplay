@@ -15,3 +15,11 @@ fun log(tag: String, message: String, t: Throwable?) {
         XposedBridge.log(t)
     }
 }
+
+/**
+ * Hot-path / no-op diagnostics. Logcat only — never [XposedBridge.log]
+ * (LSPosed module log IO was hitching system_server during connect/stack storms).
+ */
+fun logDebug(tag: String, message: String) {
+    Log.d(tag, message)
+}

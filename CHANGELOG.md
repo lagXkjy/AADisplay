@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **Perf:** cut system_server hitching from OneUI split connect/stack storms — hot-path no-ops (`no empty stage roots`, phone-steal skips, ensureFreeform skips, windowing-mode chatter) no longer write LSPosed/`XposedBridge` logs; empty StageCoordinator miss cached ~700ms; phone-steal orphan discovery skipped when no suspect TDAs; `stack-changed`/`windowing-mode` coalesce expand + asymmetric follow-up re-arms (kick instead of reset 0..7s/0..2.4s chains every event). Behavior of steal/cleanup/restore unchanged.
 - Default settings: `EnableOneUiSplit` and `DisableGoogleMapsOnAa` now default to `true` (fresh installs / missing prefs keys).
 
 ### Added

@@ -36,6 +36,7 @@ import io.github.nitsuya.aa.display.xposed.IShellManager
 import io.github.nitsuya.aa.display.xposed.TipUtil
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.template.bases.runMain
 
@@ -157,6 +158,11 @@ class AaVirtualDisplayAdapter(
         private const val SPLIT_ENTRY_SHELL_GUARD_MS = 4000L
         private val EMPTY_SPLIT_CLEANUP_TOKEN = Any()
         /**
+         * After a miss, skip re-enumerating empty StageCoordinator roots on that display briefly.
+         * SystemUI respawn still lands inside phone-steal follow-ups (≤1s cadence early on).
+         */
+        private const val EMPTY_SPLIT_ROOTS_MISS_CACHE_MS = 700L
+        /**
          * One side closed / failed replace: OneUI on the AA VD often leaves the survivor in
          * `multi-window` + an empty opposite stage (half-width zombie). Wait past mid-entry
          * empty-side races, then tear the empty shell and force FREEFORM on the survivor.
@@ -173,9 +179,17 @@ class AaVirtualDisplayAdapter(
         private val EXPAND_SPLIT_SHELL_DELAYS_MS =
             longArrayOf(0L, 150L, 400L, 900L, 1600L, 2800L, 4500L, 7000L)
         private const val EXPAND_SPLIT_SHELL_MIN_INTERVAL_MS = 200L
+        /**
+         * Divider drag / stack-changed fires continuously. Keep the multi-delay expand chain
+         * armed instead of remove+repost every event (was resetting 0..7s work constantly).
+         */
+        private const val EXPAND_SPLIT_SHELL_COALESCE_KICK_MS = 120L
         /** ActivityTaskManager.RESIZE_MODE_SYSTEM | RESIZE_MODE_FORCED */
         private const val RESIZE_MODE_SYSTEM_FORCED = 2
         private val EXPAND_SPLIT_SHELL_TOKEN = Any()
+        private val EXPAND_SPLIT_SHELL_KICK_TOKEN = Any()
+        /** Follow-up schedule tags end with "-<delayMs>" (e.g. connect-350, phone-steal:connect-250). */
+        private val REASON_DELAY_SUFFIX = Regex("-\\d+$")
 
         /** Wait briefly for VD policies before restoring last split. */
         private const val RESTORE_LAST_SPLIT_START_DELAY_MS = 400L
@@ -270,6 +284,17 @@ class AaVirtualDisplayAdapter(
     /** Fingerprint of the asymmetric layout under observation (reset when layout changes). */
     private var mAsymmetricSplitFingerprint: String? = null
     private var mLastExpandSplitShellAt = 0L
+    /** Uptime until which expand follow-ups are considered already armed. */
+    private var mExpandSplitShellArmedUntil = 0L
+    private var mLastExpandSplitShellKickAt = 0L
+    /** Uptime until which asymmetric collapse follow-ups are considered already armed. */
+    private var mAsymmetricSplitArmedUntil = 0L
+    /**
+     * displayId → uptime until which [findEmptySplitStageRootsOnDisplay] may return a cached miss.
+     * Cleared whenever roots are found / moved.
+     */
+    private val mEmptySplitRootsMissUntil = android.util.SparseLongArray()
+    private var mLastSplitFocusGuardLogAt = 0L
     /**
      * While restoring the last OneUI split pair: force freeform launches (no adjacent / AppsEdge),
      * and skip snapshot writes until restore finishes.
@@ -404,6 +429,11 @@ class AaVirtualDisplayAdapter(
         mLastAsymmetricSplitCollapseAt = 0L
         mAsymmetricSplitFingerprint = null
         mLastExpandSplitShellAt = 0L
+        mExpandSplitShellArmedUntil = 0L
+        mLastExpandSplitShellKickAt = 0L
+        mAsymmetricSplitArmedUntil = 0L
+        mEmptySplitRootsMissUntil.clear()
+        mLastSplitFocusGuardLogAt = 0L
         mRestoringLastSplit = false
         mRestoreLastSplitManual = false
         mProtectRestoredSplitUntil = 0L
@@ -413,6 +443,7 @@ class AaVirtualDisplayAdapter(
         mHandler.removeCallbacks(mDebouncedSplitFocusGuard)
         mHandler.removeCallbacks(mDebouncedPersistLastSplit)
         mHandler.removeCallbacksAndMessages(EMPTY_SPLIT_CLEANUP_TOKEN)
+        mHandler.removeCallbacksAndMessages(EXPAND_SPLIT_SHELL_KICK_TOKEN)
         mHandler.removeCallbacksAndMessages(ASYMMETRIC_SPLIT_TOKEN)
         mHandler.removeCallbacksAndMessages(EXPAND_SPLIT_SHELL_TOKEN)
         mHandler.removeCallbacksAndMessages(PHONE_EMPTY_SPLIT_STEAL_TOKEN)
@@ -550,6 +581,11 @@ class AaVirtualDisplayAdapter(
         mLastAsymmetricSplitCollapseAt = 0L
         mAsymmetricSplitFingerprint = null
         mLastExpandSplitShellAt = 0L
+        mExpandSplitShellArmedUntil = 0L
+        mLastExpandSplitShellKickAt = 0L
+        mAsymmetricSplitArmedUntil = 0L
+        mEmptySplitRootsMissUntil.clear()
+        mLastSplitFocusGuardLogAt = 0L
         mRestoringLastSplit = false
         mRestoreLastSplitManual = false
         mProtectRestoredSplitUntil = 0L
@@ -559,6 +595,7 @@ class AaVirtualDisplayAdapter(
         mHandler.removeCallbacks(mDebouncedSplitFocusGuard)
         mHandler.removeCallbacks(mDebouncedPersistLastSplit)
         mHandler.removeCallbacksAndMessages(EMPTY_SPLIT_CLEANUP_TOKEN)
+        mHandler.removeCallbacksAndMessages(EXPAND_SPLIT_SHELL_KICK_TOKEN)
         mHandler.removeCallbacksAndMessages(ASYMMETRIC_SPLIT_TOKEN)
         mHandler.removeCallbacksAndMessages(EXPAND_SPLIT_SHELL_TOKEN)
         mHandler.removeCallbacksAndMessages(PHONE_EMPTY_SPLIT_STEAL_TOKEN)
@@ -2291,6 +2328,10 @@ class AaVirtualDisplayAdapter(
      */
     private fun schedulePhoneEmptySplitSteal(reason: String) {
         if (!isOneUiSplitEnabled() || mDisplayId == Display.INVALID_DISPLAY) return
+        // Important events (wipe/connect/orphan) must re-arm the full steal window; clear miss cache.
+        if (shouldForceEmptySplitRootsScan(reason)) {
+            mEmptySplitRootsMissUntil.clear()
+        }
         mHandler.removeCallbacksAndMessages(PHONE_EMPTY_SPLIT_STEAL_TOKEN)
         val now = SystemClock.uptimeMillis()
         for (delay in PHONE_EMPTY_SPLIT_STEAL_DELAYS_MS) {
@@ -2298,7 +2339,7 @@ class AaVirtualDisplayAdapter(
             mHandler.postAtTime(
                 {
                     if (shouldSuppressPhoneSplitShellMutation()) {
-                        log(TAG, "phone-steal skipped (split entry/MW): $tagged")
+                        logDebug(TAG, "phone-steal skipped (split entry/MW): $tagged")
                         return@postAtTime
                     }
                     // Rescue orphan/ghost TDA shells first (reconnect leaves #3→#4/#5 on old VD),
@@ -2312,7 +2353,7 @@ class AaVirtualDisplayAdapter(
                     if (moved > 0 || vdHasShell) {
                         cleanupPhoneEmptySplitShellsOnly(tagged)
                     } else {
-                        log(
+                        logDebug(
                             TAG,
                             "phone-steal: skip phone kill (moved=$moved vdShell=$vdHasShell) [$tagged]"
                         )
@@ -2325,6 +2366,37 @@ class AaVirtualDisplayAdapter(
                 now + delay
             )
         }
+    }
+
+    private fun shouldForceEmptySplitRootsScan(reason: String): Boolean {
+        // Delayed follow-ups are tagged "...-350" / "phone-steal:connect-250". Those must use the
+        // miss cache; only the first wave / wipe / orphan discovery bypasses it.
+        if (REASON_DELAY_SUFFIX.containsMatchIn(reason)) return false
+        return reason == "connect" ||
+            reason == "reconnect" ||
+            reason == "destroy" ||
+            reason.contains("manual") ||
+            reason.contains("orphan") ||
+            reason == "phone-steal:connect" ||
+            reason == "phone-steal:reconnect" ||
+            reason.startsWith("phone-steal:after-manual") ||
+            reason.startsWith("phone-steal:orphan") ||
+            reason.startsWith("after-manual")
+    }
+
+    private fun noteEmptySplitRootsMiss(displayId: Int) {
+        mEmptySplitRootsMissUntil.put(
+            displayId,
+            SystemClock.uptimeMillis() + EMPTY_SPLIT_ROOTS_MISS_CACHE_MS
+        )
+    }
+
+    private fun clearEmptySplitRootsMiss(displayId: Int) {
+        mEmptySplitRootsMissUntil.delete(displayId)
+    }
+
+    private fun isEmptySplitRootsMissCached(displayId: Int): Boolean {
+        return SystemClock.uptimeMillis() < mEmptySplitRootsMissUntil.get(displayId, 0L)
     }
 
     /**
@@ -2342,7 +2414,7 @@ class AaVirtualDisplayAdapter(
     private fun noteSplitEntryShellGuard(reason: String) {
         mSuppressPhoneSplitStealUntil =
             SystemClock.uptimeMillis() + SPLIT_ENTRY_SHELL_GUARD_MS
-        log(TAG, "split-entry shell guard ${SPLIT_ENTRY_SHELL_GUARD_MS}ms [$reason]")
+        logDebug(TAG, "split-entry shell guard ${SPLIT_ENTRY_SHELL_GUARD_MS}ms [$reason]")
     }
 
     /**
@@ -2406,6 +2478,9 @@ class AaVirtualDisplayAdapter(
     private fun cleanupEmptySplitOrganizerTasks(reason: String, force: Boolean = false) {
         if (mIsDestroying && !force) return
         if (!isOneUiSplitEnabled()) return
+        if (force || shouldForceEmptySplitRootsScan(reason)) {
+            mEmptySplitRootsMissUntil.clear()
+        }
 
         // Prefer relocating reusable idle StageCoordinator trees onto the live AA VD.
         // Orphan/ghost TDAs (prior AA VD after reconnect) are always rescued — killing them
@@ -2536,7 +2611,7 @@ class AaVirtualDisplayAdapter(
     private fun cleanupPhoneEmptySplitShellsOnly(reason: String) {
         if (!isOneUiSplitEnabled() || mIsDestroying) return
         if (shouldSuppressPhoneSplitShellMutation()) {
-            log(TAG, "cleanupPhoneEmpty[$reason]: skipped (split entry/MW)")
+            logDebug(TAG, "cleanupPhoneEmpty[$reason]: skipped (split entry/MW)")
             return
         }
         val zombieIds = try {
@@ -2567,11 +2642,11 @@ class AaVirtualDisplayAdapter(
     private fun relocateEmptyPhoneSplitShellsToVirtualDisplay(reason: String): Int {
         if (!isOneUiSplitEnabled() || mDisplayId == Display.INVALID_DISPLAY || mIsDestroying) return 0
         if (shouldSuppressPhoneSplitShellMutation()) {
-            log(TAG, "relocatePhoneSplit[$reason]: skipped (split entry/MW)")
+            logDebug(TAG, "relocatePhoneSplit[$reason]: skipped (split entry/MW)")
             return 0
         }
         return relocateEmptySplitStageRoots(
-            findEmptySplitStageRootsOnDisplay(Display.DEFAULT_DISPLAY),
+            findEmptySplitStageRootsOnDisplay(Display.DEFAULT_DISPLAY, reason),
             reason,
             "relocatePhoneSplit"
         )
@@ -2585,7 +2660,7 @@ class AaVirtualDisplayAdapter(
     private fun relocateEmptyOrphanSplitShellsToVirtualDisplay(reason: String): Int {
         if (!isOneUiSplitEnabled() || mDisplayId == Display.INVALID_DISPLAY || mIsDestroying) return 0
         return relocateEmptySplitStageRoots(
-            findEmptyOrphanSplitStageRoots(),
+            findEmptyOrphanSplitStageRoots(reason),
             reason,
             "relocateOrphanSplit"
         )
@@ -2597,7 +2672,8 @@ class AaVirtualDisplayAdapter(
         logPrefix: String
     ): Int {
         if (roots.isEmpty()) {
-            log(TAG, "$logPrefix[$reason]: no empty stage roots")
+            // Connect storm logged this dozens of times/sec via XposedBridge — keep Log.d only.
+            logDebug(TAG, "$logPrefix[$reason]: no empty stage roots")
             return 0
         }
         log(TAG, "$logPrefix[$reason]: candidates=${roots.joinToString()} -> vd=$mDisplayId")
@@ -2626,6 +2702,8 @@ class AaVirtualDisplayAdapter(
         }
         if (moved > 0) {
             mEmptySplitShellsSeenAt = 0L
+            // Roots left the source display(s); allow immediate re-probe for respawns.
+            mEmptySplitRootsMissUntil.clear()
         }
         return moved
     }
@@ -2708,25 +2786,34 @@ class AaVirtualDisplayAdapter(
      * (classic `#3→#4/#5` with `sz=0`). These idle shells occupy global stages and make
      * AA VD `moveFreeformTaskToSplit` fail with "no display".
      */
-    private fun findEmptyPhoneSplitStageRoots(): List<Int> =
-        findEmptySplitStageRootsOnDisplay(Display.DEFAULT_DISPLAY)
+    private fun findEmptyPhoneSplitStageRoots(reason: String = ""): List<Int> =
+        findEmptySplitStageRootsOnDisplay(Display.DEFAULT_DISPLAY, reason)
 
     /**
      * Idle StageCoordinator roots stuck on ATM ghost displays (prior AA VD after reconnect).
      */
-    private fun findEmptyOrphanSplitStageRoots(): List<Int> {
+    private fun findEmptyOrphanSplitStageRoots(reason: String = ""): List<Int> {
         if (mDisplayId == Display.INVALID_DISPLAY) return emptyList()
+        // Hot phone-steal ticks: no known ghost TDAs → skip global display discovery.
+        if (mSuspectOrphanDisplayIds.isEmpty() &&
+            reason.contains("phone-steal") &&
+            !shouldForceEmptySplitRootsScan(reason)
+        ) {
+            return emptyList()
+        }
         val roots = linkedSetOf<Int>()
         val displayIds = linkedSetOf<Int>()
         displayIds += mSuspectOrphanDisplayIds
-        for (displayId in collectDisplaysForEmptySplitCleanup()) {
-            if (displayId == mDisplayId || displayId == Display.DEFAULT_DISPLAY) continue
-            if (!isDisplayKnownToDisplayManager(displayId)) displayIds += displayId
+        if (mSuspectOrphanDisplayIds.isEmpty() || shouldForceEmptySplitRootsScan(reason)) {
+            for (displayId in collectDisplaysForEmptySplitCleanup()) {
+                if (displayId == mDisplayId || displayId == Display.DEFAULT_DISPLAY) continue
+                if (!isDisplayKnownToDisplayManager(displayId)) displayIds += displayId
+            }
         }
         for (displayId in displayIds) {
             if (displayId == mDisplayId || displayId == Display.DEFAULT_DISPLAY) continue
             if (isDisplayKnownToDisplayManager(displayId)) continue
-            roots += findEmptySplitStageRootsOnDisplay(displayId)
+            roots += findEmptySplitStageRootsOnDisplay(displayId, reason)
         }
         return roots.toList()
     }
@@ -2740,7 +2827,14 @@ class AaVirtualDisplayAdapter(
      * `readChildTaskIds ?: continue` and never walked `rootTaskId` up to `#3`, so phone/orphan
      * steal logged "no empty stage roots" while cleanup still saw `shells=4,5,3` and killed them.
      */
-    private fun findEmptySplitStageRootsOnDisplay(displayId: Int): List<Int> {
+    private fun findEmptySplitStageRootsOnDisplay(
+        displayId: Int,
+        reason: String = ""
+    ): List<Int> {
+        val force = shouldForceEmptySplitRootsScan(reason)
+        if (!force && isEmptySplitRootsMissCached(displayId)) {
+            return emptyList()
+        }
         val tasks = try {
             Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
         } catch (e: Throwable) {
@@ -2800,6 +2894,7 @@ class AaVirtualDisplayAdapter(
                 zombieIds.minOrNull()?.let { roots += it }
             }
             if (roots.isNotEmpty()) {
+                clearEmptySplitRootsMiss(displayId)
                 log(
                     TAG,
                     "findEmptySplitStageRootsOnDisplay($displayId): " +
@@ -2807,7 +2902,7 @@ class AaVirtualDisplayAdapter(
                 )
                 return roots.toList()
             }
-            log(
+            logDebug(
                 TAG,
                 "findEmptySplitStageRootsOnDisplay($displayId): " +
                     "zombies=${zombieIds.joinToString()} but no movable root"
@@ -2839,13 +2934,24 @@ class AaVirtualDisplayAdapter(
                 roots += info.taskId
             }
         }
+        if (roots.isEmpty()) {
+            noteEmptySplitRootsMiss(displayId)
+        } else {
+            clearEmptySplitRootsMiss(displayId)
+        }
         return roots.toList()
     }
 
     private fun scheduleCollapseAsymmetricSplit(reason: String) {
         if (!isOneUiSplitEnabled() || mDisplayId == Display.INVALID_DISPLAY) return
-        mHandler.removeCallbacksAndMessages(ASYMMETRIC_SPLIT_TOKEN)
         val now = SystemClock.uptimeMillis()
+        val coalesce = reason.contains("stack-changed") || reason.contains("windowing-mode") ||
+            reason.contains("onTaskMovedToFront")
+        if (coalesce && now < mAsymmetricSplitArmedUntil) {
+            return
+        }
+        mHandler.removeCallbacksAndMessages(ASYMMETRIC_SPLIT_TOKEN)
+        mAsymmetricSplitArmedUntil = now + ASYMMETRIC_SPLIT_FOLLOWUP_DELAYS_MS.last()
         for (delay in ASYMMETRIC_SPLIT_FOLLOWUP_DELAYS_MS) {
             val taggedReason = if (delay == 0L) reason else "$reason-$delay"
             mHandler.postAtTime(
@@ -3904,7 +4010,9 @@ class AaVirtualDisplayAdapter(
         for ((taskId, pkg) in homeTasks) {
             if (moveTaskToBackSafe(taskId)) {
                 pushedHome = true
-                log(TAG, "splitFocusGuard[$reason]: moveTaskToBack homeish=$pkg#$taskId")
+                logSplitFocusGuard(
+                    "splitFocusGuard[$reason]: moveTaskToBack homeish=$pkg#$taskId"
+                )
             }
         }
 
@@ -3912,14 +4020,26 @@ class AaVirtualDisplayAdapter(
         if (homeAboveSplit || focusedIsHome) {
             val focusId = splitApps.first().first
             if (setFocusedTaskSafe(focusId)) {
-                log(
-                    TAG,
-                    "splitFocusGuard[$reason]: focus split task=$focusId pkg=${splitApps.first().second} homeAbove=$homeAboveSplit focusedHome=$focusedIsHome"
+                logSplitFocusGuard(
+                    "splitFocusGuard[$reason]: focus split task=$focusId " +
+                        "pkg=${splitApps.first().second} homeAbove=$homeAboveSplit focusedHome=$focusedIsHome"
                 )
             }
         } else if (pushedHome) {
-            log(TAG, "splitFocusGuard[$reason]: pushed home behind split (focus unchanged)")
+            logSplitFocusGuard(
+                "splitFocusGuard[$reason]: pushed home behind split (focus unchanged)"
+            )
         }
+    }
+
+    private fun logSplitFocusGuard(message: String) {
+        val now = SystemClock.uptimeMillis()
+        if (now - mLastSplitFocusGuardLogAt < 1000L) {
+            logDebug(TAG, message)
+            return
+        }
+        mLastSplitFocusGuardLogAt = now
+        log(TAG, message)
     }
 
     /** True when the display-focused root task on the AA VD is the configured Home/launcher. */
@@ -3973,8 +4093,26 @@ class AaVirtualDisplayAdapter(
 
     private fun scheduleExpandSplitShellToFullDisplay(reason: String) {
         if (!isOneUiSplitEnabled() || mDisplayId == Display.INVALID_DISPLAY) return
-        mHandler.removeCallbacksAndMessages(EXPAND_SPLIT_SHELL_TOKEN)
         val now = SystemClock.uptimeMillis()
+        val coalesce = reason.contains("stack-changed") ||
+            reason.contains("windowing-mode") ||
+            reason.contains("onTaskMovedToFront")
+        if (coalesce && now < mExpandSplitShellArmedUntil) {
+            // Keep the armed 0..7s chain; only kick one near check for OneUI re-inset.
+            if (now - mLastExpandSplitShellKickAt >= EXPAND_SPLIT_SHELL_COALESCE_KICK_MS) {
+                mLastExpandSplitShellKickAt = now
+                mHandler.removeCallbacksAndMessages(EXPAND_SPLIT_SHELL_KICK_TOKEN)
+                mHandler.postAtTime(
+                    { expandSplitShellToFullDisplay("$reason-kick") },
+                    EXPAND_SPLIT_SHELL_KICK_TOKEN,
+                    now + EXPAND_SPLIT_SHELL_COALESCE_KICK_MS
+                )
+            }
+            return
+        }
+        mHandler.removeCallbacksAndMessages(EXPAND_SPLIT_SHELL_TOKEN)
+        mHandler.removeCallbacksAndMessages(EXPAND_SPLIT_SHELL_KICK_TOKEN)
+        mExpandSplitShellArmedUntil = now + EXPAND_SPLIT_SHELL_DELAYS_MS.last()
         for (delay in EXPAND_SPLIT_SHELL_DELAYS_MS) {
             val tagged = if (delay == 0L) reason else "$reason-$delay"
             mHandler.postAtTime(
@@ -4045,7 +4183,7 @@ class AaVirtualDisplayAdapter(
 
         if (parentIds.isEmpty()) {
             if (stageInfos.isNotEmpty() || splitApps.isNotEmpty()) {
-                log(
+                logDebug(
                     TAG,
                     "expandSplitShell[$reason]: no parent candidate " +
                         "stages=${stageInfos.map { it.taskId }} apps=$splitApps"
@@ -4326,22 +4464,22 @@ class AaVirtualDisplayAdapter(
         if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return
         if (!isOneUiSplitEnabled()) return
         if (isSplitOrganizerOrStageTask(taskId)) {
-            log(TAG, "ensureFreeform skipped (organizer/stage): task=$taskId [$reason]")
+            logDebug(TAG, "ensureFreeform skipped (organizer/stage): task=$taskId [$reason]")
             return
         }
         if (mRestoreTocNotified) {
-            log(TAG, "ensureFreeform skipped (restore TOC done): task=$taskId [$reason]")
+            logDebug(TAG, "ensureFreeform skipped (restore TOC done): task=$taskId [$reason]")
             return
         }
         if (isDisplayInSplitStages()) {
-            log(TAG, "ensureFreeform skipped (split stages): task=$taskId [$reason]")
+            logDebug(TAG, "ensureFreeform skipped (split stages): task=$taskId [$reason]")
             return
         }
         // Never demote the restore left pane — it must stay fullscreen for auto-pair.
         val earlyInfo = findRootTaskInfoOnDisplay(taskId, mDisplayId)
         val earlyPkg = earlyInfo?.topActivity?.packageName
         if (mRestoringLastSplit && earlyPkg != null && earlyPkg == mRestoreFullscreenPackage) {
-            log(TAG, "ensureFreeform skipped (restore-left fullscreen): task=$taskId [$reason]")
+            logDebug(TAG, "ensureFreeform skipped (restore-left fullscreen): task=$taskId [$reason]")
             return
         }
 
@@ -4356,7 +4494,7 @@ class AaVirtualDisplayAdapter(
         val pending = isPendingInsetFreeform(pkg)
         val demote = force || pending
         if (!demote && SystemClock.uptimeMillis() < mSuppressEnsureFreeformUntil) {
-            log(TAG, "ensureFreeform skipped (suppress): task=$taskId [$reason]")
+            logDebug(TAG, "ensureFreeform skipped (suppress): task=$taskId [$reason]")
             return
         }
 
@@ -5545,7 +5683,7 @@ class AaVirtualDisplayAdapter(
     private fun syncDensityMapForDisplayChange(taskId: Int, newDisplayId: Int) {
         val packageName = findPackageForTask(taskId)
         AndroidHook.FuckAppUseApplicationContext.onTaskDisplayChanged(packageName, newDisplayId)
-        log(
+        logDebug(
             TAG,
             "onTaskDisplayChanged: task=$taskId pkg=${packageName.orEmpty()} -> display=$newDisplayId"
         )
@@ -6053,7 +6191,10 @@ class AaVirtualDisplayAdapter(
         override fun onTaskbarIconVisibleChangeRequest(componentName: ComponentName?, z: Boolean) {}
         //Samsung OneUi 7
         override fun onTaskWindowingModeChanged(i: Int) {
-            log(TAG, "onTaskWindowingModeChanged: mode=$i, displayInMw=${isDisplayInMultiWindow()} split=${isDisplayInSplitStages()}")
+            logDebug(
+                TAG,
+                "onTaskWindowingModeChanged: mode=$i, displayInMw=${isDisplayInMultiWindow()} split=${isDisplayInSplitStages()}"
+            )
             if (!isOneUiSplitEnabled() || mDisplayId == Display.INVALID_DISPLAY) return
             // Guard only when split/chooser is actually active — NOT on every freeform ensure
             // (that would keep mSuppressPhoneSplitStealUntil forever and block phone-steal).
