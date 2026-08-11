@@ -275,6 +275,11 @@ class AaVirtualDisplayAdapter(
      * and skip snapshot writes until restore finishes.
      */
     private var mRestoringLastSplit = false
+    /**
+     * Facet-bar quick restore: ignore [AADisplayConfig.RestoreLastSplit] connect gate, and on
+     * failure do not overlay Default Launch on the current VD content.
+     */
+    private var mRestoreLastSplitManual = false
     /** Package that must stay fullscreen during restore so StageCoordinator auto-pairs it into main/left. */
     private var mRestoreFullscreenPackage: String? = null
     /** Pinned freeform→split task id so retries do not TOC the organizer root (#3). */
@@ -400,6 +405,7 @@ class AaVirtualDisplayAdapter(
         mAsymmetricSplitFingerprint = null
         mLastExpandSplitShellAt = 0L
         mRestoringLastSplit = false
+        mRestoreLastSplitManual = false
         mProtectRestoredSplitUntil = 0L
         mSuspectOrphanDisplayIds.clear()
         mHandler.removeCallbacks(mDebouncedStackReclaim)
@@ -545,6 +551,7 @@ class AaVirtualDisplayAdapter(
         mAsymmetricSplitFingerprint = null
         mLastExpandSplitShellAt = 0L
         mRestoringLastSplit = false
+        mRestoreLastSplitManual = false
         mProtectRestoredSplitUntil = 0L
         mSuspectOrphanDisplayIds.clear()
         mHandler.removeCallbacks(mDebouncedStackReclaim)
@@ -763,17 +770,10 @@ class AaVirtualDisplayAdapter(
         bringConfiguredPackageToVirtualDisplay(mLauncherPackage!!, trackAsHome = false)
     }
 
-    private fun shouldRestoreLastSplitOnConnect(): Boolean {
+    /** Snapshot + packages resolvable; does not check [AADisplayConfig.RestoreLastSplit]. */
+    private fun canRestoreLastSplitFromSnapshot(): Boolean {
         if (!isOneUiSplitEnabled()) {
             log(TAG, "restoreLastSplit skip: OneUI split off")
-            return false
-        }
-        config?.reload()
-        val restoreEnabled = AADisplayConfig.RestoreLastSplit.get(config) ||
-            // Legacy / manually written key seen on some devices.
-            (config?.getBoolean("AutoRestoreLastSplit", false) == true)
-        if (!restoreEnabled) {
-            log(TAG, "restoreLastSplit skip: setting off")
             return false
         }
         val snap = LastSplitStore.load(context.contentResolver)
@@ -792,11 +792,76 @@ class AaVirtualDisplayAdapter(
         return true
     }
 
+    private fun shouldRestoreLastSplitOnConnect(): Boolean {
+        if (!canRestoreLastSplitFromSnapshot()) return false
+        config?.reload()
+        val restoreEnabled = AADisplayConfig.RestoreLastSplit.get(config) ||
+            // Legacy / manually written key seen on some devices.
+            (config?.getBoolean("AutoRestoreLastSplit", false) == true)
+        if (!restoreEnabled) {
+            log(TAG, "restoreLastSplit skip: setting off")
+            return false
+        }
+        return true
+    }
+
+    enum class ManualRestoreResult {
+        Started,
+        NoDisplay,
+        SplitOff,
+        NoSnapshot,
+        PackageUnavailable,
+    }
+
+    /**
+     * Facet-bar quick split: restore last stable pair now (no AppsEdge). Independent of the
+     * connect-time [AADisplayConfig.RestoreLastSplit] setting.
+     */
+    fun requestRestoreLastSplitManual(): ManualRestoreResult {
+        if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) {
+            log(TAG, "restoreLastSplit manual: no display session")
+            return ManualRestoreResult.NoDisplay
+        }
+        if (!isOneUiSplitEnabled()) {
+            log(TAG, "restoreLastSplit manual: OneUI split off")
+            return ManualRestoreResult.SplitOff
+        }
+        val snap = LastSplitStore.load(context.contentResolver)
+        if (snap == null) {
+            log(TAG, "restoreLastSplit manual: no snapshot")
+            return ManualRestoreResult.NoSnapshot
+        }
+        if (resolveLaunchComponent(snap.leftPackage) == null ||
+            resolveLaunchComponent(snap.rightPackage) == null
+        ) {
+            log(
+                TAG,
+                "restoreLastSplit manual: package unavailable " +
+                    "left=${snap.leftPackage} right=${snap.rightPackage}"
+            )
+            return ManualRestoreResult.PackageUnavailable
+        }
+        mHandler.removeCallbacksAndMessages(RESTORE_LAST_SPLIT_TOKEN)
+        mRestoringLastSplit = false
+        mRestoreFullscreenPackage = null
+        mRestoreSplitRightTaskId = null
+        mRestoreSplitLeftTaskId = null
+        mRestoreTocNotified = false
+        mRestoreLastSplitManual = true
+        log(
+            TAG,
+            "restoreLastSplit manual request left=${snap.leftPackage} right=${snap.rightPackage}"
+        )
+        scheduleRestoreLastSplit()
+        return ManualRestoreResult.Started
+    }
+
     private fun scheduleRestoreLastSplit() {
         val snap = LastSplitStore.load(context.contentResolver)
         log(
             TAG,
             "restoreLastSplit scheduled in ${RESTORE_LAST_SPLIT_START_DELAY_MS}ms " +
+                "manual=$mRestoreLastSplitManual " +
                 "left=${snap?.leftPackage.orEmpty()} right=${snap?.rightPackage.orEmpty()}"
         )
         mHandler.removeCallbacksAndMessages(RESTORE_LAST_SPLIT_TOKEN)
@@ -811,7 +876,12 @@ class AaVirtualDisplayAdapter(
     private fun beginRestoreLastSplit() {
         if (mIsDestroying || mDisplayId == Display.INVALID_DISPLAY) return
         val snap = LastSplitStore.load(context.contentResolver)
-        if (snap == null || !shouldRestoreLastSplitOnConnect()) {
+        val precheckOk = if (mRestoreLastSplitManual) {
+            canRestoreLastSplitFromSnapshot()
+        } else {
+            shouldRestoreLastSplitOnConnect()
+        }
+        if (snap == null || !precheckOk) {
             failRestoreLastSplit("precheck")
             return
         }
@@ -825,7 +895,8 @@ class AaVirtualDisplayAdapter(
         mSuppressEnsureFreeformUntil = 0L
         log(
             TAG,
-            "restoreLastSplit begin left=${snap.leftPackage} right=${snap.rightPackage} " +
+            "restoreLastSplit begin manual=$mRestoreLastSplitManual " +
+                "left=${snap.leftPackage} right=${snap.rightPackage} " +
                 "ratio=${snap.primaryRatio} landscape=${snap.landscape}"
         )
         // Parallel bring: avoid "fullscreen left → freeform right cover → later split".
@@ -1101,6 +1172,7 @@ class AaVirtualDisplayAdapter(
             RESTORE_RATIO_AFTER_EXPAND_MS
         )
         mRestoringLastSplit = false
+        mRestoreLastSplitManual = false
         mRestoreFullscreenPackage = null
         mRestoreSplitRightTaskId = null
         mRestoreSplitLeftTaskId = null
@@ -1112,6 +1184,16 @@ class AaVirtualDisplayAdapter(
         )
     }
 
+    private fun clearRestoreLastSplitState() {
+        mRestoringLastSplit = false
+        mRestoreLastSplitManual = false
+        mRestoreFullscreenPackage = null
+        mRestoreSplitRightTaskId = null
+        mRestoreSplitLeftTaskId = null
+        mRestoreTocNotified = false
+        mHandler.removeCallbacksAndMessages(RESTORE_LAST_SPLIT_TOKEN)
+    }
+
     private fun failRestoreLastSplit(reason: String) {
         // If TOC already ran, never overlay Default Launch on a possibly-formed split.
         if (mRestoreTocNotified) {
@@ -1120,22 +1202,18 @@ class AaVirtualDisplayAdapter(
             if (snap != null) {
                 finishRestoreLastSplit(snap, "ok-after-$reason")
             } else {
-                mRestoringLastSplit = false
-                mRestoreFullscreenPackage = null
-                mRestoreSplitRightTaskId = null
-                mRestoreSplitLeftTaskId = null
-                mRestoreTocNotified = false
-                mHandler.removeCallbacksAndMessages(RESTORE_LAST_SPLIT_TOKEN)
+                clearRestoreLastSplitState()
             }
             return
         }
+        if (mRestoreLastSplitManual) {
+            log(TAG, "restoreLastSplit failed: $reason (manual) — no Default Launch")
+            clearRestoreLastSplitState()
+            TipUtil.showToast("快捷分屏恢复失败")
+            return
+        }
         log(TAG, "restoreLastSplit failed: $reason; falling back to Default Launch")
-        mRestoringLastSplit = false
-        mRestoreFullscreenPackage = null
-        mRestoreSplitRightTaskId = null
-        mRestoreSplitLeftTaskId = null
-        mRestoreTocNotified = false
-        mHandler.removeCallbacksAndMessages(RESTORE_LAST_SPLIT_TOKEN)
+        clearRestoreLastSplitState()
         if (mLauncherPackage != null) {
             startDefaultPackage()
         } else {

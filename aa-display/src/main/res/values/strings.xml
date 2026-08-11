@@ -39,4 +39,5 @@
     <string name="controller_open_menu">Open controller menu</string>
     <string name="controller_hide_menu">Hide controller menu</string>
     <string name="cleanup_split_shells">Clean split shells</string>
+    <string name="quick_restore_split">Restore last split</string>
 </resources>

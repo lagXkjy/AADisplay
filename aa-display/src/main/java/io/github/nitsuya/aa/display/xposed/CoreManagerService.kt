@@ -340,6 +340,33 @@ class CoreManagerService private constructor(): ICoreManager.Stub() {
         }
     }
 
+    override fun restoreLastSplit() {
+        runIO {
+            val adapter = mAaVirtualDisplayAdapter
+            if (adapter == null) {
+                runMain { TipUtil.showToast("快捷分屏：无显示会话") }
+                return@runIO
+            }
+            val result = adapter.requestRestoreLastSplitManual()
+            runMain {
+                TipUtil.showToast(
+                    when (result) {
+                        AaVirtualDisplayAdapter.ManualRestoreResult.Started ->
+                            "正在恢复上次分屏…"
+                        AaVirtualDisplayAdapter.ManualRestoreResult.NoDisplay ->
+                            "快捷分屏：无显示会话"
+                        AaVirtualDisplayAdapter.ManualRestoreResult.SplitOff ->
+                            "快捷分屏：请先开启 OneUI 分屏"
+                        AaVirtualDisplayAdapter.ManualRestoreResult.NoSnapshot ->
+                            "快捷分屏：没有可恢复的分屏记录"
+                        AaVirtualDisplayAdapter.ManualRestoreResult.PackageUnavailable ->
+                            "快捷分屏：左右应用不可用"
+                    }
+                )
+            }
+        }
+    }
+
     override fun pressKey(action: Int) {
         runIO {
             mDisplayWindow?.onVirtualDisplayUserInteraction()

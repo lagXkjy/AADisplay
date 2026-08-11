@@ -5,6 +5,7 @@ interface AABroadcastConst {
         val ACTION_SCREEN_CONTROL = "aa.display.action.SCREEN_CONTROL"
         val ACTION_STEERING_WHEEL_CONTROL = "aa.display.action.STEERING_WHEEL_CONTROL"
         val ACTION_CLEANUP_SPLIT_SHELLS = "aa.display.action.CLEANUP_SPLIT_SHELLS"
+        val ACTION_RESTORE_LAST_SPLIT = "aa.display.action.RESTORE_LAST_SPLIT"
         val EXTRA_ACTION = "aa.display.extra.ACTION"
         val EXTRA_TYPE = "aa.display.extra.TYPE"
     }

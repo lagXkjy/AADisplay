@@ -24,6 +24,7 @@ interface ICoreManager {
     void moveSecondTaskToFront();
     void removeTask(int taskId);
     void cleanupSplitShells();
+    void restoreLastSplit();
     void pressKey(int action);
     void touch(in MotionEvent motionEvent);
     void toggleDisplayPower();

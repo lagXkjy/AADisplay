@@ -560,6 +560,17 @@ object AaUiHook: AaHook() {
                 }
                 setPadding(0, 5, 0, 5)
             }
+            // Stacked above clean (bottomIds grows upward from Home).
+            bottomIds += createBtn(R.drawable.ic_aa_split_44) {
+                contentDescription = ctx2.getString(R.string.quick_restore_split)
+                val intentClick = Intent().apply {
+                    action = AABroadcastConst.ACTION_RESTORE_LAST_SPLIT
+                }
+                setOnClickListener {
+                    ctx.sendBroadcast(intentClick)
+                }
+                setPadding(0, 5, 0, 5)
+            }
         }
         arrayListOf(resIdStatusBarId, resIdLauncherAndDashboardIconContainerId).forEach { vId ->
             val view = resultViewGroup.findViewById<View>(vId) ?: return@forEach

@@ -103,6 +103,10 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.cleanupSplitShells()
     }
 
+    override fun restoreLastSplit() {
+        getService()?.restoreLastSplit()
+    }
+
     override fun pressKey(action: Int) {
         getService()?.pressKey(action)
     }
