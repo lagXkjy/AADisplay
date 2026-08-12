@@ -1,17 +1,4 @@
 <resources>
     <string name="app_name">AADisplay</string>
     <string name="xposeddescription">AADisplay</string>
-    <string name="info_system_version">System Version</string>
-    <string name="activated">Activated</string>
-    <string name="need_reboot">Need Reboot</string>
-    <string name="not_activated">Not Activated</string>
-    <string name="menu_github">GitHub</string>
-    <string name="split_empty_pane">Tap to choose an app</string>
-    <string name="split_pick_app">Choose app</string>
-    <string name="split_picker_close">Close</string>
-    <string name="split_picker_recent">Recent</string>
-    <string name="split_picker_all">All apps</string>
-    <string name="split_divider_actions">Tap for recent tasks, long-press to swap panes</string>
-    <string name="controller_open_menu">Open controller menu</string>
-    <string name="controller_hide_menu">Hide controller menu</string>
 </resources>

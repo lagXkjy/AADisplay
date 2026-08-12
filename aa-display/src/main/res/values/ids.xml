@@ -7,4 +7,6 @@
     <item name="tap_count" type="id" />
     <!-- Recent-task: whether the tapped VD column was already focused before this DOWN. -->
     <item name="pane_was_focused" type="id" />
+    <!-- AaUiHook: rail touch pass-through listener installed. -->
+    <item name="rail_touch_passthrough" type="id" />
 </resources>

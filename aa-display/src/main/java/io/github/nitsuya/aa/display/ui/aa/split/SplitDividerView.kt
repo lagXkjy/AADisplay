@@ -9,7 +9,6 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
-import io.github.nitsuya.aa.display.R
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -59,7 +58,7 @@ class SplitDividerView @JvmOverloads constructor(
     }
 
     init {
-        contentDescription = context.getString(R.string.split_divider_actions)
+        contentDescription = "点击打开最近任务，长按交换分屏"
         isClickable = true
         setBackgroundColor(0x00000000)
     }

@@ -44,7 +44,7 @@ class MainActivity :
         when (buildTime) {
             0L -> {
                 baseBinding.ivIcon.setImageResource(R.drawable.ic_error_outline_24)
-                baseBinding.tvActive.setText(R.string.not_activated)
+                baseBinding.tvActive.text = "未激活"
                 baseBinding.tvVersion.text = ""
                 val colorError = android.R.attr.colorError
                 val colorOnError = theme.getAttr(com.google.android.material.R.attr.colorOnError).data
@@ -57,13 +57,13 @@ class MainActivity :
 
             BuildConfig.BUILD_TIME -> {
                 baseBinding.ivIcon.setImageResource(R.drawable.ic_round_check_circle_24)
-                baseBinding.tvActive.setText(R.string.activated)
+                baseBinding.tvActive.text = "已激活"
                 baseBinding.tvVersion.text = CoreApi.versionName
             }
 
             else -> {
                 baseBinding.ivIcon.setImageResource(R.drawable.ic_warning_amber_24)
-                baseBinding.tvActive.setText(R.string.need_reboot)
+                baseBinding.tvActive.text = "需要重启"
                 baseBinding.tvVersion.text =
                     "system: ${CoreApi.versionName}\nmodule: ${BuildConfig.VERSION_NAME}"
                 baseBinding.mcvStatus.setCardBackgroundColor(
@@ -71,7 +71,7 @@ class MainActivity :
                 )
                 baseBinding.mcvStatus.setOnClickListener {
                     MaterialAlertDialogBuilder(this)
-                        .setTitle(R.string.need_reboot)
+                        .setTitle("需要重启")
                         .setPositiveButton(android.R.string.ok, null)
                         .show()
                 }

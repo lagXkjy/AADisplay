@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **Drop i18n string resources:** no multi-locale plan; keep only `app_name` / `xposeddescription` in `strings.xml`, hardcode Chinese UI text in layouts/code (same as existing toasts).
 - **Drop Disable Google Maps on AA + App-process su:** remove `GoogleMapsOnAaManager`, libsu, Root Privilege UI, and one-tap reboot via `su`. MainActivity is activation status only; device still needs Root/LSPosed for the module itself.
 - **Drop dead ShellManager + unused prefs deps:** remove no-op `ShellManagerService` / `IShellManager` bind path on VD create/destroy; drop `preference-ktx`, `material-preference`, `androidx.media`, and preference theme attrs; trim unused `IsSystemEnv` / `RomUtil` OEM helpers.
 - **Dead-code sweep:** remove no-op `AaPropsHook`, unused template TipUtil/`BaseSimpleAdapter`/`RunIOCatching`, unused Utils helpers, unused strings, and unused `SplitAppPickerController.isShowing`.
@@ -13,6 +14,7 @@
 - **Slim AA rail + divider stack + all launchable apps:** keep AA on the vertical-rail layout family; reclaim the left black gutter by collapsing the rail/facet chain and expanding content siblings (not just hiding icons). Long-press a live pane to replace its app. Thin divider inspired by OneUI look with three-dot handle (tap opens recent tasks, drag adjusts ratio). Recent-task stack is three columns (primary pane / secondary pane / phone). App picker lists all MAIN/LAUNCHER apps including non-resizeable; add `QUERY_ALL_PACKAGES` + launcher `<queries>` for package visibility. Exit AADisplay via disconnect or phone controls (rail launcher is hidden).
 
 ### Fixed
+- **Left gutter untouchable after rail reclaim:** collapsing the AA vertical rail hid chrome but left a dead touch strip (unnamed thin FacetBar VD still full rail width, and/or a residual rail window above content). Now shrink thin-geometry rail VDs (not only `FacetBar`/`GhFacet` names), mark thin rail windows `FLAG_NOT_TOUCHABLE`, clear leftover start padding, and forward touches to the content sibling if the rail is forced visible again.
 - **Recent-task stack hard to dismiss:** empty-tap dismiss was limited to the phone column so VD taps could pick a swipe target, which made the panel feel stuck. Empty tap on phone still closes; first empty tap on a VD column selects the move target, second tap on that already-focused column closes (same on AA panel and phone overlay). Divider / recent-button toggle unchanged.
 - **Black panes after AA unplug/replug (Delay Destroy, r43):** soft reconnect with keep-locked display profile skipped `DisplayWindow.onResume`, so the Delay Destroy countdown was not cancelled and released both VDs under a still-live AA split UI (black content, operable divider/picker). Always cancel delay-destroy and rebind/kick surfaces on soft reconnect.
 - **Secondary pane cannot re-pick after close (Alook DLNA / empty VD, r42):** after the app finishes, OWN_CONTENT_ONLY VDs stay fully empty (no SecondaryDisplayLauncher), so `getPanePackage` kept stale `mPanePackages` and hid “Tap to choose”. Align vacant detection with ATMS refresh (clear outside settle). Also ignore empty/zombie root tasks when relocating — `bringTaskToFront` on `Activities=[]` no-ops; sweep affinity zombies then relaunch with `MULTIPLE_TASK`.
@@ -225,8 +227,6 @@
 - Fixed a real API-compatibility risk in `AADisplayConfig`: replaced Java Stream `.toList()` usage (API 34+) with Kotlin collection operators (safe for min SDK 31).
 - Added missing `super.onDestroy()` in `AaControlService` to resolve lifecycle correctness lint error.
 - Removed unused settings warning view/resources and unused string bloat in main settings screen.
-- Internationalization cleanup for top-right menu title (`GitHub` moved to string resource).
-
 ### Verification
 - `:aa-display:assembleDebug` succeeds after all changes.
 - `:aa-display:lintDebug` re-run confirms resolved issues for:

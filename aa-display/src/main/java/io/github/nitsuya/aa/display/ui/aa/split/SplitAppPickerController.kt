@@ -106,10 +106,10 @@ class SplitAppPickerController(
         val rest = all.filter { it.packageName !in recentSet }
         val rows = mutableListOf<Row>()
         if (recentEntries.isNotEmpty()) {
-            rows += Row.Header(binding.root.context.getString(R.string.split_picker_recent))
+            rows += Row.Header("最近")
             recentEntries.forEach { rows += Row.App(it) }
         }
-        rows += Row.Header(binding.root.context.getString(R.string.split_picker_all))
+        rows += Row.Header("全部应用")
         rest.forEach { rows += Row.App(it) }
         return rows
     }

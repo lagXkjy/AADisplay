@@ -32,7 +32,7 @@
                 android:focusable="true"
                 android:gravity="center"
                 android:padding="16dp"
-                android:text="@string/split_empty_pane"
+                android:text="点击选择应用"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"
                 android:visibility="gone" />
@@ -65,7 +65,7 @@
                 android:focusable="true"
                 android:gravity="center"
                 android:padding="16dp"
-                android:text="@string/split_empty_pane"
+                android:text="点击选择应用"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"
                 android:visibility="gone" />
@@ -91,7 +91,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingBottom="8dp"
-                android:text="@string/split_pick_app"
+                android:text="选择应用"
                 android:textColor="#FFFFFF"
                 android:textSize="18sp"
                 android:textStyle="bold" />
@@ -106,7 +106,7 @@
                 android:id="@+id/btn_picker_close"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="@string/split_picker_close" />
+                android:text="关闭" />
         </LinearLayout>
     </FrameLayout>
 

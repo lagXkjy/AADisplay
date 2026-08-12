@@ -84,7 +84,7 @@
                     style="@style/DeviceInfoDialogLabel"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="@string/info_system_version" />
+                    android:text="系统版本" />
 
                 <com.google.android.material.textview.MaterialTextView
                     android:id="@+id/system_version"

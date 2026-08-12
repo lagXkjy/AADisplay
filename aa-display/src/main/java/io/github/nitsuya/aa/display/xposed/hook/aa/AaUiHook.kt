@@ -15,8 +15,10 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Parcelable
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.LinearLayout
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.constraintlayout.widget.ConstraintSet
@@ -87,6 +89,8 @@ object AaUiHook: AaHook() {
     private var mInjectingFacetBar: Boolean = false
     private var mAutoOpen: Boolean = false
     private val facetBarInjectedTag = Any()
+    /** setTag key so the rail touch forwarder is installed once per view. */
+    private val railTouchPassThroughTagKey = R.id.rail_touch_passthrough
     private val mFacetEnsureHandler = Handler(Looper.getMainLooper())
     /**
      * Soft reconnect (no USB replug) often rebuilds LayoutInfo before GhFacetBar chrome
@@ -705,11 +709,20 @@ object AaUiHook: AaHook() {
     private fun rewriteVirtualDisplayArgs(name: String?, width: Int, height: Int): Pair<Int, Int>? {
         if (width <= 0 || height <= 0) return null
         val railName = name?.contains("FacetBar", ignoreCase = true) == true ||
-            name?.contains("GhFacet", ignoreCase = true) == true
-        if (railName) {
+            name?.contains("GhFacet", ignoreCase = true) == true ||
+            name?.contains("VerticalRail", ignoreCase = true) == true ||
+            name?.contains("EdgeColumn", ignoreCase = true) == true
+        // Named rail OR any thin vertical strip — leave a 1px VD so Coolwalk's compositor
+        // slot collapses; a full-width transparent facet VD otherwise eats the left gutter
+        // touches after view chrome is hidden.
+        if (railName || isThinRailSize(width, height)) {
             if (width > 1) {
                 mObservedRailWidthPx = width
-                log(tagName, "AaUiHook: shrink rail VD name=$name ${width}x$height → 1x$height")
+                log(
+                    tagName,
+                    "AaUiHook: shrink rail VD name=$name ${width}x$height → 1x$height" +
+                        if (railName) "" else " (thin-geometry)"
+                )
                 return 1 to height
             }
             return null
@@ -719,7 +732,6 @@ object AaUiHook: AaHook() {
         if (fullW <= 0 || fullH <= 0) return null
         if (abs(height - fullH) > 2) return null
         if (width >= fullW) return null
-        if (isThinRailSize(width, height)) return null
         val missing = fullW - width
         val range = railPxRange(fullW)
         val observed = mObservedRailWidthPx
@@ -975,7 +987,11 @@ object AaUiHook: AaHook() {
                 val root = param.args[0] as? ViewGroup ?: return@hookAfter
                 root.post {
                     if (!canHookFacetBar || mInjectingFacetBar) return@post
-                    if (!containsFacetChrome(root) || hasInjectedFacet(root)) return@post
+                    if (hasInjectedFacet(root)) {
+                        reclaimLeftGutter(root)
+                        return@post
+                    }
+                    if (!containsFacetChrome(root)) return@post
                     scheduleEnsureFacetBar("windowAttach")
                 }
             }
@@ -1172,13 +1188,26 @@ object AaUiHook: AaHook() {
     /**
      * Collapse the rail/facet column AND its thin wrappers, then expand content siblings
      * so the black gutter does not remain after chrome is hidden.
+     * Also disarm touch on residual rail windows — otherwise the left strip looks filled
+     * (content underneath / stretched) but still eats MotionEvents.
      */
     private fun reclaimRailSpace(rail: View) {
         applyZeroWidthGone(rail)
+        installRailTouchPassThrough(rail)
+        passThroughTouchesIfRailWindow(rail)
         collapseThinRailChainAndExpandContent(rail)
-        rail.post { collapseThinRailChainAndExpandContent(rail) }
-        rail.postDelayed({ collapseThinRailChainAndExpandContent(rail) }, 300L)
-        rail.postDelayed({ collapseThinRailChainAndExpandContent(rail) }, 1000L)
+        rail.post {
+            collapseThinRailChainAndExpandContent(rail)
+            passThroughTouchesIfRailWindow(rail)
+        }
+        rail.postDelayed({
+            collapseThinRailChainAndExpandContent(rail)
+            passThroughTouchesIfRailWindow(rail)
+        }, 300L)
+        rail.postDelayed({
+            collapseThinRailChainAndExpandContent(rail)
+            passThroughTouchesIfRailWindow(rail)
+        }, 1000L)
     }
 
     private fun maxSideRailPx(view: View): Int =
@@ -1188,17 +1217,120 @@ object AaUiHook: AaHook() {
         view.visibility = View.GONE
         view.isClickable = false
         view.isFocusable = false
+        view.isEnabled = false
+        view.isFocusableInTouchMode = false
+        if (view is ViewGroup) {
+            view.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        }
         val lp = sourceLp ?: view.layoutParams
         if (lp != null) {
             lp.width = 0
+            if (lp is ViewGroup.MarginLayoutParams) {
+                lp.marginStart = 0
+                lp.leftMargin = 0
+                lp.marginEnd = 0
+                lp.rightMargin = 0
+            }
             if (lp is LinearLayout.LayoutParams) {
                 lp.weight = 0f
-                lp.marginStart = 0
-                lp.marginEnd = 0
             }
             view.layoutParams = lp
         } else {
             view.layoutParams = ViewGroup.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+    }
+
+    /**
+     * If AA forces the collapsed rail visible again, forward touches to the content sibling
+     * instead of swallowing the left gutter.
+     */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun installRailTouchPassThrough(rail: View) {
+        if (rail.getTag(railTouchPassThroughTagKey) != null) return
+        rail.setTag(railTouchPassThroughTagKey, true)
+        rail.setOnTouchListener { v, event ->
+            forwardRailTouchToContentSibling(v, event)
+        }
+    }
+
+    private fun forwardRailTouchToContentSibling(rail: View, event: MotionEvent): Boolean {
+        val parent = rail.parent as? ViewGroup ?: return false
+        val maxSide = maxSideRailPx(rail)
+        for (i in 0 until parent.childCount) {
+            val sibling = parent.getChildAt(i) ?: continue
+            if (sibling === rail) continue
+            if (sibling.visibility != View.VISIBLE) continue
+            if (isThinSideRail(sibling, maxSide)) continue
+            val copy = MotionEvent.obtain(event)
+            copy.offsetLocation(
+                (rail.left - sibling.left).toFloat(),
+                (rail.top - sibling.top).toFloat(),
+            )
+            return try {
+                sibling.dispatchTouchEvent(copy)
+            } catch (_: Throwable) {
+                false
+            } finally {
+                copy.recycle()
+            }
+        }
+        return false
+    }
+
+    /**
+     * Thin / facet-only [WindowManager] windows stay in the z-order after chrome is hidden
+     * and steal the left gutter. Mark them not-touchable so events fall through to content
+     * on the same display.
+     */
+    private fun passThroughTouchesIfRailWindow(rail: View) {
+        val root = generateSequence(rail as View?) { it.parent as? View }.lastOrNull() ?: return
+        val lp = root.layoutParams as? WindowManager.LayoutParams ?: return
+        val maxSide = maxSideRailPx(root)
+        val frameW = when {
+            lp.width > 0 -> lp.width
+            root.width > 0 -> root.width
+            else -> measuredOrLpWidth(root)
+        }
+        val frameH = when {
+            lp.height > 0 -> lp.height
+            root.height > 0 -> root.height
+            else -> measuredOrLpHeight(root)
+        }
+        val thinWindow = frameW in 1..maxSide && (frameH <= 0 || frameH >= frameW * 2)
+        // MATCH_PARENT on a thin FacetBar VD still reports the rail width as the window frame.
+        if (!thinWindow && lp.width != 0 && lp.width != WindowManager.LayoutParams.MATCH_PARENT) {
+            return
+        }
+        if (!thinWindow && lp.width == WindowManager.LayoutParams.MATCH_PARENT) {
+            // Only pass-through when this window is clearly the rail host (injected facet /
+            // facet chrome) and not the full HU content window.
+            val hasInjected = root.findViewWithTag<View>(facetBarInjectedTag) != null
+            val looksFullHu = layoutWidthPx().takeIf { it > 0 }?.let { fullW ->
+                (root.width.takeIf { it > 0 } ?: frameW) >= fullW - 2
+            } == true
+            if (!hasInjected || looksFullHu) return
+        } else if (!thinWindow) {
+            return
+        }
+        var changed = false
+        if (lp.width != 0 && (thinWindow || lp.width in 1..maxSide)) {
+            lp.width = 0
+            changed = true
+        }
+        val passFlags =
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        if (lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE == 0) {
+            lp.flags = lp.flags or passFlags
+            changed = true
+        }
+        if (!changed) return
+        try {
+            val wm = root.context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            wm.updateViewLayout(root, lp)
+            log(tagName, "AaUiHook: rail window pass-through (NOT_TOUCHABLE, w→${lp.width})")
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: rail window pass-through update failed", e)
         }
     }
 
@@ -1241,7 +1373,14 @@ object AaUiHook: AaHook() {
         }
         content.layoutParams = lp
         content.translationX = 0f
-        content.setPadding(0, content.paddingTop, content.paddingRight, content.paddingBottom)
+        clearStartPadding(content)
+        // Parent paddingStart also leaves a dead touch strip after the rail is gone.
+        (content.parent as? View)?.let { clearStartPadding(it) }
+    }
+
+    private fun clearStartPadding(view: View) {
+        if (view.paddingStart == 0 && view.paddingLeft == 0) return
+        view.setPaddingRelative(0, view.paddingTop, view.paddingEnd, view.paddingBottom)
     }
 
     private fun collapseThinRailChainAndExpandContent(from: View) {
