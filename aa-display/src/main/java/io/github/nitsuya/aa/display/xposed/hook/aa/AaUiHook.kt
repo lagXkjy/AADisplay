@@ -114,12 +114,14 @@ object AaUiHook: AaHook() {
      * Keep attempts few and spaced so a successful start can cancel before the next retry
      * (repeated start recreates/refocuses CarActivity and feels janky).
      */
-    private val AUTO_OPEN_DELAYS_MS = longArrayOf(400L, 4000L, 8000L)
+    private val AUTO_OPEN_DELAYS_MS = longArrayOf(1200L, 4000L, 8000L)
     private val AUTO_OPEN_TOKEN = Any()
     /** Uptime of the last armed Auto Open session; used to debounce LayoutInfo storms. */
     private var mAutoOpenSessionAtMs = 0L
     private val AUTO_OPEN_REARM_GAP_MS = 12_000L
     @Volatile private var mAaDisplayShownThisSession = false
+    /** One start per connect window — duplicate invokes let GhAppLauncherService win CAM. */
+    @Volatile private var mAutoOpenInvokedThisSession = false
     private var mAutoOpenShownReceiver: android.content.BroadcastReceiver? = null
 
     /** Latest main-display LayoutInfo size in dp (from constructor args). */
@@ -1066,6 +1068,7 @@ object AaUiHook: AaHook() {
         }
         mAutoOpenSessionAtMs = now
         mAaDisplayShownThisSession = false
+        mAutoOpenInvokedThisSession = false
         mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
         log(tagName, "AaUiHook: arm AutoOpen retries ($reason) delays=${AUTO_OPEN_DELAYS_MS.contentToString()}")
         for (delayMs in AUTO_OPEN_DELAYS_MS) {
@@ -1078,13 +1081,24 @@ object AaUiHook: AaHook() {
     }
 
     private fun tryAutoOpenAaDisplay(delayMs: Long) {
-        if (mAaDisplayShownThisSession || isAaDisplayCarSessionActive()) {
-            markAaDisplayShown(if (mAaDisplayShownThisSession) "flag" else "service-running@${delayMs}ms")
+        if (mAaDisplayShownThisSession) {
+            markAaDisplayShown("flag")
+            return
+        }
+        if (mAutoOpenInvokedThisSession || isAaDisplayCarSessionActive()) {
+            logDebug(
+                tagName,
+                "AaUiHook: AutoOpen skip invoke@${delayMs}ms " +
+                    "invoked=$mAutoOpenInvokedThisSession service=${isAaDisplayCarSessionActive()}"
+            )
             return
         }
         val method = startMethod ?: return
         try {
             method.invoke(null, aaDisplayLaunchIntent())
+            mAutoOpenInvokedThisSession = true
+            // Further retries race GhAppLauncherService and steal foreground (see CAR.CAM override logs).
+            mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
             logDebug(tagName, "AaUiHook: AutoOpen invoke at ${delayMs}ms")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: AutoOpen invoke failed at ${delayMs}ms", e)
