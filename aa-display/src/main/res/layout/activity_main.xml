@@ -63,7 +63,7 @@
                     android:layout_toEndOf="@id/iv_icon"
                     android:textAppearance="?textAppearanceBodyMedium"
                     android:textColor="?colorOnPrimary"
-                    tools:text="0.23#16.6-r1" />
+                    tools:text="0.24#17.4-r1" />
 
             </RelativeLayout>
         </com.google.android.material.card.MaterialCardView>

@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **Version bump to `0.24#17.4-r1`:** target Android Auto 17.4; remove MainActivity GitHub menu link.
 - **Dead-code sweep (post rail-touch cleanup):** remove no-op `AaDpiHook` (DexKit load with empty hook body); drop orphaned IPC (`printLog`, `startTaskId`, `getVersionCode`, `getUid`, `restoreLastSplit` manual path); rename `touchHost` → `touchPrimaryPane` (inject PRIMARY pane VD, not host display); extract shared `RecentTaskUiHelper` for AA + phone overlay recent-task columns; stop writing unused `landscape`/`sideBySide` in `LastSplitStore`; remove `ServiceProxy` per-IPC logging and voice-assist no-op stub.
 - **Drop i18n string resources:** no multi-locale plan; keep only `app_name` / `xposeddescription` in `strings.xml`, hardcode Chinese UI text in layouts/code (same as existing toasts).
 - **Drop Disable Google Maps on AA + App-process su:** remove `GoogleMapsOnAaManager`, libsu, Root Privilege UI, and one-tap reboot via `su`. MainActivity is activation status only; device still needs Root/LSPosed for the module itself.

@@ -1,15 +1,9 @@
 package io.github.nitsuya.aa.display.ui.main
 
 import android.annotation.SuppressLint
-import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.LayoutInflater
-import android.view.Menu
-import android.view.MenuInflater
-import android.view.MenuItem
-import androidx.core.net.toUri
-import androidx.core.view.MenuProvider
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.github.duzhaokun123.template.bases.BaseActivity
@@ -24,8 +18,7 @@ class MainActivity :
         ActivityMainBinding::class.java,
         Config.NO_BACK,
         Config.LAYOUT_MATCH_HORI
-    ),
-    MenuProvider {
+    ) {
     companion object {
         const val TAG = "AADisplay_MainActivity"
     }
@@ -33,7 +26,6 @@ class MainActivity :
     override fun onCreate(savedInstanceState: Bundle?) {
         ActivityMainBinding.inflate(LayoutInflater.from(this))
         super.onCreate(savedInstanceState)
-        addMenuProvider(this, this)
     }
 
     @SuppressLint("SetTextI18n")
@@ -81,23 +73,6 @@ class MainActivity :
                 "${Build.VERSION.CODENAME} Preview (API ${Build.VERSION.SDK_INT})"
         } else {
             baseBinding.systemVersion.text = "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
-        }
-    }
-
-    override fun onCreateMenu(menu: Menu, menuInflater: MenuInflater) {
-        menuInflater.inflate(R.menu.menu_main, menu)
-    }
-
-    override fun onMenuItemSelected(menuItem: MenuItem): Boolean {
-        return when (menuItem.itemId) {
-            R.id.github -> {
-                startActivity(Intent(Intent.ACTION_VIEW).apply {
-                    data = "https://github.com/Stashboy/AADisplay".toUri()
-                })
-                true
-            }
-
-            else -> false
         }
     }
 }

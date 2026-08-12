@@ -4,19 +4,22 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Rect
 import android.util.AttributeSet
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
-import android.view.TouchDelegate
 import android.view.View
 import android.view.ViewConfiguration
+import android.widget.LinearLayout
 import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
  * Thin split divider inspired by OneUI look (not StageCoordinator).
  * Tap swaps panes; long-press opens recent-task stack; drag adjusts ratio.
+ *
+ * Hit target is wider than the visual seam and overlaps adjacent panes via negative
+ * margins + elevation. Parent [TouchDelegate] cannot steal touches already consumed by
+ * sibling TextureViews (which long-press open the app picker).
  */
 class SplitDividerView @JvmOverloads constructor(
     context: Context,
@@ -25,11 +28,6 @@ class SplitDividerView @JvmOverloads constructor(
 ) : View(context, attrs, defStyleAttr) {
 
     var sideBySide: Boolean = true
-        set(value) {
-            if (field == value) return
-            field = value
-            scheduleTouchDelegateUpdate()
-        }
 
     var onRatioChanged: ((Float) -> Unit)? = null
     var onRatioSettled: ((Float) -> Unit)? = null
@@ -37,7 +35,6 @@ class SplitDividerView @JvmOverloads constructor(
     var onSwapClick: (() -> Unit)? = null
 
     private val density = resources.displayMetrics.density
-    private val touchExpandPx = SplitPane.DIVIDER_TOUCH_EXPAND_DP * density
     private val seamPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0x66FFFFFF.toInt()
         strokeWidth = 1.5f * density
@@ -66,10 +63,10 @@ class SplitDividerView @JvmOverloads constructor(
         onStackClick?.invoke()
     }
 
-    private val updateTouchDelegateRunnable = Runnable { updateTouchDelegate() }
-
     init {
         isClickable = true
+        // Above empty-pane overlays (elevation 4) so overlap hit target wins Z-order.
+        elevation = 8f
         setBackgroundColor(0x00000000)
     }
 
@@ -77,43 +74,34 @@ class SplitDividerView @JvmOverloads constructor(
         lastRatio = SplitPane.clampRatio(ratio)
     }
 
-    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-        super.onLayout(changed, left, top, right, bottom)
-        if (changed) {
-            scheduleTouchDelegateUpdate()
+    /**
+     * Layout size = visual seam + expand on each side; negative margins keep the
+     * LinearLayout gap at [SplitPane.DIVIDER_DP] while the view overlaps panes for touch.
+     */
+    fun applyLayoutParams(lp: LinearLayout.LayoutParams, sideBySide: Boolean) {
+        val seamPx = (SplitPane.DIVIDER_DP * density).toInt().coerceAtLeast(1)
+        val expandPx = (SplitPane.DIVIDER_TOUCH_EXPAND_DP * density).toInt().coerceAtLeast(0)
+        val touchSpan = seamPx + 2 * expandPx
+        if (sideBySide) {
+            lp.width = touchSpan
+            lp.height = LinearLayout.LayoutParams.MATCH_PARENT
+            lp.marginStart = -expandPx
+            lp.marginEnd = -expandPx
+            lp.topMargin = 0
+            lp.bottomMargin = 0
+        } else {
+            lp.width = LinearLayout.LayoutParams.MATCH_PARENT
+            lp.height = touchSpan
+            lp.topMargin = -expandPx
+            lp.bottomMargin = -expandPx
+            lp.marginStart = 0
+            lp.marginEnd = 0
         }
-    }
-
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        scheduleTouchDelegateUpdate()
     }
 
     override fun onDetachedFromWindow() {
         removeCallbacks(longPressRunnable)
-        removeCallbacks(updateTouchDelegateRunnable)
         super.onDetachedFromWindow()
-    }
-
-    private fun scheduleTouchDelegateUpdate() {
-        if (!isAttachedToWindow) return
-        removeCallbacks(updateTouchDelegateRunnable)
-        post(updateTouchDelegateRunnable)
-    }
-
-    private fun updateTouchDelegate() {
-        val parentView = parent as? View ?: return
-        if (width == 0 || height == 0) return
-        val hitRect = Rect()
-        getHitRect(hitRect)
-        if (sideBySide) {
-            hitRect.left -= touchExpandPx.toInt()
-            hitRect.right += touchExpandPx.toInt()
-        } else {
-            hitRect.top -= touchExpandPx.toInt()
-            hitRect.bottom += touchExpandPx.toInt()
-        }
-        parentView.touchDelegate = TouchDelegate(hitRect, this)
     }
 
     override fun onDraw(canvas: Canvas) {

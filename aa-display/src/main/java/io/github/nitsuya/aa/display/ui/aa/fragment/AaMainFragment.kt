@@ -77,7 +77,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                         AABroadcastConst.EXTRA_PANE,
                         SplitPane.PRIMARY
                     )
-                    appPicker.show(pane)
+                    // system_server already decided this pane needs a pick (restore miss / vacant).
+                    // Do not re-check getPanePackage — stale mPanePackages used to block the picker.
+                    if (SplitPane.isValid(pane)) {
+                        paneHasApp[pane] = false
+                        updateEmptyOverlays()
+                        appPicker.show(pane)
+                    }
                 }
                 AABroadcastConst.ACTION_SPLIT_STATE_CHANGED -> {
                     // Occupancy only — never re-apply ratio/weights from broadcasts.
@@ -269,15 +275,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         appliedSideBySide = sideBySide
         baseBinding.splitContainer.orientation =
             if (sideBySide) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        // Divider overlaps panes for hit target; allow drawing/touch outside child box.
+        baseBinding.splitContainer.clipChildren = false
         baseBinding.splitDivider.sideBySide = sideBySide
         val dividerLp = baseBinding.splitDivider.layoutParams as LinearLayout.LayoutParams
-        if (sideBySide) {
-            dividerLp.width = (SplitPane.DIVIDER_DP * resources.displayMetrics.density).toInt()
-            dividerLp.height = LinearLayout.LayoutParams.MATCH_PARENT
-        } else {
-            dividerLp.width = LinearLayout.LayoutParams.MATCH_PARENT
-            dividerLp.height = (SplitPane.DIVIDER_DP * resources.displayMetrics.density).toInt()
-        }
+        baseBinding.splitDivider.applyLayoutParams(dividerLp, sideBySide)
         baseBinding.splitDivider.layoutParams = dividerLp
 
         val primaryLp = baseBinding.panePrimary.layoutParams as LinearLayout.LayoutParams
@@ -345,6 +347,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     private fun setupEmptyPaneClicks() {
+        // Overlay is only visible while local occupancy says vacant — no Binder gate.
         baseBinding.tvEmptyPrimary.setOnClickListener { appPicker.show(SplitPane.PRIMARY) }
         baseBinding.tvEmptySecondary.setOnClickListener { appPicker.show(SplitPane.SECONDARY) }
         updateEmptyOverlays()
@@ -472,55 +475,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         pane: Int,
         setDownTime: (Long) -> Unit,
     ) {
-        val touchSlop = android.view.ViewConfiguration.get(textureView.context).scaledTouchSlop
-        val longPressTimeout = android.view.ViewConfiguration.getLongPressTimeout().toLong()
-        var downX = 0f
-        var downY = 0f
-        var longPressFired = false
-        val longPressRunnable = Runnable {
-            longPressFired = true
-            // Cancel the in-progress gesture on the VD before opening the picker.
-            val down = if (pane == SplitPane.PRIMARY) repairDownTimePrimary else repairDownTimeSecondary
-            val cancel = MotionEvent.obtain(
-                down,
-                SystemClock.uptimeMillis(),
-                MotionEvent.ACTION_CANCEL,
-                downX,
-                downY,
-                0,
-            )
-            cancel.source = InputDeviceCompat.SOURCE_TOUCHSCREEN
-            CoreApi.touchPane(pane, cancel)
-            cancel.recycle()
-            appPicker.show(pane)
-        }
-        textureView.setOnTouchListener { v, e ->
+        textureView.setOnTouchListener { _, e ->
             val uptimeMillis = SystemClock.uptimeMillis()
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    longPressFired = false
-                    downX = e.x
-                    downY = e.y
-                    setDownTime(uptimeMillis)
-                    CoreApi.setFocusedPane(pane)
-                    v.removeCallbacks(longPressRunnable)
-                    v.postDelayed(longPressRunnable, longPressTimeout)
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (!longPressFired) {
-                        val dx = e.x - downX
-                        val dy = e.y - downY
-                        if (dx * dx + dy * dy > touchSlop * touchSlop) {
-                            v.removeCallbacks(longPressRunnable)
-                        }
-                    }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    v.removeCallbacks(longPressRunnable)
-                }
-            }
-            if (longPressFired) {
-                return@setOnTouchListener true
+            if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+                setDownTime(uptimeMillis)
+                CoreApi.setFocusedPane(pane)
             }
             val down = if (pane == SplitPane.PRIMARY) repairDownTimePrimary else repairDownTimeSecondary
             val newEvent = rewriteMotionEvent(
