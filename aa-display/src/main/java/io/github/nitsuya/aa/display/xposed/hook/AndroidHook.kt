@@ -5,6 +5,7 @@ import android.content.pm.ActivityInfo
 import android.content.pm.IPackageManager
 import android.content.res.Configuration
 import android.view.Display
+import android.view.WindowManager
 import com.github.kyuubiran.ezxhelper.utils.*
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
@@ -13,6 +14,7 @@ import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.xposed.BridgeService
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.ui.aa.split.SplitPresentationGuard
 import io.github.qauxv.util.Initiator
 import java.io.File
 import java.lang.reflect.Method
@@ -54,6 +56,43 @@ object AndroidHook : BaseHook() {
         return findMethod(className, cl, findSuper, condition)
     }
 
+    /** Prefer themable UI Context for Toast / dialogs. */
+    private fun fieldContext(ams: Any, name: String): Context? =
+        runCatching { ams.getObjectAs(name, Context::class.java) as? Context }.getOrNull()
+
+    private fun activityThreadUiContext(): Context? =
+        runCatching {
+            val atClass = Class.forName("android.app.ActivityThread")
+            val thread = atClass.getDeclaredMethod("currentActivityThread").invoke(null)
+                ?: return@runCatching null
+            runCatching {
+                atClass.getDeclaredMethod("getSystemUiContext").invoke(thread) as? Context
+            }.getOrNull()
+                ?: runCatching {
+                    atClass.getDeclaredMethod("getSystemContext").invoke(thread) as? Context
+                }.getOrNull()
+        }.getOrNull()
+
+    /**
+     * Capture AMS system/UI Context across OEM signature churn (e.g. One UI 8.5
+     * no longer always has Context as constructor parameterTypes[0]).
+     */
+    private fun captureSystemContext(ams: Any, args: Array<Any?>?): Boolean {
+        if (CoreManagerService.hasSystemContext) return true
+        val ctx =
+            fieldContext(ams, "mUiContext")
+                ?: args?.filterIsInstance<Context>()?.firstOrNull()
+                ?: fieldContext(ams, "mContext")
+                ?: activityThreadUiContext()
+        if (ctx == null) {
+            log(tagName, "captureSystemContext failed")
+            return false
+        }
+        CoreManagerService.systemContext = ctx
+        log(tagName, "get systemUiContext")
+        return true
+    }
+
     override fun init(lpparam: XC_LoadPackage.LoadPackageParam) {
         systemServerClassLoader = lpparam.classLoader
         isSystemServerHooked = true
@@ -76,27 +115,38 @@ object AndroidHook : BaseHook() {
             }
         }
 
+        // One UI 8.5+ may reorder/wrap AMS ctor params; do not require Context at [0].
         var activityManagerServiceConstructorHook: List<XC_MethodHook.Unhook> = emptyList()
         activityManagerServiceConstructorHook =
             findAllConstructors("com.android.server.am.ActivityManagerService") {
-                parameterTypes[0] == Context::class.java
-            }.hookAfter {
-                activityManagerServiceConstructorHook.forEach { hook -> hook.unhook() }
-                CoreManagerService.systemContext = it.thisObject.getObjectAs("mUiContext")
-                log(tagName, "get systemUiContext")
+                true
+            }.hookAfter { param ->
+                if (captureSystemContext(param.thisObject, param.args)) {
+                    activityManagerServiceConstructorHook.forEach { hook -> hook.unhook() }
+                }
             }.also {
-                if (it.isEmpty())
-                    log(tagName, "no constructor with parameterTypes[0] == Context found")
+                if (it.isEmpty()) {
+                    log(tagName, "no ActivityManagerService constructor found")
+                } else {
+                    log(tagName, "hooked ${it.size} ActivityManagerService constructor(s)")
+                }
             }
 
         var activityManagerServiceSystemReadyHook: XC_MethodHook.Unhook? = null
         activityManagerServiceSystemReadyHook =
             findMethod("com.android.server.am.ActivityManagerService") {
                 name == "systemReady"
-            }.hookAfter {
+            }.hookAfter { param ->
                 activityManagerServiceSystemReadyHook?.unhook()
-                CoreManagerService.systemReady()
-                log(tagName, "system ready")
+                runCatching {
+                    if (!CoreManagerService.hasSystemContext) {
+                        captureSystemContext(param.thisObject, param.args)
+                    }
+                    CoreManagerService.systemReady()
+                    log(tagName, "system ready")
+                }.onFailure {
+                    log(tagName, "systemReady failed", it)
+                }
             }
 
 
@@ -338,5 +388,63 @@ object AndroidHook : BaseHook() {
             return pkg.takeIf { it.isNotEmpty() }
         }
 
+    }
+
+    /**
+     * Reject [Presentation] windows that target an AA pane owned by another package.
+     * Prevents e.g. Douyin (SECONDARY) from covering PRIMARY via MediaRouter after reconnect.
+     */
+    object PanePresentationGuard {
+        /** WindowManagerGlobal.ADD_INVALID_DISPLAY */
+        private const val ADD_INVALID_DISPLAY = -9
+
+        private var addWindowHook: XC_MethodHook.Unhook? = null
+        private var hooked = false
+
+        fun ensureHooked() {
+            if (!isReadyForSystemHooks()) return
+            if (hooked) return
+            hook()
+        }
+
+        private fun hook() {
+            val method = findSystemMethod("com.android.server.wm.WindowManagerService") {
+                name == "addWindow" &&
+                    parameterTypes.any { it.name.endsWith("LayoutParams") }
+            }
+            if (method == null) {
+                log(tagName, "PanePresentationGuard: WindowManagerService.addWindow not found")
+                return
+            }
+            addWindowHook = method.hookBefore { param ->
+                try {
+                    val attrsIdx = param.args.indexOfFirst { it is WindowManager.LayoutParams }
+                    if (attrsIdx < 0) return@hookBefore
+                    val attrs = param.args[attrsIdx] as WindowManager.LayoutParams
+                    if (!SplitPresentationGuard.isPresentationType(attrs.type)) return@hookBefore
+                    val displayId = param.args.getOrNull(attrsIdx + 2) as? Int ?: return@hookBefore
+                    if (!CoreManagerService.isAaVirtualDisplay(displayId)) return@hookBefore
+                    val ownerPkg = CoreManagerService.panePackageForDisplay(displayId) ?: return@hookBefore
+                    val session = param.args.firstOrNull { arg ->
+                        arg != null && arg.javaClass.name.endsWith("Session")
+                    } ?: return@hookBefore
+                    val uid = session.javaClass.methods.firstOrNull { m ->
+                        m.name == "getUid" && m.parameterTypes.isEmpty()
+                    }?.invoke(session) as? Int ?: return@hookBefore
+                    val callerPkg = SplitPresentationGuard.packageForUid(CoreManagerService.systemContext, uid)
+                        ?: return@hookBefore
+                    if (callerPkg == ownerPkg || callerPkg == BuildConfig.APPLICATION_ID) return@hookBefore
+                    log(
+                        tagName,
+                        "PanePresentationGuard: block $callerPkg presentation on display=$displayId (owner=$ownerPkg)"
+                    )
+                    param.result = ADD_INVALID_DISPLAY
+                } catch (e: Throwable) {
+                    log(tagName, "PanePresentationGuard addWindow hook failed", e)
+                }
+            }
+            hooked = true
+            log(tagName, "PanePresentationGuard: hooked WindowManagerService.addWindow")
+        }
     }
 }

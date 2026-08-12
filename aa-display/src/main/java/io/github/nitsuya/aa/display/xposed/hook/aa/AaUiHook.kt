@@ -119,8 +119,6 @@ object AaUiHook: AaHook() {
     private var mAutoOpenSessionAtMs = 0L
     private val AUTO_OPEN_REARM_GAP_MS = 12_000L
     @Volatile private var mAaDisplayShownThisSession = false
-    /** One start per connect window — duplicate invokes let GhAppLauncherService win CAM. */
-    @Volatile private var mAutoOpenInvokedThisSession = false
     private var mAutoOpenShownReceiver: android.content.BroadcastReceiver? = null
 
     /** Latest main-display LayoutInfo size in dp (from constructor args). */
@@ -1065,7 +1063,6 @@ object AaUiHook: AaHook() {
         }
         mAutoOpenSessionAtMs = now
         mAaDisplayShownThisSession = false
-        mAutoOpenInvokedThisSession = false
         mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
         log(tagName, "AaUiHook: arm AutoOpen retries ($reason) delays=${AUTO_OPEN_DELAYS_MS.contentToString()}")
         for (delayMs in AUTO_OPEN_DELAYS_MS) {
@@ -1078,23 +1075,16 @@ object AaUiHook: AaHook() {
     }
 
     private fun tryAutoOpenAaDisplay(delayMs: Long) {
+        // Only stop on real resume (AA_DISPLAY_SHOWN). CarSystemUiControllerService
+        // swallows "Unable to start activity" — invoke can "succeed" without opening,
+        // so do not cancel remaining 4s/8s retries on a bare invoke.
         if (mAaDisplayShownThisSession) {
             markAaDisplayShown("flag")
-            return
-        }
-        if (mAutoOpenInvokedThisSession) {
-            logDebug(
-                tagName,
-                "AaUiHook: AutoOpen skip invoke@${delayMs}ms invoked=$mAutoOpenInvokedThisSession"
-            )
             return
         }
         val method = startMethod ?: return
         try {
             method.invoke(null, aaDisplayLaunchIntent())
-            mAutoOpenInvokedThisSession = true
-            // Further retries race GhAppLauncherService and steal foreground (see CAR.CAM override logs).
-            mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
             logDebug(tagName, "AaUiHook: AutoOpen invoke at ${delayMs}ms")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: AutoOpen invoke failed at ${delayMs}ms", e)

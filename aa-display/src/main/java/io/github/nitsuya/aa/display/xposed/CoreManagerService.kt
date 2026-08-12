@@ -12,6 +12,7 @@ import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplayWindow
+import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.template.bases.runIO
 import io.github.nitsuya.template.bases.runMain
@@ -31,6 +32,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
         @SuppressLint("StaticFieldLeak")
         private lateinit var systemContextHost: Context
+        val hasSystemContext: Boolean
+            get() = ::systemContextHost.isInitialized
         var systemContext: Context
             get() = systemContextHost
             set(value) {
@@ -125,12 +128,26 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         }
 
         fun systemReady() {
+            if (!hasSystemContext) {
+                log(TAG, "systemReady skipped: systemContext not initialized")
+                return
+            }
             TipUtil.init(systemContext, "[AADisplay] ")
             Instances.init(systemContext)
+            AndroidHook.PanePresentationGuard.ensureHooked()
         }
 
         fun isAaVirtualDisplay(displayId: Int): Boolean {
             return mSplitController?.isAaVirtualDisplay(displayId) == true
+        }
+
+        fun panePackageForDisplay(displayId: Int): String? {
+            val controller = mSplitController ?: return null
+            return when (displayId) {
+                controller.primaryDisplayId -> controller.mPanePackages[SplitPane.PRIMARY]
+                controller.secondaryDisplayId -> controller.mPanePackages[SplitPane.SECONDARY]
+                else -> null
+            }?.trim()?.takeIf { it.isNotEmpty() }
         }
 
         fun getDensityDpi(): Int {
@@ -157,6 +174,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 "onCreateSplitDisplay: ${width}x$height,$densityDpi ratio=$ratio " +
                     "existing=${mSplitController != null}"
             )
+            if (!hasSystemContext) {
+                log(TAG, "onCreateSplitDisplay aborted: systemContext not initialized")
+                return@runMain
+            }
             val profile = resolveDisplayProfile(
                 width = width,
                 height = height,
@@ -343,7 +364,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     override fun toast(msg: String) {
-        runMain { TipUtil.showToast(msg) }
+        runMain {
+            runCatching { TipUtil.showToast(msg) }
+                .onFailure { log(TAG, "toast failed: $msg", it) }
+        }
     }
 }
+
 

@@ -15,6 +15,15 @@ object TipUtil {
     }
 
     fun showToast(msg: String) {
-        Toast.makeText(context, "$prefix$msg", Toast.LENGTH_LONG).show()
+        // Never throw into system_server (e.g. AMS Context hook missed on OEM ROMs).
+        if (!::context.isInitialized) {
+            log("TipUtil", "showToast skipped (context not initialized): $msg")
+            return
+        }
+        runCatching {
+            Toast.makeText(context, "${if (::prefix.isInitialized) prefix else ""}$msg", Toast.LENGTH_LONG).show()
+        }.onFailure {
+            log("TipUtil", "showToast failed: $msg", it)
+        }
     }
 }

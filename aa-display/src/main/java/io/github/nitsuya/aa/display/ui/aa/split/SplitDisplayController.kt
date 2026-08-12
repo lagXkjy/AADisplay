@@ -229,6 +229,7 @@ class SplitDisplayController(
         vd.applyPolicies(SplitPane.PRIMARY, "reconnect")
         vd.applyPolicies(SplitPane.SECONDARY, "reconnect")
         launch.scheduleEnsurePanePackages("reconnect")
+        SplitPresentationGuard.scheduleEvictForeignPresentations(this, "reconnect")
     }
 
     fun setPaneSurface(pane: Int, surface: Surface?) {

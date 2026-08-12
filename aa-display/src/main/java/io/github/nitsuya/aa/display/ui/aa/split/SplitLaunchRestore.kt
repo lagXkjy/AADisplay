@@ -214,6 +214,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                 maxOf(c.mSuppressReclaimUntil, SystemClock.uptimeMillis() + SplitDisplayController.SUPPRESS_RECLAIM_MS)
             c.notifySplitStateChanged()
         }
+        SplitPresentationGuard.scheduleEvictForeignPresentations(c, "ensure-$reason")
     }
 
     fun openPickerForPane(pane: Int) {
