@@ -372,14 +372,9 @@ class SplitDisplayController(
     }
 
     /**
-     * Relay Coolwalk left-rail / FacetBar-slot touches. After content expand, that
-     * strip is the left of PRIMARY. Inject into the pane VD directly: the AADisplay
-     * host display is FLAG_PRIVATE + touch NONE, and DisplayManager.getDisplays()
-     * omits it, so host-display inject was a silent no-op.
+     * Relay Coolwalk left-rail touches (HU x &lt; rail width) into the PRIMARY pane VD.
      */
     fun onTouchHost(event: MotionEvent) {
-        // Host display is FLAG_PRIVATE + touch NONE; injectInputEvent can return
-        // true without delivery. Pane VDs are the proven path (adb tap works).
         onTouchPane(SplitPane.PRIMARY, event)
     }
 

@@ -28,30 +28,6 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
         else -> null
     }
 
-    /** AADisplay CarActivity private presentation (receives Coolwalk content touches). */
-    fun findAaHostDisplayId(): Int? {
-        cachedAaHostDisplayId?.takeIf { id ->
-            Instances.displayManager.getDisplay(id) != null
-        }?.let { return it }
-        // getDisplays() hides FLAG_PRIVATE VDs (AaDisplayActivity is private).
-        val found = findDisplayIdByName("AaDisplayActivity")
-        cachedAaHostDisplayId = found
-        return found
-    }
-
-    private fun findDisplayIdByName(needle: String): Int? {
-        Instances.displayManager.displays.firstOrNull { d ->
-            d.name?.contains(needle, ignoreCase = true) == true
-        }?.displayId?.let { return it }
-        for (id in 1..64) {
-            val d = runCatching { Instances.displayManager.getDisplay(id) }.getOrNull() ?: continue
-            if (d.name?.contains(needle, ignoreCase = true) == true) return id
-        }
-        return null
-    }
-
-    private var cachedAaHostDisplayId: Int? = null
-
     fun injectInputEvent(displayId: Int, event: InputEvent): Boolean {
         val identity = Binder.clearCallingIdentity()
         return try {

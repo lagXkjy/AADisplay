@@ -46,7 +46,6 @@ import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType
 import java.lang.reflect.Constructor
 import java.lang.reflect.Method
-import java.util.Collections
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -74,20 +73,9 @@ object AaUiHook: AaHook() {
     private var startMethod: Method? = null
     /** Methods that touch projection `content_bounds` (DexKit via string). */
     private var contentBoundsMethods: List<Method> = emptyList()
-    /**
-     * Coolwalk `injectTouchEvent` on a per-surface injector (DexKit via log string).
-     * FacetBar hits land here — not on Android View touch listeners (window often NO_SURFACE).
-     */
-    private var facetInjectTouchMethod: Method? = null
-    /**
-     * Coolwalk HU-level touch router (CarActivityManagerService): maps ProjectionTouchEvent
-     * onto a window. Left-rail hits die here with "does not correspond to a window" when
-     * GhFacetBar is alpha=0 / NOT_VISIBLE — never reach injectTouchEvent.
-     */
+    /** CarActivityManagerService HU touch router (imt.H/G/I in :car). */
     private var huTouchDispatchMethod: Method? = null
-    /** Display ids of GhFacetBar / thin-rail VDs we should redirect away from. */
-    private val railVirtualDisplayIds: MutableSet<Int> = Collections.synchronizedSet(mutableSetOf())
-    /** First pointer downTime for a FacetBar gesture (host relay). */
+    /** First pointer downTime for a stolen left-rail gesture. */
     @Volatile private var mRailHostDownTime = 0L
     /** HU-space gesture started in the left rail strip (follow through MOVE/UP). */
     @Volatile private var mHuRailGesture = false
@@ -110,8 +98,6 @@ object AaUiHook: AaHook() {
     private var mInjectingFacetBar: Boolean = false
     private var mAutoOpen: Boolean = false
     private val facetBarInjectedTag = Any()
-    /** setTag key so the rail touch forwarder is installed once per view. */
-    private val railTouchPassThroughTagKey = R.id.rail_touch_passthrough
     private val mFacetEnsureHandler = Handler(Looper.getMainLooper())
     /**
      * Soft reconnect (no USB replug) often rebuilds LayoutInfo before GhFacetBar chrome
@@ -173,25 +159,6 @@ object AaUiHook: AaHook() {
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: DexKit content_bounds methods failed", e)
             emptyList()
-        }
-
-        facetInjectTouchMethod = try {
-            bridge.findMethod {
-                matcher { usingStrings("injectTouchEvent: virtualDisplay is null") }
-            }.mapNotNull { md ->
-                runCatching { md.getMethodInstance(lpparam.classLoader) }.getOrNull()
-            }.firstOrNull { m ->
-                m.parameterTypes.size == 1 && m.returnType == Boolean::class.javaPrimitiveType
-            }.also { m ->
-                log(
-                    tagName,
-                    "AaUiHook: facet injectTouch method=" +
-                        (m?.let { "${it.declaringClass.name}#${it.name}" } ?: "null")
-                )
-            }
-        } catch (e: Throwable) {
-            log(tagName, "AaUiHook: DexKit injectTouchEvent failed", e)
-            null
         }
 
         huTouchDispatchMethod = try {
@@ -293,12 +260,9 @@ object AaUiHook: AaHook() {
         // Coolwalk: GhLifecycleService in :car puts content_bounds=Rect(rail,0,fullW,fullH).
         // Must rewrite here — :projection never sees that putParcelable.
         hookContentBounds()
-        // CarActivityManagerService (imt.H/G/I) and VirtualTouchscreen (jhu.o) run in :car.
-        // :projection only has the classes loaded; hooking them there never sees HU events
-        // (r44–r47 left-rail taps produced zero "HU rail" / "facet inject" logs).
-        hookHuTouchDispatchRedirect()
-        hookFacetBarTouchInjectRedirect()
         if (lpparam.processName == processCar) {
+            // HU touch dispatch (imt.H/G/I) only runs in :car.
+            hookHuTouchDispatchRedirect()
             return
         }
         mAutoOpen = true
@@ -773,10 +737,11 @@ object AaUiHook: AaHook() {
 
     private fun rememberRailVirtualDisplay(name: String?, vd: VirtualDisplay?) {
         if (vd == null || !isRailVirtualDisplayName(name)) return
-        val id = runCatching { vd.display?.displayId }.getOrNull() ?: return
-        if (railVirtualDisplayIds.add(id)) {
-            log(tagName, "AaUiHook: track rail VD id=$id name=$name")
+        val display = vd.display ?: return
+        if (display.width > 1) {
+            mObservedRailWidthPx = display.width
         }
+        logDebug(tagName, "AaUiHook: observe rail VD id=${display.displayId} name=$name w=${display.width}")
     }
 
     /**
@@ -830,28 +795,10 @@ object AaUiHook: AaHook() {
         val motion = when (raw) {
             is MotionEvent -> raw
             else -> projectionTouchEventToMotionEvent(raw)
-        }
-        if (motion == null) {
-            if (mHuDispatchSeenLogged < 6) {
-                mHuDispatchSeenLogged++
-                log(
-                    tagName,
-                    "AaUiHook: HU dispatch decode null pte=${raw.javaClass.name}"
-                )
-            }
-            return
-        }
+        } ?: return
         try {
             val rail = railHitWidthPx()
             val action = motion.actionMasked
-            if (mHuDispatchSeenLogged < 6) {
-                mHuDispatchSeenLogged++
-                log(
-                    tagName,
-                    "AaUiHook: HU dispatch ${param.method.name} action=$action " +
-                        "x=${motion.x} y=${motion.y} rail=$rail"
-                )
-            }
             val inRail = (0 until motion.pointerCount).any { i -> motion.getX(i) < rail }
             if (action == MotionEvent.ACTION_DOWN) {
                 mHuRailGesture = inRail
@@ -861,21 +808,16 @@ object AaUiHook: AaHook() {
                 mHuRailGesture = false
             }
             if (!steal) return
-            try {
-                CoreManager.touchHost(motion)
-                // Skip original so the FacetBar slot cannot swallow the event.
-                param.result = null
-                if (action == MotionEvent.ACTION_DOWN || mFacetInjectOkLogged < 8) {
-                    mFacetInjectOkLogged++
-                    log(
-                        tagName,
-                        "AaUiHook: HU rail → touchHost action=$action " +
-                            "x=${motion.x} y=${motion.y} rail=$rail via=${param.method.name}"
-                    )
-                }
-            } catch (e: Throwable) {
-                log(tagName, "AaUiHook: HU rail → touchHost failed", e)
+            CoreManager.touchHost(motion)
+            param.result = null
+            if (action == MotionEvent.ACTION_DOWN) {
+                logDebug(
+                    tagName,
+                    "AaUiHook: HU rail → touchHost x=${motion.x} y=${motion.y} rail=$rail"
+                )
             }
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: HU rail → touchHost failed", e)
         } finally {
             if (owned) motion.recycle()
         }
@@ -892,122 +834,6 @@ object AaUiHook: AaHook() {
         }
         if (observed in 16..200) return observed
         return 80
-    }
-
-    /**
-     * Coolwalk routes HU left-rail hits to the FacetBar VirtualTouchscreen injector.
-     * Backup path when HU dispatch redirect is unavailable.
-     */
-    private fun hookFacetBarTouchInjectRedirect() {
-        val method = facetInjectTouchMethod
-        if (method == null) {
-            log(tagName, "AaUiHook: skip facet inject redirect (method not found)")
-            return
-        }
-        try {
-            method.hookBefore { param ->
-                val injector = param.thisObject
-                val display = resolveInjectorDisplay(injector)
-                val displayId = display?.displayId ?: resolveInjectorDisplayId(injector)
-                val name = display?.name ?: resolveInjectorDisplayName(injector)
-                val rail = isFacetBarTouchInjector(injector, displayId, name, display)
-                if (!rail) return@hookBefore
-                val motion = projectionTouchEventToMotionEvent(param.args[0])
-                if (motion == null) {
-                    if (mFacetInjectMissLogged < 8) {
-                        mFacetInjectMissLogged++
-                        log(
-                            tagName,
-                            "AaUiHook: facet inject decode null display=$displayId name=$name " +
-                                "pte=${param.args[0]?.javaClass?.name}"
-                        )
-                    }
-                    return@hookBefore
-                }
-                try {
-                    CoreManager.touchHost(motion)
-                    param.result = true
-                    if (motion.actionMasked == MotionEvent.ACTION_DOWN || mFacetInjectOkLogged < 6) {
-                        mFacetInjectOkLogged++
-                        log(
-                            tagName,
-                            "AaUiHook: facet inject → touchHost action=${motion.actionMasked} " +
-                                "x=${motion.x} y=${motion.y} display=$displayId name=$name"
-                        )
-                    }
-                } catch (e: Throwable) {
-                    log(tagName, "AaUiHook: facet inject → touchHost failed", e)
-                } finally {
-                    motion.recycle()
-                }
-            }
-            log(tagName, "AaUiHook: hooked facet injectTouch → touchHost")
-        } catch (e: Throwable) {
-            log(tagName, "AaUiHook: hook facet injectTouch failed", e)
-        }
-    }
-
-    @Volatile private var mFacetInjectOkLogged = 0
-    @Volatile private var mFacetInjectMissLogged = 0
-    @Volatile private var mHuDispatchSeenLogged = 0
-
-    private fun isFacetBarTouchInjector(
-        injector: Any,
-        displayId: Int? = null,
-        name: String? = null,
-        display: android.view.Display? = null,
-    ): Boolean {
-        val id = displayId ?: resolveInjectorDisplayId(injector)
-        if (id != null && railVirtualDisplayIds.contains(id)) return true
-        val n = name ?: resolveInjectorDisplayName(injector)
-        if (isRailVirtualDisplayName(n)) {
-            id?.let { railVirtualDisplayIds.add(it) }
-            return true
-        }
-        // Fallback: any thin vertical VD (FacetBar is typically ~80×480).
-        val d = display ?: resolveInjectorDisplay(injector)
-        val w = d?.width ?: 0
-        val h = d?.height ?: 0
-        if (w in 1..160 && h >= w * 2) {
-            id?.let { railVirtualDisplayIds.add(it) }
-            return true
-        }
-        return false
-    }
-
-    private fun resolveInjectorDisplayId(injector: Any): Int? {
-        resolveInjectorDisplay(injector)?.displayId?.let { return it }
-        // Fallback: first int field in a plausible display-id range.
-        return runCatching {
-            injector.javaClass.declaredFields.firstOrNull { f ->
-                f.type == Int::class.javaPrimitiveType
-            }?.apply { isAccessible = true }?.getInt(injector)?.takeIf { it in 1..64 }
-        }.getOrNull()
-    }
-
-    private fun resolveInjectorDisplayName(injector: Any): String? =
-        resolveInjectorDisplay(injector)?.name
-
-    private fun resolveInjectorDisplay(injector: Any): android.view.Display? {
-        runCatching {
-            for (f in injector.javaClass.declaredFields) {
-                f.isAccessible = true
-                val v = f.get(injector) ?: continue
-                when (v) {
-                    is VirtualDisplay -> return v.display
-                    is android.view.Display -> return v
-                }
-                // One level of nesting (VD holder / ioa-like wrapper).
-                for (f2 in v.javaClass.declaredFields) {
-                    f2.isAccessible = true
-                    when (val v2 = f2.get(v)) {
-                        is VirtualDisplay -> return v2.display
-                        is android.view.Display -> return v2
-                    }
-                }
-            }
-        }
-        return null
     }
 
     /**
@@ -1105,10 +931,7 @@ object AaUiHook: AaHook() {
             name?.contains("GhFacet", ignoreCase = true) == true ||
             name?.contains("VerticalRail", ignoreCase = true) == true ||
             name?.contains("EdgeColumn", ignoreCase = true) == true
-        // Named rail: keep native rail width so Coolwalk still delivers usable local
-        // coordinates into the FacetBar VD; we forward those to the AADisplay host.
-        // Shrinking to 1px + NOT_TOUCHABLE made the left strip look filled but dropped
-        // every left-gutter MotionEvent (compositor still routes x∈[0,rail] here).
+        // Named FacetBar VD: observe width for railHitWidthPx / content expand only.
         if (railName) {
             if (width > 1) {
                 mObservedRailWidthPx = width
@@ -1587,95 +1410,13 @@ object AaUiHook: AaHook() {
     /**
      * Collapse the rail/facet column AND its thin wrappers, then expand content siblings
      * so the black gutter does not remain after chrome is hidden.
-     * FacetBar private-presentation windows must stay VISIBLE (alpha=0) so Coolwalk still
-     * calls injectTouchEvent — GONE → NO_SURFACE removes display  from InputDispatcher.
      */
     private fun reclaimRailSpace(rail: View) {
-        if (isThinPrivatePresentationWindow(rail)) {
-            prepareFacetBarTouchRelay(rail)
-        } else {
-            applyZeroWidthGone(rail)
-            collapseThinRailChainAndExpandContent(rail)
-        }
-        passThroughTouchesIfRailWindow(rail)
-        rail.post {
-            if (isThinPrivatePresentationWindow(rail)) {
-                prepareFacetBarTouchRelay(rail)
-            } else {
-                collapseThinRailChainAndExpandContent(rail)
-            }
-            passThroughTouchesIfRailWindow(rail)
-        }
-        rail.postDelayed({
-            if (isThinPrivatePresentationWindow(rail)) {
-                prepareFacetBarTouchRelay(rail)
-            } else {
-                collapseThinRailChainAndExpandContent(rail)
-            }
-            passThroughTouchesIfRailWindow(rail)
-        }, 300L)
-        rail.postDelayed({
-            if (isThinPrivatePresentationWindow(rail)) {
-                prepareFacetBarTouchRelay(rail)
-            } else {
-                collapseThinRailChainAndExpandContent(rail)
-            }
-            passThroughTouchesIfRailWindow(rail)
-        }, 1000L)
-    }
-
-    /** True when [view] lives in the standalone GhFacetBar (or similar) private VD window. */
-    private fun isThinPrivatePresentationWindow(view: View): Boolean {
-        val root = generateSequence(view as View?) { it.parent as? View }.lastOrNull() ?: return false
-        val lp = root.layoutParams as? WindowManager.LayoutParams ?: return false
-        val maxSide = maxSideRailPx(root)
-        val frameW = when {
-            lp.width > 0 -> lp.width
-            root.width > 0 -> root.width
-            else -> measuredOrLpWidth(root)
-        }
-        val frameH = when {
-            lp.height > 0 -> lp.height
-            root.height > 0 -> root.height
-            else -> measuredOrLpHeight(root)
-        }
-        return frameW in 1..maxSide && (frameH <= 0 || frameH >= frameW * 2)
-    }
-
-    /**
-     * Keep FacetBar window content alive for Coolwalk VirtualTouchscreen + View relay.
-     * Root must stay [View.VISIBLE] (alpha=0 on the window) — INVISIBLE/GONE both mark the
-     * WindowState not-visible for InputDispatcher on Samsung.
-     */
-    private fun prepareFacetBarTouchRelay(rail: View) {
-        val root = generateSequence(rail as View?) { it.parent as? View }.lastOrNull() ?: rail
-        fun keepAlive(v: View) {
-            if (v.visibility != View.VISIBLE) v.visibility = View.VISIBLE
-            v.isClickable = true
-            v.isEnabled = true
-            v.isFocusable = false
-            v.isFocusableInTouchMode = false
-            val lp = v.layoutParams
-            if (lp != null && (lp.width == 0 || lp.width == ViewGroup.LayoutParams.WRAP_CONTENT)) {
-                lp.width = ViewGroup.LayoutParams.MATCH_PARENT
-                if (lp.height == 0) lp.height = ViewGroup.LayoutParams.MATCH_PARENT
-                v.layoutParams = lp
-            }
-        }
-        keepAlive(rail)
-        keepAlive(root)
-        // Hide injected chrome descendants so the alpha=0 window paints nothing useful,
-        // but keep the relay root itself VISIBLE for hit-testing / surface.
-        if (rail is ViewGroup) {
-            for (i in 0 until rail.childCount) {
-                val child = rail.getChildAt(i) ?: continue
-                // Original AA chrome was already GONE in buildAaFacetBar; leave it.
-                if (child.tag === facetBarInjectedTag) continue
-                if (child.visibility == View.VISIBLE) child.visibility = View.INVISIBLE
-            }
-        }
-        installRailTouchPassThrough(root)
-        installRailTouchPassThrough(rail)
+        applyZeroWidthGone(rail)
+        collapseThinRailChainAndExpandContent(rail)
+        rail.post { collapseThinRailChainAndExpandContent(rail) }
+        rail.postDelayed({ collapseThinRailChainAndExpandContent(rail) }, 300L)
+        rail.postDelayed({ collapseThinRailChainAndExpandContent(rail) }, 1000L)
     }
 
     private fun maxSideRailPx(view: View): Int =
@@ -1705,127 +1446,6 @@ object AaUiHook: AaHook() {
             view.layoutParams = lp
         } else {
             view.layoutParams = ViewGroup.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT)
-        }
-    }
-
-    /**
-     * If AA forces the collapsed rail visible again, forward touches to the AADisplay host
-     * (via CoreManager) instead of swallowing the left gutter. Sibling dispatch is a
-     * same-window fallback only.
-     */
-    @android.annotation.SuppressLint("ClickableViewAccessibility")
-    private fun installRailTouchPassThrough(target: View) {
-        if (target.getTag(railTouchPassThroughTagKey) != null) return
-        target.setTag(railTouchPassThroughTagKey, true)
-        target.isClickable = true
-        target.isEnabled = true
-        target.setOnTouchListener { v, event ->
-            if (forwardRailTouchToAaHost(event)) return@setOnTouchListener true
-            forwardRailTouchToContentSibling(v, event)
-        }
-    }
-
-    private fun forwardRailTouchToAaHost(event: MotionEvent): Boolean {
-        return try {
-            // CoreManager → system_server injects into AaDisplayActivity; TextureViews
-            // then touchPane into the app VDs. FacetBar local x maps 1:1 onto host left.
-            CoreManager.touchHost(event)
-            true
-        } catch (e: Throwable) {
-            log(tagName, "AaUiHook: rail→host touch relay failed", e)
-            false
-        }
-    }
-
-    private fun forwardRailTouchToContentSibling(rail: View, event: MotionEvent): Boolean {
-        val parent = rail.parent as? ViewGroup ?: return false
-        val maxSide = maxSideRailPx(rail)
-        for (i in 0 until parent.childCount) {
-            val sibling = parent.getChildAt(i) ?: continue
-            if (sibling === rail) continue
-            if (sibling.visibility != View.VISIBLE) continue
-            if (isThinSideRail(sibling, maxSide)) continue
-            val copy = MotionEvent.obtain(event)
-            copy.offsetLocation(
-                (rail.left - sibling.left).toFloat(),
-                (rail.top - sibling.top).toFloat(),
-            )
-            return try {
-                sibling.dispatchTouchEvent(copy)
-            } catch (_: Throwable) {
-                false
-            } finally {
-                copy.recycle()
-            }
-        }
-        return false
-    }
-
-    /**
-     * FacetBar/rail windows stay in Coolwalk's compositor hit map after chrome is hidden.
-     * Do not mark NOT_TOUCHABLE (that drops the left strip). Keep the window receiving
-     * events, paint it transparent, and relay to the AADisplay host.
-     */
-    private fun passThroughTouchesIfRailWindow(rail: View) {
-        val root = generateSequence(rail as View?) { it.parent as? View }.lastOrNull() ?: return
-        val lp = root.layoutParams as? WindowManager.LayoutParams ?: return
-        val maxSide = maxSideRailPx(root)
-        val frameW = when {
-            lp.width > 0 -> lp.width
-            root.width > 0 -> root.width
-            else -> measuredOrLpWidth(root)
-        }
-        val frameH = when {
-            lp.height > 0 -> lp.height
-            root.height > 0 -> root.height
-            else -> measuredOrLpHeight(root)
-        }
-        val thinWindow = frameW in 1..maxSide && (frameH <= 0 || frameH >= frameW * 2)
-        if (!thinWindow && lp.width != 0 && lp.width != WindowManager.LayoutParams.MATCH_PARENT) {
-            // Still install the forwarder on any window that hosts our facet inject.
-            if (root.findViewWithTag<View>(facetBarInjectedTag) == null &&
-                root.findViewWithTag<View>(railTouchPassThroughTagKey) == null
-            ) {
-                return
-            }
-        }
-        if (!thinWindow && lp.width == WindowManager.LayoutParams.MATCH_PARENT) {
-            val hasInjected = root.findViewWithTag<View>(facetBarInjectedTag) != null
-            val looksFullHu = layoutWidthPx().takeIf { it > 0 }?.let { fullW ->
-                (root.width.takeIf { it > 0 } ?: frameW) >= fullW - 2
-            } == true
-            if (!hasInjected || looksFullHu) return
-        } else if (!thinWindow) {
-            // Non-thin, non-MATCH_PARENT: only continue when facet-injected.
-            if (root.findViewWithTag<View>(facetBarInjectedTag) == null) return
-        }
-        var changed = false
-        // Undo any prior NOT_TOUCHABLE so Coolwalk-routed events reach our forwarder.
-        val blockFlags =
-            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        if (lp.flags and blockFlags != 0) {
-            lp.flags = lp.flags and blockFlags.inv()
-            changed = true
-        }
-        // Do NOT set alpha=0: Samsung InputDispatcher marks that NOT_VISIBLE and Coolwalk
-        // drops HU hits with "does not correspond to a window". Keep alpha=1 + transparent.
-        if (lp.alpha == 0f) {
-            lp.alpha = 1f
-            changed = true
-        }
-        installRailTouchPassThrough(root)
-        if (root.visibility == View.GONE) {
-            root.visibility = View.VISIBLE
-            changed = true
-        }
-        root.setBackgroundColor(android.graphics.Color.TRANSPARENT)
-        if (!changed) return
-        try {
-            val wm = root.context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            wm.updateViewLayout(root, lp)
-            log(tagName, "AaUiHook: rail window touch relay (alpha=1 transparent, touchable)")
-        } catch (e: Throwable) {
-            log(tagName, "AaUiHook: rail window touch relay update failed", e)
         }
     }
 
@@ -2002,15 +1622,7 @@ object AaUiHook: AaHook() {
         // Keep original chrome in hierarchy but hidden so AA lifecycle stays intact.
         resultViewGroup.visibility = View.GONE
         aaFacetBar.addView(resultViewGroup)
-        // Standalone GhFacetBar VD must keep a surface (VISIBLE + alpha=0 window).
-        // Embedded rail columns in the main Coolwalk layout still collapse to 0 width.
-        if (isThinPrivatePresentationWindow(resultViewGroup) ||
-            isThinPrivatePresentationWindow(aaFacetBar)
-        ) {
-            prepareFacetBarTouchRelay(aaFacetBar)
-        } else {
-            applyZeroWidthGone(aaFacetBar)
-        }
+        applyZeroWidthGone(aaFacetBar)
         return aaFacetBar
     }
 

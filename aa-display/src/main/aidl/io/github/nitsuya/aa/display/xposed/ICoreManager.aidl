@@ -48,7 +48,7 @@ interface ICoreManager {
     void touchPane(int pane, in MotionEvent motionEvent);
     /**
      * Inject into the AADisplay CarActivity host display (not a pane VD).
-     * Used to relay Coolwalk FacetBar/rail-slot touches after the rail chrome is reclaimed.
+     * Used to relay Coolwalk left-rail HU touches from :car into PRIMARY pane.
      */
     void touchHost(in MotionEvent motionEvent);
     void toggleDisplayPower();
