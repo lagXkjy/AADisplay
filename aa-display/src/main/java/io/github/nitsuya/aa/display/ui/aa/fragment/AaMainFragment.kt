@@ -267,6 +267,19 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     AaDisplayActivityKt.showRecentTask(this@AaMainFragment.parentFragmentManager)
                 }
             }
+            onSwapClick = {
+                CoreApi.swapSplitPanes()
+                // Broadcast carries occupancy only; sync inverted ratio after controller settles.
+                baseBinding.root.postDelayed({
+                    if (!isAdded || view == null || dividerDragging) return@postDelayed
+                    val ratio = tryOrNull { CoreApi.splitRatio }?.takeIf { it > 0f } ?: return@postDelayed
+                    val clamped = SplitPane.clampRatio(ratio)
+                    splitRatio = clamped
+                    applySplitLayoutWeights(clamped)
+                    baseBinding.splitDivider.setRatio(clamped)
+                    syncPaneOccupancyFromService()
+                }, 280L)
+            }
         }
     }
 

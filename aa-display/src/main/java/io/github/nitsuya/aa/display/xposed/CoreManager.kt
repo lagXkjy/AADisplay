@@ -96,6 +96,14 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.setFocusedPane(pane)
     }
 
+    override fun getFocusedPane(): Int {
+        return getService()?.focusedPane ?: SplitPane.PRIMARY
+    }
+
+    override fun swapSplitPanes() {
+        getService()?.swapSplitPanes()
+    }
+
     override fun onDestroyDisplay() {
         getService()?.onDestroyDisplay()
     }
@@ -114,6 +122,10 @@ object CoreManager : ICoreManager, DeathRecipient {
 
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
         getService()?.moveTaskId(taskId, isVirtualDisplay)
+    }
+
+    override fun moveTaskIdToPane(taskId: Int, pane: Int) {
+        getService()?.moveTaskIdToPane(taskId, pane)
     }
 
     override fun moveTaskToFront(taskId: Int) {

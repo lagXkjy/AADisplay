@@ -8,13 +8,22 @@ import androidx.core.view.ViewCompat
 import androidx.recyclerview.widget.ItemTouchHelper
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
-import io.github.nitsuya.aa.display.databinding.FragmentAaRecentTaskBinding
 import io.github.nitsuya.aa.display.databinding.RecentTaskBinding
 import io.github.nitsuya.aa.display.model.RecentTaskInfo
+import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 
+/**
+ * Recent-task column for phone / primary VD / secondary VD.
+ *
+ * Layout: `[Primary(VD1) | Secondary(VD2) | Phone]`.
+ * - Phone LEFT → focused VD pane (tap a VD column first to choose VD1/VD2)
+ * - VD RIGHT → phone; Primary LEFT → remove; Secondary LEFT → Primary
+ */
 class DisplayRecyclerViewAdapter(
-      private val recyclerView: RecyclerView
-    , private val onExit: (() -> Unit)
+      private val recyclerView: RecyclerView,
+    /** null = phone stack; [SplitPane.PRIMARY] / [SplitPane.SECONDARY] = VD stacks. */
+      private val stackPane: Int? = null,
+      private val onExit: (() -> Unit),
 ) : RecyclerView.Adapter<DisplayRecyclerViewAdapter.ViewHolder>(){
 
     companion object {
@@ -22,7 +31,10 @@ class DisplayRecyclerViewAdapter(
     }
 
     private val items: MutableList<RecentTaskInfo> = ArrayList()
-    lateinit var otherAdapter: DisplayRecyclerViewAdapter
+
+    var phoneAdapter: DisplayRecyclerViewAdapter? = null
+    var primaryAdapter: DisplayRecyclerViewAdapter? = null
+    var secondaryAdapter: DisplayRecyclerViewAdapter? = null
 
     init {
         ItemTouchHelper(ItemTouchHelperCallback()).attachToRecyclerView(recyclerView)
@@ -43,8 +55,7 @@ class DisplayRecyclerViewAdapter(
         holder.binding.ivIcon.setImageBitmap(item.logo)
         holder.binding.tvName.text = "${item.label} [${item.taskId}]"
 
-        if(recyclerView.id == R.id.rv_recent_task_left ||
-            recyclerView.id == R.id.rv_recent_task_center){
+        if (stackPane != null) {
             ConstraintSet().apply {
                 clone(holder.binding.clItem)
                 constrainPercentWidth(R.id.iv_snapshot,0.8f)
@@ -60,10 +71,11 @@ class DisplayRecyclerViewAdapter(
             it.setOnClickListener {
                 val pkg = item.packageName
                 // Phone-stack tap: launch onto the focused AA split pane.
-                // VD-stack tap: focus that task.
-                if (recyclerView.id == R.id.rv_recent_task_right && !pkg.isNullOrBlank()) {
+                // VD-stack tap: focus that pane and bring the task forward.
+                if (stackPane == null && !pkg.isNullOrBlank()) {
                     CoreApi.startActivity(pkg, 0)
                 } else {
+                    stackPane?.let { CoreApi.setFocusedPane(it) }
                     CoreApi.moveTaskToFront(item.taskId)
                 }
                 onExit()
@@ -129,21 +141,46 @@ class DisplayRecyclerViewAdapter(
         override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
             val item = items.get(viewHolder.layoutPosition)
             removeItem(item)
-            if(recyclerView.id == R.id.rv_recent_task_left ||
-                recyclerView.id == R.id.rv_recent_task_center){
-                if (direction == ItemTouchHelper.LEFT) {
-                    CoreApi.removeTask(item.taskId)
-                } else if (direction == ItemTouchHelper.RIGHT) {
-                    otherAdapter.addItem(item)
-                    CoreApi.moveTaskId(item.taskId, false)
-                }
-            } else if(recyclerView.id == R.id.rv_recent_task_right){
-                if (direction == ItemTouchHelper.RIGHT) {
-                    CoreApi.removeTask(item.taskId)
-                } else if (direction == ItemTouchHelper.LEFT) {
-                    otherAdapter.addItem(item)
-                    CoreApi.moveTaskId(item.taskId, true)
-                }
+            when (stackPane) {
+                null -> onPhoneSwiped(item, direction)
+                SplitPane.PRIMARY -> onPrimarySwiped(item, direction)
+                SplitPane.SECONDARY -> onSecondarySwiped(item, direction)
+            }
+        }
+
+        private fun onPhoneSwiped(item: RecentTaskInfo, direction: Int) {
+            if (direction == ItemTouchHelper.RIGHT) {
+                CoreApi.removeTask(item.taskId)
+                return
+            }
+            if (direction != ItemTouchHelper.LEFT) return
+            // Respect focused pane so phone→VD2 works after selecting the center column
+            // (or touching the secondary mirror). Previously always forced Primary/VD1.
+            val pane = CoreApi.focusedPane.let {
+                if (SplitPane.isValid(it)) it else SplitPane.PRIMARY
+            }
+            val targetAdapter = if (pane == SplitPane.SECONDARY) secondaryAdapter else primaryAdapter
+            targetAdapter?.addItem(item)
+            CoreApi.moveTaskIdToPane(item.taskId, pane)
+        }
+
+        private fun onPrimarySwiped(item: RecentTaskInfo, direction: Int) {
+            if (direction == ItemTouchHelper.LEFT) {
+                CoreApi.removeTask(item.taskId)
+            } else if (direction == ItemTouchHelper.RIGHT) {
+                phoneAdapter?.addItem(item)
+                CoreApi.moveTaskId(item.taskId, false)
+            }
+        }
+
+        private fun onSecondarySwiped(item: RecentTaskInfo, direction: Int) {
+            if (direction == ItemTouchHelper.LEFT) {
+                // Move onto Primary (VD1); use close button to dismiss.
+                primaryAdapter?.addItem(item)
+                CoreApi.moveTaskIdToPane(item.taskId, SplitPane.PRIMARY)
+            } else if (direction == ItemTouchHelper.RIGHT) {
+                phoneAdapter?.addItem(item)
+                CoreApi.moveTaskId(item.taskId, false)
             }
         }
 
@@ -162,7 +199,7 @@ class DisplayRecyclerViewAdapter(
 
         override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
             super.clearView(recyclerView, viewHolder)
-            viewHolder?.itemView?.apply {
+            viewHolder.itemView.apply {
                 ViewCompat.animate(this)
                     .setDuration(200)
                     .scaleX(1f)

@@ -28,12 +28,17 @@ interface ICoreManager {
     /** Package currently owned by [pane], or null/empty when vacant. */
     String getPanePackage(int pane);
     void setFocusedPane(int pane);
+    int getFocusedPane();
+    /** Swap user task stacks between PRIMARY and SECONDARY panes; ratio follows apps. */
+    void swapSplitPanes();
     void onDestroyDisplay();
 
     void startActivity(String packageName, int userId);
     void startActivityOnPane(String packageName, int userId, int pane);
     void startTaskId(int taskId, String packageName, int userId);
     void moveTaskId(int taskId, boolean isVirtualDisplay);
+    /** Move task onto PRIMARY/SECONDARY virtual-display pane (not the phone). */
+    void moveTaskIdToPane(int taskId, int pane);
     void moveTaskToFront(int taskId);
     void moveSecondTaskToFront();
     void removeTask(int taskId);

@@ -88,30 +88,31 @@ class DisplayWindow(
     }
 
     private val isSupportInteractive = RomUtil.isMiui()
-    private val mVirtualDisplayId: Int
-        get() = displayAdapter.primaryDisplayId
     private var mKeepAwakeJob: Job? = null
     private var mLastTouchKeepAwakeAt = 0L
     private var mMiuiReceiverRegistered = false
     private var iPowerManagerService: Any? = null
     private var iPowerManagerUserActivity: java.lang.reflect.Method? = null
+
+    /**
+     * Both split VDs use OWN_DISPLAY_GROUP, so each has an independent power group.
+     * Keeping only the primary awake leaves the secondary black while audio continues.
+     */
+    private fun aaVirtualDisplayIds(): IntArray {
+        val primary = displayAdapter.primaryDisplayId
+        val secondary = displayAdapter.secondaryDisplayId
+        return when {
+            primary == Display.INVALID_DISPLAY && secondary == Display.INVALID_DISPLAY -> intArrayOf()
+            secondary == Display.INVALID_DISPLAY -> intArrayOf(primary)
+            primary == Display.INVALID_DISPLAY -> intArrayOf(secondary)
+            else -> intArrayOf(primary, secondary)
+        }
+    }
+
     private var interactiveMonitor = object: BroadcastReceiver(){
-        val monitor by lazy {
-            Instances.powerManagerHidden.newWakeLock(
-                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK
-                , "${BuildConfig.APPLICATION_ID}:Monitor", mVirtualDisplayId).apply {
-                    setReferenceCounted(false)
-            }
-        }
-        val wakePulse by lazy {
-            Instances.powerManagerHidden.newWakeLock(
-                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                "${BuildConfig.APPLICATION_ID}:VdWake",
-                mVirtualDisplayId
-            ).apply {
-                setReferenceCounted(false)
-            }
-        }
+        private val monitorLocks = mutableMapOf<Int, PowerManager.WakeLock>()
+        private val wakePulseLocks = mutableMapOf<Int, PowerManager.WakeLock>()
+
         fun addAction(intentFilter: IntentFilter): IntentFilter {
             return intentFilter.apply {
                 addAction(Intent.ACTION_SCREEN_ON)
@@ -135,31 +136,84 @@ class DisplayWindow(
             // Phone screen policy must not blank the AA virtual display group.
             keepVirtualDisplayAwake("phone-$action", forceWake = true)
         }
-        fun acquireMonitor() {
-            val displayId = mVirtualDisplayId
-            if (displayId == Display.INVALID_DISPLAY) return
-            try {
-                if (!monitor.isHeld) {
-                    monitor.acquire()
-                    log(TAG, "VD Monitor wake lock acquired display=$displayId")
+
+        private fun newDisplayWakeLock(levelAndFlags: Int, tagSuffix: String, displayId: Int): PowerManager.WakeLock {
+            return Instances.powerManagerHidden.newWakeLock(
+                levelAndFlags,
+                "${BuildConfig.APPLICATION_ID}:$tagSuffix:$displayId",
+                displayId
+            ).apply { setReferenceCounted(false) }
+        }
+
+        private fun releaseLockMap(locks: MutableMap<Int, PowerManager.WakeLock>, label: String) {
+            locks.keys.toList().forEach { displayId ->
+                try {
+                    locks.remove(displayId)?.let { lock ->
+                        if (lock.isHeld) lock.release()
+                    }
+                } catch (e: Throwable) {
+                    log(TAG, "VD $label release failed display=$displayId:", e)
                 }
-            } catch (e: Throwable) {
-                log(TAG, "VD Monitor acquire failed:", e)
             }
         }
-        fun releaseMonitor() {
+
+        private fun pruneStaleLocks(activeIds: Set<Int>) {
+            (monitorLocks.keys - activeIds).forEach { displayId ->
+                try {
+                    monitorLocks.remove(displayId)?.let { if (it.isHeld) it.release() }
+                } catch (_: Throwable) {}
+            }
+            (wakePulseLocks.keys - activeIds).forEach { displayId ->
+                try {
+                    wakePulseLocks.remove(displayId)?.let { if (it.isHeld) it.release() }
+                } catch (_: Throwable) {}
+            }
+        }
+
+        fun acquireMonitor() {
+            val ids = aaVirtualDisplayIds()
+            if (ids.isEmpty()) return
+            val active = ids.toSet()
+            pruneStaleLocks(active)
+            for (displayId in ids) {
+                try {
+                    val lock = monitorLocks.getOrPut(displayId) {
+                        newDisplayWakeLock(
+                            PowerManager.SCREEN_BRIGHT_WAKE_LOCK,
+                            "Monitor",
+                            displayId
+                        )
+                    }
+                    if (!lock.isHeld) {
+                        lock.acquire()
+                        log(TAG, "VD Monitor wake lock acquired display=$displayId")
+                    }
+                } catch (e: Throwable) {
+                    log(TAG, "VD Monitor acquire failed display=$displayId:", e)
+                }
+            }
+        }
+
+        fun pulseWake(displayId: Int) {
             try {
-                if (monitor.isHeld) {
-                    monitor.release()
+                val lock = wakePulseLocks.getOrPut(displayId) {
+                    newDisplayWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                        "VdWake",
+                        displayId
+                    )
+                }
+                if (!lock.isHeld) {
+                    lock.acquire(2_000L)
                 }
             } catch (e: Throwable) {
-                log(TAG, "VD Monitor release failed:", e)
+                log(TAG, "VD wakePulse failed display=$displayId:", e)
             }
-            try {
-                if (wakePulse.isHeld) {
-                    wakePulse.release()
-                }
-            } catch (_: Throwable) {}
+        }
+
+        fun releaseMonitor() {
+            releaseLockMap(monitorLocks, "Monitor")
+            releaseLockMap(wakePulseLocks, "VdWake")
         }
         fun init(){
             if(mScreenOffReplaceLockScreen){
@@ -178,9 +232,9 @@ class DisplayWindow(
             if (isSupportInteractive) {
                 onReceive(mContext, if(Instances.powerManager.isInteractive) Intent.ACTION_SCREEN_ON else Intent.ACTION_SCREEN_OFF)
             }
-            // Always hold a display-scoped SCREEN_BRIGHT lock for the AA VD group.
+            // Always hold a display-scoped SCREEN_BRIGHT lock for each AA VD group.
             // MIUI synergy / ScreenOffReplace only affect the phone panel; without this,
-            // Samsung OWN_DISPLAY_GROUP still DOZEs the car virtual display.
+            // Samsung OWN_DISPLAY_GROUP still DOZEs the car virtual displays.
             acquireMonitor()
             startKeepAwakeLoop()
             keepVirtualDisplayAwake("init", forceWake = true)
@@ -226,25 +280,19 @@ class DisplayWindow(
     }
 
     /**
-     * Keep / restore power for the AA virtual display group so the car UI does not
+     * Keep / restore power for both AA virtual display groups so the car UI does not
      * stay black after phone sleep, doze, or OWN_DISPLAY_GROUP user-activity timeout.
      */
     fun keepVirtualDisplayAwake(reason: String, forceWake: Boolean = false) {
-        val displayId = mVirtualDisplayId
-        if (displayId == Display.INVALID_DISPLAY) return
+        val displayIds = aaVirtualDisplayIds()
+        if (displayIds.isEmpty()) return
         try {
             interactiveMonitor.acquireMonitor()
-            userActivityOnDisplay(
-                displayId,
-                if (forceWake) USER_ACTIVITY_EVENT_TOUCH else USER_ACTIVITY_EVENT_OTHER
-            )
-            if (forceWake) {
-                try {
-                    if (!interactiveMonitor.wakePulse.isHeld) {
-                        interactiveMonitor.wakePulse.acquire(2_000L)
-                    }
-                } catch (e: Throwable) {
-                    log(TAG, "VD wakePulse failed[$reason]:", e)
+            val event = if (forceWake) USER_ACTIVITY_EVENT_TOUCH else USER_ACTIVITY_EVENT_OTHER
+            for (displayId in displayIds) {
+                userActivityOnDisplay(displayId, event)
+                if (forceWake) {
+                    interactiveMonitor.pulseWake(displayId)
                 }
             }
         } catch (e: Throwable) {
@@ -360,18 +408,23 @@ class DisplayWindow(
                 }
             }
             tvVirtualDisplayInfo.text = "$mDisplayWidth*$mDisplayHeight,$mDensityDpi"
-            val phoneAdapter = DisplayRecyclerViewAdapter(rvRecentTaskRight) {
-                hideRecentTask()
-            }
-            val primaryAdapter = DisplayRecyclerViewAdapter(rvRecentTaskLeft) {
-                hideRecentTask()
-            }
-            val secondaryAdapter = DisplayRecyclerViewAdapter(rvRecentTaskCenter) {
-                hideRecentTask()
-            }
-            primaryAdapter.otherAdapter = phoneAdapter
-            secondaryAdapter.otherAdapter = phoneAdapter
-            phoneAdapter.otherAdapter = primaryAdapter
+            val phoneAdapter = DisplayRecyclerViewAdapter(rvRecentTaskRight, onExit = ::hideRecentTask)
+            val primaryAdapter = DisplayRecyclerViewAdapter(
+                rvRecentTaskLeft,
+                SplitPane.PRIMARY,
+                ::hideRecentTask,
+            )
+            val secondaryAdapter = DisplayRecyclerViewAdapter(
+                rvRecentTaskCenter,
+                SplitPane.SECONDARY,
+                ::hideRecentTask,
+            )
+            phoneAdapter.primaryAdapter = primaryAdapter
+            phoneAdapter.secondaryAdapter = secondaryAdapter
+            primaryAdapter.phoneAdapter = phoneAdapter
+            primaryAdapter.secondaryAdapter = secondaryAdapter
+            secondaryAdapter.phoneAdapter = phoneAdapter
+            secondaryAdapter.primaryAdapter = primaryAdapter
             rvRecentTaskLeft.apply {
                 layoutManager = LinearLayoutManager(context)
                 adapter = primaryAdapter
@@ -390,9 +443,17 @@ class DisplayWindow(
                         MotionEvent.ACTION_DOWN -> {
                             v.setTag(R.id.drag_last_x, event.x)
                             v.setTag(R.id.drag_last_y, event.y)
+                            when (v.id) {
+                                R.id.rv_recent_task_left ->
+                                    displayAdapter.setFocusedPane(SplitPane.PRIMARY)
+                                R.id.rv_recent_task_center ->
+                                    displayAdapter.setFocusedPane(SplitPane.SECONDARY)
+                            }
                         }
                         MotionEvent.ACTION_UP -> {
-                            if (v.id != 0
+                            // VD columns: tap only selects move target; do not dismiss.
+                            // Phone column empty-tap still closes the panel.
+                            if (v.id == R.id.rv_recent_task_right
                                 && abs((v.getTag(R.id.drag_last_x) as? Float ?: 0f) - event.x) <= 5
                                 && abs((v.getTag(R.id.drag_last_y) as? Float ?: 0f) - event.y) <= 5) {
                                 hideRecentTask()

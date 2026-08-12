@@ -305,6 +305,15 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         mSplitController?.setFocusedPane(pane)
     }
 
+    override fun getFocusedPane(): Int {
+        return mSplitController?.mFocusedPane ?: SplitPane.PRIMARY
+    }
+
+    override fun swapSplitPanes() {
+        // Controller marshals onto its handler; keep off the Binder thread.
+        runIO { mSplitController?.swapPanes() }
+    }
+
     override fun onDestroyDisplay() {
         runMain {
             mDisplayWindow?.onDestroy {
@@ -332,6 +341,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
         // Controller marshals onto its handler; keep off the Binder thread.
         runIO { mSplitController?.moveTaskId(taskId, isVirtualDisplay) }
+    }
+
+    override fun moveTaskIdToPane(taskId: Int, pane: Int) {
+        runIO { mSplitController?.moveTaskIdToPane(taskId, pane) }
     }
 
     override fun moveTaskToFront(taskId: Int) {
