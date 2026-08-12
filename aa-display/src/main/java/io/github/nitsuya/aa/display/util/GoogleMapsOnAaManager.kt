@@ -17,6 +17,12 @@ object GoogleMapsOnAaManager {
         "com.google.android.apps.maps/com.google.android.apps.auto.client.activity.ghost.GhostActivity"
     )
 
+    /** No-op when already applied (avoids force-stopping Maps/AA on every settings open). */
+    fun ensureDisabled(): Boolean {
+        if (isDisabledFlagSet()) return true
+        return apply(disableGoogleMapsOnAa = true)
+    }
+
     fun apply(disableGoogleMapsOnAa: Boolean): Boolean {
         val componentCommand = if (disableGoogleMapsOnAa) "disable" else "enable"
         val componentOpsSucceeded = targetComponents.all { component ->
@@ -31,5 +37,12 @@ object GoogleMapsOnAaManager {
         val stopMaps = Shell.getShell().newJob().add("am force-stop $MAPS_PACKAGE").exec().isSuccess
         val stopAa = Shell.getShell().newJob().add("am force-stop $AA_PACKAGE").exec().isSuccess
         return componentOpsSucceeded && setGlobalToggle && stopMaps && stopAa
+    }
+
+    private fun isDisabledFlagSet(): Boolean {
+        val result = Shell.cmd("settings get global $GLOBAL_DISABLE_GOOGLE_MAPS_ON_AA_KEY").exec()
+        if (!result.isSuccess) return false
+        val value = result.out.firstOrNull()?.trim().orEmpty()
+        return value == "1"
     }
 }

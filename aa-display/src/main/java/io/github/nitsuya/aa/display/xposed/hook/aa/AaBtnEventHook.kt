@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.SharedPreferences
 import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.core.content.IntentCompat
@@ -13,7 +12,6 @@ import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.util.AABroadcastConst
-import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.hook.abortMethod
 import io.github.nitsuya.aa.display.xposed.log
@@ -41,8 +39,9 @@ object AaBtnEventHook: AaHook() {
         return processProjection == processName
     }
 
-    override fun hook(config: SharedPreferences?, lpparam: XC_LoadPackage.LoadPackageParam) {
-        val enableDefVoiceAssist = AADisplayConfig.VoiceAssistShell.get(config).isNullOrBlank()
+    override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
+        // Default voice assist (no custom VoiceAssistShell).
+        val enableDefVoiceAssist = true
         val hookedReceiverClasses = Collections.synchronizedSet(HashSet<String>())
         val activeReceiverByAction = Collections.synchronizedMap(HashMap<String, Any>())
         val longPressByKeyCode = Collections.synchronizedMap(HashMap<Int, AtomicBoolean>())

@@ -53,7 +53,6 @@ interface ICoreManager {
 
     RecentTask getRecentTask();
 
-    void testCode(String action);
     void toast(String msg);
     void printLog(String tag, String msg);
 }

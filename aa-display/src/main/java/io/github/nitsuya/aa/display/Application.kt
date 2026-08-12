@@ -5,8 +5,6 @@ import android.os.Process
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import com.google.android.material.color.DynamicColors
 import com.topjohnwu.superuser.Shell
-import io.github.nitsuya.aa.display.util.AADisplayConfig
-import io.github.nitsuya.aa.display.util.SharedPreferencesAccess
 import io.github.nitsuya.aa.display.xposed.CoreManager
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
@@ -32,7 +30,6 @@ class Application: android.app.Application() {
 
     override fun onCreate() {
         super.onCreate()
-        SharedPreferencesAccess.makeReadableForHooks(this, AADisplayConfig.ConfigName)
         DynamicColors.applyToActivitiesIfAvailable(this)
     }
 

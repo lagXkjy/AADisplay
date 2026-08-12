@@ -54,15 +54,36 @@ class AaRecentTaskFragment: BaseFragment<FragmentAaRecentTaskBinding>(FragmentAa
                         v.setTag(R.id.drag_last_x, event.x)
                         v.setTag(R.id.drag_last_y, event.y)
                         when (v.id) {
-                            R.id.rv_recent_task_left -> CoreApi.setFocusedPane(SplitPane.PRIMARY)
-                            R.id.rv_recent_task_center -> CoreApi.setFocusedPane(SplitPane.SECONDARY)
+                            R.id.rv_recent_task_left -> {
+                                v.setTag(
+                                    R.id.pane_was_focused,
+                                    CoreApi.focusedPane == SplitPane.PRIMARY,
+                                )
+                                CoreApi.setFocusedPane(SplitPane.PRIMARY)
+                            }
+                            R.id.rv_recent_task_center -> {
+                                v.setTag(
+                                    R.id.pane_was_focused,
+                                    CoreApi.focusedPane == SplitPane.SECONDARY,
+                                )
+                                CoreApi.setFocusedPane(SplitPane.SECONDARY)
+                            }
                         }
                     }
                     MotionEvent.ACTION_UP -> {
-                        // VD columns: tap selects move target; phone empty-tap dismisses.
-                        if (v.id == R.id.rv_recent_task_right
-                            && abs((v.getTag(R.id.drag_last_x) as? Float ?: 0f) - event.x) <= 5
-                            && abs((v.getTag(R.id.drag_last_y) as? Float ?: 0f) - event.y) <= 5) {
+                        // Empty tap: phone always dismisses. VD first tap selects move
+                        // target; second tap on the already-focused column dismisses.
+                        val isTap = abs((v.getTag(R.id.drag_last_x) as? Float ?: 0f) - event.x) <= 5
+                            && abs((v.getTag(R.id.drag_last_y) as? Float ?: 0f) - event.y) <= 5
+                        if (!isTap) return@setOnTouchListener false
+                        val dismiss = when (v.id) {
+                            R.id.rv_recent_task_right -> true
+                            R.id.rv_recent_task_left,
+                            R.id.rv_recent_task_center ->
+                                v.getTag(R.id.pane_was_focused) as? Boolean == true
+                            else -> false
+                        }
+                        if (dismiss) {
                             AaDisplayActivityKt.hideRecentTask(parentFragmentManager)
                         }
                     }

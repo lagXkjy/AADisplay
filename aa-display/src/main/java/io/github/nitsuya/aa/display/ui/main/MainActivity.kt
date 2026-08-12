@@ -4,13 +4,11 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.text.InputType
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.Menu
 import android.view.MenuInflater
 import android.view.MenuItem
-import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.core.net.toUri
 import androidx.core.view.MenuProvider
@@ -22,10 +20,10 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
-import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.util.GoogleMapsOnAaManager
-import io.github.nitsuya.aa.display.util.SharedPreferencesAccess
 import io.github.nitsuya.template.bases.getAttr
+import io.github.nitsuya.template.bases.runIO
+import io.github.nitsuya.template.bases.runMain
 
 class MainActivity :
     BaseActivity<ActivityMainBinding>(
@@ -38,32 +36,10 @@ class MainActivity :
         const val TAG = "AADisplay_MainActivity"
     }
 
-    private data class DelayOption(
-        val seconds: Int,
-        val label: String
-    )
-
-    private val appConfig by lazy {
-        SharedPreferencesAccess.openForHooks(this, AADisplayConfig.ConfigName)
-    }
-
-    private var delayOptions: List<DelayOption> = emptyList()
-    private var delayDisplayToSeconds: Map<String, Int> = emptyMap()
-    private var savedDelayDestroyTime: Int = 180
-    private var savedAutoOpen: Boolean = false
-    private var savedRestoreLastSplit: Boolean = false
-    private var savedDisableGoogleMapsOnAa: Boolean = true
-
     override fun onCreate(savedInstanceState: Bundle?) {
         ActivityMainBinding.inflate(LayoutInflater.from(this))
         super.onCreate(savedInstanceState)
-        SharedPreferencesAccess.makeReadableForHooks(this, AADisplayConfig.ConfigName)
         addMenuProvider(this, this)
-    }
-
-    override fun initViews() {
-        super.initViews()
-        setupSettingControls()
     }
 
     @SuppressLint("SetTextI18n")
@@ -116,12 +92,7 @@ class MainActivity :
             baseBinding.systemVersion.text = "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
         }
         baseBinding.rootPrivilege.text = if (Shell.getShell().isRoot) "YES" else "NO"
-        refreshSettingControls()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        refreshSettingControls()
+        ensureGoogleMapsDisabledOnAa()
     }
 
     override fun onCreateMenu(menu: Menu, menuInflater: MenuInflater) {
@@ -141,174 +112,20 @@ class MainActivity :
         }
     }
 
-    private fun setupSettingControls() {
-        baseBinding.switchAutoOpen.setOnCheckedChangeListener { _, _ ->
-            updateSaveButtonState()
-        }
-
-        baseBinding.switchRestoreLastSplit.setOnCheckedChangeListener { _, _ ->
-            updateSaveButtonState()
-        }
-
-        baseBinding.switchDisableGoogleMapsOnAa.setOnCheckedChangeListener { _, _ ->
-            updateSaveButtonState()
-        }
-
-        baseBinding.actvDelayDestroyTime.apply {
-            inputType = InputType.TYPE_NULL
-            keyListener = null
-            threshold = 0
-            isCursorVisible = false
-            isLongClickable = false
-            showSoftInputOnFocus = false
-            setTextIsSelectable(false)
-            setOnClickListener {
-                showAllDelayOptions()
-            }
-            setOnFocusChangeListener { _, hasFocus ->
-                if (hasFocus) {
-                    showAllDelayOptions()
-                }
-                if (!hasFocus) {
-                    validateDelaySelection(showError = true)
-                }
-            }
-            setOnItemClickListener { _, _, _, _ ->
-                validateDelaySelection(showError = false)
-                updateSaveButtonState()
-            }
-        }
-
-        baseBinding.btnSave.setOnClickListener {
-            persistSettings()
-        }
-    }
-
-    private fun refreshSettingControls() {
-        savedAutoOpen = AADisplayConfig.AutoOpen.get(appConfig)
-        savedRestoreLastSplit = AADisplayConfig.RestoreLastSplit.get(appConfig)
-        savedDisableGoogleMapsOnAa = AADisplayConfig.DisableGoogleMapsOnAa.get(appConfig)
-        savedDelayDestroyTime = AADisplayConfig.DelayDestroyTime.get(appConfig)
-        baseBinding.switchAutoOpen.isChecked = savedAutoOpen
-        baseBinding.switchRestoreLastSplit.isChecked = savedRestoreLastSplit
-        baseBinding.switchDisableGoogleMapsOnAa.isChecked = savedDisableGoogleMapsOnAa
-
-        bindDelayDropdown()
-
-        val selectedDelay = delayOptions.firstOrNull { it.seconds == savedDelayDestroyTime }
-            ?: delayOptions.firstOrNull()
-        if (selectedDelay != null) {
-            baseBinding.actvDelayDestroyTime.setText(selectedDelay.label, false)
-        } else {
-            baseBinding.actvDelayDestroyTime.setText("", false)
-        }
-
-        validateDelaySelection(showError = false)
-        updateSaveButtonState()
-    }
-
-    private fun bindDelayDropdown() {
-        delayOptions = listOf(
-            DelayOption(60, getString(R.string.delay_60_seconds)),
-            DelayOption(120, getString(R.string.delay_120_seconds)),
-            DelayOption(180, getString(R.string.delay_180_seconds))
-        )
-        delayDisplayToSeconds = delayOptions.associate { it.label to it.seconds }
-        val adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_list_item_1,
-            delayOptions.map { it.label }
-        )
-        baseBinding.actvDelayDestroyTime.setAdapter(adapter)
-    }
-
-    private fun showAllDelayOptions() {
-        @Suppress("UNCHECKED_CAST")
-        val adapter = baseBinding.actvDelayDestroyTime.adapter as? ArrayAdapter<String> ?: return
-        adapter.filter.filter(null)
-        baseBinding.actvDelayDestroyTime.showDropDown()
-    }
-
-    private fun resolveSelectedDelaySeconds(): Int? {
-        val raw = baseBinding.actvDelayDestroyTime.text?.toString()?.trim().orEmpty()
-        if (raw.isBlank()) return null
-        delayDisplayToSeconds[raw]?.let { return it }
-        return delayOptions.firstOrNull { it.label == raw }?.seconds
-    }
-
-    private fun validateDelaySelection(showError: Boolean): Boolean {
-        val value = resolveSelectedDelaySeconds()
-        val valid = value != null && delayOptions.any { it.seconds == value }
-        if (!valid && showError) {
-            baseBinding.tilDelayDestroyTime.error = getString(R.string.delay_destroy_time_invalid)
-        } else if (valid) {
-            baseBinding.tilDelayDestroyTime.error = null
-        }
-        return valid
-    }
-
-    private fun persistSettings() {
-        val delayValid = validateDelaySelection(showError = true)
-        if (!delayValid) {
-            updateSaveButtonState()
-            return
-        }
-
-        val delay = resolveSelectedDelaySeconds() ?: return
-        val disableGoogleMapsOnAa = baseBinding.switchDisableGoogleMapsOnAa.isChecked
-        if (disableGoogleMapsOnAa != savedDisableGoogleMapsOnAa) {
-            val applied = GoogleMapsOnAaManager.apply(disableGoogleMapsOnAa)
+    /** Always-on: keep Google Maps off AA projection (idempotent; skips if already applied). */
+    private fun ensureGoogleMapsDisabledOnAa() {
+        if (!Shell.getShell().isRoot) return
+        runIO {
+            val applied = GoogleMapsOnAaManager.ensureDisabled()
             if (!applied) {
-                Toast.makeText(this, getString(R.string.disable_google_maps_on_aa_apply_failed), Toast.LENGTH_SHORT).show()
-                baseBinding.switchDisableGoogleMapsOnAa.isChecked = savedDisableGoogleMapsOnAa
-                updateSaveButtonState()
-                return
+                runMain {
+                    Toast.makeText(
+                        this@MainActivity,
+                        getString(R.string.disable_google_maps_on_aa_apply_failed),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
             }
         }
-
-        val settingsSaved = appConfig.edit()
-            .putBoolean(AADisplayConfig.AutoOpen.key, baseBinding.switchAutoOpen.isChecked)
-            .putBoolean(AADisplayConfig.RestoreLastSplit.key, baseBinding.switchRestoreLastSplit.isChecked)
-            .putBoolean(AADisplayConfig.DisableGoogleMapsOnAa.key, disableGoogleMapsOnAa)
-            .putString(AADisplayConfig.DelayDestroyTime.key, delay.toString())
-            .commit()
-
-        if (!settingsSaved) {
-            Toast.makeText(this, getString(R.string.settings_saved_pref_access_failed), Toast.LENGTH_LONG).show()
-            updateSaveButtonState()
-            return
-        }
-
-        // Always keep local "saved*" in sync when disk write succeeds. Hook readability is separate.
-        savedAutoOpen = baseBinding.switchAutoOpen.isChecked
-        savedRestoreLastSplit = baseBinding.switchRestoreLastSplit.isChecked
-        savedDisableGoogleMapsOnAa = disableGoogleMapsOnAa
-        savedDelayDestroyTime = delay
-
-        val readableForHooks = SharedPreferencesAccess.makeReadableForHooks(this, AADisplayConfig.ConfigName)
-        if (!readableForHooks) {
-            Toast.makeText(this, getString(R.string.settings_saved_pref_access_failed), Toast.LENGTH_LONG).show()
-        } else {
-            Toast.makeText(this, getString(R.string.settings_saved_successfully), Toast.LENGTH_SHORT).show()
-        }
-        updateSaveButtonState()
-    }
-
-    private fun updateSaveButtonState() {
-        val hasChanges = hasPendingChanges()
-        val enabled = hasChanges && validateDelaySelection(showError = false)
-        baseBinding.btnSave.isEnabled = enabled
-        baseBinding.btnSave.alpha = if (enabled) 1f else 0.6f
-    }
-
-    private fun hasPendingChanges(): Boolean {
-        val currentAutoOpen = baseBinding.switchAutoOpen.isChecked
-        val currentRestoreLastSplit = baseBinding.switchRestoreLastSplit.isChecked
-        val currentDisableGoogleMapsOnAa = baseBinding.switchDisableGoogleMapsOnAa.isChecked
-        val currentDelay = resolveSelectedDelaySeconds()
-        return currentAutoOpen != savedAutoOpen ||
-            currentRestoreLastSplit != savedRestoreLastSplit ||
-            currentDisableGoogleMapsOnAa != savedDisableGoogleMapsOnAa ||
-            currentDelay != savedDelayDestroyTime
     }
 }

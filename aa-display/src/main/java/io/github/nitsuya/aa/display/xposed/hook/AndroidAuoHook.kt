@@ -2,16 +2,11 @@ package io.github.nitsuya.aa.display.xposed.hook
 
 import android.app.Application
 import android.app.Instrumentation
-import android.content.SharedPreferences
 import com.github.kyuubiran.ezxhelper.init.EzXHelperInit
 import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XSharedPreferences
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import io.github.nitsuya.aa.display.BuildConfig
-import io.github.nitsuya.aa.display.util.AADisplayConfig
-import io.github.nitsuya.aa.display.util.SharedPreferencesAccess
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaBasicsHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaBtnEventHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaDpiHook
@@ -20,7 +15,6 @@ import io.github.nitsuya.aa.display.xposed.hook.aa.AaSignatureHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaUiHook
 import io.github.nitsuya.aa.display.xposed.log
 import org.luckypray.dexkit.DexKitBridge
-import java.io.File
 import kotlin.system.measureTimeMillis
 
 
@@ -33,7 +27,7 @@ abstract class AaHook {
     abstract val tagName: String
     abstract fun isSupportProcess(processName: String) : Boolean
     open fun loadDexClass(bridge: DexKitBridge, lpparam: XC_LoadPackage.LoadPackageParam) {}
-    abstract fun hook(config: SharedPreferences?, lpparam: XC_LoadPackage.LoadPackageParam)
+    abstract fun hook(lpparam: XC_LoadPackage.LoadPackageParam)
 }
 
 object AndroidAuoHook : BaseHook() {
@@ -42,8 +36,6 @@ object AndroidAuoHook : BaseHook() {
         val processName = lpparam.processName
         val hooks = listOf(AaBasicsHook, AaSignatureHook, AaDpiHook, AaBtnEventHook, AaUiHook, AaPropsHook).filter { i -> i.isSupportProcess(processName) }
         if(hooks.isEmpty()) return
-
-        val config = loadConfigPreferences()
 
         var onCreateApplication: XC_MethodHook.Unhook? = null
         onCreateApplication = findMethod(Instrumentation::class.java) {
@@ -67,34 +59,8 @@ object AndroidAuoHook : BaseHook() {
                 log(tagName,"${lpparam.processName} load class measure ${measureTimeMillis}ms")
             }
             hooks.forEach { h ->
-                h.hook(config, lpparam)
+                h.hook(lpparam)
             }
         }
-    }
-
-    private fun loadConfigPreferences(): SharedPreferences? {
-        // Prefer durable system mirror so AA process matches system_server after reboot.
-        try {
-            val mirror = File(SharedPreferencesAccess.HOOK_MIRROR_PATH)
-            if (mirror.exists() && mirror.canRead()) {
-                return XSharedPreferences(mirror).also { runCatching { it.reload() } }
-            }
-        } catch (e: Throwable) {
-            log(tagName, "hook mirror load failed:", e)
-        }
-
-        val configPreferences = XSharedPreferences(BuildConfig.APPLICATION_ID, AADisplayConfig.ConfigName)
-        runCatching {
-            configPreferences.reload()
-        }.onFailure { e ->
-            log(tagName, "configPreferences reload failed; continuing with cached/default values", e)
-        }
-        if (configPreferences.all.isNotEmpty()) {
-            return configPreferences
-        }
-        log(tagName, "configPreferences empty/unreadable: ${configPreferences.file}; continuing with defaults")
-        return null
     }
 }
-
-

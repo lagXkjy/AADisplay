@@ -5,7 +5,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.SharedPreferences
 import android.graphics.SurfaceTexture
 import android.os.SystemClock
 import android.support.car.Car
@@ -24,7 +23,6 @@ import androidx.core.view.doOnLayout
 import androidx.core.view.isVisible
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import com.google.android.gms.car.CarFirstPartyManager
-import com.topjohnwu.superuser.Shell
 import io.github.duzhaokun123.template.bases.BaseFragment
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.databinding.FragmentAaMainBinding
@@ -32,9 +30,7 @@ import io.github.nitsuya.aa.display.ui.aa.AaDisplayActivityKt
 import io.github.nitsuya.aa.display.ui.aa.split.SplitAppPickerController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.AABroadcastConst
-import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.util.LastSplitStore
-import io.github.nitsuya.aa.display.util.SharedPreferencesAccess
 import io.github.nitsuya.aa.display.util.getGmsCarFirstPartyManager
 import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.util.startCarAaDisplay
@@ -56,7 +52,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private var primarySurface: Surface? = null
     private var secondarySurface: Surface? = null
     private var splitRatio: Float = SplitPane.DEFAULT_RATIO
-    private lateinit var config: SharedPreferences
     private lateinit var appPicker: SplitAppPickerController
     private val paneHasApp = booleanArrayOf(false, false)
 
@@ -75,19 +70,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     private val broadcastReceiver = object : BroadcastReceiver() {
-        val voiceAssistShell by lazy { AADisplayConfig.VoiceAssistShell.get(config) }
         fun startVoiceAssist() {
-            voiceAssistShell?.let {
-                CoreApi.displayPower(true)
-                tryOrNull {
-                    Shell.cmd(
-                        it.replace(
-                            "\${DisplayId}",
-                            (if (displayId == Display.INVALID_DISPLAY) Display.DEFAULT_DISPLAY else displayId).toString()
-                        )
-                    ).exec()
-                }
-            }
+            // Custom VoiceAssistShell removed with prefs; steering-wheel search is a no-op here.
         }
 
         override fun onReceive(context: Context?, intent: Intent) {
@@ -165,10 +149,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     override fun initViews() {
-        config = SharedPreferencesAccess.openForHooks(this.requireContext(), AADisplayConfig.ConfigName)
         Log.i(TAG, "initViews")
-        // Do NOT call makeReadableForHooks here: Shell.getShell()+cp blocks AA main thread
-        // for hundreds of ms–seconds. Mirror is published when settings are saved.
         appPicker = SplitAppPickerController(baseBinding).also {
             it.onAppPicked = { pane, _ ->
                 paneHasApp[pane] = true
@@ -199,13 +180,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     override fun onResume() {
         super.onResume()
         isForeground = true
-        if (this::config.isInitialized) {
-            baseBinding.splitContainer.post {
-                if (displayId == Display.INVALID_DISPLAY) {
-                    isDisplayCreateRequested = false
-                }
-                requestDisplay("resume")
+        baseBinding.splitContainer.post {
+            if (displayId == Display.INVALID_DISPLAY) {
+                isDisplayCreateRequested = false
             }
+            requestDisplay("resume")
         }
     }
 
@@ -439,12 +418,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     private fun requestDisplay(reason: String) {
-        if (!this::config.isInitialized) return
         val displayWidth = baseBinding.splitContainer.width
         val displayHeight = baseBinding.splitContainer.height
-        val displayDpi = AADisplayConfig.VirtualDisplayDpi.get(config).let {
-            if (it <= 50) resources.displayMetrics.densityDpi else it
-        }
+        val displayDpi = resources.displayMetrics.densityDpi
         Log.i(
             TAG,
             "requestDisplay[$reason]: ${displayWidth}x$displayHeight,$displayDpi " +

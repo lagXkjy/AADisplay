@@ -8,21 +8,17 @@ import android.view.Display
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceControl
-import de.robv.android.xposed.XSharedPreferences
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplayWindow
-import io.github.nitsuya.aa.display.util.AADisplayConfig
-import io.github.nitsuya.aa.display.util.SharedPreferencesAccess
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.template.bases.runIO
 import io.github.nitsuya.template.bases.runMain
 import io.github.qauxv.ui.CommonContextWrapper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
-import java.io.File
 
 class CoreManagerService private constructor() : ICoreManager.Stub() {
     companion object {
@@ -42,50 +38,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 log(TAG, "SystemContext.params is null: ${value.params}")
                 systemContextHost = value.createContext(value.params ?: ContextParams.Builder().build())
             }
-
-        @Volatile
-        private var configHolder: XSharedPreferences? = null
-
-        val config: XSharedPreferences?
-            get() {
-                configHolder?.let {
-                    runCatching { it.reload() }
-                    return it
-                }
-                return loadConfigPreferences().also { configHolder = it }
-            }
-
-        private fun loadConfigPreferences(): XSharedPreferences? {
-            loadMirrorPreferences()?.let { return it }
-            try {
-                val pkgPrefs = XSharedPreferences(BuildConfig.APPLICATION_ID, AADisplayConfig.ConfigName)
-                runCatching { pkgPrefs.reload() }
-                if (pkgPrefs.all.isNotEmpty()) {
-                    return pkgPrefs
-                }
-                log(TAG, "package config empty/unreadable: ${pkgPrefs.file}")
-            } catch (e: Throwable) {
-                log(TAG, "config load failed:", e)
-            }
-            return null
-        }
-
-        private fun loadMirrorPreferences(): XSharedPreferences? {
-            return try {
-                val mirror = File(SharedPreferencesAccess.HOOK_MIRROR_PATH)
-                if (!mirror.exists() || !mirror.canRead()) {
-                    log(TAG, "hook mirror missing/unreadable: $mirror")
-                    return null
-                }
-                XSharedPreferences(mirror).also {
-                    runCatching { it.reload() }
-                    log(TAG, "hook mirror loaded: keys=${it.all.size}")
-                }
-            } catch (e: Throwable) {
-                log(TAG, "hook mirror load failed:", e)
-                null
-            }
-        }
 
         private var mDisplayWindow: DisplayWindow? = null
         private var mSplitController: SplitDisplayController? = null
@@ -240,12 +192,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 logDebug(TAG, "onCreateSplitDisplay ignored: create already in progress")
                 return@runMain
             }
-            config?.apply {
-                reload()
-                logDebug(TAG, "config loaded: keys=${this.all.size}")
-            }
             mDisplayCreateInProgress = true
-            SplitDisplayController(systemContext, config) {
+            SplitDisplayController(systemContext) {
                 try {
                     val controller = this
                     mSplitController = controller
@@ -420,10 +368,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         return runBlocking(Dispatchers.IO) {
             mSplitController?.getRecentTask() ?: RecentTask(emptyList(), emptyList(), emptyList())
         }
-    }
-
-    @SuppressLint("RestrictedApi")
-    override fun testCode(action: String) {
     }
 
     override fun toast(msg: String) {

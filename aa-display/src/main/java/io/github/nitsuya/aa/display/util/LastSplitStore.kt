@@ -11,20 +11,32 @@ import java.util.Properties
 /**
  * Durable custom-split snapshot written from system_server ([SplitDisplayController]).
  * Settings.Global is the source of truth; file under `/data/system` is best-effort.
+ *
+ * Persisted keys keep historical `left`/`right` names (= PRIMARY/SECONDARY panes).
+ * Kotlin API uses primary/secondary to match [io.github.nitsuya.aa.display.ui.aa.split.SplitPane].
  */
 object LastSplitStore {
     private const val TAG = "AADisplay_LastSplitStore"
     const val PATH = "/data/system/aadisplay_last_split.properties"
 
+    /** Settings.Global key for PRIMARY pane package (historical name). */
     const val SETTINGS_LEFT = "aadisplay_last_split_left"
+    /** Settings.Global key for SECONDARY pane package (historical name). */
     const val SETTINGS_RIGHT = "aadisplay_last_split_right"
     const val SETTINGS_RATIO = "aadisplay_last_split_ratio"
     const val SETTINGS_LANDSCAPE = "aadisplay_last_split_landscape"
     const val SETTINGS_SIDE_BY_SIDE = "aadisplay_last_split_side_by_side"
 
+    /** Properties-file keys (historical names; do not rename — existing snapshots). */
+    private const val FILE_LEFT = "LastSplitLeftPackage"
+    private const val FILE_RIGHT = "LastSplitRightPackage"
+    private const val FILE_RATIO = "LastSplitPrimaryRatio"
+    private const val FILE_LANDSCAPE = "LastSplitDisplayLandscape"
+    private const val FILE_SIDE_BY_SIDE = "LastSplitSideBySide"
+
     data class Snapshot(
-        val leftPackage: String,
-        val rightPackage: String,
+        val primaryPackage: String,
+        val secondaryPackage: String,
         val primaryRatio: Float,
         val landscape: Boolean,
         val sideBySide: Boolean = landscape,
@@ -55,11 +67,11 @@ object LastSplitStore {
             val props = Properties()
             FileInputStream(file).use { props.load(it) }
             parseProps(
-                left = props.getProperty(AADisplayConfig.LastSplitLeftPackage.key),
-                right = props.getProperty(AADisplayConfig.LastSplitRightPackage.key),
-                ratio = props.getProperty(AADisplayConfig.LastSplitPrimaryRatio.key),
-                landscape = props.getProperty(AADisplayConfig.LastSplitDisplayLandscape.key),
-                sideBySide = props.getProperty("LastSplitSideBySide"),
+                primary = props.getProperty(FILE_LEFT),
+                secondary = props.getProperty(FILE_RIGHT),
+                ratio = props.getProperty(FILE_RATIO),
+                landscape = props.getProperty(FILE_LANDSCAPE),
+                sideBySide = props.getProperty(FILE_SIDE_BY_SIDE),
             )
         } catch (e: Throwable) {
             Log.w(TAG, "load file failed", e)
@@ -71,8 +83,8 @@ object LastSplitStore {
         if (cr == null) return null
         return try {
             parseProps(
-                left = Settings.Global.getString(cr, SETTINGS_LEFT),
-                right = Settings.Global.getString(cr, SETTINGS_RIGHT),
+                primary = Settings.Global.getString(cr, SETTINGS_LEFT),
+                secondary = Settings.Global.getString(cr, SETTINGS_RIGHT),
                 ratio = Settings.Global.getString(cr, SETTINGS_RATIO),
                 landscape = Settings.Global.getString(cr, SETTINGS_LANDSCAPE),
                 sideBySide = Settings.Global.getString(cr, SETTINGS_SIDE_BY_SIDE),
@@ -84,34 +96,28 @@ object LastSplitStore {
     }
 
     private fun parseProps(
-        left: String?,
-        right: String?,
+        primary: String?,
+        secondary: String?,
         ratio: String?,
         landscape: String?,
         sideBySide: String?,
     ): Snapshot? {
-        val l = left?.trim().orEmpty()
-        val r = right?.trim().orEmpty()
-        if (l.isEmpty() || r.isEmpty() || l == r) return null
+        val p = primary?.trim().orEmpty()
+        val s = secondary?.trim().orEmpty()
+        if (p.isEmpty() || s.isEmpty() || p == s) return null
         val ratioVal = ratio?.toFloatOrNull()?.takeIf { it in 0.15f..0.85f } ?: 0.5f
         val landscapeVal = landscape?.toBooleanStrictOrNull() ?: true
         val sideBySideVal = sideBySide?.toBooleanStrictOrNull() ?: landscapeVal
-        return Snapshot(l, r, ratioVal, landscapeVal, sideBySideVal)
+        return Snapshot(p, s, ratioVal, landscapeVal, sideBySideVal)
     }
 
     private fun saveToFile(snapshot: Snapshot): Boolean {
         val props = Properties()
-        props.setProperty(AADisplayConfig.LastSplitLeftPackage.key, snapshot.leftPackage)
-        props.setProperty(AADisplayConfig.LastSplitRightPackage.key, snapshot.rightPackage)
-        props.setProperty(
-            AADisplayConfig.LastSplitPrimaryRatio.key,
-            snapshot.primaryRatio.toString()
-        )
-        props.setProperty(
-            AADisplayConfig.LastSplitDisplayLandscape.key,
-            snapshot.landscape.toString()
-        )
-        props.setProperty("LastSplitSideBySide", snapshot.sideBySide.toString())
+        props.setProperty(FILE_LEFT, snapshot.primaryPackage)
+        props.setProperty(FILE_RIGHT, snapshot.secondaryPackage)
+        props.setProperty(FILE_RATIO, snapshot.primaryRatio.toString())
+        props.setProperty(FILE_LANDSCAPE, snapshot.landscape.toString())
+        props.setProperty(FILE_SIDE_BY_SIDE, snapshot.sideBySide.toString())
         val file = File(PATH)
         fun writeOnce(): Boolean {
             file.parentFile?.mkdirs()
@@ -126,7 +132,7 @@ object LastSplitStore {
             writeOnce()
             Log.i(
                 TAG,
-                "file saved left=${snapshot.leftPackage} right=${snapshot.rightPackage} " +
+                "file saved primary=${snapshot.primaryPackage} secondary=${snapshot.secondaryPackage} " +
                     "ratio=${snapshot.primaryRatio} landscape=${snapshot.landscape}"
             )
             true
@@ -149,14 +155,14 @@ object LastSplitStore {
     private fun saveToSettings(snapshot: Snapshot, cr: ContentResolver?): Boolean {
         if (cr == null) return false
         return try {
-            Settings.Global.putString(cr, SETTINGS_LEFT, snapshot.leftPackage)
-            Settings.Global.putString(cr, SETTINGS_RIGHT, snapshot.rightPackage)
+            Settings.Global.putString(cr, SETTINGS_LEFT, snapshot.primaryPackage)
+            Settings.Global.putString(cr, SETTINGS_RIGHT, snapshot.secondaryPackage)
             Settings.Global.putString(cr, SETTINGS_RATIO, snapshot.primaryRatio.toString())
             Settings.Global.putString(cr, SETTINGS_LANDSCAPE, snapshot.landscape.toString())
             Settings.Global.putString(cr, SETTINGS_SIDE_BY_SIDE, snapshot.sideBySide.toString())
             Log.i(
                 TAG,
-                "settings saved left=${snapshot.leftPackage} right=${snapshot.rightPackage}"
+                "settings saved primary=${snapshot.primaryPackage} secondary=${snapshot.secondaryPackage}"
             )
             true
         } catch (e: Throwable) {

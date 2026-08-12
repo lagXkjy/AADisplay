@@ -1,6 +1,5 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa
 
-import android.content.SharedPreferences
 import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import de.robv.android.xposed.callbacks.XC_LoadPackage
@@ -58,7 +57,7 @@ object AaSignatureHook: AaHook() {
             && parameterTypes[0] == String::class.java
         }
     }
-    override fun hook(config: SharedPreferences?, lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
         method.hookAfter { param ->
             if((param.args[0] as String) == BuildConfig.APPLICATION_ID){
                 param.result = true

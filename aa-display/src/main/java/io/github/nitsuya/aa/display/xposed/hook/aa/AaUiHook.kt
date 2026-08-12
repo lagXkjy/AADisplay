@@ -4,7 +4,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.SharedPreferences
 import android.app.ActivityManager
 import android.content.res.Resources
 import android.graphics.Rect
@@ -34,7 +33,6 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.service.AaActivityService
 import io.github.nitsuya.aa.display.util.AABroadcastConst
-import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.log
 import io.github.nitsuya.aa.display.xposed.logDebug
@@ -75,7 +73,6 @@ object AaUiHook: AaHook() {
     private var resLayoutLeftResourceId: Int = 0
     private var resLayoutRightResourceId: Int = 0
 
-    private var resLayoutGhFacetBarId: Int = 0
     private var resIdStatusBarId: Int = 0
     private var resIdLauncherAndDashboardIconContainerId: Int = 0
     private var resIdLauncherAndDashboardIconId: Int = 0
@@ -117,11 +114,6 @@ object AaUiHook: AaHook() {
     /** Latest main-display LayoutInfo size in dp (from constructor args). */
     @Volatile private var mLayoutWidthDp: Int = 0
     @Volatile private var mLayoutHeightDp: Int = 0
-    /**
-     * Coolwalk HU VDs use density 160; LayoutInfo dp matches content_bounds px 1:1.
-     * Do not use the phone DisplayMetrics.density for rail/bounds math.
-     */
-    @Volatile private var mCarDensity: Float = 1f
     /** Last observed GhFacetBar / thin-rail VD width in px (for content expand fallback). */
     @Volatile private var mObservedRailWidthPx: Int = 0
 
@@ -190,7 +182,7 @@ object AaUiHook: AaHook() {
 
         // AA 16.x used vertical coolwalk facet; 17.x with canonical rail may still inflate
         // the non-vertical / RHD variants — match all known facet hosts.
-        resLayoutGhFacetBarId = layoutId("gh_coolwalk_vertical_facet_bar")
+        layoutId("gh_coolwalk_vertical_facet_bar")
         layoutId("gh_coolwalk_facet_bar")
         layoutId("gh_coolwalk_facet_bar_rhd")
         layoutId("gh_coolwalk_vertical_facet_bar_rhd")
@@ -232,24 +224,21 @@ object AaUiHook: AaHook() {
         log(tagName, "AaUiHook: rail width dimens=$railWidthDimenIds")
     }
 
-    override fun hook(config: SharedPreferences?, lpparam: XC_LoadPackage.LoadPackageParam) {
-        log(tagName, "AaUiHook: ~~~~~~~~~~~~~~~~~~~~~~~~~~~ process=${lpparam.processName}")
+    override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
         // Coolwalk: GhLifecycleService in :car puts content_bounds=Rect(rail,0,fullW,fullH).
         // Must rewrite here — :projection never sees that putParcelable.
         hookContentBounds()
         if (lpparam.processName == processCar) {
             return
         }
-        mAutoOpen = AADisplayConfig.AutoOpen.get(config)
+        mAutoOpen = true
         log(tagName, "AaUiHook: AutoOpen=$mAutoOpen startMethod=${startMethod?.name}")
         // Zero rail-column dimens first so LayoutInfo / VD allocation sees full HU width.
         hookRailWidthDimens()
         hookVirtualDisplaySizing()
         // Auto Open must arm even when layout override resources are missing.
         hookLayoutInfoAutoOpen()
-        if (mAutoOpen) {
-            registerAutoOpenShownReceiver()
-        }
+        registerAutoOpenShownReceiver()
         if (canHookLayout) {
             hookLayout()
         }
@@ -257,7 +246,7 @@ object AaUiHook: AaHook() {
             hookFacetBar()
             hookFacetWindowAttach()
         }
-        hookRadius(config)
+        hookRadius()
     }
 
     private fun hookLayoutInfoAutoOpen() {
@@ -745,13 +734,6 @@ object AaUiHook: AaHook() {
         )
         return fullW to height
     }
-
-    /**
-     * Coolwalk HU virtual displays report density 160; LayoutInfo displayWidthDp/HeightDp match
-     * content_bounds pixels 1:1. Never multiply by the phone's DisplayMetrics.density (often 2.5–3.5)
-     * or rail heuristics miss (e.g. left=80 vs minRail=120) and VD expand targets 2400px.
-     */
-    private fun displayDensity(): Float = mCarDensity.coerceAtLeast(0.5f)
 
     private fun layoutWidthPx(): Int = mLayoutWidthDp.takeIf { it > 0 } ?: 0
 
@@ -1390,10 +1372,7 @@ object AaUiHook: AaHook() {
         return aaFacetBar
     }
 
-    private fun hookRadius(config: SharedPreferences?) {
-        if(!AADisplayConfig.ForceRightAngle.get(config)){
-            return
-        }
+    private fun hookRadius() {
         try{
             val targetClass = loadClass("com.google.android.gms.car.ProjectionWindowDecorationParams")
             val ctor = targetClass.declaredConstructors.firstOrNull { c ->

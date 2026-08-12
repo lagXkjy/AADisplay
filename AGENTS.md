@@ -94,10 +94,9 @@ flowchart LR
 
 ### 配置
 
-- Prefs 名：`aadisplay_config`（`AADisplayConfig.ConfigName`）
-- 定义：`util/AADisplayConfig.kt`（sealed 配置项）
-- App 侧：`SharedPreferences` + `SharedPreferencesAccess.makeReadableForHooks`
-- Hook 侧：`XSharedPreferences` 读取同一文件
+本模块**不再使用** `aadisplay_config` SharedPreferences / XSharedPreferences 镜像。
+行为为代码内常量（如 Delay Destroy = 180s、Auto Open / Restore Last Split / Disable Google Maps on AA 始终开启）。
+分屏快照仍走 `LastSplitStore`（`Settings.Global` + `/data/system/aadisplay_last_split.properties`），与旧 prefs 无关。
 
 ### LSPosed scope
 
@@ -124,8 +123,8 @@ flowchart LR
 1. 安装 APK
 2. LSPosed 启用模块：至少 **System Framework** + **Android Auto**
 3. 重启设备
-4. 打开 AADisplay 配置（Auto Open、Restore Last Split、Delay Destroy、Maps 等）
-5. 连接 Android Auto，验证双屏分屏、触控、任务切换、断开后延迟销毁
+4. 打开 AADisplay 查看激活状态（同时 ensureDisabled Google Maps on AA）
+5. 连接 Android Auto，验证双屏分屏、触控、任务切换、断开后约 180s 延迟销毁
 
 改 AA 钩子后：对照目标 gearhead 版本；确认 DexKit 解析仍命中；查阅 `CHANGELOG.md` / `RELEASE_NOTES_*` 中的稳定性约束（如 display profile lock、TaskView）。
 
@@ -137,9 +136,9 @@ flowchart LR
 - **禁止随意重命名**（跨进程 / 对外契约）：
   - 类名 `AndroidAuoHook`（历史拼写，保持现状）
   - Binder magic `AADD`
-  - prefs 名 `aadisplay_config` 与已有 config key
   - `ICoreManager` / 其它 AIDL 方法签名与 parcelable
   - `xposed_scope` 数组项（除非明确要扩展作用域）
+  - `LastSplitStore` 持久化 key 名（已有设备上的 snapshot）
 - **隐藏 API**：变更走 `lib-stub` + Rikka Refine；勿在主模块硬编码未 stub 的 framework 类。
 - **混淆**：ProGuard 已 keep `io.github.nitsuya.aa.display.**`；新增反射 / Xposed 目标仍需评估 AA 版本与混淆差异。
 - **资源 package id**：工程保留 `0x64`（Xposed 友好），勿随意改。
@@ -147,12 +146,9 @@ flowchart LR
 
 ## 6. 按场景的改动指引
 
-### 新增设置项
+### 行为常量（勿再加 prefs UI）
 
-1. 在 `AADisplayConfig` 增加 sealed 配置项与默认值
-2. 在 `MainActivity` / Preference UI 暴露读写
-3. Hook 侧用同一 key 经 `XSharedPreferences` 读取
-4. 确保 `SharedPreferencesAccess` 可读性约定未被破坏
+需要可调行为时优先用代码常量或 `LastSplitStore`；不要重新引入 `aadisplay_config` SharedPreferences 管线。
 
 ### 新增 / 调整 AA 行为钩子
 
@@ -169,12 +165,12 @@ flowchart LR
 - `ui/aa/split/SplitDisplayController.kt`（双 VD 创建 / 分屏 / Surface / 任务）
 - `ui/aa/fragment/AaMainFragment.kt`（Surface / touch / 分屏 UI）
 
-注意 CHANGELOG 中的 **display profile lock**、**Delay Destroy Time**、TaskView 稳定性相关行为，避免重引入重连闪烁或过早销毁。
+注意 CHANGELOG 中的 **display profile lock**、固定 **Delay Destroy = 180s**、TaskView 稳定性相关行为，避免重引入重连闪烁或过早销毁。
 
 ### Maps 在 AA 上的开关
 
 - `util/GoogleMapsOnAaManager.kt`
-- 配置项：`DisableGoogleMapsOnAa`
+- 始终禁用 AA 上的 Google Maps 投影组件（打开设置页时 `ensureDisabled`，无独立开关）
 
 与 `AaUiHook` 等 UI 钩子职责分离，勿混写。
 
@@ -205,7 +201,7 @@ flowchart LR
 | AA 钩子总控 | `xposed/hook/AndroidAuoHook.kt` |
 | 车机画面与触控 | `ui/aa/AaDisplayActivity*.java/kt`、`AaMainFragment.kt` |
 | 手机设置页 | `ui/main/MainActivity.kt` |
-| 配置项定义 | `util/AADisplayConfig.kt` |
+| 分屏快照 | `util/LastSplitStore.kt` |
 | IPC 契约 | `aidl/.../ICoreManager.aidl` |
 | 隐藏 API stubs | `lib-stub/` |
 | 作用域 | `res/values/arrays.xml` |

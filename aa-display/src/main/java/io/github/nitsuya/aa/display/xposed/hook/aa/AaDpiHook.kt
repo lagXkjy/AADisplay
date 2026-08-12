@@ -1,20 +1,19 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa
 
-import android.content.SharedPreferences
 import android.graphics.Point
 import android.graphics.Rect
 import android.util.Size
-import com.github.kyuubiran.ezxhelper.utils.hookAfter
-import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import com.github.kyuubiran.ezxhelper.utils.loadClass
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
-import io.github.nitsuya.aa.display.xposed.log
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType
 import java.lang.reflect.Constructor
 
+/**
+ * Optional Android Auto DPI override. Prefs-driven DPI was removed; DexKit resolution is
+ * retained for future use, but display params are not rewritten.
+ */
 object AaDpiHook : AaHook() {
     override val tagName: String = "AAD_AaDpiHook"
 
@@ -80,20 +79,7 @@ object AaDpiHook : AaHook() {
         carDisplayConstructor.isAccessible = true
     }
 
-    override fun hook(config: SharedPreferences?, lpparam: XC_LoadPackage.LoadPackageParam) {
-        AADisplayConfig.AndroidAutoDpi.get(config).also { androidAutoDpi ->
-            if (androidAutoDpi < 50) return@also
-            displayParamsConstructor.hookAfter { param -> log(tagName, param.thisObject.toString()) }
-            carDisplayConstructor.hookAfter { param -> log(tagName, param.thisObject.toString()) }
-            displayParamsConstructor.hookBefore { param ->
-                param.args[8] = androidAutoDpi
-            }
-            carDisplayConstructor.hookBefore { param ->
-                if (param.args[1] == 0 && param.args[2] != androidAutoDpi) {
-                    param.args[2] = androidAutoDpi
-                }
-            }
-        }
+    override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
+        // No AndroidAutoDpi override — use gearhead defaults.
     }
 }
-

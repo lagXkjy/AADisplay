@@ -44,11 +44,11 @@ public interface ITaskStackListener extends IInterface {
     //A15 Add
     void onTaskSnapshotInvalidated(int taskId) throws RemoteException;
 
-    //Samsung OneUi
+    // Samsung OneUI AIDL deltas — empty overrides required on device; not StageCoordinator logic.
     void onActivityDismissingSplitTask(String str) throws RemoteException;
     void onTaskWindowingModeChanged(int i) throws RemoteException;
     void onOccludeChangeNotice(ComponentName componentName, boolean z) throws RemoteException;
-    //Samsung OneUi 7
+    // Samsung OneUI 7
     void onTaskbarIconVisibleChangeRequest(ComponentName componentName, boolean z) throws RemoteException;
 
     abstract class Stub extends Binder implements ITaskStackListener {

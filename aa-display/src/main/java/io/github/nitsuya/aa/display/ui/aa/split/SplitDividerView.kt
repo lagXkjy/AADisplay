@@ -14,7 +14,7 @@ import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
- * OneUI-style split divider: thin seam + three-dot handle.
+ * Thin split divider inspired by OneUI look (not StageCoordinator).
  * Tap opens recent-task stack; long-press swaps panes; drag adjusts ratio.
  */
 class SplitDividerView @JvmOverloads constructor(

@@ -1,7 +1,6 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa
 
 
-import android.content.SharedPreferences
 import android.content.pm.InstallSourceInfo
 
 import com.github.kyuubiran.ezxhelper.utils.findMethod
@@ -18,8 +17,7 @@ object AaBasicsHook : AaHook() {
         return true
     }
 
-    override fun hook(config: SharedPreferences?, lpparam: XC_LoadPackage.LoadPackageParam) {
-
+    override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
             findMethod(InstallSourceInfo::class.java) {
                 name == "getInitiatingPackageName"
@@ -29,6 +27,5 @@ object AaBasicsHook : AaHook() {
         } catch (e: Throwable) {
             log(tagName, "InstallSourceInfo.getInitiatingPackageName", e)
         }
-
     }
 }

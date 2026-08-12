@@ -22,9 +22,7 @@ import io.github.nitsuya.aa.display.databinding.WindowControllerBinding
 import io.github.nitsuya.aa.display.databinding.WindowMirrorBinding
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
-import io.github.nitsuya.aa.display.util.AADisplayConfig
 import io.github.nitsuya.aa.display.util.rewriteMotionEvent
-import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.TipUtil
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.log
@@ -82,10 +80,9 @@ class DisplayWindow(
         override fun onTick(millisUntilFinished: Long) {}
     }
 
-    private var mScreenOffReplaceLockScreen = AADisplayConfig.ScreenOffReplaceLockScreen.get(CoreManagerService.config)
-    private val mDelayDestroyTime = AADisplayConfig.DelayDestroyTime.get(CoreManagerService.config).let { value ->
-        if (value < 0) 0 else value
-    }
+    private var mScreenOffReplaceLockScreen = false
+    /** Seconds to keep dual VD after AA disconnect before destroy. */
+    private val mDelayDestroyTime = 180
 
     private val isSupportInteractive = RomUtil.isMiui()
     private var mKeepAwakeJob: Job? = null
@@ -444,27 +441,43 @@ class DisplayWindow(
                             v.setTag(R.id.drag_last_x, event.x)
                             v.setTag(R.id.drag_last_y, event.y)
                             when (v.id) {
-                                R.id.rv_recent_task_left ->
+                                R.id.rv_recent_task_left -> {
+                                    v.setTag(
+                                        R.id.pane_was_focused,
+                                        displayAdapter.mFocusedPane == SplitPane.PRIMARY,
+                                    )
                                     displayAdapter.setFocusedPane(SplitPane.PRIMARY)
-                                R.id.rv_recent_task_center ->
+                                }
+                                R.id.rv_recent_task_center -> {
+                                    v.setTag(
+                                        R.id.pane_was_focused,
+                                        displayAdapter.mFocusedPane == SplitPane.SECONDARY,
+                                    )
                                     displayAdapter.setFocusedPane(SplitPane.SECONDARY)
+                                }
                             }
                         }
                         MotionEvent.ACTION_UP -> {
-                            // VD columns: tap only selects move target; do not dismiss.
-                            // Phone column empty-tap still closes the panel.
-                            if (v.id == R.id.rv_recent_task_right
-                                && abs((v.getTag(R.id.drag_last_x) as? Float ?: 0f) - event.x) <= 5
-                                && abs((v.getTag(R.id.drag_last_y) as? Float ?: 0f) - event.y) <= 5) {
-                                hideRecentTask()
+                            // Empty tap: phone always dismisses. VD first tap selects move
+                            // target; second tap on the already-focused column dismisses.
+                            val isTap = abs((v.getTag(R.id.drag_last_x) as? Float ?: 0f) - event.x) <= 5
+                                && abs((v.getTag(R.id.drag_last_y) as? Float ?: 0f) - event.y) <= 5
+                            if (!isTap) return@setOnTouchListener false
+                            val dismiss = when (v.id) {
+                                R.id.rv_recent_task_right -> true
+                                R.id.rv_recent_task_left,
+                                R.id.rv_recent_task_center ->
+                                    v.getTag(R.id.pane_was_focused) as? Boolean == true
+                                else -> false
                             }
+                            if (dismiss) hideRecentTask()
                         }
                     }
                     return@setOnTouchListener false
                 }
             }
         }
-        updateDipslaySize()
+        updateDisplaySize()
         mMirrorBinding?.apply {
             bindMirrorSurface(svMirrorPrimary, SplitPane.PRIMARY)
             bindMirrorSurface(svMirrorSecondary, SplitPane.SECONDARY)
@@ -533,10 +546,10 @@ class DisplayWindow(
     }
 
     fun onSplitRatioChanged() {
-        updateDipslaySize()
+        updateDisplaySize()
     }
 
-    private fun updateDipslaySize(){
+    private fun updateDisplaySize(){
         mControllerBinding?.apply {
             ibMirrorDisplay.visibility = View.VISIBLE
         }
@@ -595,7 +608,7 @@ class DisplayWindow(
         mMirrorBinding?.tvVirtualDisplayInfo?.text = "$mDisplayWidth*$mDisplayHeight,$mDensityDpi"
         interactiveMonitor.init()
         mDestroyJob?.cancelAndJoin()
-        updateDipslaySize()
+        updateDisplaySize()
         mControllerBinding?.apply {
             tvDestroyTime.visibility = View.GONE
             ibMirrorDisplay.visibility = View.VISIBLE

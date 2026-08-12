@@ -10,10 +10,6 @@
     <string name="not_activated">Not Activated</string>
     <string name="reboot">Reboot</string>
     <string name="menu_github">GitHub</string>
-    <string name="auto_open_title">Auto Open</string>
-    <string name="auto_open_summary">Automatically open app when Android Auto is connected</string>
-    <string name="restore_last_split_title">Restore Last Split</string>
-    <string name="restore_last_split_summary">When Android Auto connects and creates a new dual virtual display session, restore the last custom split pair and ratio.</string>
     <string name="split_empty_pane">Tap to choose an app</string>
     <string name="split_pick_app">Choose app</string>
     <string name="split_picker_close">Close</string>
@@ -21,17 +17,7 @@
     <string name="split_picker_all">All apps</string>
     <string name="split_stack_button">Show recent tasks</string>
     <string name="split_divider_actions">Tap for recent tasks, long-press to swap panes</string>
-    <string name="disable_google_maps_on_aa_title">Disable Google Maps on AA</string>
-    <string name="disable_google_maps_on_aa_summary">This will keep Google Maps on your device, not AA</string>
-    <string name="disable_google_maps_on_aa_apply_failed">Failed to apply Disable Google Maps on AA setting</string>
-    <string name="save_settings">Save</string>
-    <string name="delay_destroy_time_title">Delay Destroy Time</string>
-    <string name="delay_destroy_time_invalid">Select a valid Delay Destroy Time</string>
-    <string name="delay_60_seconds">60 Seconds</string>
-    <string name="delay_120_seconds">120 Seconds</string>
-    <string name="delay_180_seconds">180 Seconds</string>
-    <string name="settings_saved_successfully">Settings saved successfully</string>
-    <string name="settings_saved_pref_access_failed">Settings saved, but hook preference access could not be verified</string>
+    <string name="disable_google_maps_on_aa_apply_failed">Failed to apply Disable Google Maps on AA</string>
     <string name="controller_open_menu">Open controller menu</string>
     <string name="controller_hide_menu">Hide controller menu</string>
 </resources>

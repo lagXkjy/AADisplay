@@ -172,10 +172,6 @@ object CoreManager : ICoreManager, DeathRecipient {
         return getService()?.recentTask
     }
 
-    override fun testCode(action: String) {
-        getService()?.testCode(action)
-    }
-
     override fun toast(msg: String) {
         getService()?.toast(msg)
     }
