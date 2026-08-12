@@ -7,10 +7,8 @@ import android.view.WindowManager
 import android.widget.RelativeLayout
 import androidx.activity.viewModels
 import androidx.annotation.CallSuper
-import androidx.annotation.StringRes
 import androidx.annotation.StyleRes
 import androidx.appcompat.app.AppCompatActivity
-import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -21,7 +19,6 @@ import androidx.lifecycle.ViewModel
 import androidx.viewbinding.ViewBinding
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.ActivityBaseRoot2Binding
-import io.github.nitsuya.template.bases.TipUtil
 import io.github.nitsuya.template.bases.maxSystemBarsDisplayCutout
 import net.matsudamper.viewbindingutil.ViewBindingUtil
 
@@ -36,13 +33,9 @@ abstract class BaseActivity<BaseBinding : ViewBinding>(
         LAYOUT_MATCH_HORI,
     }
 
-    val className by lazy { this::class.simpleName }
-    val startIntent by lazy { intent }
-
     lateinit var rootBinding: ActivityBaseRoot2Binding
     lateinit var baseBinding: BaseBinding
         private set
-    var isFirstCreate = true
 
     private val windowInsetsCompatModel by viewModels<WindowInsetsCompatModel>()
 
@@ -51,7 +44,6 @@ abstract class BaseActivity<BaseBinding : ViewBinding>(
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        isFirstCreate = savedInstanceState == null
         setTheme(themeId)
         super.onCreate(savedInstanceState)
 
@@ -87,24 +79,12 @@ abstract class BaseActivity<BaseBinding : ViewBinding>(
         initEvents()
         initData()
 
-        TipUtil.registerCoordinatorLayout(this, registerCoordinatorLayout())
         windowInsetsCompatModel.windowInsetsCompat.observe(this, ::onApplyWindowInsetsCompat)
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        TipUtil.unregisterCoordinatorLayout(this)
     }
 
     override fun setTitle(title: CharSequence?) {
         supportActionBar?.title = title
     }
-
-    fun setSubtitle(subtitle: CharSequence?) {
-        supportActionBar?.subtitle = subtitle
-    }
-
-    fun setSubtitle(@StringRes subtitleId: Int) = setSubtitle(getText(subtitleId))
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return if (item.itemId == android.R.id.home) {
@@ -125,8 +105,6 @@ abstract class BaseActivity<BaseBinding : ViewBinding>(
                 rootBinding.rootAbl.updatePadding(top = top)
         }
     }
-
-    open fun registerCoordinatorLayout(): CoordinatorLayout? = rootBinding.rootCl
 
     open fun findViews() {}
     open fun initActionBar() =

@@ -1,13 +1,10 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
 import android.annotation.SuppressLint
-import android.content.ComponentName
 import android.content.Context
-import android.content.ServiceConnection
 import android.hardware.display.VirtualDisplay
 import android.os.Binder
 import android.os.Handler
-import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Display
@@ -26,7 +23,6 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.LastSplitStore
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
-import io.github.nitsuya.aa.display.xposed.IShellManager
 import io.github.nitsuya.aa.display.xposed.TipUtil
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.log
@@ -120,32 +116,6 @@ class SplitDisplayController(
     internal val mPrimaryForceView = View(context)
     internal val mSecondaryForceView = View(context)
 
-    internal var mShellManager: IShellManager? = null
-    internal val mShellDeathRecipient = IBinder.DeathRecipient {
-        log(TAG, "ShellManagerService binder died")
-        mShellManager = null
-    }
-    internal val mServiceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            logDebug(TAG, "ShellManagerService connected: $name")
-            tryOrNull { mShellManager?.asBinder()?.unlinkToDeath(mShellDeathRecipient, 0) }
-            mShellManager = IShellManager.Stub.asInterface(service)
-            try {
-                mShellManager?.asBinder()?.linkToDeath(mShellDeathRecipient, 0)
-            } catch (e: Throwable) {
-                log(TAG, "ShellManagerService linkToDeath failed:", e)
-                mShellManager = null
-            }
-            input.invokeShellManager("createVirtualDisplayBefore") { it.createVirtualDisplayBefore() }
-        }
-
-        override fun onServiceDisconnected(name: ComponentName?) {
-            logDebug(TAG, "ShellManagerService disconnected: $name")
-            tryOrNull { mShellManager?.asBinder()?.unlinkToDeath(mShellDeathRecipient, 0) }
-            mShellManager = null
-        }
-    }
-
     private val mTaskStackListener = SplitTaskStackListener(this)
     internal var mLastResizeAt = 0L
     /** Displays already freeze-locked to ROTATION_0; skip re-freeze on resize (OEM walks all DCs). */
@@ -159,7 +129,6 @@ class SplitDisplayController(
     internal val mPendingResize = Runnable { vd.resizePanesInternal("ratio-throttled") }
 
     init {
-        input.bindShellManager()
         scope.launch {
             onReady()
         }
@@ -377,11 +346,6 @@ class SplitDisplayController(
                 }
             }
         mTrackedPackageUsers.clear()
-
-        input.invokeShellManager("destroyVirtualDisplayAfter") { it.destroyVirtualDisplayAfter() }
-        tryOrNull { mShellManager?.asBinder()?.unlinkToDeath(mShellDeathRecipient, 0) }
-        mShellManager = null
-        tryOrNull { CoreManagerService.systemContext.unbindService(mServiceConnection) }
 
         input.releaseMirrors(mPrimaryMirrors)
         input.releaseMirrors(mSecondaryMirrors)

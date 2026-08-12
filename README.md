@@ -25,11 +25,7 @@ Production-ready fork of [Nitsuya/AADisplay](https://github.com/Nitsuya/AADispla
    - Android Auto
    - System Framework
 3. Reboot device.
-4. Open AADisplay and configure:
-    - Auto Open
-    - Disable Google Maps on AA
-    - Default Launch Package
-    - Delay Destroy Time
+4. Open AADisplay and confirm the module is activated.
 
 ## Build
 

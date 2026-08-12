@@ -84,18 +84,6 @@
                     style="@style/DeviceInfoDialogLabel"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="@string/info_root_privilege" />
-
-                <com.google.android.material.textview.MaterialTextView
-                    android:id="@+id/root_privilege"
-                    style="@style/DeviceInfoDialogValue"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content" />
-
-                <com.google.android.material.textview.MaterialTextView
-                    style="@style/DeviceInfoDialogLabel"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
                     android:text="@string/info_system_version" />
 
                 <com.google.android.material.textview.MaterialTextView

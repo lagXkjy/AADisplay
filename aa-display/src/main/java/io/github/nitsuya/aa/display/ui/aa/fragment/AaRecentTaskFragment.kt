@@ -14,9 +14,6 @@ import io.github.nitsuya.template.bases.runMain
 import kotlin.math.abs
 
 class AaRecentTaskFragment: BaseFragment<FragmentAaRecentTaskBinding>(FragmentAaRecentTaskBinding::class.java){
-    companion object {
-        const val TAG = "AADisplay_AaRecentTaskFragment"
-    }
 
     override fun initViews() {
         val hide = { AaDisplayActivityKt.hideRecentTask(parentFragmentManager) }

@@ -106,12 +106,9 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.11.0")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
 //    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("androidx.media:media:1.7.1")
     implementation("androidx.constraintlayout:constraintlayout:2.2.1")
-    implementation("androidx.preference:preference-ktx:1.2.1")
     implementation("com.google.android.material:material:1.13.0")
     implementation("dev.rikka.rikkax.appcompat:appcompat:1.6.1")
-    implementation("dev.rikka.rikkax.material:material-preference:2.0.0")
 
     //kotlinx-coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.10.2")
@@ -126,7 +123,6 @@ dependencies {
     compileOnly("dev.rikka.hidden:stub:4.4.0")
     compileOnly(files("./libs/de.robv.android.xposed_api_82.jar"))
     implementation("com.github.kyuubiran:EzXHelper:1.0.3")
-    implementation("com.github.topjohnwu.libsu:core:5.2.0")
     implementation("org.luckypray:dexkit:2.0.0-rc3")
 //    implementation("com.github.martoreto:aauto-sdk:v4.7")
     implementation(files("./libs/aauto.aar"))

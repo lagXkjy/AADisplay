@@ -39,7 +39,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | `ui/main/` | 手机端设置（`MainActivity`） |
 | `ui/aa/` | 车机投影 Activity / Fragment / VirtualDisplay 适配 |
 | `ui/window/` | 手机端悬浮窗与任务列表 |
-| `service/` | `AaActivityService`、`ShellManagerService` |
+| `service/` | `AaActivityService` |
 | `util/` | 配置、Maps 开关、广播常量等 |
 | `model/` | 最近任务等模型 |
 
@@ -82,7 +82,7 @@ flowchart LR
 - `…:projection`
 - `…:car`
 
-已注册 AA 钩子：`AaBasicsHook`、`AaSignatureHook`、`AaDpiHook`、`AaBtnEventHook`、`AaUiHook`、`AaPropsHook`（按 `isSupportProcess` 过滤；大量依赖 DexKit）。
+已注册 AA 钩子：`AaBasicsHook`、`AaSignatureHook`、`AaDpiHook`、`AaBtnEventHook`、`AaUiHook`（按 `isSupportProcess` 过滤；大量依赖 DexKit）。
 
 ### 跨进程 IPC
 
@@ -95,8 +95,9 @@ flowchart LR
 ### 配置
 
 本模块**不再使用** `aadisplay_config` SharedPreferences / XSharedPreferences 镜像。
-行为为代码内常量（如 Delay Destroy = 180s、Auto Open / Restore Last Split / Disable Google Maps on AA 始终开启）。
+行为为代码内常量（如 Delay Destroy = 180s、Auto Open / Restore Last Split 始终开启）。
 分屏快照仍走 `LastSplitStore`（`Settings.Global` + `/data/system/aadisplay_last_split.properties`），与旧 prefs 无关。
+App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能力经 Xposed → system_server。
 
 ### LSPosed scope
 
@@ -123,7 +124,7 @@ flowchart LR
 1. 安装 APK
 2. LSPosed 启用模块：至少 **System Framework** + **Android Auto**
 3. 重启设备
-4. 打开 AADisplay 查看激活状态（同时 ensureDisabled Google Maps on AA）
+4. 打开 AADisplay 查看激活状态
 5. 连接 Android Auto，验证双屏分屏、触控、任务切换、断开后约 180s 延迟销毁
 
 改 AA 钩子后：对照目标 gearhead 版本；确认 DexKit 解析仍命中；查阅 `CHANGELOG.md` / `RELEASE_NOTES_*` 中的稳定性约束（如 display profile lock、TaskView）。
@@ -166,13 +167,6 @@ flowchart LR
 - `ui/aa/fragment/AaMainFragment.kt`（Surface / touch / 分屏 UI）
 
 注意 CHANGELOG 中的 **display profile lock**、固定 **Delay Destroy = 180s**、TaskView 稳定性相关行为，避免重引入重连闪烁或过早销毁。
-
-### Maps 在 AA 上的开关
-
-- `util/GoogleMapsOnAaManager.kt`
-- 始终禁用 AA 上的 Google Maps 投影组件（打开设置页时 `ensureDisabled`，无独立开关）
-
-与 `AaUiHook` 等 UI 钩子职责分离，勿混写。
 
 ### 手机悬浮控制
 

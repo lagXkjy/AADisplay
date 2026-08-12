@@ -26,10 +26,6 @@ class DisplayRecyclerViewAdapter(
       private val onExit: (() -> Unit),
 ) : RecyclerView.Adapter<DisplayRecyclerViewAdapter.ViewHolder>(){
 
-    companion object {
-        private const val TAG = "AADisplay_DisplayRecyclerViewAdapter"
-    }
-
     private val items: MutableList<RecentTaskInfo> = ArrayList()
 
     var phoneAdapter: DisplayRecyclerViewAdapter? = null

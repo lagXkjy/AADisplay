@@ -92,8 +92,6 @@ class SplitAppPickerController(
         onVisibilityChanged?.invoke(false)
     }
 
-    fun isShowing(): Boolean = binding.appPickerHost.isVisible
-
     private sealed class Row {
         data class Header(val title: String) : Row()
         data class App(val entry: SplitAppEntry) : Row()

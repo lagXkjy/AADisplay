@@ -1,8 +1,6 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
 import android.app.ActivityTaskManager
-import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Binder
 import android.os.Build
@@ -18,14 +16,8 @@ import androidx.core.graphics.drawable.toBitmap
 import com.github.kyuubiran.ezxhelper.utils.argTypes
 import com.github.kyuubiran.ezxhelper.utils.args
 import com.github.kyuubiran.ezxhelper.utils.invokeMethod
-import com.github.kyuubiran.ezxhelper.utils.tryOrNull
-import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTaskInfo
-import io.github.nitsuya.aa.display.service.ShellManagerService
-import io.github.nitsuya.aa.display.xposed.CoreManagerService
-import io.github.nitsuya.aa.display.xposed.IShellManager
 import io.github.nitsuya.aa.display.xposed.log
-import io.github.nitsuya.aa.display.xposed.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
 
 internal class SplitInputRecents(private val c: SplitDisplayController) {
@@ -117,35 +109,5 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
             sc.release()
         }
         map.clear()
-    }
-
-    fun bindShellManager() {
-        val bound = try {
-            CoreManagerService.systemContext.bindService(
-                Intent(ShellManagerService::class.java.name).apply {
-                    setPackage(BuildConfig.APPLICATION_ID)
-                },
-                c.mServiceConnection,
-                Context.BIND_AUTO_CREATE
-            )
-        } catch (e: Throwable) {
-            log(SplitDisplayController.TAG, "bind ShellManager failed:", e)
-            false
-        }
-        logDebug(SplitDisplayController.TAG, "bind ShellManagerService requested=$bound")
-    }
-
-    fun invokeShellManager(op: String, block: (IShellManager) -> Unit) {
-        val sm = c.mShellManager ?: return
-        try {
-            if (!sm.asBinder().isBinderAlive) {
-                c.mShellManager = null
-                return
-            }
-            block(sm)
-        } catch (e: Throwable) {
-            log(SplitDisplayController.TAG, "$op failed:", e)
-            c.mShellManager = null
-        }
     }
 }
