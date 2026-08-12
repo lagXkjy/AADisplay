@@ -68,8 +68,13 @@ object AaUiHook: AaHook() {
         "legacy_facet_bar_touch_target_width",
     )
 
-    private lateinit var layoutInfoConstructor: Constructor<*>
+    /** All LayoutInfo ctors with the stable (layoutId,w,h,type,rhd,hasVerticalRail,…) shape. */
+    private var layoutInfoConstructors: List<Constructor<*>> = emptyList()
     private var startMethod: Method? = null
+    /** LayoutInfo.hasVerticalRail (2nd instance boolean); resolved once after first construct. */
+    @Volatile private var hasVerticalRailField: java.lang.reflect.Field? = null
+    /** LayoutInfo.layoutResourceId (first instance int); resolved once after first construct. */
+    @Volatile private var layoutResourceIdField: java.lang.reflect.Field? = null
     /** Methods that touch projection `content_bounds` (DexKit via string). */
     private var contentBoundsMethods: List<Method> = emptyList()
     /** CarActivityManagerService HU touch router (imt.H/G/I in :car). */
@@ -201,7 +206,13 @@ object AaUiHook: AaHook() {
         if (classes.isEmpty() || classes.size > 1) {
             throw NoSuchMethodException("AaUiHook: not found LayoutInfo class：${classes.size}")
         }
-        layoutInfoConstructor = resolveLayoutInfoConstructor(classes[0].name)
+        val layoutInfoClassName = classes[0].name
+        layoutInfoConstructors = resolveLayoutInfoConstructors(layoutInfoClassName)
+        log(
+            tagName,
+            "AaUiHook: LayoutInfo ctors=${layoutInfoConstructors.size} " +
+                layoutInfoConstructors.joinToString { "p${it.parameterCount}" }
+        )
 
         startMethod = resolveCarStartActivityMethod()
 
@@ -236,7 +247,7 @@ object AaUiHook: AaHook() {
         if (!canHookLayout) {
             log(
                 tagName,
-                "AaUiHook: skip layout override, missing LHD canonical layout: lhd=$resLayoutLeftResourceId"
+                "AaUiHook: LHD canonical layout missing; still forcing hasVerticalRail=true"
             )
         }
         canHookFacetBar =
@@ -269,12 +280,11 @@ object AaUiHook: AaHook() {
         // Zero rail-column dimens first so LayoutInfo / VD allocation sees full HU width.
         hookRailWidthDimens()
         hookVirtualDisplaySizing()
-        // Auto Open must arm even when layout override resources are missing.
-        hookLayoutInfoAutoOpen()
+        // Always force vertical rail on LayoutInfo — do not gate on canHookLayout.
+        // Missing canonical layout resources still need hasVerticalRail=true or AA
+        // falls back to the bottom facet bar (GhFacetBar 800×80 on 800×480 HUs).
+        hookLayoutInfo()
         registerAutoOpenShownReceiver()
-        if (canHookLayout) {
-            hookLayout()
-        }
         if (canHookFacetBar) {
             hookFacetBar()
             hookFacetWindowAttach()
@@ -282,35 +292,130 @@ object AaUiHook: AaHook() {
         hookRadius()
     }
 
-    private fun hookLayoutInfoAutoOpen() {
-        layoutInfoConstructor.hookAfter { param ->
-            scheduleAutoOpenIfNeeded("layoutInfo")
+    /**
+     * Force main-display LayoutInfo onto the LHD vertical-rail family.
+     * AA 17.4 on some HUs (e.g. 800×480) defaults hasVerticalRail=false → bottom bar.
+     */
+    private fun hookLayoutInfo() {
+        var hooked = 0
+        for (ctor in layoutInfoConstructors) {
+            try {
+                ctor.hookBefore { param -> forceVerticalRailOnLayoutInfoArgs(param.args) }
+                ctor.hookAfter { param ->
+                    val instance = param.thisObject ?: return@hookAfter
+                    forceVerticalRailOnLayoutInfoInstance(instance)
+                    scheduleAutoOpenIfNeeded("layoutInfo")
+                    if (canHookFacetBar) {
+                        scheduleEnsureFacetBar("layoutInfo")
+                    }
+                }
+                hooked++
+            } catch (e: Throwable) {
+                log(tagName, "AaUiHook: hook LayoutInfo ctor p${ctor.parameterCount} failed", e)
+            }
+        }
+        log(
+            tagName,
+            "AaUiHook: LayoutInfo vertical-rail force hooked=$hooked/" +
+                "${layoutInfoConstructors.size} canHookLayout=$canHookLayout " +
+                "lhd=$resLayoutLeftResourceId"
+        )
+    }
+
+    private fun isAuxiliaryLayoutType(args: Array<Any?>): Boolean {
+        val code = layoutTypeCode(args.getOrNull(3) ?: return false) ?: return false
+        // Skip cluster/auxiliary layouts to avoid overriding non-main surfaces.
+        return code in setOf(7, 8, 9)
+    }
+
+    private fun forceVerticalRailOnLayoutInfoArgs(args: Array<Any?>) {
+        if (args.size < 6) return
+        if (isAuxiliaryLayoutType(args)) return
+        (args[1] as? Int)?.takeIf { it > 0 }?.let { mLayoutWidthDp = it }
+        (args[2] as? Int)?.takeIf { it > 0 }?.let { mLayoutHeightDp = it }
+
+        val beforeLayoutId = args[0] as? Int
+        val beforeType = args[3]
+        val beforeRail = args[5] as? Boolean
+
+        // LHD only: pin the left vertical-rail layout when the resource exists.
+        // RHD is out of scope. hasVerticalRail must be forced even without that layout.
+        if (resLayoutLeftResourceId != 0) {
+            args[0] = resLayoutLeftResourceId
+            setLayoutTypeArg(args, 2)
+        }
+        if (args[5] is Boolean) {
+            args[5] = true
+        }
+
+        if (beforeRail != true ||
+            (resLayoutLeftResourceId != 0 && beforeLayoutId != resLayoutLeftResourceId)
+        ) {
+            log(
+                tagName,
+                "AaUiHook: force vertical rail args " +
+                    "layoutId=$beforeLayoutId→${args[0]} type=$beforeType→${args[3]} " +
+                    "hasVerticalRail=$beforeRail→${args[5]} size=${mLayoutWidthDp}x${mLayoutHeightDp}"
+            )
         }
     }
 
-    private fun hookLayout() {
-        layoutInfoConstructor.hookAfter { param ->
-            // Collapse any residual facet/rail chrome so it cannot leave a black gutter.
-            if (canHookFacetBar) {
-                scheduleEnsureFacetBar("layoutInfo")
+    private fun forceVerticalRailOnLayoutInfoInstance(instance: Any) {
+        try {
+            resolveLayoutInfoFields(instance.javaClass)
+            val railField = hasVerticalRailField
+            if (railField != null && !railField.getBoolean(instance)) {
+                railField.setBoolean(instance, true)
+                log(tagName, "AaUiHook: force vertical rail field ${railField.name}=true")
             }
+            val layoutField = layoutResourceIdField
+            if (resLayoutLeftResourceId != 0 && layoutField != null) {
+                val cur = layoutField.getInt(instance)
+                if (cur != resLayoutLeftResourceId) {
+                    layoutField.setInt(instance, resLayoutLeftResourceId)
+                    log(
+                        tagName,
+                        "AaUiHook: force vertical rail layoutId field ${layoutField.name} $cur→$resLayoutLeftResourceId"
+                    )
+                }
+            }
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: force vertical rail on instance failed", e)
         }
-        layoutInfoConstructor.hookBefore { param ->
-            if (param.args.size < 5) return@hookBefore
-            val layoutTypeCode = layoutTypeCode(param.args[3] ?: return@hookBefore) ?: return@hookBefore
-            // Skip cluster/auxiliary layouts to avoid overriding non-main surfaces.
-            if (layoutTypeCode in setOf(7, 8, 9)) return@hookBefore
-            (param.args[1] as? Int)?.takeIf { it > 0 }?.let { mLayoutWidthDp = it }
-            (param.args[2] as? Int)?.takeIf { it > 0 }?.let { mLayoutHeightDp = it }
-            // LHD only: always the left vertical-rail family. RHD is out of scope.
-            // hasVerticalRail=false would switch chrome to the bottom bar.
-            if (resLayoutLeftResourceId != 0) {
-                param.args[0] = resLayoutLeftResourceId
-                setLayoutTypeArg(param.args, 2)
-            }
-            if (param.args.size > 5 && param.args[5] is Boolean) {
-                param.args[5] = true // hasVerticalRail
-            }
+    }
+
+    private fun resolveLayoutInfoFields(clazz: Class<*>) {
+        if (hasVerticalRailField != null && layoutResourceIdField != null) return
+        val namedRail = clazz.declaredFields.firstOrNull { f ->
+            !java.lang.reflect.Modifier.isStatic(f.modifiers) &&
+                f.type == Boolean::class.javaPrimitiveType &&
+                f.name.contains("vertical", ignoreCase = true)
+        }
+        val bools = clazz.declaredFields.filter { f ->
+            !java.lang.reflect.Modifier.isStatic(f.modifiers) &&
+                f.type == Boolean::class.javaPrimitiveType
+        }
+        // Ctor booleans: [isRhd, hasVerticalRail, isDriverAlignedDashboard, isHero, isIrregular]
+        val rail = namedRail ?: bools.getOrNull(1)
+        if (rail != null) {
+            rail.isAccessible = true
+            hasVerticalRailField = rail
+        }
+        val namedLayout = clazz.declaredFields.firstOrNull { f ->
+            !java.lang.reflect.Modifier.isStatic(f.modifiers) &&
+                f.type == Int::class.javaPrimitiveType &&
+                (f.name.contains("layoutResource", ignoreCase = true) ||
+                    f.name.contains("layoutRes", ignoreCase = true))
+        }
+        val ints = clazz.declaredFields.filter { f ->
+            !java.lang.reflect.Modifier.isStatic(f.modifiers) &&
+                f.type == Int::class.javaPrimitiveType
+        }
+        // Ctor ints: [layoutResourceId, displayWidthDp, displayHeightDp, layoutType?]
+        val layoutId = namedLayout ?: ints.getOrNull(0)
+        if (layoutId != null) {
+            layoutId.isAccessible = true
+            layoutResourceIdField = layoutId
         }
     }
 
@@ -1100,10 +1205,10 @@ object AaUiHook: AaHook() {
         }
     }
 
-    private fun resolveLayoutInfoConstructor(className: String): Constructor<*> {
+    private fun resolveLayoutInfoConstructors(className: String): List<Constructor<*>> {
         // Keep only stable shape checks so this works across AA 16.4 and 16.6+.
         val clazz = loadClass(className)
-        val fallback = clazz.declaredConstructors.firstOrNull { ctor ->
+        val matched = clazz.declaredConstructors.filter { ctor ->
             val p = ctor.parameterTypes
             p.size >= 10
                 && p[0] == Int::class.javaPrimitiveType
@@ -1116,11 +1221,20 @@ object AaUiHook: AaHook() {
                 && p[9] == Boolean::class.javaPrimitiveType
                 && !p[6].isPrimitive
                 && (p[3] == Int::class.javaPrimitiveType || p[3].isEnum)
-        } ?: throw NoSuchMethodException("AaUiHook: not found compatible LayoutInfo constructor for $className")
-
-        fallback.isAccessible = true
-        log(tagName, "AaUiHook: fallback constructor selected, paramCount=${fallback.parameterCount}, layoutTypeArg=${fallback.parameterTypes[3].name}")
-        return fallback
+        }
+        if (matched.isEmpty()) {
+            throw NoSuchMethodException("AaUiHook: not found compatible LayoutInfo constructor for $className")
+        }
+        for (ctor in matched) {
+            ctor.isAccessible = true
+        }
+        val primary = matched.first()
+        log(
+            tagName,
+            "AaUiHook: LayoutInfo constructor selected, paramCount=${primary.parameterCount}, " +
+                "layoutTypeArg=${primary.parameterTypes[3].name}, matches=${matched.size}"
+        )
+        return matched
     }
 
     private fun layoutTypeCode(raw: Any): Int? {
