@@ -4,9 +4,11 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Rect
 import android.util.AttributeSet
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.TouchDelegate
 import android.view.View
 import android.view.ViewConfiguration
 import kotlin.math.abs
@@ -14,7 +16,7 @@ import kotlin.math.hypot
 
 /**
  * Thin split divider inspired by OneUI look (not StageCoordinator).
- * Tap opens recent-task stack; long-press swaps panes; drag adjusts ratio.
+ * Tap swaps panes; long-press opens recent-task stack; drag adjusts ratio.
  */
 class SplitDividerView @JvmOverloads constructor(
     context: Context,
@@ -23,12 +25,19 @@ class SplitDividerView @JvmOverloads constructor(
 ) : View(context, attrs, defStyleAttr) {
 
     var sideBySide: Boolean = true
+        set(value) {
+            if (field == value) return
+            field = value
+            scheduleTouchDelegateUpdate()
+        }
+
     var onRatioChanged: ((Float) -> Unit)? = null
     var onRatioSettled: ((Float) -> Unit)? = null
     var onStackClick: (() -> Unit)? = null
     var onSwapClick: (() -> Unit)? = null
 
     private val density = resources.displayMetrics.density
+    private val touchExpandPx = SplitPane.DIVIDER_TOUCH_EXPAND_DP * density
     private val seamPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0x66FFFFFF.toInt()
         strokeWidth = 1.5f * density
@@ -54,17 +63,57 @@ class SplitDividerView @JvmOverloads constructor(
         if (!tracking || dragging || longPressFired) return@Runnable
         longPressFired = true
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-        onSwapClick?.invoke()
+        onStackClick?.invoke()
     }
 
+    private val updateTouchDelegateRunnable = Runnable { updateTouchDelegate() }
+
     init {
-        contentDescription = "点击打开最近任务，长按交换分屏"
         isClickable = true
         setBackgroundColor(0x00000000)
     }
 
     fun setRatio(ratio: Float) {
         lastRatio = SplitPane.clampRatio(ratio)
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (changed) {
+            scheduleTouchDelegateUpdate()
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        scheduleTouchDelegateUpdate()
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(longPressRunnable)
+        removeCallbacks(updateTouchDelegateRunnable)
+        super.onDetachedFromWindow()
+    }
+
+    private fun scheduleTouchDelegateUpdate() {
+        if (!isAttachedToWindow) return
+        removeCallbacks(updateTouchDelegateRunnable)
+        post(updateTouchDelegateRunnable)
+    }
+
+    private fun updateTouchDelegate() {
+        val parentView = parent as? View ?: return
+        if (width == 0 || height == 0) return
+        val hitRect = Rect()
+        getHitRect(hitRect)
+        if (sideBySide) {
+            hitRect.left -= touchExpandPx.toInt()
+            hitRect.right += touchExpandPx.toInt()
+        } else {
+            hitRect.top -= touchExpandPx.toInt()
+            hitRect.bottom += touchExpandPx.toInt()
+        }
+        parentView.touchDelegate = TouchDelegate(hitRect, this)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -138,7 +187,8 @@ class SplitDividerView @JvmOverloads constructor(
                     longPressFired = false
                     parent.requestDisallowInterceptTouchEvent(false)
                     if (event.actionMasked == MotionEvent.ACTION_UP && !wasDragging && !wasLongPress) {
-                        onStackClick?.invoke()
+                        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                        onSwapClick?.invoke()
                         performClick()
                     } else if (wasDragging && !wasLongPress) {
                         onRatioSettled?.invoke(lastRatio)
@@ -148,10 +198,5 @@ class SplitDividerView @JvmOverloads constructor(
             }
         }
         return super.onTouchEvent(event)
-    }
-
-    override fun onDetachedFromWindow() {
-        removeCallbacks(longPressRunnable)
-        super.onDetachedFromWindow()
     }
 }

@@ -71,41 +71,100 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             "restoreLastSplit manual=$manual primary=${snap.primaryPackage}:$primaryOk " +
                 "secondary=${snap.secondaryPackage}:$secondaryOk ratio=${c.mRatio}"
         )
-        if (!primaryOk) openPickerForPane(SplitPane.PRIMARY)
-        if (!secondaryOk) openPickerForPane(SplitPane.SECONDARY)
+        // Auto-restore: defer picker to verify — startActivity can fail transiently while tasks settle.
+        if (manual) {
+            if (!primaryOk) openPickerForPane(SplitPane.PRIMARY)
+            if (!secondaryOk) openPickerForPane(SplitPane.SECONDARY)
+        }
         c.notifySplitStateChanged()
         // Launch returning true only means startActivity was accepted — verify panes stuck.
-        scheduleVerifyRestore(snap)
+        scheduleVerifyRestore(snap, attempt = 0)
     }
 
-    fun scheduleVerifyRestore(snap: LastSplitStore.Snapshot) {
+    fun scheduleVerifyRestore(snap: LastSplitStore.Snapshot, attempt: Int) {
         c.mHandler.removeCallbacksAndMessages(VERIFY_RESTORE_TOKEN)
+        val delay = if (attempt == 0) {
+            SplitDisplayController.RESTORE_VERIFY_DELAY_MS
+        } else {
+            SplitDisplayController.RESTORE_VERIFY_RETRY_MS
+        }
         c.mHandler.postDelayed({
             if (c.mIsDestroying) return@postDelayed
+            runVerifyRestore(snap, attempt)
+        }, VERIFY_RESTORE_TOKEN, delay)
+    }
+
+    private fun runVerifyRestore(snap: LastSplitStore.Snapshot, attempt: Int) {
+        if (attempt == 0) {
             c.mSuppressReclaimUntil = SystemClock.uptimeMillis() + SplitDisplayController.SUPPRESS_RECLAIM_MS
-            val primaryDisplay = c.primaryDisplayId
-            val secondaryDisplay = c.secondaryDisplayId
-            val primaryPresent = primaryDisplay != Display.INVALID_DISPLAY &&
-                c.ownership.hasPackageOnDisplay(snap.primaryPackage, primaryDisplay)
-            val secondaryPresent = secondaryDisplay != Display.INVALID_DISPLAY &&
-                c.ownership.hasPackageOnDisplay(snap.secondaryPackage, secondaryDisplay)
-            if (!primaryPresent) {
-                log(SplitDisplayController.TAG, "restore verify: primary missing ${snap.primaryPackage}, relaunch")
-                val ok = c.startActivityOnPane(snap.primaryPackage, 0, SplitPane.PRIMARY)
-                if (!ok) openPickerForPane(SplitPane.PRIMARY)
-            }
-            if (!secondaryPresent) {
-                log(SplitDisplayController.TAG, "restore verify: secondary missing ${snap.secondaryPackage}, relaunch")
-                val ok = c.startActivityOnPane(snap.secondaryPackage, 0, SplitPane.SECONDARY)
-                if (!ok) openPickerForPane(SplitPane.SECONDARY)
-            }
-            if (primaryPresent && secondaryPresent) {
-                c.mPanePackages[SplitPane.PRIMARY] = snap.primaryPackage
-                c.mPanePackages[SplitPane.SECONDARY] = snap.secondaryPackage
-                persistSnapshot(force = true, mirrorSettings = true)
-            }
-            c.notifySplitStateChanged()
-        }, VERIFY_RESTORE_TOKEN, SplitDisplayController.RESTORE_VERIFY_DELAY_MS)
+        }
+        val primaryDisplay = c.primaryDisplayId
+        val secondaryDisplay = c.secondaryDisplayId
+        val primaryPresent = primaryDisplay != Display.INVALID_DISPLAY &&
+            c.ownership.hasPackageOnDisplay(snap.primaryPackage, primaryDisplay)
+        val secondaryPresent = secondaryDisplay != Display.INVALID_DISPLAY &&
+            c.ownership.hasPackageOnDisplay(snap.secondaryPackage, secondaryDisplay)
+
+        var retry = false
+        if (!primaryPresent) {
+            retry = retry || verifyRestorePaneMissing(
+                snap.primaryPackage,
+                SplitPane.PRIMARY,
+                primaryDisplay,
+                attempt,
+            )
+        }
+        if (!secondaryPresent) {
+            retry = retry || verifyRestorePaneMissing(
+                snap.secondaryPackage,
+                SplitPane.SECONDARY,
+                secondaryDisplay,
+                attempt,
+            )
+        }
+        if (retry) {
+            scheduleVerifyRestore(snap, attempt + 1)
+            return
+        }
+        if (primaryPresent && secondaryPresent) {
+            c.mPanePackages[SplitPane.PRIMARY] = snap.primaryPackage
+            c.mPanePackages[SplitPane.SECONDARY] = snap.secondaryPackage
+            persistSnapshot(force = true, mirrorSettings = true)
+        }
+        c.notifySplitStateChanged()
+    }
+
+    /**
+     * @return true when restore settle may still be in progress and verify should retry (no picker yet).
+     */
+    private fun verifyRestorePaneMissing(
+        packageName: String,
+        pane: Int,
+        displayId: Int,
+        attempt: Int,
+    ): Boolean {
+        if (displayId == Display.INVALID_DISPLAY) return false
+        if (c.ownership.hasPackageOnDisplay(packageName, displayId)) return false
+        log(
+            SplitDisplayController.TAG,
+            "restore verify: pane=$pane missing $packageName attempt=$attempt"
+        )
+        val ok = c.startActivityOnPane(packageName, 0, pane)
+        if (c.ownership.hasPackageOnDisplay(packageName, displayId)) return false
+        val canRetry = attempt + 1 < SplitDisplayController.MAX_RESTORE_VERIFY_ATTEMPTS
+        if (canRetry) {
+            log(
+                SplitDisplayController.TAG,
+                "restore verify: pane=$pane still missing $packageName ok=$ok → retry"
+            )
+            return true
+        }
+        log(
+            SplitDisplayController.TAG,
+            "restore verify: pane=$pane failed $packageName ok=$ok → picker"
+        )
+        openPickerForPane(pane)
+        return false
     }
 
     fun scheduleEnsurePanePackages(reason: String) {

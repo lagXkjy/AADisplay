@@ -52,7 +52,9 @@ class SplitDisplayController(
         /** Longer suppress after restore so reclaim cannot overwrite panes during settle. */
         internal const val SUPPRESS_RECLAIM_AFTER_RESTORE_MS = 8000L
         internal const val ENSURE_PANES_DELAY_MS = 500L
-        internal const val RESTORE_VERIFY_DELAY_MS = 1200L
+        internal const val RESTORE_VERIFY_DELAY_MS = 2000L
+        internal const val RESTORE_VERIFY_RETRY_MS = 2000L
+        internal const val MAX_RESTORE_VERIFY_ATTEMPTS = 3
     }
 
     /** Phone overlay / other observers refresh layout when VD sizes change. */
