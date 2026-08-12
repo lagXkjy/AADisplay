@@ -70,10 +70,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     private val broadcastReceiver = object : BroadcastReceiver() {
-        fun startVoiceAssist() {
-            // Custom VoiceAssistShell removed with prefs; steering-wheel search is a no-op here.
-        }
-
         override fun onReceive(context: Context?, intent: Intent) {
             when (intent.action) {
                 AABroadcastConst.ACTION_OPEN_SPLIT_PICKER -> {
@@ -97,7 +93,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 AABroadcastConst.ACTION_SCREEN_CONTROL -> {
                     when (val action = intent.getIntExtra(AABroadcastConst.EXTRA_ACTION, 0)) {
                         KeyEvent.KEYCODE_FEATURED_APP_1 -> carManager.startCarTelecom()
-                        KeyEvent.KEYCODE_SEARCH -> startVoiceAssist()
                         KeyEvent.KEYCODE_POWER -> CoreApi.toggleDisplayPower()
                         else -> {
                             if (!isForeground) {
@@ -136,7 +131,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                         }
                         1 -> {
                             when (action) {
-                                KeyEvent.KEYCODE_SEARCH -> startVoiceAssist()
                                 KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> CoreApi.moveSecondTaskToFront()
                                 else -> CoreApi.toast("方控长按[$action]未设置")
                             }

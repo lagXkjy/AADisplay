@@ -9,7 +9,6 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaBasicsHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaBtnEventHook
-import io.github.nitsuya.aa.display.xposed.hook.aa.AaDpiHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaSignatureHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaUiHook
 import io.github.nitsuya.aa.display.xposed.log
@@ -32,7 +31,7 @@ object AndroidAuoHook : BaseHook() {
     override val tagName: String = "AAD_AndroidAuoHook"
     override fun init(lpparam: XC_LoadPackage.LoadPackageParam) {
         val processName = lpparam.processName
-        val hooks = listOf(AaBasicsHook, AaSignatureHook, AaDpiHook, AaBtnEventHook, AaUiHook).filter { i -> i.isSupportProcess(processName) }
+        val hooks = listOf(AaBasicsHook, AaSignatureHook, AaBtnEventHook, AaUiHook).filter { i -> i.isSupportProcess(processName) }
         if(hooks.isEmpty()) return
 
         var onCreateApplication: XC_MethodHook.Unhook? = null

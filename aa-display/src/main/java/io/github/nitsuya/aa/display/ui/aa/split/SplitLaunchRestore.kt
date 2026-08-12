@@ -280,8 +280,6 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             primaryPackage = primaryPkg,
             secondaryPackage = secondaryPkg,
             primaryRatio = c.mRatio,
-            landscape = c.isSideBySide,
-            sideBySide = c.isSideBySide,
         )
         LastSplitStore.save(snap, c.context.contentResolver, mirrorSettings = mirrorSettings || force)
     }

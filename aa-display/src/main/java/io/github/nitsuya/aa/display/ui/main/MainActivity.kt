@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 import android.view.LayoutInflater
 import android.view.Menu
 import android.view.MenuInflater
@@ -40,7 +39,6 @@ class MainActivity :
     @SuppressLint("SetTextI18n")
     override fun initData() {
         val buildTime = CoreApi.buildTime
-        Log.d(TAG, "buildtime: $buildTime ${BuildConfig.BUILD_TIME}")
         when (buildTime) {
             0L -> {
                 baseBinding.ivIcon.setImageResource(R.drawable.ic_error_outline_24)

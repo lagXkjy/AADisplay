@@ -14,7 +14,6 @@ import android.view.*
 import androidx.core.view.ViewCompat
 import androidx.core.view.allViews
 import androidx.core.view.updateLayoutParams
-import androidx.recyclerview.widget.LinearLayoutManager
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.R
@@ -405,77 +404,14 @@ class DisplayWindow(
                 }
             }
             tvVirtualDisplayInfo.text = "$mDisplayWidth*$mDisplayHeight,$mDensityDpi"
-            val phoneAdapter = DisplayRecyclerViewAdapter(rvRecentTaskRight, onExit = ::hideRecentTask)
-            val primaryAdapter = DisplayRecyclerViewAdapter(
-                rvRecentTaskLeft,
-                SplitPane.PRIMARY,
-                ::hideRecentTask,
+            RecentTaskUiHelper.wireThreeColumnRecents(
+                left = rvRecentTaskLeft,
+                center = rvRecentTaskCenter,
+                right = rvRecentTaskRight,
+                onExit = ::hideRecentTask,
+                focusedPaneProvider = { displayAdapter.mFocusedPane },
+                setFocusedPane = { displayAdapter.setFocusedPane(it) },
             )
-            val secondaryAdapter = DisplayRecyclerViewAdapter(
-                rvRecentTaskCenter,
-                SplitPane.SECONDARY,
-                ::hideRecentTask,
-            )
-            phoneAdapter.primaryAdapter = primaryAdapter
-            phoneAdapter.secondaryAdapter = secondaryAdapter
-            primaryAdapter.phoneAdapter = phoneAdapter
-            primaryAdapter.secondaryAdapter = secondaryAdapter
-            secondaryAdapter.phoneAdapter = phoneAdapter
-            secondaryAdapter.primaryAdapter = primaryAdapter
-            rvRecentTaskLeft.apply {
-                layoutManager = LinearLayoutManager(context)
-                adapter = primaryAdapter
-            }
-            rvRecentTaskCenter.apply {
-                layoutManager = LinearLayoutManager(context)
-                adapter = secondaryAdapter
-            }
-            rvRecentTaskRight.apply {
-                layoutManager = LinearLayoutManager(context)
-                adapter = phoneAdapter
-            }
-            arrayOf(rvRecentTaskLeft, rvRecentTaskCenter, rvRecentTaskRight).forEach {
-                it.setOnTouchListener { v, event ->
-                    when(event.action) {
-                        MotionEvent.ACTION_DOWN -> {
-                            v.setTag(R.id.drag_last_x, event.x)
-                            v.setTag(R.id.drag_last_y, event.y)
-                            when (v.id) {
-                                R.id.rv_recent_task_left -> {
-                                    v.setTag(
-                                        R.id.pane_was_focused,
-                                        displayAdapter.mFocusedPane == SplitPane.PRIMARY,
-                                    )
-                                    displayAdapter.setFocusedPane(SplitPane.PRIMARY)
-                                }
-                                R.id.rv_recent_task_center -> {
-                                    v.setTag(
-                                        R.id.pane_was_focused,
-                                        displayAdapter.mFocusedPane == SplitPane.SECONDARY,
-                                    )
-                                    displayAdapter.setFocusedPane(SplitPane.SECONDARY)
-                                }
-                            }
-                        }
-                        MotionEvent.ACTION_UP -> {
-                            // Empty tap: phone always dismisses. VD first tap selects move
-                            // target; second tap on the already-focused column dismisses.
-                            val isTap = abs((v.getTag(R.id.drag_last_x) as? Float ?: 0f) - event.x) <= 5
-                                && abs((v.getTag(R.id.drag_last_y) as? Float ?: 0f) - event.y) <= 5
-                            if (!isTap) return@setOnTouchListener false
-                            val dismiss = when (v.id) {
-                                R.id.rv_recent_task_right -> true
-                                R.id.rv_recent_task_left,
-                                R.id.rv_recent_task_center ->
-                                    v.getTag(R.id.pane_was_focused) as? Boolean == true
-                                else -> false
-                            }
-                            if (dismiss) hideRecentTask()
-                        }
-                    }
-                    return@setOnTouchListener false
-                }
-            }
         }
         updateDisplaySize()
         mMirrorBinding?.apply {

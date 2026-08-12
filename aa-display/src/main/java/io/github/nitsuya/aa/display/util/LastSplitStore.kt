@@ -24,6 +24,7 @@ object LastSplitStore {
     /** Settings.Global key for SECONDARY pane package (historical name). */
     const val SETTINGS_RIGHT = "aadisplay_last_split_right"
     const val SETTINGS_RATIO = "aadisplay_last_split_ratio"
+    /** Historical keys — still read for migration; no longer written. */
     const val SETTINGS_LANDSCAPE = "aadisplay_last_split_landscape"
     const val SETTINGS_SIDE_BY_SIDE = "aadisplay_last_split_side_by_side"
 
@@ -38,8 +39,6 @@ object LastSplitStore {
         val primaryPackage: String,
         val secondaryPackage: String,
         val primaryRatio: Float,
-        val landscape: Boolean,
-        val sideBySide: Boolean = landscape,
     )
 
     fun load(contentResolver: ContentResolver? = null): Snapshot? {
@@ -106,9 +105,7 @@ object LastSplitStore {
         val s = secondary?.trim().orEmpty()
         if (p.isEmpty() || s.isEmpty() || p == s) return null
         val ratioVal = ratio?.toFloatOrNull()?.takeIf { it in 0.15f..0.85f } ?: 0.5f
-        val landscapeVal = landscape?.toBooleanStrictOrNull() ?: true
-        val sideBySideVal = sideBySide?.toBooleanStrictOrNull() ?: landscapeVal
-        return Snapshot(p, s, ratioVal, landscapeVal, sideBySideVal)
+        return Snapshot(p, s, ratioVal)
     }
 
     private fun saveToFile(snapshot: Snapshot): Boolean {
@@ -116,8 +113,6 @@ object LastSplitStore {
         props.setProperty(FILE_LEFT, snapshot.primaryPackage)
         props.setProperty(FILE_RIGHT, snapshot.secondaryPackage)
         props.setProperty(FILE_RATIO, snapshot.primaryRatio.toString())
-        props.setProperty(FILE_LANDSCAPE, snapshot.landscape.toString())
-        props.setProperty(FILE_SIDE_BY_SIDE, snapshot.sideBySide.toString())
         val file = File(PATH)
         fun writeOnce(): Boolean {
             file.parentFile?.mkdirs()
@@ -133,7 +128,7 @@ object LastSplitStore {
             Log.i(
                 TAG,
                 "file saved primary=${snapshot.primaryPackage} secondary=${snapshot.secondaryPackage} " +
-                    "ratio=${snapshot.primaryRatio} landscape=${snapshot.landscape}"
+                    "ratio=${snapshot.primaryRatio}"
             )
             true
         } catch (e: Throwable) {
@@ -158,8 +153,6 @@ object LastSplitStore {
             Settings.Global.putString(cr, SETTINGS_LEFT, snapshot.primaryPackage)
             Settings.Global.putString(cr, SETTINGS_RIGHT, snapshot.secondaryPackage)
             Settings.Global.putString(cr, SETTINGS_RATIO, snapshot.primaryRatio.toString())
-            Settings.Global.putString(cr, SETTINGS_LANDSCAPE, snapshot.landscape.toString())
-            Settings.Global.putString(cr, SETTINGS_SIDE_BY_SIDE, snapshot.sideBySide.toString())
             Log.i(
                 TAG,
                 "settings saved primary=${snapshot.primaryPackage} secondary=${snapshot.secondaryPackage}"

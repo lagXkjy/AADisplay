@@ -3,7 +3,6 @@ package io.github.nitsuya.aa.display.xposed
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.ContextParams
-import android.os.Process
 import android.view.Display
 import android.view.MotionEvent
 import android.view.Surface
@@ -142,10 +141,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun getVersionName(): String = BuildConfig.VERSION_NAME
 
-    override fun getVersionCode(): Int = BuildConfig.VERSION_CODE
-
-    override fun getUid(): Int = Process.myUid()
-
     override fun getBuildTime(): Long = BuildConfig.BUILD_TIME
 
     override fun onCreateSplitDisplay(
@@ -282,10 +277,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runIO { mSplitController?.startActivityOnPane(packageName, userId, pane) }
     }
 
-    override fun startTaskId(taskId: Int, packageName: String, userId: Int) {
-        runIO { mSplitController?.startTaskId(taskId, packageName, userId) }
-    }
-
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
         // Controller marshals onto its handler; keep off the Binder thread.
         runIO { mSplitController?.moveTaskId(taskId, isVirtualDisplay) }
@@ -308,31 +299,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runIO { mSplitController?.removeTask(taskId) }
     }
 
-    override fun restoreLastSplit() {
-        runIO {
-            val controller = mSplitController
-            if (controller == null) {
-                runMain { TipUtil.showToast("快捷分屏：无显示会话") }
-                return@runIO
-            }
-            val result = controller.requestRestoreLastSplitManual()
-            runMain {
-                TipUtil.showToast(
-                    when (result) {
-                        SplitDisplayController.ManualRestoreResult.Started ->
-                            "正在恢复上次分屏…"
-                        SplitDisplayController.ManualRestoreResult.NoDisplay ->
-                            "快捷分屏：无显示会话"
-                        SplitDisplayController.ManualRestoreResult.NoSnapshot ->
-                            "快捷分屏：没有可恢复的分屏记录"
-                        SplitDisplayController.ManualRestoreResult.PackageUnavailable ->
-                            "快捷分屏：左右应用不可用"
-                    }
-                )
-            }
-        }
-    }
-
     override fun pressKey(action: Int) {
         runIO {
             mDisplayWindow?.onVirtualDisplayUserInteraction()
@@ -348,11 +314,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         mSplitController?.onTouchPane(pane, event)
     }
 
-    override fun touchHost(event: MotionEvent) {
+    override fun touchPrimaryPane(event: MotionEvent) {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             runIO { mDisplayWindow?.onVirtualDisplayUserInteraction() }
         }
-        mSplitController?.onTouchHost(event)
+        mSplitController?.onTouchPrimaryPane(event)
     }
 
     override fun toggleDisplayPower() {
@@ -379,10 +345,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun toast(msg: String) {
         runMain { TipUtil.showToast(msg) }
-    }
-
-    override fun printLog(tag: String, msg: String) {
-        runIO { log(tag, msg) }
     }
 }
 

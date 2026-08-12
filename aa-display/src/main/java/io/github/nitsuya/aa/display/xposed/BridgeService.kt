@@ -14,7 +14,7 @@ object BridgeService {
     private const val TAG = "AADisplay_Bridge"
 
     private var appUid = 0
-    /** Android Auto shares this uid across :car / :projection; needed for rail touchHost. */
+    /** Android Auto shares this uid across :car / :projection; needed for rail touchPrimaryPane. */
     private var gearheadUid = 0
 
     fun register(pms: IPackageManager) {

@@ -9,8 +9,6 @@ import io.github.nitsuya.aa.display.model.RecentTask;
 interface ICoreManager {
 
     String getVersionName();
-    int getVersionCode();
-    int getUid();
     long getBuildTime();
 
     /** Create dual-pane virtual displays for custom split. [ratio] is primary fraction (0.2..0.8). */
@@ -36,21 +34,18 @@ interface ICoreManager {
 
     void startActivity(String packageName, int userId);
     void startActivityOnPane(String packageName, int userId, int pane);
-    void startTaskId(int taskId, String packageName, int userId);
     void moveTaskId(int taskId, boolean isVirtualDisplay);
     /** Move task onto PRIMARY/SECONDARY virtual-display pane (not the phone). */
     void moveTaskIdToPane(int taskId, int pane);
     void moveTaskToFront(int taskId);
     void moveSecondTaskToFront();
     void removeTask(int taskId);
-    void restoreLastSplit();
     void pressKey(int action);
     void touchPane(int pane, in MotionEvent motionEvent);
     /**
-     * Inject into the AADisplay CarActivity host display (not a pane VD).
-     * Used to relay Coolwalk left-rail HU touches from :car into PRIMARY pane.
+     * Relay Coolwalk left-rail HU touches from :car into the PRIMARY pane virtual display.
      */
-    void touchHost(in MotionEvent motionEvent);
+    void touchPrimaryPane(in MotionEvent motionEvent);
     void toggleDisplayPower();
     void displayPower(boolean displayPower);
 
@@ -60,5 +55,4 @@ interface ICoreManager {
     RecentTask getRecentTask();
 
     void toast(String msg);
-    void printLog(String tag, String msg);
 }

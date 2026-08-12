@@ -10,21 +10,9 @@ import android.view.Surface
 import android.view.SurfaceControl
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
-import java.lang.reflect.InvocationHandler
-import java.lang.reflect.Method
-import java.lang.reflect.Proxy
 
 object CoreManager : ICoreManager, DeathRecipient {
     private const val TAG = "CoreManager"
-
-    private class ServiceProxy(private val obj: ICoreManager) : InvocationHandler {
-        override fun invoke(proxy: Any?, method: Method, args: Array<out Any?>?): Any? {
-            val result = method.invoke(obj, *args.orEmpty())
-            if (result == null) Log.i(TAG, "Call service method ${method.name}")
-            else Log.i(TAG, "Call service method ${method.name} with result " + result.toString().take(20))
-            return result
-        }
-    }
 
     @Volatile
     private var service: ICoreManager? = null
@@ -39,10 +27,6 @@ object CoreManager : ICoreManager, DeathRecipient {
     override fun getVersionName(): String? {
         return getService()?.versionName
     }
-
-    override fun getVersionCode() = getService()?.versionCode ?: 0
-
-    override fun getUid() = getService()?.uid ?: -1
 
     override fun getBuildTime(): Long {
         return getService()?.buildTime ?: 0
@@ -116,10 +100,6 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.startActivityOnPane(packageName, userId, pane)
     }
 
-    override fun startTaskId(taskId: Int, packageName: String, userId: Int) {
-        getService()?.startTaskId(taskId, packageName, userId)
-    }
-
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
         getService()?.moveTaskId(taskId, isVirtualDisplay)
     }
@@ -140,10 +120,6 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.removeTask(taskId)
     }
 
-    override fun restoreLastSplit() {
-        getService()?.restoreLastSplit()
-    }
-
     override fun pressKey(action: Int) {
         getService()?.pressKey(action)
     }
@@ -152,13 +128,13 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.touchPane(pane, motionEvent)
     }
 
-    override fun touchHost(motionEvent: MotionEvent) {
+    override fun touchPrimaryPane(motionEvent: MotionEvent) {
         val svc = getService()
         if (svc == null) {
-            Log.e(TAG, "touchHost skipped; binder unavailable")
+            Log.e(TAG, "touchPrimaryPane skipped; binder unavailable")
             return
         }
-        svc.touchHost(motionEvent)
+        svc.touchPrimaryPane(motionEvent)
     }
 
     override fun toggleDisplayPower() {
@@ -185,10 +161,6 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.toast(msg)
     }
 
-    override fun printLog(tag: String, msg: String) {
-        getService()?.printLog(tag, msg)
-    }
-
     private fun getService(): ICoreManager? {
         if (service != null) return service
         val pm = ServiceManager.getService("package")
@@ -211,11 +183,7 @@ object CoreManager : ICoreManager, DeathRecipient {
         if (remote != null) {
             Log.i(TAG, "Binder acquired")
             remote.asBinder().linkToDeath(this, 0)
-            service = Proxy.newProxyInstance(
-                javaClass.classLoader,
-                arrayOf(ICoreManager::class.java),
-                ServiceProxy(remote)
-            ) as ICoreManager
+            service = remote
         }
         return service
     }

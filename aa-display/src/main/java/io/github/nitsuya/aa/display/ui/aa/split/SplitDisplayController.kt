@@ -21,7 +21,6 @@ import com.github.kyuubiran.ezxhelper.utils.newInstance
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
-import io.github.nitsuya.aa.display.util.LastSplitStore
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.TipUtil
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
@@ -54,10 +53,6 @@ class SplitDisplayController(
         internal const val SUPPRESS_RECLAIM_AFTER_RESTORE_MS = 8000L
         internal const val ENSURE_PANES_DELAY_MS = 500L
         internal const val RESTORE_VERIFY_DELAY_MS = 1200L
-    }
-
-    enum class ManualRestoreResult {
-        Started, NoDisplay, NoSnapshot, PackageUnavailable
     }
 
     /** Phone overlay / other observers refresh layout when VD sizes change. */
@@ -374,7 +369,7 @@ class SplitDisplayController(
     /**
      * Relay Coolwalk left-rail touches (HU x &lt; rail width) into the PRIMARY pane VD.
      */
-    fun onTouchHost(event: MotionEvent) {
+    fun onTouchPrimaryPane(event: MotionEvent) {
         onTouchPane(SplitPane.PRIMARY, event)
     }
 
@@ -513,16 +508,6 @@ class SplitDisplayController(
             log(TAG, "startActivityOnPane failed pkg=$packageName pane=$pane display=$displayId")
         }
         return ok
-    }
-
-    fun startTaskId(taskId: Int?, packageName: String, userId: Int): Boolean {
-        if (taskId == null) return startActivity(packageName, userId)
-        return try {
-            moveTaskId(taskId, true)
-        } catch (e: Throwable) {
-            log(TAG, "startTaskId error:", e)
-            startActivity(packageName, userId)
-        }
     }
 
     fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean): Boolean {
@@ -735,18 +720,6 @@ class SplitDisplayController(
                 "tasksP=${afterPrimary.map { it.taskId }} tasksS=${afterSecondary.map { it.taskId }}"
         )
         return true
-    }
-
-    fun requestRestoreLastSplitManual(): ManualRestoreResult {
-        if (primaryDisplayId == Display.INVALID_DISPLAY) return ManualRestoreResult.NoDisplay
-        val snap = LastSplitStore.load(context.contentResolver) ?: return ManualRestoreResult.NoSnapshot
-        if (launch.resolveLaunchComponent(snap.primaryPackage) == null ||
-            launch.resolveLaunchComponent(snap.secondaryPackage) == null
-        ) {
-            return ManualRestoreResult.PackageUnavailable
-        }
-        launch.scheduleRestoreLastSplit(manual = true)
-        return ManualRestoreResult.Started
     }
 
     fun notifySplitStateChanged() {

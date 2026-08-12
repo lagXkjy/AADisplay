@@ -40,8 +40,6 @@ object AaBtnEventHook: AaHook() {
     }
 
     override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
-        // Default voice assist (no custom VoiceAssistShell).
-        val enableDefVoiceAssist = true
         val hookedReceiverClasses = Collections.synchronizedSet(HashSet<String>())
         val activeReceiverByAction = Collections.synchronizedMap(HashMap<String, Any>())
         val longPressByKeyCode = Collections.synchronizedMap(HashMap<Int, AtomicBoolean>())
@@ -115,7 +113,7 @@ object AaBtnEventHook: AaHook() {
                             KeyEvent::class.java
                         ) ?: return@hookBefore
                         val keyCode = keyEvent.keyCode
-                        if (enableDefVoiceAssist && keyCode == KeyEvent.KEYCODE_SEARCH) {
+                        if (keyCode == KeyEvent.KEYCODE_SEARCH) {
                             return@hookBefore
                         }
 

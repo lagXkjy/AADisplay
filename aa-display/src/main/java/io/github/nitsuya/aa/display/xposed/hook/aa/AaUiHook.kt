@@ -291,7 +291,6 @@ object AaUiHook: AaHook() {
 
     private fun hookLayout() {
         layoutInfoConstructor.hookAfter { param ->
-            log(tagName, param.thisObject.toString())
             // Collapse any residual facet/rail chrome so it cannot leave a black gutter.
             if (canHookFacetBar) {
                 scheduleEnsureFacetBar("layoutInfo")
@@ -783,7 +782,7 @@ object AaUiHook: AaHook() {
         }
         log(
             tagName,
-            "AaUiHook: hooked HU touch dispatch → touchHost " +
+            "AaUiHook: hooked HU touch dispatch → touchPrimaryPane " +
                 "methods=${targets.joinToString { it.name }} hooked=$hooked"
         )
     }
@@ -808,16 +807,16 @@ object AaUiHook: AaHook() {
                 mHuRailGesture = false
             }
             if (!steal) return
-            CoreManager.touchHost(motion)
+            CoreManager.touchPrimaryPane(motion)
             param.result = null
             if (action == MotionEvent.ACTION_DOWN) {
                 logDebug(
                     tagName,
-                    "AaUiHook: HU rail → touchHost x=${motion.x} y=${motion.y} rail=$rail"
+                    "AaUiHook: HU rail → touchPrimaryPane x=${motion.x} y=${motion.y} rail=$rail"
                 )
             }
         } catch (e: Throwable) {
-            log(tagName, "AaUiHook: HU rail → touchHost failed", e)
+            log(tagName, "AaUiHook: HU rail → touchPrimaryPane failed", e)
         } finally {
             if (owned) motion.recycle()
         }

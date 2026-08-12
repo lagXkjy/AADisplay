@@ -27,7 +27,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | `aa-display/src/main/aidl/` | Binder 接口与 parcelable 模型 |
 | `lib-stub/` | 隐藏 Framework API 的 Rikka Refine stubs（`compileOnly`） |
 | `CHANGELOG.md` / `RELEASE_NOTES_*` | 行为变更与真机验证记录 |
-| `settings.gradle.kts` | 仅 `:aa-display`、`:lib-stub`（`:lib-aasdk` 已注释且不存在） |
+| `settings.gradle.kts` | 仅 `:aa-display`、`:lib-stub` |
 
 ### 主包结构（`io.github.nitsuya.aa.display`）
 
@@ -82,7 +82,7 @@ flowchart LR
 - `…:projection`
 - `…:car`
 
-已注册 AA 钩子：`AaBasicsHook`、`AaSignatureHook`、`AaDpiHook`、`AaBtnEventHook`、`AaUiHook`（按 `isSupportProcess` 过滤；大量依赖 DexKit）。
+已注册 AA 钩子：`AaBasicsHook`、`AaSignatureHook`、`AaBtnEventHook`、`AaUiHook`（按 `isSupportProcess` 过滤；大量依赖 DexKit）。
 
 ### 跨进程 IPC
 
