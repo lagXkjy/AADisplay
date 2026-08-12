@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Binder
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.os.UserHandle
@@ -301,9 +302,16 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         return try {
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(pkg)
             val pm = c.context.packageManager
-            val ri = pm.resolveActivity(intent, PackageManager.MATCH_ALL)
-                ?: pm.queryIntentActivities(intent, PackageManager.MATCH_ALL).firstOrNull()
-                ?: return null
+            val ri = if (Build.VERSION.SDK_INT >= 33) {
+                val flags = PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong())
+                pm.resolveActivity(intent, flags)
+                    ?: pm.queryIntentActivities(intent, flags).firstOrNull()
+            } else {
+                @Suppress("DEPRECATION")
+                pm.resolveActivity(intent, PackageManager.MATCH_ALL)
+                    ?: @Suppress("DEPRECATION")
+                    pm.queryIntentActivities(intent, PackageManager.MATCH_ALL).firstOrNull()
+            } ?: return null
             val ai = ri.activityInfo ?: return null
             ComponentName(ai.packageName, ai.name)
         } catch (_: Throwable) {

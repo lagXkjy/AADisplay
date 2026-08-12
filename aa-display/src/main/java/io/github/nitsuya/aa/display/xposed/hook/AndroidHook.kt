@@ -248,13 +248,11 @@ object AndroidHook : BaseHook() {
                         )
                     }
                 }
-            applicationThread_bindApplication_hook =
+                applicationThread_bindApplication_hook =
                 applicationThread_bindApplication?.hookBefore { param ->
                     try {
-                        val configuration = param.args[15]
-                        if (configuration !is Configuration) {
-                            return@hookBefore
-                        }
+                        val configuration = param.args.firstOrNull { it is Configuration } as? Configuration
+                            ?: return@hookBefore
                         val packageName = normalizePackage(param.args[0] as? String) ?: return@hookBefore
                         pinDensityIfMapped(packageName, configuration)
                     } catch (e: Exception) {

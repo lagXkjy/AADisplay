@@ -1,6 +1,7 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
 import android.app.ActivityTaskManager
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Binder
 import android.os.Build
@@ -77,8 +78,16 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
             }
             var label = taskDescription.label
             if (label == null) {
-                label = Instances.packageManager.getActivityInfo(topActivity, 0)
-                    .loadLabel(Instances.packageManager).toString()
+                val activityInfo = if (Build.VERSION.SDK_INT >= 33) {
+                    Instances.packageManager.getActivityInfo(
+                        topActivity,
+                        PackageManager.ComponentInfoFlags.of(0)
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    Instances.packageManager.getActivityInfo(topActivity, 0)
+                }
+                label = activityInfo.loadLabel(Instances.packageManager).toString()
             }
             val snapshot: Bitmap? = runCatching {
                 val snap: TaskSnapshot? = try {

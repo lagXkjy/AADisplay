@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.ui.aa.split
 import android.content.pm.ActivityInfo
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
+import android.hardware.display.DisplayManagerHidden
 import android.os.Binder
 import android.os.SystemClock
 import android.view.Display
@@ -48,10 +49,10 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             DisplayManager.VIRTUAL_DISPLAY_FLAG_SECURE or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
-            (1 shl 10) or // TRUSTED
-            (1 shl 11) or // OWN_DISPLAY_GROUP
-            (1 shl 12) or // ALWAYS_UNLOCKED
-            (1 shl 13)    // TOUCH_FEEDBACK_DISABLED
+            DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_TRUSTED or
+            DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP or
+            DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED or
+            DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED
     }
 
     fun resizePanesInternal(reason: String) {

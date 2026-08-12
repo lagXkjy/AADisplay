@@ -48,6 +48,10 @@ public class SurfaceControlHidden {
         throw new RuntimeException("Stub!");
     }
 
+    /**
+     * @deprecated Removed in API 34. Use {@link DisplayControl#getPhysicalDisplayToken(long)} instead.
+     */
+    @Deprecated
     @NonNull
     public static IBinder getInternalDisplayToken() {
         throw new RuntimeException("Stub!");

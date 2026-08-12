@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "io.github.nitsuya.aa.lib_stub"
-    compileSdk = 33
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 31

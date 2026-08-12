@@ -124,7 +124,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             mLockedDisplayProfile = null
         }
 
-        @SuppressLint("UnspecifiedRegisterReceiverFlag")
         fun systemReady() {
             TipUtil.init(systemContext, "[AADisplay] ")
             Instances.init(systemContext)

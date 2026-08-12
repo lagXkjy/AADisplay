@@ -11,6 +11,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.*
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.allViews
 import androidx.core.view.updateLayoutParams
@@ -25,10 +26,12 @@ import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.xposed.TipUtil
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.util.DisplayPowerCompat
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.RomUtil
 import io.github.nitsuya.template.bases.runIO
 import io.github.nitsuya.template.bases.runMain
+import java.lang.reflect.Method
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlin.math.abs
@@ -219,7 +222,12 @@ class DisplayWindow(
             // when Samsung DreamManager tries to DOZE the AA virtual display with the phone.
             if (!mMiuiReceiverRegistered) {
                 try {
-                    mContext.registerReceiver(this, addAction(IntentFilter()))
+                    ContextCompat.registerReceiver(
+                        mContext,
+                        this,
+                        addAction(IntentFilter()),
+                        ContextCompat.RECEIVER_NOT_EXPORTED
+                    )
                     mMiuiReceiverRegistered = true
                 } catch (e: Throwable) {
                     log(TAG, "register SCREEN_ON/OFF failed:", e)
@@ -307,6 +315,7 @@ class DisplayWindow(
     /**
      * IPowerManager.userActivity(displayId, …) — PowerManager only forwards the
      * context display id, which is useless for OWN_DISPLAY_GROUP virtual displays.
+     * Resolves overload by name/arity so A14–A16 signature churn does not hard-fail.
      */
     private fun userActivityOnDisplay(displayId: Int, event: Int) {
         try {
@@ -315,17 +324,69 @@ class DisplayWindow(
                     isAccessible = true
                 }.get(Instances.powerManager)?.also { iPowerManagerService = it }
                 ?: return
-            val method = iPowerManagerUserActivity
-                ?: service.javaClass.getMethod(
-                    "userActivity",
-                    Int::class.javaPrimitiveType,
-                    Long::class.javaPrimitiveType,
-                    Int::class.javaPrimitiveType,
-                    Int::class.javaPrimitiveType
-                ).also { iPowerManagerUserActivity = it }
-            method.invoke(service, displayId, SystemClock.uptimeMillis(), event, 0)
+            val method = iPowerManagerUserActivity ?: resolveUserActivityMethod(service.javaClass)
+                ?.also { iPowerManagerUserActivity = it }
+                ?: return
+            invokeUserActivity(method, service, displayId, event)
         } catch (e: Throwable) {
             log(TAG, "IPowerManager.userActivity(display=$displayId) failed:", e)
+        }
+    }
+
+    private fun resolveUserActivityMethod(serviceClass: Class<*>): Method? {
+        val candidates = serviceClass.methods.filter { it.name == "userActivity" }
+        // Prefer (int displayId, long time, int event, int flags)
+        candidates.firstOrNull { m ->
+            val p = m.parameterTypes
+            p.size == 4 &&
+                p[0] == Int::class.javaPrimitiveType &&
+                p[1] == Long::class.javaPrimitiveType &&
+                p[2] == Int::class.javaPrimitiveType &&
+                p[3] == Int::class.javaPrimitiveType
+        }?.let { return it }
+        // (long time, int event, int flags) — no displayId
+        candidates.firstOrNull { m ->
+            val p = m.parameterTypes
+            p.size == 3 &&
+                p[0] == Long::class.javaPrimitiveType &&
+                p[1] == Int::class.javaPrimitiveType &&
+                p[2] == Int::class.javaPrimitiveType
+        }?.let { return it }
+        // (long time, boolean noChangeLights) legacy
+        candidates.firstOrNull { m ->
+            val p = m.parameterTypes
+            p.size == 2 &&
+                p[0] == Long::class.javaPrimitiveType &&
+                p[1] == Boolean::class.javaPrimitiveType
+        }?.let { return it }
+        return candidates.firstOrNull()
+    }
+
+    private fun invokeUserActivity(method: Method, service: Any, displayId: Int, event: Int) {
+        val now = SystemClock.uptimeMillis()
+        when (method.parameterTypes.size) {
+            4 -> method.invoke(service, displayId, now, event, 0)
+            3 -> method.invoke(service, now, event, 0)
+            2 -> method.invoke(service, now, false)
+            else -> method.invoke(service, *Array(method.parameterCount) { i ->
+                val t = method.parameterTypes[i]
+                when {
+                    t == Int::class.javaPrimitiveType && i == 0 -> displayId
+                    t == Long::class.javaPrimitiveType -> now
+                    t == Int::class.javaPrimitiveType -> event
+                    t == Boolean::class.javaPrimitiveType -> false
+                    else -> null
+                }
+            })
+        }
+    }
+
+    /** Wake the phone panel without deprecated ACQUIRE_CAUSES_WAKEUP wake locks. */
+    private fun pulsePhoneWake() {
+        try {
+            userActivityOnDisplay(Display.DEFAULT_DISPLAY, USER_ACTIVITY_EVENT_TOUCH)
+        } catch (e: Throwable) {
+            log(TAG, "pulsePhoneWake failed:", e)
         }
     }
 
@@ -600,18 +661,9 @@ class DisplayWindow(
         try {
             if (mScreenOffReplaceLockScreen) {
                 mDisplayPower = true
-                SurfaceControlHidden.setDisplayPowerMode(
-                    SurfaceControlHidden.getInternalDisplayToken(),
-                    SurfaceControlHidden.POWER_MODE_NORMAL
-                )
+                DisplayPowerCompat.setPhoneDisplayPowerMode(SurfaceControlHidden.POWER_MODE_NORMAL)
             } else {
-                Instances.powerManager.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                    "${BuildConfig.APPLICATION_ID}:wakeup"
-                ).apply {
-                    acquire()
-                    release()
-                }
+                pulsePhoneWake()
             }
         } catch (e: Throwable) {
             log(TAG, "restorePhoneDisplayPower failed:", e)
@@ -623,16 +675,13 @@ class DisplayWindow(
             if(mScreenOffReplaceLockScreen){
                 mDisplayPower = displayPower
                 if(mDisplayPower){
-                    SurfaceControlHidden.setDisplayPowerMode(SurfaceControlHidden.getInternalDisplayToken(), SurfaceControlHidden.POWER_MODE_NORMAL)
+                    DisplayPowerCompat.setPhoneDisplayPowerMode(SurfaceControlHidden.POWER_MODE_NORMAL)
                 } else {
-                    SurfaceControlHidden.setDisplayPowerMode(SurfaceControlHidden.getInternalDisplayToken(), SurfaceControlHidden.POWER_MODE_OFF)
+                    DisplayPowerCompat.setPhoneDisplayPowerMode(SurfaceControlHidden.POWER_MODE_OFF)
                 }
             } else if (displayPower) {
                 // Wake phone panel only when explicitly turning power on (legacy path).
-                Instances.powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "${BuildConfig.APPLICATION_ID}:wakeup").apply {
-                    acquire()
-                    release()
-                }
+                pulsePhoneWake()
             }
             // Always restore the AA virtual display group — this is what the car sees.
             keepVirtualDisplayAwake("toggleDisplayPower:$displayPower", forceWake = displayPower)

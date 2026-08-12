@@ -4,7 +4,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.app.ActivityManager
 import android.content.res.Resources
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
@@ -531,11 +530,9 @@ object AaUiHook: AaHook() {
 
     private fun fixProjectionConfigBundle(bundle: Bundle) {
         try {
-            @Suppress("DEPRECATION")
-            val bounds = bundle.getParcelable("content_bounds") as? Rect
+            val bounds = bundleParcelableRect(bundle, "content_bounds")
             rewriteProjectionConfigParcelable("content_bounds", bounds)
-            @Suppress("DEPRECATION")
-            val insets = bundle.getParcelable("content_insets") as? Rect
+            val insets = bundleParcelableRect(bundle, "content_insets")
             rewriteProjectionConfigParcelable("content_insets", insets)
             if (bundle.containsKey("pillar_width")) {
                 val value = bundle.getInt("pillar_width", 0)
@@ -1085,11 +1082,10 @@ object AaUiHook: AaHook() {
             markAaDisplayShown("flag")
             return
         }
-        if (mAutoOpenInvokedThisSession || isAaDisplayCarSessionActive()) {
+        if (mAutoOpenInvokedThisSession) {
             logDebug(
                 tagName,
-                "AaUiHook: AutoOpen skip invoke@${delayMs}ms " +
-                    "invoked=$mAutoOpenInvokedThisSession service=${isAaDisplayCarSessionActive()}"
+                "AaUiHook: AutoOpen skip invoke@${delayMs}ms invoked=$mAutoOpenInvokedThisSession"
             )
             return
         }
@@ -1105,16 +1101,12 @@ object AaUiHook: AaHook() {
         }
     }
 
-    @Suppress("DEPRECATION")
-    private fun isAaDisplayCarSessionActive(): Boolean {
-        return try {
-            val am = InitFields.appContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-                ?: return false
-            am.getRunningServices(64).any {
-                it.service.className == AaActivityService::class.java.name
-            }
-        } catch (_: Throwable) {
-            false
+    private fun bundleParcelableRect(bundle: Bundle, key: String): Rect? {
+        return if (Build.VERSION.SDK_INT >= 33) {
+            bundle.getParcelable(key, Rect::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            bundle.getParcelable(key) as? Rect
         }
     }
 
