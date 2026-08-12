@@ -152,6 +152,15 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.touchPane(pane, motionEvent)
     }
 
+    override fun touchHost(motionEvent: MotionEvent) {
+        val svc = getService()
+        if (svc == null) {
+            Log.e(TAG, "touchHost skipped; binder unavailable")
+            return
+        }
+        svc.touchHost(motionEvent)
+    }
+
     override fun toggleDisplayPower() {
         getService()?.toggleDisplayPower()
     }

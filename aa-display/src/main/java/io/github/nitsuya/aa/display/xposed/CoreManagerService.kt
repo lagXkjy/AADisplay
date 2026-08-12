@@ -348,6 +348,13 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         mSplitController?.onTouchPane(pane, event)
     }
 
+    override fun touchHost(event: MotionEvent) {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            runIO { mDisplayWindow?.onVirtualDisplayUserInteraction() }
+        }
+        mSplitController?.onTouchHost(event)
+    }
+
     override fun toggleDisplayPower() {
         runIO { mDisplayWindow?.toggleDisplayPower() }
     }

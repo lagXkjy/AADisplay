@@ -14,16 +14,15 @@ object BridgeService {
     private const val TAG = "AADisplay_Bridge"
 
     private var appUid = 0
+    /** Android Auto shares this uid across :car / :projection; needed for rail touchHost. */
+    private var gearheadUid = 0
 
     fun register(pms: IPackageManager) {
         log(TAG, "Initialize AADisplayService - Version ${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE})")
-        appUid = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            pms.getPackageUid(BuildConfig.APPLICATION_ID, 0L, 0)
-        } else {
-            pms.getPackageUid(BuildConfig.APPLICATION_ID, 0, 0)
-        }
+        appUid = packageUid(pms, BuildConfig.APPLICATION_ID)
+        gearheadUid = packageUid(pms, "com.google.android.projection.gearhead")
 
-        log(TAG, "Client uid: $appUid")
+        log(TAG, "Client uid: app=$appUid gearhead=$gearheadUid")
         log(TAG, "Service uid: ${Process.myUid()}")
         log(TAG, "Initialize service proxy")
         pms.javaClass.findMethod(true) {
@@ -42,8 +41,8 @@ object BridgeService {
 
     private fun myTransact(code: Int, data: Parcel, reply: Parcel?): Boolean {
         if (code == TRANSACTION) {
-            if (Binder.getCallingUid() == appUid) {
-                log(TAG, "Transaction from client")
+            if (isAllowedClient(Binder.getCallingUid())) {
+                log(TAG, "Transaction from client uid=${Binder.getCallingUid()}")
                 runCatching {
                     data.enforceInterface(DESCRIPTOR)
                     when (data.readInt()) {
@@ -58,11 +57,30 @@ object BridgeService {
                     log(TAG, "Transaction error", it)
                 }
             } else {
-                log(TAG, "Someone else trying to get my binder?")
+                log(TAG, "Someone else trying to get my binder? uid=${Binder.getCallingUid()}")
             }
             data.setDataPosition(0)
             reply?.setDataPosition(0)
         }
         return false
+    }
+
+    private fun isAllowedClient(uid: Int): Boolean {
+        if (uid == appUid) return true
+        if (gearheadUid != 0 && uid == gearheadUid) return true
+        return false
+    }
+
+    private fun packageUid(pms: IPackageManager, packageName: String): Int {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pms.getPackageUid(packageName, 0L, 0)
+            } else {
+                pms.getPackageUid(packageName, 0, 0)
+            }
+        } catch (e: Throwable) {
+            log(TAG, "getPackageUid($packageName) failed", e)
+            0
+        }
     }
 }

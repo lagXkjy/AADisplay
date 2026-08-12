@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.xposed;
 
+import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceControl;
 import io.github.nitsuya.aa.display.xposed.IVirtualDisplayCreatedListener;
@@ -45,6 +46,11 @@ interface ICoreManager {
     void restoreLastSplit();
     void pressKey(int action);
     void touchPane(int pane, in MotionEvent motionEvent);
+    /**
+     * Inject into the AADisplay CarActivity host display (not a pane VD).
+     * Used to relay Coolwalk FacetBar/rail-slot touches after the rail chrome is reclaimed.
+     */
+    void touchHost(in MotionEvent motionEvent);
     void toggleDisplayPower();
     void displayPower(boolean displayPower);
 
