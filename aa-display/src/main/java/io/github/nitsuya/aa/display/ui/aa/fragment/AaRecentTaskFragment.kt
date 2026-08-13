@@ -6,8 +6,8 @@ import io.github.nitsuya.aa.display.databinding.FragmentAaRecentTaskBinding
 import io.github.nitsuya.aa.display.ui.aa.AaDisplayActivityKt
 import io.github.nitsuya.aa.display.ui.window.DisplayRecyclerViewAdapter
 import io.github.nitsuya.aa.display.ui.window.RecentTaskUiHelper
-import io.github.nitsuya.template.bases.runIO
-import io.github.nitsuya.template.bases.runMain
+import io.github.duzhaokun123.template.utils.runIO
+import io.github.duzhaokun123.template.utils.runMain
 
 class AaRecentTaskFragment: BaseFragment<FragmentAaRecentTaskBinding>(FragmentAaRecentTaskBinding::class.java){
 

@@ -35,7 +35,7 @@ import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.util.startCarAaDisplay
 import io.github.nitsuya.aa.display.util.startCarTelecom
 import io.github.nitsuya.aa.display.xposed.IVirtualDisplayCreatedListener
-import io.github.nitsuya.template.bases.runMain
+import io.github.duzhaokun123.template.utils.runMain
 
 class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding::class.java) {
     companion object {

@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.model
 import android.graphics.Bitmap
 import android.os.Parcel
 import android.os.Parcelable
+import androidx.core.os.ParcelCompat
 
 data class RecentTaskInfo(
     var logo: Bitmap?,
@@ -12,10 +13,10 @@ data class RecentTaskInfo(
     var packageName: String? = null
 ) : Parcelable {
     constructor(parcel: Parcel) : this(
-        parcel.readParcelable(Bitmap::class.java.classLoader),
+        ParcelCompat.readParcelable(parcel, Bitmap::class.java.classLoader, Bitmap::class.java),
         parcel.readInt(),
         parcel.readString(),
-        parcel.readParcelable(Bitmap::class.java.classLoader),
+        ParcelCompat.readParcelable(parcel, Bitmap::class.java.classLoader, Bitmap::class.java),
         parcel.readString()
     )
 

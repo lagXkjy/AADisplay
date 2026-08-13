@@ -19,7 +19,7 @@ import androidx.lifecycle.ViewModel
 import androidx.viewbinding.ViewBinding
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.ActivityBaseRoot2Binding
-import io.github.nitsuya.template.bases.maxSystemBarsDisplayCutout
+import io.github.duzhaokun123.template.utils.maxSystemBarsDisplayCutout
 import net.matsudamper.viewbindingutil.ViewBindingUtil
 
 abstract class BaseActivity<BaseBinding : ViewBinding>(

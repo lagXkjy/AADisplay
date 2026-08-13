@@ -11,7 +11,7 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
-import io.github.nitsuya.template.bases.getAttr
+import io.github.duzhaokun123.template.utils.getAttr
 
 class MainActivity :
     BaseActivity<ActivityMainBinding>(

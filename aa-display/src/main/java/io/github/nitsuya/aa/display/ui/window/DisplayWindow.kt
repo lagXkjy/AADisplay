@@ -27,8 +27,8 @@ import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.RomUtil
-import io.github.nitsuya.template.bases.runIO
-import io.github.nitsuya.template.bases.runMain
+import io.github.duzhaokun123.template.utils.runIO
+import io.github.duzhaokun123.template.utils.runMain
 import java.lang.reflect.Method
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
