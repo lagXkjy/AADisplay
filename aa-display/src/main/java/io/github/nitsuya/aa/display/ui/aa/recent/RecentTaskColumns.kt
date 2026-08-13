@@ -1,4 +1,4 @@
-package io.github.nitsuya.aa.display.ui.window
+package io.github.nitsuya.aa.display.ui.aa.recent
 
 import android.view.MotionEvent
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -8,12 +8,12 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import kotlin.math.abs
 
 data class RecentTaskAdapters(
-    val primary: DisplayRecyclerViewAdapter,
-    val secondary: DisplayRecyclerViewAdapter,
-    val phone: DisplayRecyclerViewAdapter,
+    val primary: RecentTaskColumnAdapter,
+    val secondary: RecentTaskColumnAdapter,
+    val phone: RecentTaskColumnAdapter,
 )
 
-object RecentTaskUiHelper {
+object RecentTaskColumns {
 
     fun wireThreeColumnRecents(
         left: RecyclerView,
@@ -23,9 +23,9 @@ object RecentTaskUiHelper {
         focusedPaneProvider: () -> Int,
         setFocusedPane: (Int) -> Unit,
     ): RecentTaskAdapters {
-        val phoneAdapter = DisplayRecyclerViewAdapter(right, onExit = onExit)
-        val primaryAdapter = DisplayRecyclerViewAdapter(left, SplitPane.PRIMARY, onExit)
-        val secondaryAdapter = DisplayRecyclerViewAdapter(center, SplitPane.SECONDARY, onExit)
+        val phoneAdapter = RecentTaskColumnAdapter(right, onExit = onExit)
+        val primaryAdapter = RecentTaskColumnAdapter(left, SplitPane.PRIMARY, onExit)
+        val secondaryAdapter = RecentTaskColumnAdapter(center, SplitPane.SECONDARY, onExit)
         phoneAdapter.primaryAdapter = primaryAdapter
         phoneAdapter.secondaryAdapter = secondaryAdapter
         primaryAdapter.phoneAdapter = phoneAdapter

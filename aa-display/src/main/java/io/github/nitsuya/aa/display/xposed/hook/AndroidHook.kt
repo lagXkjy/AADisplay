@@ -10,7 +10,6 @@ import android.view.WindowManager
 import com.github.kyuubiran.ezxhelper.utils.*
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.xposed.BridgeService
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.log
@@ -437,12 +436,13 @@ object AndroidHook : BaseHook() {
                     val displayId = param.args[2] as? Int ?: return@hookBefore
                     if (!CoreManagerService.isAaVirtualDisplay(displayId)) return@hookBefore
                     val ownerPkg = CoreManagerService.panePackageForDisplay(displayId) ?: return@hookBefore
-                    val uid = android.os.Binder.getCallingUid()
                     val callerPkg = SplitPresentationGuard.packageForUid(
                         CoreManagerService.systemContext,
-                        uid
+                        android.os.Binder.getCallingUid()
                     ) ?: return@hookBefore
-                    if (callerPkg == ownerPkg || callerPkg == BuildConfig.APPLICATION_ID) return@hookBefore
+                    if (!SplitPresentationGuard.isForeignPresentationCaller(ownerPkg, callerPkg)) {
+                        return@hookBefore
+                    }
                     log(
                         tagName,
                         "PanePresentationGuard: block attachContext $callerPkg type=$type " +
@@ -462,6 +462,17 @@ object AndroidHook : BaseHook() {
 
         private fun shouldBlockPresentation(displayId: Int, args: Array<Any?>): Boolean {
             val ownerPkg = CoreManagerService.panePackageForDisplay(displayId) ?: return false
+            val callerPkg = resolvePresentationCallerPackage(args) ?: return false
+            if (!SplitPresentationGuard.isForeignPresentationCaller(ownerPkg, callerPkg)) return false
+            log(
+                tagName,
+                "PanePresentationGuard: block addWindow $callerPkg presentation on " +
+                    "display=$displayId (owner=$ownerPkg)"
+            )
+            return true
+        }
+
+        private fun resolvePresentationCallerPackage(args: Array<Any?>): String? {
             val session = args.firstOrNull { arg ->
                 arg != null && arg.javaClass.name.endsWith("Session")
             }
@@ -471,16 +482,8 @@ object AndroidHook : BaseHook() {
                 }?.invoke(session) as? Int
             } else {
                 android.os.Binder.getCallingUid()
-            } ?: return false
-            val callerPkg = SplitPresentationGuard.packageForUid(CoreManagerService.systemContext, uid)
-                ?: return false
-            if (callerPkg == ownerPkg || callerPkg == BuildConfig.APPLICATION_ID) return false
-            log(
-                tagName,
-                "PanePresentationGuard: block addWindow $callerPkg presentation on " +
-                    "display=$displayId (owner=$ownerPkg)"
-            )
-            return true
+            } ?: return null
+            return SplitPresentationGuard.packageForUid(CoreManagerService.systemContext, uid)
         }
 
         /**

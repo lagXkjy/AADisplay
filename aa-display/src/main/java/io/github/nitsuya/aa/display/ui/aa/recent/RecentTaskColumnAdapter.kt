@@ -1,4 +1,4 @@
-package io.github.nitsuya.aa.display.ui.window
+package io.github.nitsuya.aa.display.ui.aa.recent
 
 import androidx.recyclerview.widget.RecyclerView
 import android.view.LayoutInflater
@@ -19,18 +19,18 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
  * - Phone LEFT → focused VD pane (tap a VD column first to choose VD1/VD2)
  * - VD RIGHT → phone; Primary LEFT → remove; Secondary LEFT → Primary
  */
-class DisplayRecyclerViewAdapter(
+class RecentTaskColumnAdapter(
       private val recyclerView: RecyclerView,
     /** null = phone stack; [SplitPane.PRIMARY] / [SplitPane.SECONDARY] = VD stacks. */
       private val stackPane: Int? = null,
       private val onExit: (() -> Unit),
-) : RecyclerView.Adapter<DisplayRecyclerViewAdapter.ViewHolder>(){
+) : RecyclerView.Adapter<RecentTaskColumnAdapter.ViewHolder>(){
 
     private val items: MutableList<RecentTaskInfo> = ArrayList()
 
-    var phoneAdapter: DisplayRecyclerViewAdapter? = null
-    var primaryAdapter: DisplayRecyclerViewAdapter? = null
-    var secondaryAdapter: DisplayRecyclerViewAdapter? = null
+    var phoneAdapter: RecentTaskColumnAdapter? = null
+    var primaryAdapter: RecentTaskColumnAdapter? = null
+    var secondaryAdapter: RecentTaskColumnAdapter? = null
 
     init {
         ItemTouchHelper(ItemTouchHelperCallback()).attachToRecyclerView(recyclerView)

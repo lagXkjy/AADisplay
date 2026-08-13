@@ -369,10 +369,17 @@ class SplitDisplayController(
                 action == KeyEvent.KEYCODE_MEDIA_NEXT || action == KeyEvent.KEYCODE_MEDIA_PREVIOUS
             // After pane swap, mFocusedPane may still sit on 高德 while LivePlay is the other
             // VD — MEDIA_* would then hit the system media session (QQ). Prefer any live pane.
-            val displayId = when {
-                nextPrev -> resolveLiveStyleDisplayId().takeIf { it != Display.INVALID_DISPLAY }
-                    ?: resolveKeyInjectionDisplayId()
-                else -> resolveKeyInjectionDisplayId()
+            var knownLive = false
+            val displayId = if (nextPrev) {
+                val liveId = resolvePaneDisplayId { input.isLiveStyleTopActivity(it) }
+                if (liveId != Display.INVALID_DISPLAY) {
+                    knownLive = true
+                    liveId
+                } else {
+                    resolveKeyInjectionDisplayId()
+                }
+            } else {
+                resolveKeyInjectionDisplayId()
             }
             if (displayId == Display.INVALID_DISPLAY) return@runOnHandlerBlocking false
             val topTask = ownership.snapshotUserRootTasks(displayId).lastOrNull()
@@ -380,7 +387,8 @@ class SplitDisplayController(
                 ownership.bringTaskToFront(ref.taskId)
                 paneForDisplayId(displayId)?.let { mFocusedPane = it }
             }
-            val live = input.isLiveStyleTopActivity(displayId)
+            // knownLive: already confirmed by resolvePaneDisplayId — skip a second ATMS walk.
+            val live = knownLive || input.isLiveStyleTopActivity(displayId)
             // Live rooms ignore MEDIA_NEXT/PREV; swipe the current VD bounds instead
             // (size read at inject time — split ratio / resize can change anytime).
             if (live && nextPrev) {
@@ -402,8 +410,8 @@ class SplitDisplayController(
         }
     }
 
-    /** Prefer the focused pane when it still has a user task; otherwise any occupied AA pane. */
-    private fun resolveKeyInjectionDisplayId(): Int {
+    /** Focused pane first, then secondary, then primary. */
+    private fun resolvePaneDisplayId(predicate: (Int) -> Boolean): Int {
         val candidates = intArrayOf(
             input.displayIdFor(mFocusedPane) ?: Display.INVALID_DISPLAY,
             secondaryDisplayId,
@@ -411,23 +419,16 @@ class SplitDisplayController(
         )
         for (displayId in candidates) {
             if (displayId == Display.INVALID_DISPLAY) continue
-            if (ownership.snapshotUserRootTasks(displayId).isNotEmpty()) return displayId
-        }
-        return input.displayIdFor(mFocusedPane) ?: primaryDisplayId
-    }
-
-    /** Scan both AA VDs for LivePlay-style top activity (swap / focus independent). */
-    private fun resolveLiveStyleDisplayId(): Int {
-        val candidates = intArrayOf(
-            input.displayIdFor(mFocusedPane) ?: Display.INVALID_DISPLAY,
-            secondaryDisplayId,
-            primaryDisplayId,
-        )
-        for (displayId in candidates) {
-            if (displayId == Display.INVALID_DISPLAY) continue
-            if (input.isLiveStyleTopActivity(displayId)) return displayId
+            if (predicate(displayId)) return displayId
         }
         return Display.INVALID_DISPLAY
+    }
+
+    /** Prefer the focused pane when it still has a user task; otherwise any occupied AA pane. */
+    private fun resolveKeyInjectionDisplayId(): Int {
+        val found = resolvePaneDisplayId { ownership.snapshotUserRootTasks(it).isNotEmpty() }
+        if (found != Display.INVALID_DISPLAY) return found
+        return input.displayIdFor(mFocusedPane) ?: primaryDisplayId
     }
 
     fun getRecentTask(): RecentTask {

@@ -169,8 +169,13 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 
 ### 手机悬浮控制
 
-- `ui/window/DisplayWindow.kt`、`DisplayRecyclerViewAdapter.kt`
+- `ui/window/DisplayWindow.kt`
 - 通过 `CoreApi` 操作任务，不直接碰 system VirtualDisplay
+
+### 车机 Recent 任务列
+
+- `ui/aa/fragment/AaRecentTaskFragment.kt`、`ui/aa/recent/`（`RecentTaskColumns` / `RecentTaskColumnAdapter`）
+- 入口：分屏分隔条长按 → `AaDisplayActivityKt.showRecentTask`
 
 ### 扩展 IPC
 

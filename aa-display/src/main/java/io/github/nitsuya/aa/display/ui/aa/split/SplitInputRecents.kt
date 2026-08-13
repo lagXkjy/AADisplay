@@ -78,8 +78,8 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
             Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
         }.orEmpty()
         val name = tasks.firstOrNull()?.topActivity?.className ?: return false
+        // "LivePlay" is covered by case-insensitive "live".
         return name.contains("live", ignoreCase = true) ||
-            name.contains("LivePlay", ignoreCase = true) ||
             name.contains("webcast", ignoreCase = true)
     }
 

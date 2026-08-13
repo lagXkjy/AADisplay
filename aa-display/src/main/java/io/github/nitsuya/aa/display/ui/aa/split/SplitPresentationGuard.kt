@@ -94,7 +94,7 @@ internal object SplitPresentationGuard {
                 }.getOrNull() ?: return@Consumer
                 if (!isPresentationType(attrs.type)) return@Consumer
                 val pkg = packageForWindowState(c, windowState) ?: return@Consumer
-                if (pkg == ownerPkg || pkg == BuildConfig.APPLICATION_ID) return@Consumer
+                if (!isForeignPresentationCaller(ownerPkg, pkg)) return@Consumer
                 victims += windowState
             }
             try {
@@ -182,6 +182,11 @@ internal object SplitPresentationGuard {
 
     fun isPresentationType(type: Int): Boolean {
         return type == TYPE_PRESENTATION || type == TYPE_PRIVATE_PRESENTATION
+    }
+
+    /** True when [callerPkg] is neither the pane owner nor this module. */
+    fun isForeignPresentationCaller(ownerPkg: String, callerPkg: String): Boolean {
+        return callerPkg != ownerPkg && callerPkg != BuildConfig.APPLICATION_ID
     }
 
     fun packageForUid(context: android.content.Context, uid: Int): String? {

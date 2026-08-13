@@ -49,7 +49,6 @@ class DisplayWindow(
     private lateinit var mControllerLayoutParams: WindowManager.LayoutParams
 
     private var mControllerStatus = false
-    private var mControllerCollapsed = true
     private var mControllerDockRight = true
     private val mControllerPeekPx by lazy { (mContext.resources.displayMetrics.density * 14f).toInt() }
 
@@ -165,7 +164,6 @@ class DisplayWindow(
                     }
                     if (!lock.isHeld) {
                         lock.acquire()
-                        log(TAG, "VD Monitor wake lock acquired display=$displayId")
                     }
                 } catch (e: Throwable) {
                     log(TAG, "VD Monitor acquire failed display=$displayId:", e)
@@ -378,16 +376,8 @@ class DisplayWindow(
 
     fun doInit() {
         initLayoutParams()
-        mControllerBinding?.apply {
-            root.allViews.forEach {
-                it.setOnTouchListener(this@DisplayWindow)
-            }
-            ibHandle.setOnClickListener {
-                expandController()
-            }
-            ibHideController.setOnClickListener {
-                collapseController()
-            }
+        mControllerBinding?.root?.allViews?.forEach {
+            it.setOnTouchListener(this@DisplayWindow)
         }
         showController()
     }
@@ -415,6 +405,7 @@ class DisplayWindow(
         mDestroyJob?.cancelAndJoin()
         mControllerBinding?.apply {
             tvDestroyTime.visibility = View.GONE
+            root.post { applyControllerDockPosition() }
         }
         showController()
     }
@@ -443,12 +434,13 @@ class DisplayWindow(
                 }
             }.onStart {
                 tvDestroyTime.visibility = View.VISIBLE
+                root.post { applyControllerDockPosition() }
             }.onEach {
-                if(mControllerStatus){
-                    tvDestroyTime.text = "${it}S"
+                if (mControllerStatus) {
+                    tvDestroyTime.text = "${it}s"
                 }
             }.onCompletion {
-                if(it == null){
+                if (it == null) {
                     close()
                     onDestroySucceed()
                 }
@@ -469,10 +461,7 @@ class DisplayWindow(
         if(mControllerStatus) return
         mControllerBinding?.apply {
             tryOrNull { Instances.windowManager.addView(root, mControllerLayoutParams) }
-            applyControllerCollapsedState()
-            root.post {
-                applyControllerDockPosition()
-            }
+            root.post { applyControllerDockPosition() }
             mChangeAlphaCountDownTimer.start()
             mControllerStatus = true
         }
@@ -485,47 +474,22 @@ class DisplayWindow(
         }
     }
 
-    private fun expandController(){
-        setControllerCollapsed(false)
-    }
-    private fun collapseController(){
-        setControllerCollapsed(true)
-    }
-
-    private fun setControllerCollapsed(collapsed: Boolean) {
-        mControllerCollapsed = collapsed
-        applyControllerCollapsedState()
-        mControllerBinding?.root?.post {
-            applyControllerDockPosition()
-        }
-    }
-
-    private fun applyControllerCollapsedState() {
-        mControllerBinding?.apply {
-            cvPanel.visibility = if (mControllerCollapsed) View.GONE else View.VISIBLE
-            cvHandle.visibility = if (mControllerCollapsed) View.VISIBLE else View.GONE
-            llPanel.visibility = if (mControllerCollapsed) View.GONE else View.VISIBLE
-        }
-    }
-
     private fun applyControllerDockPosition() {
         val binding = mControllerBinding ?: return
         val displayMetrics = mContext.resources.displayMetrics
-        val visibleWidth = getControllerVisibleWidth(binding)
-        val visibleHeight = getControllerVisibleHeight(binding)
+        val visibleWidth = binding.cvHandle.width.takeIf { it > 0 } ?: binding.cvHandle.measuredWidth
+        val visibleHeight = binding.cvHandle.height.takeIf { it > 0 } ?: binding.cvHandle.measuredHeight
         if (visibleWidth <= 0 || visibleHeight <= 0) return
 
-        mControllerLayoutParams.x = if (mControllerCollapsed) {
+        // Peek a strip at the screen edge; full card slides out when destroy countdown shows.
+        val showingCountdown = binding.tvDestroyTime.visibility == View.VISIBLE
+        mControllerLayoutParams.x = if (showingCountdown) {
+            if (mControllerDockRight) displayMetrics.widthPixels - visibleWidth else 0
+        } else {
             if (mControllerDockRight) {
                 displayMetrics.widthPixels - mControllerPeekPx
             } else {
                 -(visibleWidth - mControllerPeekPx)
-            }
-        } else {
-            if (mControllerDockRight) {
-                displayMetrics.widthPixels - visibleWidth
-            } else {
-                0
             }
         }
         mControllerLayoutParams.y = mControllerLayoutParams.y.coerceIn(
@@ -533,22 +497,6 @@ class DisplayWindow(
             (displayMetrics.heightPixels - visibleHeight).coerceAtLeast(0)
         )
         tryOrNull { Instances.windowManager.updateViewLayout(binding.root, mControllerLayoutParams) }
-    }
-
-    private fun getControllerVisibleWidth(binding: WindowControllerBinding): Int {
-        return if (mControllerCollapsed) {
-            binding.cvHandle.width.takeIf { it > 0 } ?: binding.cvHandle.measuredWidth
-        } else {
-            binding.cvPanel.width.takeIf { it > 0 } ?: binding.cvPanel.measuredWidth
-        }
-    }
-
-    private fun getControllerVisibleHeight(binding: WindowControllerBinding): Int {
-        return if (mControllerCollapsed) {
-            binding.cvHandle.height.takeIf { it > 0 } ?: binding.cvHandle.measuredHeight
-        } else {
-            binding.cvPanel.height.takeIf { it > 0 } ?: binding.cvPanel.measuredHeight
-        }
     }
 
     private fun close() {
