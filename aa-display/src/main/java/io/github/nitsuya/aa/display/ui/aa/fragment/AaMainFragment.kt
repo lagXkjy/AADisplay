@@ -7,8 +7,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.SurfaceTexture
 import android.os.SystemClock
-import android.support.car.Car
-import android.support.car.CarConnectionCallback
 import android.util.Log
 import android.view.Display
 import android.view.KeyEvent
@@ -21,7 +19,6 @@ import androidx.core.view.InputDeviceCompat
 import androidx.core.view.doOnLayout
 import androidx.core.view.isVisible
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
-import com.google.android.gms.car.CarFirstPartyManager
 import io.github.duzhaokun123.template.bases.BaseFragment
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.databinding.FragmentAaMainBinding
@@ -30,10 +27,7 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitAppPickerController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.LastSplitStore
-import io.github.nitsuya.aa.display.util.getGmsCarFirstPartyManager
 import io.github.nitsuya.aa.display.util.rewriteMotionEvent
-import io.github.nitsuya.aa.display.util.startCarAaDisplay
-import io.github.nitsuya.aa.display.util.startCarTelecom
 import io.github.nitsuya.aa.display.xposed.IVirtualDisplayCreatedListener
 import io.github.duzhaokun123.template.utils.runMain
 
@@ -45,7 +39,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private var displayId: Int = Display.INVALID_DISPLAY
     private var repairDownTimePrimary = Long.MIN_VALUE
     private var repairDownTimeSecondary = Long.MIN_VALUE
-    private var isForeground = false
     private var isDisplayCreateRequested = false
     private var isControlReceiverRegistered = false
     private var primarySurface: Surface? = null
@@ -53,20 +46,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private var splitRatio: Float = SplitPane.DEFAULT_RATIO
     private lateinit var appPicker: SplitAppPickerController
     private val paneHasApp = booleanArrayOf(false, false)
-
-    private var car: Car? = null
-    private var carManager: CarFirstPartyManager? = null
-    private val carConnectionCallback = object : CarConnectionCallback() {
-        override fun onConnected(car: Car) {
-            if (carManager == null) {
-                carManager = car.getGmsCarFirstPartyManager()
-            }
-        }
-
-        override fun onDisconnected(car: Car) {
-            carManager = null
-        }
-    }
 
     private val broadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent) {
@@ -93,25 +72,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                         applyOccupancyFromPackages(primary.orEmpty(), secondary.orEmpty())
                     } else {
                         syncPaneOccupancyFromService()
-                    }
-                }
-                AABroadcastConst.ACTION_SCREEN_CONTROL -> {
-                    when (val action = intent.getIntExtra(AABroadcastConst.EXTRA_ACTION, 0)) {
-                        KeyEvent.KEYCODE_FEATURED_APP_1 -> carManager.startCarTelecom()
-                        KeyEvent.KEYCODE_POWER -> CoreApi.toggleDisplayPower()
-                        else -> {
-                            if (!isForeground) {
-                                carManager.startCarAaDisplay()
-                                return
-                            }
-                            when (action) {
-                                KeyEvent.KEYCODE_DEMO_APP_1 -> CoreApi.moveSecondTaskToFront()
-                                KeyEvent.KEYCODE_BACK -> CoreApi.pressKey(action)
-                                KeyEvent.KEYCODE_APP_SWITCH -> runMain {
-                                    AaDisplayActivityKt.showRecentTask(this@AaMainFragment.parentFragmentManager)
-                                }
-                            }
-                        }
                     }
                 }
                 AABroadcastConst.ACTION_STEERING_WHEEL_CONTROL -> {
@@ -169,27 +129,16 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         baseBinding.splitContainer.doOnLayout {
             requestDisplay("layout")
         }
-
-        car?.disconnect()
-        car = Car.createCar(this.requireContext(), carConnectionCallback).apply {
-            connect()
-        }
     }
 
     override fun onResume() {
         super.onResume()
-        isForeground = true
         baseBinding.splitContainer.post {
             if (displayId == Display.INVALID_DISPLAY) {
                 isDisplayCreateRequested = false
             }
             requestDisplay("resume")
         }
-    }
-
-    override fun onPause() {
-        super.onPause()
-        isForeground = false
     }
 
     override fun onDestroy() {
@@ -208,8 +157,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             tryOrNull { context?.unregisterReceiver(broadcastReceiver) }
             isControlReceiverRegistered = false
         }
-        car?.disconnect()
-        car = null
     }
 
     private var appliedRatio: Float = Float.NaN
@@ -499,7 +446,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         val ctx = context
         if (!isAdded || ctx == null) return
         ContextCompat.registerReceiver(ctx, broadcastReceiver, IntentFilter().apply {
-            addAction(AABroadcastConst.ACTION_SCREEN_CONTROL)
             addAction(AABroadcastConst.ACTION_STEERING_WHEEL_CONTROL)
             addAction(AABroadcastConst.ACTION_OPEN_SPLIT_PICKER)
             addAction(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED)

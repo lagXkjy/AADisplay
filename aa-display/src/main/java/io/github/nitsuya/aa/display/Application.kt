@@ -11,12 +11,8 @@ val CoreApi by lazy {
     if (AndroidHook.isReadyForSystemHooks()) CoreManagerService.instance!!
     else CoreManager
 }
-lateinit var App : Application
-class Application: android.app.Application() {
-    init {
-        App = this
-    }
 
+class Application: android.app.Application() {
     override fun onCreate() {
         super.onCreate()
         DynamicColors.applyToActivitiesIfAvailable(this)

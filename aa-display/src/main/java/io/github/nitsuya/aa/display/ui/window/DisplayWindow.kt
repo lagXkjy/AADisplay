@@ -68,7 +68,6 @@ class DisplayWindow(
     private val mControllerPeekPx by lazy { (mContext.resources.displayMetrics.density * 14f).toInt() }
 
     private var mDisplayRatio = 1f
-    private var mDisplayPower = true
 
     private var mDestroyJob: Job? = null
     private var mChangeAlphaCountDownTimer = object : CountDownTimer(5000,5000){
@@ -418,9 +417,6 @@ class DisplayWindow(
                 collapseController()
                 true
             }
-            ibExpand.setOnClickListener {
-                expandController()
-            }
         }
         mMirrorBinding?.apply {
             arrayOf(vHeightUmbrella1, vHeightUmbrella2).forEach {
@@ -641,19 +637,6 @@ class DisplayWindow(
         }
     }
 
-    fun toggleDisplayPower(displayPower: Boolean = !mDisplayPower){
-        try {
-            mDisplayPower = displayPower
-            if (displayPower) {
-                pulsePhoneWake()
-            }
-            // Always restore the AA virtual display group — this is what the car sees.
-            keepVirtualDisplayAwake("toggleDisplayPower:$displayPower", forceWake = displayPower)
-        } catch (e : Throwable){
-            log(TAG, "toggleDisplayPower failed:", e)
-        }
-    }
-
     private fun showController(){
         if(mMirrorStatus){
             hideMirror()
@@ -742,7 +725,6 @@ class DisplayWindow(
             cvPanel.visibility = if (mControllerCollapsed) View.GONE else View.VISIBLE
             cvHandle.visibility = if (mControllerCollapsed) View.VISIBLE else View.GONE
             llPanel.visibility = if (mControllerCollapsed) View.GONE else View.VISIBLE
-            ibExpand.visibility = View.GONE
         }
     }
 

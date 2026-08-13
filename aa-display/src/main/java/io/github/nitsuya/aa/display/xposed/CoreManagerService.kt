@@ -338,14 +338,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         mSplitController?.onTouchPrimaryPane(event)
     }
 
-    override fun toggleDisplayPower() {
-        runIO { mDisplayWindow?.toggleDisplayPower() }
-    }
-
-    override fun displayPower(displayPower: Boolean) {
-        runIO { mDisplayWindow?.toggleDisplayPower(displayPower) }
-    }
-
     override fun addMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
         runIO { mSplitController?.addMirrorPane(pane, surfaceControl) }
     }

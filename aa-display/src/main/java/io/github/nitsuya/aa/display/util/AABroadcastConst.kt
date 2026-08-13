@@ -2,7 +2,6 @@ package io.github.nitsuya.aa.display.util
 
 interface AABroadcastConst {
     companion object {
-        const val ACTION_SCREEN_CONTROL = "aa.display.action.SCREEN_CONTROL"
         const val ACTION_STEERING_WHEEL_CONTROL = "aa.display.action.STEERING_WHEEL_CONTROL"
         const val ACTION_OPEN_SPLIT_PICKER = "aa.display.action.OPEN_SPLIT_PICKER"
         /** AA CarActivity resumed — cancel pending Auto Open retries in gearhead. */

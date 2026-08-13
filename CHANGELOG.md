@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **Dead-code cleanup:** remove orphaned `ACTION_SCREEN_CONTROL` (+ Car/`AACarUtil` path), unused floating-controller buttons (`ib_expand`/`ib_extinguish`), idle `toggleDisplayPower`/`displayPower` IPC, and unused `Application.App`.
 - **OSS hygiene cleanup:** remove dead ScreenOffReplace / `AndroidHook.Power` / `DisplayPowerCompat`; drop unused restore `manual` API and LastSplitStore landscape/sideBySide reads; rename `FuckAppUseApplicationContext` → `VdDensityPin`; refresh Known limitations for dual-VD (below).
 - **Version bump to `0.24#17.4-r1`:** target Android Auto 17.4; remove MainActivity GitHub menu link.
 - **Dead-code sweep (post rail-touch cleanup):** remove no-op `AaDpiHook` (DexKit load with empty hook body); drop orphaned IPC (`printLog`, `startTaskId`, `getVersionCode`, `getUid`, `restoreLastSplit` manual path); rename `touchHost` → `touchPrimaryPane` (inject PRIMARY pane VD, not host display); extract shared `RecentTaskUiHelper` for AA + phone overlay recent-task columns; stop writing unused `landscape`/`sideBySide` in `LastSplitStore`; remove `ServiceProxy` per-IPC logging and voice-assist no-op stub.

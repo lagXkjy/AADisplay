@@ -46,8 +46,6 @@ interface ICoreManager {
      * Relay Coolwalk left-rail HU touches from :car into the PRIMARY pane virtual display.
      */
     void touchPrimaryPane(in MotionEvent motionEvent);
-    void toggleDisplayPower();
-    void displayPower(boolean displayPower);
 
     void addMirrorPane(int pane, in SurfaceControl surfaceControl);
     void removeMirrorPane(int pane, in SurfaceControl surfaceControl);

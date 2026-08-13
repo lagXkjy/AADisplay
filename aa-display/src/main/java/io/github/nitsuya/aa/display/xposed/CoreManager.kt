@@ -137,14 +137,6 @@ object CoreManager : ICoreManager, DeathRecipient {
         svc.touchPrimaryPane(motionEvent)
     }
 
-    override fun toggleDisplayPower() {
-        getService()?.toggleDisplayPower()
-    }
-
-    override fun displayPower(displayPower: Boolean) {
-        getService()?.displayPower(displayPower)
-    }
-
     override fun addMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
         getService()?.addMirrorPane(pane, surfaceControl)
     }
