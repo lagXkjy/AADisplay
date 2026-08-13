@@ -36,11 +36,11 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | `xposed/` | `XposedInit`、Binder 桥、`CoreManager` / `CoreManagerService` |
 | `xposed/hook/` | 系统 / 通用钩子 |
 | `xposed/hook/aa/` | Android Auto 专用钩子（`Aa*Hook`） |
-| `ui/main/` | 手机端设置（`MainActivity`） |
+| `ui/main/` | 手机端激活状态页（`MainActivity`） |
 | `ui/aa/` | 车机投影 Activity / Fragment / VirtualDisplay 适配 |
 | `ui/window/` | 手机端悬浮窗与任务列表 |
 | `service/` | `AaActivityService` |
-| `util/` | 配置、Maps 开关、广播常量等 |
+| `util/` | `LastSplitStore`、广播常量、触控改写等 |
 | `model/` | 最近任务等模型 |
 
 Vendored 基座（**非必要不改**）：

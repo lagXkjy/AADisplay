@@ -1,7 +1,6 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    //kotlin("android")
     id("dev.rikka.tools.refine") version "4.4.0"
 }
 
@@ -51,7 +50,6 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
-            sourceSets.getByName("main").java.srcDir(File("build/generated/ksp/release/kotlin"))
         }
         getByName("debug") {
             // Keep debug artifacts unminified to avoid AGP warnings and speed up test builds.
@@ -105,13 +103,10 @@ dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-ktx:1.11.0")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
-//    implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.constraintlayout:constraintlayout:2.2.1")
     implementation("com.google.android.material:material:1.13.0")
     implementation("dev.rikka.rikkax.appcompat:appcompat:1.6.1")
 
-    //kotlinx-coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     //ViewBindingUtil
@@ -119,12 +114,10 @@ dependencies {
 
     compileOnly(project(":lib-stub"))
     implementation("dev.rikka.tools.refine:runtime:4.4.0")
-    implementation("dev.rikka.hidden:compat:4.4.0")
     compileOnly("dev.rikka.hidden:stub:4.4.0")
     compileOnly(files("./libs/de.robv.android.xposed_api_82.jar"))
     implementation("com.github.kyuubiran:EzXHelper:1.0.3")
     implementation("org.luckypray:dexkit:2.0.0-rc3")
-//    implementation("com.github.martoreto:aauto-sdk:v4.7")
     implementation(files("./libs/aauto.aar"))
 
     //lifecycle
@@ -132,9 +125,4 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:$lifecycleVersion")
     implementation("androidx.lifecycle:lifecycle-livedata-ktx:$lifecycleVersion")
     implementation("androidx.lifecycle:lifecycle-common-java8:$lifecycleVersion")
-
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.3.0")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
-
 }

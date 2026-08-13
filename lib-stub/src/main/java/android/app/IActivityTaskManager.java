@@ -6,8 +6,6 @@ import android.os.IInterface;
 import android.os.RemoteException;
 import android.window.TaskSnapshot;
 
-import org.jetbrains.annotations.NotNull;
-
 import java.util.List;
 
 public interface IActivityTaskManager extends IInterface {
@@ -16,12 +14,6 @@ public interface IActivityTaskManager extends IInterface {
     void registerTaskStackListener(ITaskStackListener listener) throws RemoteException;
 
     void unregisterTaskStackListener(ITaskStackListener listener) throws RemoteException;
-
-    int getFrontActivityScreenCompatMode();
-
-    void setFrontActivityScreenCompatMode(int mode);
-
-    void setFocusedTask(int taskId);
 
     boolean removeTask(int taskId);
 

@@ -1,8 +1,5 @@
 package android.app;
 
-
-import android.os.RemoteException;
-
 import dev.rikka.tools.refine.RefineAs;
 
 @RefineAs(ActivityManager.class)

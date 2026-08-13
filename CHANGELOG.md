@@ -3,9 +3,11 @@
 ## Unreleased
 
 ### Changed
+- **Low-risk hygiene:** drop unused `Application` (never in Manifest), dead Gradle deps (`hidden:compat`, `coroutines-jdk8`, empty test deps, KSP srcDir), unused ATMS stub methods; align lib-stub hidden stub to 4.4.0; docs sync (`AGENTS` util map, version `0.24#17.4-r2`).
+- **Drop dead Auto Open flag:** `AaUiHook.mAutoOpen` was always set `true` after prefs removal; remove the fake gate (behavior unchanged: always arm retries).
 - **Dead-code cleanup:** remove orphaned `ACTION_SCREEN_CONTROL` (+ Car/`AACarUtil` path), unused floating-controller buttons (`ib_expand`/`ib_extinguish`), idle `toggleDisplayPower`/`displayPower` IPC, and unused `Application.App`.
 - **OSS hygiene cleanup:** remove dead ScreenOffReplace / `AndroidHook.Power` / `DisplayPowerCompat`; drop unused restore `manual` API and LastSplitStore landscape/sideBySide reads; rename `FuckAppUseApplicationContext` → `VdDensityPin`; refresh Known limitations for dual-VD (below).
-- **Version bump to `0.24#17.4-r1`:** target Android Auto 17.4; remove MainActivity GitHub menu link.
+- **Version bump to `0.24#17.4-r2`:** target Android Auto 17.4; remove MainActivity GitHub menu link.
 - **Dead-code sweep (post rail-touch cleanup):** remove no-op `AaDpiHook` (DexKit load with empty hook body); drop orphaned IPC (`printLog`, `startTaskId`, `getVersionCode`, `getUid`, `restoreLastSplit` manual path); rename `touchHost` → `touchPrimaryPane` (inject PRIMARY pane VD, not host display); extract shared `RecentTaskUiHelper` for AA + phone overlay recent-task columns; stop writing unused `landscape`/`sideBySide` in `LastSplitStore`; remove `ServiceProxy` per-IPC logging and voice-assist no-op stub.
 - **Drop i18n string resources:** no multi-locale plan; keep only `app_name` / `xposeddescription` in `strings.xml`, hardcode Chinese UI text in layouts/code (same as existing toasts).
 - **Drop Disable Google Maps on AA + App-process su:** remove `GoogleMapsOnAaManager`, libsu, Root Privilege UI, and one-tap reboot via `su`. MainActivity is activation status only; device still needs Root/LSPosed for the module itself.

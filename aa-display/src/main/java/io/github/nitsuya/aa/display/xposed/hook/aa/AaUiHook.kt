@@ -100,7 +100,6 @@ object AaUiHook: AaHook() {
     private var canHookLayout: Boolean = false
     private var canHookFacetBar: Boolean = false
     private var mInjectingFacetBar: Boolean = false
-    private var mAutoOpen: Boolean = false
     private val facetBarInjectedTag = Any()
     private val mFacetEnsureHandler = Handler(Looper.getMainLooper())
     /**
@@ -275,8 +274,7 @@ object AaUiHook: AaHook() {
             hookHuTouchDispatchRedirect()
             return
         }
-        mAutoOpen = true
-        log(tagName, "AaUiHook: AutoOpen=$mAutoOpen startMethod=${startMethod?.name}")
+        log(tagName, "AaUiHook: AutoOpen always-on startMethod=${startMethod?.name}")
         // Zero rail-column dimens first so LayoutInfo / VD allocation sees full HU width.
         hookRailWidthDimens()
         hookVirtualDisplaySizing()
@@ -1157,7 +1155,6 @@ object AaUiHook: AaHook() {
     }
 
     private fun scheduleAutoOpenIfNeeded(reason: String = "unknown") {
-        if (!mAutoOpen) return
         if (startMethod == null) {
             log(tagName, "AaUiHook: AutoOpen skip ($reason): startMethod null")
             return

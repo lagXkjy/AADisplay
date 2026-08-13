@@ -1,6 +1,5 @@
 package io.github.nitsuya.aa.display
 
-import com.google.android.material.color.DynamicColors
 import io.github.nitsuya.aa.display.xposed.CoreManager
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
@@ -10,11 +9,4 @@ val CoreApi by lazy {
     // only the real system_server process hosts CoreManagerService.
     if (AndroidHook.isReadyForSystemHooks()) CoreManagerService.instance!!
     else CoreManager
-}
-
-class Application: android.app.Application() {
-    override fun onCreate() {
-        super.onCreate()
-        DynamicColors.applyToActivitiesIfAvailable(this)
-    }
 }
