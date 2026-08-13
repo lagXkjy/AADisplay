@@ -5,16 +5,15 @@ import android.view.WindowManager
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.xposed.log
-import io.github.nitsuya.aa.display.xposed.logDebug
 import java.util.function.Consumer
 
 /**
  * Blocks / removes [Presentation] windows that leak onto the wrong AA VirtualDisplay pane.
- * Seen with Douyin after soft reconnect / LivePlay: task on SECONDARY while a fullscreen
- * ty=PRESENTATION window covers PRIMARY (MediaRouter picks the other VD).
+ * Seen with Douyin LivePlay: task on SECONDARY while a fullscreen ty=PRESENTATION window
+ * covers PRIMARY (MediaRouter / WindowContext picks the other VD).
  *
- * OneUI: [WindowContainer.forAllWindows] is `(Consumer, boolean)` — a size-1 lookup never
- * matches, so eviction was a no-op until the boolean overload was used.
+ * OneUI: [WindowContainer.forAllWindows] is `(Consumer, boolean)`. Prefer
+ * [WindowState.removeImmediately] + [WindowState.getOwningPackage] over Session reflection.
  */
 internal object SplitPresentationGuard {
 
@@ -30,7 +29,7 @@ internal object SplitPresentationGuard {
 
     fun scheduleEvictForeignPresentations(c: SplitDisplayController, reason: String) {
         c.mHandler.removeCallbacksAndMessages(EVICT_TOKEN)
-        val delays = longArrayOf(0L, 600L, 1800L)
+        val delays = longArrayOf(0L, 350L, 900L, 2000L)
         for (delay in delays) {
             c.mHandler.postDelayed({
                 if (c.mIsDestroying) return@postDelayed
@@ -67,15 +66,28 @@ internal object SplitPresentationGuard {
             val wms = Class.forName("android.view.WindowManagerGlobal")
                 .getDeclaredMethod("getWindowManagerService")
                 .apply { isAccessible = true }
-                .invoke(null) ?: return@tryOrNull 0
-            val root = wms.javaClass.getField("mRoot").get(wms) ?: return@tryOrNull 0
+                .invoke(null) ?: run {
+                    log(SplitDisplayController.TAG, "evictPresentation[$reason]: no WMS")
+                    return@tryOrNull 0
+                }
+            val root = runCatching { wms.javaClass.getField("mRoot").get(wms) }.getOrNull()
+                ?: run {
+                    log(SplitDisplayController.TAG, "evictPresentation[$reason]: no mRoot")
+                    return@tryOrNull 0
+                }
             val displayContent = root.javaClass.methods.firstOrNull { m ->
                 m.name == "getDisplayContent" &&
                     m.parameterTypes.size == 1 &&
                     m.parameterTypes[0] == Int::class.javaPrimitiveType
-            }?.invoke(root, displayId) ?: return@tryOrNull 0
-            val forAllWindows = resolveForAllWindows(displayContent.javaClass) ?: return@tryOrNull 0
-            val victims = mutableListOf<Pair<Any, String>>()
+            }?.invoke(root, displayId) ?: run {
+                log(SplitDisplayController.TAG, "evictPresentation[$reason]: no DisplayContent id=$displayId")
+                return@tryOrNull 0
+            }
+            val forAllWindows = resolveForAllWindows(displayContent.javaClass) ?: run {
+                log(SplitDisplayController.TAG, "evictPresentation[$reason]: forAllWindows missing")
+                return@tryOrNull 0
+            }
+            val victims = mutableListOf<Any>()
             val consumer = Consumer<Any> { windowState ->
                 val attrs = runCatching {
                     windowState.javaClass.getField("mAttrs").get(windowState) as WindowManager.LayoutParams
@@ -83,40 +95,63 @@ internal object SplitPresentationGuard {
                 if (!isPresentationType(attrs.type)) return@Consumer
                 val pkg = packageForWindowState(c, windowState) ?: return@Consumer
                 if (pkg == ownerPkg || pkg == BuildConfig.APPLICATION_ID) return@Consumer
-                victims += windowState to pkg
+                victims += windowState
             }
-            invokeForAllWindows(forAllWindows, displayContent, consumer)
+            try {
+                invokeForAllWindows(forAllWindows, displayContent, consumer)
+            } catch (e: Throwable) {
+                log(SplitDisplayController.TAG, "evictPresentation[$reason]: forAllWindows failed", e)
+                return@tryOrNull 0
+            }
             if (victims.isEmpty()) return@tryOrNull 0
-            val removeWindow = wms.javaClass.methods.firstOrNull { m ->
-                m.name == "removeWindow" &&
-                    m.parameterTypes.size == 2 &&
-                    m.parameterTypes[0].name.contains("Session")
-            } ?: return@tryOrNull 0
             var count = 0
-            for ((windowState, pkg) in victims) {
-                val session = runCatching {
-                    windowState.javaClass.getField("mSession").get(windowState)
-                }.getOrNull() ?: continue
-                val client = runCatching {
-                    windowState.javaClass.getField("mClient").get(windowState)
-                }.getOrNull() ?: continue
-                runCatching {
-                    removeWindow.invoke(wms, session, client)
+            for (windowState in victims) {
+                val pkg = packageForWindowState(c, windowState) ?: "?"
+                if (removeWindowState(wms, windowState)) {
                     count++
                     log(
                         SplitDisplayController.TAG,
                         "evictPresentation[$reason]: removed $pkg from display=$displayId (owner=$ownerPkg)"
+                    )
+                } else {
+                    log(
+                        SplitDisplayController.TAG,
+                        "evictPresentation[$reason]: failed to remove $pkg from display=$displayId"
                     )
                 }
             }
             count
         } ?: 0
         if (removed == 0) {
-            logDebug(
+            // Keep visible in logcat (logDebug is too easy to miss while debugging LivePlay).
+            log(
                 SplitDisplayController.TAG,
                 "evictPresentation[$reason]: display=$displayId owner=$ownerPkg nothing to remove"
             )
         }
+    }
+
+    private fun removeWindowState(wms: Any, windowState: Any): Boolean {
+        // Prefer WindowState.removeImmediately — reliable on OneUI for Presentation tokens.
+        val removedImmediate = runCatching {
+            val m = windowState.javaClass.methods.firstOrNull {
+                it.name == "removeImmediately" && it.parameterTypes.isEmpty()
+            } ?: return@runCatching false
+            m.invoke(windowState)
+            true
+        }.getOrDefault(false)
+        if (removedImmediate) return true
+        return runCatching {
+            val removeWindow = wms.javaClass.methods.firstOrNull { m ->
+                m.name == "removeWindow" &&
+                    m.parameterTypes.size == 2 &&
+                    m.parameterTypes[0].name.contains("Session")
+            } ?: return@runCatching false
+            val session = windowState.javaClass.getField("mSession").get(windowState) ?: return@runCatching false
+            val client = windowState.javaClass.getField("mClient").get(windowState) ?: return@runCatching false
+            removeWindow.invoke(wms, session, client)
+            true
+        }.getOrDefault(false)
     }
 
     /** Prefer OneUI `(Consumer, boolean)`; fall back to AOSP single-arg if present. */
@@ -156,6 +191,11 @@ internal object SplitPresentationGuard {
     }
 
     private fun packageForWindowState(c: SplitDisplayController, windowState: Any): String? {
+        runCatching {
+            windowState.javaClass.methods.firstOrNull {
+                it.name == "getOwningPackage" && it.parameterTypes.isEmpty()
+            }?.invoke(windowState) as? String
+        }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
         val session = runCatching {
             windowState.javaClass.getField("mSession").get(windowState)
         }.getOrNull() ?: return null

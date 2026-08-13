@@ -1,9 +1,18 @@
 # Changelog
 
+## 0.24#17.4-r3
+
+### Fixed
+- **Douyin LivePlay covers the other pane + 方控 dead (r3):** LivePlay uses MediaRouter / `createWindowContext(TYPE_PRESENTATION)` to attach a fullscreen presentation onto the sibling AA VD (e.g. task on SECONDARY while PRIMARY/高德 is covered and keys have no focus sink). Drop `VIRTUAL_DISPLAY_FLAG_PRESENTATION` on AA VDs; block foreign presentation attach/`addWindow` in `AndroidHook.PanePresentationGuard`; harden `SplitPresentationGuard` eviction (`removeImmediately`, dynamic delays). Before key inject, evict + bring task to front.
+- **方控「下一曲/上一曲」切直播间 (r3):** on live-style top activities, `MEDIA_NEXT`/`MEDIA_PREVIOUS` inject a vertical fling using **current** VD `getRealSize` (split ratio / resize safe) instead of media-session fallback (which was driving QQ 车载音乐). Feed still uses normal media keys. After pane swap, resolve the LivePlay VD across both panes (do not trust `mFocusedPane` alone — focus can stay on 高德 and wrongly drive QQ).
+
+### Changed
+- **Version bump to `0.24#17.4-r3`** (`versionCode` 3059).
+
 ## Unreleased
 
 ### Changed
-- **Low-risk hygiene:** drop unused `Application` (never in Manifest), dead Gradle deps (`hidden:compat`, `coroutines-jdk8`, empty test deps, KSP srcDir), unused ATMS stub methods; align lib-stub hidden stub to 4.4.0; docs sync (`AGENTS` util map, version `0.24#17.4-r2`).
+- **Low-risk hygiene:** drop unused `Application` (never in Manifest), dead Gradle deps (`hidden:compat`, `coroutines-jdk8`, empty test deps, KSP srcDir), unused ATMS stub methods; align lib-stub hidden stub to 4.4.0; docs sync (`AGENTS` util map).
 - **Drop dead Auto Open flag:** `AaUiHook.mAutoOpen` was always set `true` after prefs removal; remove the fake gate (behavior unchanged: always arm retries).
 - **Dead-code cleanup:** remove orphaned `ACTION_SCREEN_CONTROL` (+ Car/`AACarUtil` path), unused floating-controller buttons (`ib_expand`/`ib_extinguish`), idle `toggleDisplayPower`/`displayPower` IPC, and unused `Application.App`.
 - **OSS hygiene cleanup:** remove dead ScreenOffReplace / `AndroidHook.Power` / `DisplayPowerCompat`; drop unused restore `manual` API and LastSplitStore landscape/sideBySide reads; rename `FuckAppUseApplicationContext` → `VdDensityPin`; refresh Known limitations for dual-VD (below).

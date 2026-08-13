@@ -45,9 +45,12 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
     }
 
     fun vdFlags(): Int {
+        // Do NOT set VIRTUAL_DISPLAY_FLAG_PRESENTATION. Douyin LivePlay uses MediaRouter
+        // to attach a ty=PRESENTATION window onto "presentation" displays; with the flag
+        // set, PRIMARY is offered as a target while the task stays on SECONDARY, covering
+        // 高德 and killing key focus. Apps launched *on* the VD still work without it.
         return DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_SECURE or
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_TRUSTED or
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP or

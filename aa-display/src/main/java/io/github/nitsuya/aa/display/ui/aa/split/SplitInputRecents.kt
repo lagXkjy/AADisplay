@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.ui.aa.split
 import android.app.ActivityTaskManager
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Point
 import android.os.Binder
 import android.os.Build
 import android.os.SystemClock
@@ -11,6 +12,7 @@ import android.view.InputDevice
 import android.view.InputEvent
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.window.TaskSnapshot
 import androidx.core.graphics.drawable.toBitmap
 import com.github.kyuubiran.ezxhelper.utils.argTypes
@@ -84,6 +86,7 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
     /**
      * Best-effort when the focused VD activity ignores injected MEDIA_* (e.g. Douyin
      * LivePlay after FeedPlayerSession is removed). Runs as system_server.
+     * Do not use for NEXT/PREV on live rooms — that should [injectLiveRoomSwipe].
      */
     fun dispatchMediaKeyFallback(keyCode: Int) {
         if (!isMediaKeyCode(keyCode)) return
@@ -93,6 +96,85 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
             am.dispatchMediaKeyEvent(createKeyEvent(KeyEvent.ACTION_UP, keyCode))
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "dispatchMediaKeyFallback failed key=$keyCode:", e)
+        }
+    }
+
+    /**
+     * Vertical fling on the current AA VirtualDisplay size (ratio / resize safe).
+     * [next]=true → swipe up (next live room); false → swipe down (previous).
+     * Keeps the gesture in the upper-mid video band so comment RecyclerViews rarely steal it.
+     */
+    fun injectLiveRoomSwipe(displayId: Int, next: Boolean): Boolean {
+        val size = displaySizePx(displayId) ?: return false
+        val w = size.x
+        val h = size.y
+        if (w < 2 || h < 2) return false
+        // Slightly right of center: fewer overlays than the left host/avatar cluster.
+        val x = w * 0.62f
+        val yFrom = h * (if (next) 0.42f else 0.18f)
+        val yTo = h * (if (next) 0.12f else 0.42f)
+        val durationMs = 140L
+        val steps = 6
+        val downTime = SystemClock.uptimeMillis()
+        var ok = injectMotion(displayId, MotionEvent.ACTION_DOWN, x, yFrom, downTime, downTime)
+        for (i in 1..steps) {
+            val t = downTime + durationMs * i / steps
+            val y = yFrom + (yTo - yFrom) * i / steps
+            ok = injectMotion(displayId, MotionEvent.ACTION_MOVE, x, y, downTime, t) && ok
+        }
+        ok = injectMotion(
+            displayId,
+            MotionEvent.ACTION_UP,
+            x,
+            yTo,
+            downTime,
+            downTime + durationMs
+        ) && ok
+        log(
+            SplitDisplayController.TAG,
+            "injectLiveRoomSwipe: display=$displayId ${w}x$h next=$next ok=$ok"
+        )
+        return ok
+    }
+
+    /** Live display metrics — always read at inject time (split ratio / VD resize). */
+    fun displaySizePx(displayId: Int): Point? {
+        if (displayId == Display.INVALID_DISPLAY) return null
+        return tryOrNull {
+            val display = Instances.displayManager.getDisplay(displayId) ?: return@tryOrNull null
+            val point = Point()
+            @Suppress("DEPRECATION")
+            display.getRealSize(point)
+            if (point.x <= 0 || point.y <= 0) {
+                @Suppress("DEPRECATION")
+                display.getSize(point)
+            }
+            point.takeIf { it.x > 0 && it.y > 0 }
+        }
+    }
+
+    private fun injectMotion(
+        displayId: Int,
+        action: Int,
+        x: Float,
+        y: Float,
+        downTime: Long,
+        eventTime: Long,
+    ): Boolean {
+        val event = MotionEvent.obtain(
+            downTime,
+            eventTime,
+            action,
+            x,
+            y,
+            0
+        ).apply {
+            source = InputDevice.SOURCE_TOUCHSCREEN
+        }
+        return try {
+            injectInputEvent(displayId, event)
+        } finally {
+            event.recycle()
         }
     }
 

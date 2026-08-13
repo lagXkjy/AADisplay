@@ -365,27 +365,44 @@ class SplitDisplayController(
         // first, then bring the target task to front so InputDispatcher has a focus sink.
         ownership.runOnHandlerBlocking(false) {
             SplitPresentationGuard.evictForeignPresentations(this, "pressKey")
-            val displayId = resolveKeyInjectionDisplayId()
+            val nextPrev =
+                action == KeyEvent.KEYCODE_MEDIA_NEXT || action == KeyEvent.KEYCODE_MEDIA_PREVIOUS
+            // After pane swap, mFocusedPane may still sit on 高德 while LivePlay is the other
+            // VD — MEDIA_* would then hit the system media session (QQ). Prefer any live pane.
+            val displayId = when {
+                nextPrev -> resolveLiveStyleDisplayId().takeIf { it != Display.INVALID_DISPLAY }
+                    ?: resolveKeyInjectionDisplayId()
+                else -> resolveKeyInjectionDisplayId()
+            }
             if (displayId == Display.INVALID_DISPLAY) return@runOnHandlerBlocking false
             val topTask = ownership.snapshotUserRootTasks(displayId).lastOrNull()
             topTask?.let { ref ->
                 ownership.bringTaskToFront(ref.taskId)
                 paneForDisplayId(displayId)?.let { mFocusedPane = it }
             }
+            val live = input.isLiveStyleTopActivity(displayId)
+            // Live rooms ignore MEDIA_NEXT/PREV; swipe the current VD bounds instead
+            // (size read at inject time — split ratio / resize can change anytime).
+            if (live && nextPrev) {
+                return@runOnHandlerBlocking input.injectLiveRoomSwipe(
+                    displayId,
+                    next = action == KeyEvent.KEYCODE_MEDIA_NEXT
+                )
+            }
             val down = input.createKeyEvent(KeyEvent.ACTION_DOWN, action)
             val up = input.createKeyEvent(KeyEvent.ACTION_UP, action)
             input.injectInputEvent(displayId, down)
             input.injectInputEvent(displayId, up)
             // Live UI often ignores injected MEDIA_* (FeedPlayerSession is torn down);
-            // try the system media-session path only then to avoid double-firing in feed.
-            if (input.isMediaKeyCode(action) && input.isLiveStyleTopActivity(displayId)) {
+            // play/pause etc. may still reach the active media-button session.
+            if (live && input.isMediaKeyCode(action)) {
                 input.dispatchMediaKeyFallback(action)
             }
             true
         }
     }
 
-    /** Prefer the focused pane when it still has a user task; otherwise any live AA pane. */
+    /** Prefer the focused pane when it still has a user task; otherwise any occupied AA pane. */
     private fun resolveKeyInjectionDisplayId(): Int {
         val candidates = intArrayOf(
             input.displayIdFor(mFocusedPane) ?: Display.INVALID_DISPLAY,
@@ -397,6 +414,20 @@ class SplitDisplayController(
             if (ownership.snapshotUserRootTasks(displayId).isNotEmpty()) return displayId
         }
         return input.displayIdFor(mFocusedPane) ?: primaryDisplayId
+    }
+
+    /** Scan both AA VDs for LivePlay-style top activity (swap / focus independent). */
+    private fun resolveLiveStyleDisplayId(): Int {
+        val candidates = intArrayOf(
+            input.displayIdFor(mFocusedPane) ?: Display.INVALID_DISPLAY,
+            secondaryDisplayId,
+            primaryDisplayId,
+        )
+        for (displayId in candidates) {
+            if (displayId == Display.INVALID_DISPLAY) continue
+            if (input.isLiveStyleTopActivity(displayId)) return displayId
+        }
+        return Display.INVALID_DISPLAY
     }
 
     fun getRecentTask(): RecentTask {

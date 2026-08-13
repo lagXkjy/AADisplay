@@ -358,16 +358,16 @@ object AndroidHook : BaseHook() {
     }
 
     /**
-     * Reject [Presentation] windows that target an AA pane owned by another package.
-     * Prevents e.g. Douyin (SECONDARY) from covering PRIMARY via MediaRouter after reconnect /
-     * LivePlay — Samsung `addWindow` places three ints after LayoutParams
-     * (viewVisibility / userId / displayId order varies), so we scan for AA VD ids.
+     * Reject [Presentation] windows / WindowContexts that target an AA pane owned by another
+     * package. Douyin LivePlay uses MediaRouter → createWindowContext(TYPE_PRESENTATION)
+     * → [attachWindowContextToDisplayArea]; `addWindow` often sees displayId=-1 afterward.
      */
     object PanePresentationGuard {
         /** WindowManagerGlobal.ADD_INVALID_DISPLAY */
         private const val ADD_INVALID_DISPLAY = -9
 
         private var addWindowHook: XC_MethodHook.Unhook? = null
+        private var attachContextHook: XC_MethodHook.Unhook? = null
         private var hooked = false
 
         fun ensureHooked() {
@@ -377,6 +377,19 @@ object AndroidHook : BaseHook() {
         }
 
         private fun hook() {
+            hookAddWindow()
+            hookAttachWindowContext()
+            hooked = addWindowHook != null || attachContextHook != null
+            if (hooked) {
+                log(
+                    tagName,
+                    "PanePresentationGuard: hooked addWindow=${addWindowHook != null} " +
+                        "attachContext=${attachContextHook != null}"
+                )
+            }
+        }
+
+        private fun hookAddWindow() {
             val method = findSystemMethod("com.android.server.wm.WindowManagerService") {
                 name == "addWindow" &&
                     parameterTypes.any { it.name.endsWith("LayoutParams") }
@@ -393,27 +406,81 @@ object AndroidHook : BaseHook() {
                     if (!SplitPresentationGuard.isPresentationType(attrs.type)) return@hookBefore
                     val displayId = resolveAaPresentationDisplayId(param.args, attrsIdx)
                         ?: return@hookBefore
-                    val ownerPkg = CoreManagerService.panePackageForDisplay(displayId) ?: return@hookBefore
-                    val session = param.args.firstOrNull { arg ->
-                        arg != null && arg.javaClass.name.endsWith("Session")
-                    } ?: return@hookBefore
-                    val uid = session.javaClass.methods.firstOrNull { m ->
-                        m.name == "getUid" && m.parameterTypes.isEmpty()
-                    }?.invoke(session) as? Int ?: return@hookBefore
-                    val callerPkg = SplitPresentationGuard.packageForUid(CoreManagerService.systemContext, uid)
-                        ?: return@hookBefore
-                    if (callerPkg == ownerPkg || callerPkg == BuildConfig.APPLICATION_ID) return@hookBefore
-                    log(
-                        tagName,
-                        "PanePresentationGuard: block $callerPkg presentation on display=$displayId (owner=$ownerPkg)"
-                    )
-                    param.result = ADD_INVALID_DISPLAY
+                    if (shouldBlockPresentation(displayId, param.args)) {
+                        param.result = ADD_INVALID_DISPLAY
+                    }
                 } catch (e: Throwable) {
                     log(tagName, "PanePresentationGuard addWindow hook failed", e)
                 }
             }
-            hooked = true
-            log(tagName, "PanePresentationGuard: hooked WindowManagerService.addWindow")
+        }
+
+        /**
+         * AOSP/OneUI: `attachWindowContextToDisplayArea(IBinder, type, displayId, Bundle)`.
+         * This is where Douyin binds TYPE_PRESENTATION to the wrong AA VD before addWindow.
+         */
+        private fun hookAttachWindowContext() {
+            val method = findSystemMethod("com.android.server.wm.WindowManagerService") {
+                name == "attachWindowContextToDisplayArea" &&
+                    parameterTypes.size >= 3 &&
+                    parameterTypes[1] == Int::class.javaPrimitiveType &&
+                    parameterTypes[2] == Int::class.javaPrimitiveType
+            }
+            if (method == null) {
+                log(tagName, "PanePresentationGuard: attachWindowContextToDisplayArea not found")
+                return
+            }
+            attachContextHook = method.hookBefore { param ->
+                try {
+                    val type = param.args[1] as? Int ?: return@hookBefore
+                    if (!SplitPresentationGuard.isPresentationType(type)) return@hookBefore
+                    val displayId = param.args[2] as? Int ?: return@hookBefore
+                    if (!CoreManagerService.isAaVirtualDisplay(displayId)) return@hookBefore
+                    val ownerPkg = CoreManagerService.panePackageForDisplay(displayId) ?: return@hookBefore
+                    val uid = android.os.Binder.getCallingUid()
+                    val callerPkg = SplitPresentationGuard.packageForUid(
+                        CoreManagerService.systemContext,
+                        uid
+                    ) ?: return@hookBefore
+                    if (callerPkg == ownerPkg || callerPkg == BuildConfig.APPLICATION_ID) return@hookBefore
+                    log(
+                        tagName,
+                        "PanePresentationGuard: block attachContext $callerPkg type=$type " +
+                            "display=$displayId (owner=$ownerPkg)"
+                    )
+                    // IllegalArgumentException is what clients expect for a bad display/type.
+                    param.setThrowable(
+                        IllegalArgumentException(
+                            "AADisplay: presentation display $displayId owned by $ownerPkg"
+                        )
+                    )
+                } catch (e: Throwable) {
+                    log(tagName, "PanePresentationGuard attachContext hook failed", e)
+                }
+            }
+        }
+
+        private fun shouldBlockPresentation(displayId: Int, args: Array<Any?>): Boolean {
+            val ownerPkg = CoreManagerService.panePackageForDisplay(displayId) ?: return false
+            val session = args.firstOrNull { arg ->
+                arg != null && arg.javaClass.name.endsWith("Session")
+            }
+            val uid = if (session != null) {
+                session.javaClass.methods.firstOrNull { m ->
+                    m.name == "getUid" && m.parameterTypes.isEmpty()
+                }?.invoke(session) as? Int
+            } else {
+                android.os.Binder.getCallingUid()
+            } ?: return false
+            val callerPkg = SplitPresentationGuard.packageForUid(CoreManagerService.systemContext, uid)
+                ?: return false
+            if (callerPkg == ownerPkg || callerPkg == BuildConfig.APPLICATION_ID) return false
+            log(
+                tagName,
+                "PanePresentationGuard: block addWindow $callerPkg presentation on " +
+                    "display=$displayId (owner=$ownerPkg)"
+            )
+            return true
         }
 
         /**
