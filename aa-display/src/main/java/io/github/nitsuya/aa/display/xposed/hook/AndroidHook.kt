@@ -57,7 +57,7 @@ object AndroidHook : BaseHook() {
         return findMethod(className, cl, findSuper, condition)
     }
 
-    /** Prefer themable UI Context for Toast / dialogs. */
+    /** Prefer themable UI Context for system-side UI / Instances. */
     private fun fieldContext(ams: Any, name: String): Context? =
         runCatching { ams.getObjectAs(name, Context::class.java) as? Context }.getOrNull()
 
