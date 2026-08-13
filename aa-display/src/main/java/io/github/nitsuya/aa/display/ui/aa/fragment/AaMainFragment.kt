@@ -15,7 +15,6 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
-import android.view.View
 import android.widget.LinearLayout
 import androidx.core.content.ContextCompat
 import androidx.core.view.InputDeviceCompat

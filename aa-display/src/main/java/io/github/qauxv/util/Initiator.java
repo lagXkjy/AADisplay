@@ -32,10 +32,6 @@ public class Initiator {
         sHostClassLoader = classLoader;
     }
 
-    public static ClassLoader getPluginClassLoader() {
-        return Initiator.class.getClassLoader();
-    }
-
     public static ClassLoader getHostClassLoader() {
         return sHostClassLoader;
     }

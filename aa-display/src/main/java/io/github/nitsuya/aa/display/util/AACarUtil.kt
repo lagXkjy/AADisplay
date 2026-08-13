@@ -1,7 +1,6 @@
 package io.github.nitsuya.aa.display.util;
 
 import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
 import android.support.car.Car
 import com.google.android.gms.car.CarFirstPartyManager

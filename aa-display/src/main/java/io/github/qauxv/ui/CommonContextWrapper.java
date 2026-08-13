@@ -22,7 +22,6 @@
 
 package io.github.qauxv.ui;
 
-import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.Resources;
@@ -41,20 +40,9 @@ import io.github.nitsuya.aa.display.R;
 import io.github.qauxv.util.SavedInstanceStatePatchedClassReferencer;
 
 /**
- * If you just want to create a MaterialDialog or AppCompatDialog, see {@link #createMaterialDesignContext(Context)} and
- * {@link #createAppCompatContext(Context)}
+ * If you just want to create a MaterialDialog or AppCompatDialog, see {@link #createAppCompatContext(Context)}.
  **/
 public class CommonContextWrapper extends ContextThemeWrapper {
-
-    /**
-     * Creates a new context wrapper with the specified theme with correct module ClassLoader.
-     *
-     * @param base  the base context
-     * @param theme the resource ID of the theme to be applied on top of the base context's theme
-     */
-    public CommonContextWrapper(@NonNull Context base, int theme) {
-        this(base, theme, null);
-    }
 
     /**
      * Creates a new context wrapper with the specified theme with correct module ClassLoader.
@@ -121,20 +109,6 @@ public class CommonContextWrapper extends ContextThemeWrapper {
         }
     }
 
-    private static final int[] MATERIAL_CHECK_ATTRS = {com.google.android.material.R.attr.colorPrimaryVariant};
-
-    public static boolean isMaterialDesignContext(@NonNull Context context) {
-        if (!isAppCompatContext(context)) {
-            return false;
-        }
-        @SuppressLint("ResourceType") TypedArray a = context.obtainStyledAttributes(MATERIAL_CHECK_ATTRS);
-        try {
-            return a.hasValue(0);
-        } finally {
-            a.recycle();
-        }
-    }
-
     public static boolean checkContextClassLoader(@NonNull Context context) {
         try {
             ClassLoader cl = context.getClassLoader();
@@ -155,17 +129,6 @@ public class CommonContextWrapper extends ContextThemeWrapper {
         return new CommonContextWrapper(
                 base,
                 R.style.Theme_AADisplay_Window,
-//                com.google.android.material.R.style.Theme_Material3_DynamicColors_DayNight,
                 recreateNighModeConfig(base, base.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK));
-    }
-
-    @NonNull
-    public static Context createMaterialDesignContext(@NonNull Context base) {
-        if (isMaterialDesignContext(base)) {
-            return base;
-        }
-        // currently all themes by createAppCompatContext are material themes
-        // change this if you have a AppCompat theme that is not material theme
-        return createAppCompatContext(base);
     }
 }
