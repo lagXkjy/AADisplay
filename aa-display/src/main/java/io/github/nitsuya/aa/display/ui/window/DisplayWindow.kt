@@ -23,7 +23,6 @@ import io.github.nitsuya.aa.display.databinding.WindowMirrorBinding
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.rewriteMotionEvent
-import io.github.nitsuya.aa.display.xposed.TipUtil
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
@@ -393,7 +392,6 @@ class DisplayWindow(
             }
         }.onFailure {
             log(TAG, "init: new window failed may you forget reboot", it)
-            TipUtil.showToast("new window failed\nmay you forget reboot")
         }.onSuccess {
             doInit()
         }

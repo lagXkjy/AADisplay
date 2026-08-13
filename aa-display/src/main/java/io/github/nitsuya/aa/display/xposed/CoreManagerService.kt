@@ -133,7 +133,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 log(TAG, "systemReady skipped: systemContext not initialized")
                 return
             }
-            TipUtil.init(systemContext, "[AADisplay] ")
             Instances.init(systemContext)
             AndroidHook.PanePresentationGuard.ensureHooked()
         }
@@ -358,13 +357,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     override fun getRecentTask(): RecentTask {
         return runBlocking(Dispatchers.IO) {
             mSplitController?.getRecentTask() ?: RecentTask(emptyList(), emptyList(), emptyList())
-        }
-    }
-
-    override fun toast(msg: String) {
-        runMain {
-            runCatching { TipUtil.showToast(msg) }
-                .onFailure { log(TAG, "toast failed: $msg", it) }
         }
     }
 }

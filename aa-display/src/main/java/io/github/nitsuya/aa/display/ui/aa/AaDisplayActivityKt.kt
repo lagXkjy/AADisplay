@@ -14,10 +14,6 @@ object AaDisplayActivityKt {
         CoreApi.pressKey(action)
     }
 
-    fun toast(msg: String){
-        CoreApi.toast(msg)
-    }
-
     fun showMain(fragmentManager: FragmentManager){
         fragmentManager.commit {
             setReorderingAllowed(true)

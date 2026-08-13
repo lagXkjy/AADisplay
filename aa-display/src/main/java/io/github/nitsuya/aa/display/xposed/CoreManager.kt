@@ -157,10 +157,6 @@ object CoreManager : ICoreManager, DeathRecipient {
         return getService()?.recentTask
     }
 
-    override fun toast(msg: String) {
-        getService()?.toast(msg)
-    }
-
     private fun getService(): ICoreManager? {
         if (service != null) return service
         val pm = ServiceManager.getService("package")

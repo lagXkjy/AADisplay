@@ -8,10 +8,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
-import android.widget.Toast;
 
 import com.google.android.apps.auto.sdk.CarActivity;
-import com.google.android.apps.auto.sdk.CarToast;
 import io.github.nitsuya.aa.display.R;
 import io.github.nitsuya.aa.display.databinding.ActivityAaDisplayBinding;
 
@@ -78,7 +76,6 @@ public class AaDisplayActivity extends CarActivity {
                 AaDisplayActivityKt.INSTANCE.pressKey(keyCode);
                 return true;
             default:
-                AaDisplayActivityKt.INSTANCE.toast("键值:[" + keyCode + "]未适配");
                 return super.onKeyDown(keyCode, keyEvent);
         }
     }

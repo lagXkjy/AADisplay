@@ -22,7 +22,6 @@ import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
-import io.github.nitsuya.aa.display.xposed.TipUtil
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.log
 import io.github.nitsuya.aa.display.xposed.logDebug
@@ -393,7 +392,6 @@ class SplitDisplayController(
                 return
             }
         } catch (e: Throwable) {
-            TipUtil.showToast("addMirror error: ${e.message}")
             log(TAG, "addMirrorPane error:", e)
             sc.release()
             return

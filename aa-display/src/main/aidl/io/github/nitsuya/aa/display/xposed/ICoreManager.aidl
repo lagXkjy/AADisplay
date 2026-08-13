@@ -53,6 +53,4 @@ interface ICoreManager {
     void removeMirrorPane(int pane, in SurfaceControl surfaceControl);
 
     RecentTask getRecentTask();
-
-    void toast(String msg);
 }

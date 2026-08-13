@@ -87,7 +87,7 @@ flowchart LR
 ### 跨进程 IPC
 
 - 门面：`CoreApi`（`Application.kt`）—— 非 system 用 `CoreManager`，uid 1000 用 `CoreManagerService.instance`
-- 契约：`ICoreManager.aidl`（创建/销毁显示、Surface、启停任务、按键/触摸、镜像、最近任务、toast/log）
+- 契约：`ICoreManager.aidl`（创建/销毁显示、Surface、启停任务、按键/触摸、镜像、最近任务）
 - 桥接：`AndroidHook` 注入 `IPackageManager.onTransact`，magic code **`AADD`**，把 `CoreManagerService` binder 交给应用进程
 
 跨进程显示能力 **必须** 经 `CoreApi` / `ICoreManager`，不要在 AA 或普通 App 进程直接操作 VirtualDisplay。

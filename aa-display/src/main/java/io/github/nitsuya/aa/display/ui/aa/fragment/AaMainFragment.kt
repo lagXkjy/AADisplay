@@ -131,16 +131,16 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                                 KeyEvent.KEYCODE_MEDIA_PLAY,
                                 KeyEvent.KEYCODE_MEDIA_PAUSE,
                                 KeyEvent.KEYCODE_MEDIA_RECORD -> CoreApi.pressKey(action)
-                                else -> CoreApi.toast("方控[$action]未设置")
+                                else -> { }
                             }
                         }
                         1 -> {
                             when (action) {
                                 KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> CoreApi.moveSecondTaskToFront()
-                                else -> CoreApi.toast("方控长按[$action]未设置")
+                                else -> { }
                             }
                         }
-                        2 -> CoreApi.toast("方控双击[$action]未设置")
+                        2 -> { }
                     }
                 }
             }
