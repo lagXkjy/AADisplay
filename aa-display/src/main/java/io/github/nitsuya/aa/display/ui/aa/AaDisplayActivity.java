@@ -27,7 +27,7 @@ public class AaDisplayActivity extends CarActivity {
     @Override
     public void onCreate(Bundle bundle) {
         super.onCreate(bundle);
-        Log.i(TAG, "onCreate");
+        Log.d(TAG, "onCreate");
         setIgnoreConfigChanges(0xFFFF);
         this.setTheme(R.style.Theme_AADisplay);
         this.mBinding = ActivityAaDisplayBinding.inflate(getLayoutInflater());
@@ -41,13 +41,13 @@ public class AaDisplayActivity extends CarActivity {
     @Override
     public void onStart() {
         super.onStart();
-        Log.i(TAG, "onStart");
+        Log.d(TAG, "onStart");
     }
 
     @Override
     public void onResume() {
         super.onResume();
-        Log.i(TAG, "onResume");
+        Log.d(TAG, "onResume");
         try {
             // Keep in sync with AABroadcastConst.ACTION_AA_DISPLAY_SHOWN
             sendBroadcast(new android.content.Intent("aa.display.action.AA_DISPLAY_SHOWN"));
@@ -57,13 +57,13 @@ public class AaDisplayActivity extends CarActivity {
 
     @Override
     public void onPause() {
-        Log.i(TAG, "onPause");
+        Log.d(TAG, "onPause");
         super.onPause();
     }
 
     @Override
     public void onStop() {
-        Log.i(TAG, "onStop");
+        Log.d(TAG, "onStop");
         super.onStop();
     }
 
@@ -110,7 +110,7 @@ public class AaDisplayActivity extends CarActivity {
 
     @Override
     public void onDestroy() {
-        Log.i(TAG, "onDestroy");
+        Log.d(TAG, "onDestroy");
         super.onDestroy();
     }
 

@@ -12,18 +12,18 @@ public class AaActivityService extends CarActivityService {
     @Override
     public void onCreate() {
         super.onCreate();
-        Log.i(TAG, "onCreate");
+        Log.d(TAG, "onCreate");
     }
 
     @Override
     public Class<? extends CarActivity> getCarActivity() {
-        Log.i(TAG, "getCarActivity");
+        Log.d(TAG, "getCarActivity");
         return AaDisplayActivity.class;
     }
 
     @Override
     public int getHandledConfigChanges() {
-        Log.i(TAG, "getHandledConfigChanges");
+        Log.d(TAG, "getHandledConfigChanges");
         return ActivityInfo.CONFIG_MCC
                 | ActivityInfo.CONFIG_MNC
                 | ActivityInfo.CONFIG_LOCALE

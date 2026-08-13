@@ -91,7 +91,7 @@ internal class SplitTaskStackListener(
     override fun onBackPressedOnTaskRoot(taskInfo: ActivityManager.RunningTaskInfo?) {}
     override fun onTaskDisplayChanged(taskId: Int, newDisplayId: Int) {
         val pkg = c.ownership.findPackageForTask(taskId)
-        AndroidHook.FuckAppUseApplicationContext.onTaskDisplayChanged(pkg, newDisplayId)
+        AndroidHook.VdDensityPin.onTaskDisplayChanged(pkg, newDisplayId)
         if (c.isAaVirtualDisplay(newDisplayId)) {
             c.mVdTaskIds.add(taskId)
             pkg?.let { c.mVdPackages.add(it) }

@@ -10,10 +10,10 @@ import com.github.kyuubiran.ezxhelper.utils.*
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.BuildConfig
-import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.xposed.BridgeService
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.logDebug
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPresentationGuard
 import io.github.qauxv.util.Initiator
 import java.io.File
@@ -165,46 +165,11 @@ object AndroidHook : BaseHook() {
         }
     }
 
-    object Power {
-        private val powerPress by lazy {
-            try {
-                findSystemMethod("com.android.server.policy.PhoneWindowManager") {
-                    name == "powerPress"
-                            && parameterCount == 3
-                            && parameterTypes[0] == Long::class.javaPrimitiveType //eventTime
-                            && parameterTypes[1] == Int::class.javaPrimitiveType //count
-                            && parameterTypes[2] == Boolean::class.javaPrimitiveType //beganFromNonInteractive
-                }
-            } catch (e: Throwable) {
-                log(tagName, "Power PhoneWindowManager.powerPress", e)
-                null
-            }
-        }
-        private var hookPower: XC_MethodHook.Unhook? = null
-        fun hook() {
-            if (!isReadyForSystemHooks()) return
-            unHook()
-            hookPower = powerPress?.hookBefore {
-                if (!(it.args[2] as Boolean)) {
-                    CoreApi.toggleDisplayPower()
-                    it.abortMethod()
-                } else {
-                    CoreApi.displayPower(true)
-                }
-            }
-        }
-
-        fun unHook() {
-            hookPower?.unhook()
-            hookPower = null
-        }
-    }
-
     /**
      * Pins virtual-display densityDpi for processes whose tasks live on the AA VD.
      * Must stay in sync when tasks move between the phone stack and the virtual-display stack.
      */
-    object FuckAppUseApplicationContext {
+    object VdDensityPin {
         private val appInitUseDisplay: ConcurrentHashMap<String, Int> = ConcurrentHashMap()
         private val activityTaskManagerService_startProcessAsync by lazy {
             try {
@@ -214,7 +179,7 @@ object AndroidHook : BaseHook() {
             } catch (e: Throwable) {
                 log(
                     tagName,
-                    "FuckAppUseAppContext ActivityTaskManagerService.startProcessAsync method",
+                    "VdDensityPin ActivityTaskManagerService.startProcessAsync method",
                     e
                 )
                 null
@@ -226,7 +191,7 @@ object AndroidHook : BaseHook() {
                     name == "bindApplication"
                 }
             } catch (e: Throwable) {
-                log(tagName, "FuckAppUseAppContext IApplicationThread.bindApplication method", e)
+                log(tagName, "VdDensityPin IApplicationThread.bindApplication method", e)
                 null
             }
         }
@@ -239,13 +204,13 @@ object AndroidHook : BaseHook() {
             val pkg = normalizePackage(packageName) ?: return
             if (displayId == Display.DEFAULT_DISPLAY || displayId == Display.INVALID_DISPLAY) return
             appInitUseDisplay[pkg] = displayId
-            log(tagName, "VD density map mark: $pkg -> display=$displayId")
+            logDebug(tagName, "VD density map mark: $pkg -> display=$displayId")
         }
 
         fun clearPackageVirtualDisplay(packageName: String?) {
             val pkg = normalizePackage(packageName) ?: return
             if (appInitUseDisplay.remove(pkg) != null) {
-                log(tagName, "VD density map clear: $pkg")
+                logDebug(tagName, "VD density map clear: $pkg")
             }
         }
 

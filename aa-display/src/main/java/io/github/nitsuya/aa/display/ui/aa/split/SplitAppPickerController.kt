@@ -36,7 +36,7 @@ class SplitAppPickerController(
 ) {
     companion object {
         private const val TAG = "AADisplay_AppPicker"
-        private fun logPicker(msg: String) = Log.i(TAG, msg)
+        private fun logPicker(msg: String) = Log.d(TAG, msg)
     }
     private var targetPane: Int = SplitPane.PRIMARY
     private val mainHandler = Handler(Looper.getMainLooper())

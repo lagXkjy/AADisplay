@@ -215,7 +215,7 @@ class SplitDisplayController(
         if (launch.shouldRestoreLastSplitOnConnect()) {
             mSuppressReclaimUntil =
                 SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_AFTER_RESTORE_MS
-            launch.scheduleRestoreLastSplit(manual = false)
+            launch.scheduleRestoreLastSplit()
         } else {
             notifySplitStateChanged()
         }
@@ -477,7 +477,7 @@ class SplitDisplayController(
                 ownership.vacateOtherPanesHolding(packageName, keepPane = pane)
                 val moved = try {
                     Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, displayId)
-                    AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(
+                    AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(
                         packageName,
                         displayId
                     )
@@ -577,9 +577,9 @@ class SplitDisplayController(
             ownership.markOwnership(packageName, targetDisplayId)
             mPanePackages[pane] = packageName
             mFocusedPane = pane
-            AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(packageName, targetDisplayId)
+            AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(packageName, targetDisplayId)
         } else {
-            AndroidHook.FuckAppUseApplicationContext.clearPackageVirtualDisplay(packageName)
+            AndroidHook.VdDensityPin.clearPackageVirtualDisplay(packageName)
             // Best-effort: drop SecondaryDisplayLauncher so the empty overlay is obvious.
             vacatedPanes.distinct().forEach { pane ->
                 input.displayIdFor(pane)?.let { ownership.removeChromeTasksOnDisplay(it) }
@@ -614,7 +614,7 @@ class SplitDisplayController(
                         vacated += i
                     }
                 }
-                AndroidHook.FuckAppUseApplicationContext.clearPackageVirtualDisplay(packageName)
+                AndroidHook.VdDensityPin.clearPackageVirtualDisplay(packageName)
                 ownership.untrackPackage(packageName)
                 vacated.forEach { pane ->
                     input.displayIdFor(pane)?.let { ownership.removeChromeTasksOnDisplay(it) }

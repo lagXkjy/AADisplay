@@ -37,7 +37,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         var systemContext: Context
             get() = systemContextHost
             set(value) {
-                log(TAG, "SystemContext.params is null: ${value.params}")
+                if (value.params == null) {
+                    log(TAG, "SystemContext.params is null; using empty ContextParams")
+                }
                 systemContextHost = value.createContext(value.params ?: ContextParams.Builder().build())
             }
 
@@ -96,9 +98,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 return candidate
             }
             if (current != candidate) {
-                // Soft reconnect often briefly reports the pre-rail-reclaim size (e.g. 720)
-                // after we already grew to full HU (800). Allow monotonic grow so split panes
-                // fill the reclaimed gutter; keep lock on shrink/jitter to avoid flicker.
+                // Soft reconnect may briefly report pre-rail-reclaim size; allow monotonic grow
+                // so panes fill the reclaimed gutter, keep lock on shrink/jitter.
                 val grew =
                     current.isLandscape == candidate.isLandscape &&
                         candidate.width >= current.width &&
@@ -106,13 +107,13 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                         (candidate.width > current.width || candidate.height > current.height)
                 if (grew) {
                     mLockedDisplayProfile = candidate
-                    log(
+                    logDebug(
                         TAG,
                         "displayProfile relocked(grow): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
                     )
                     return candidate
                 }
-                log(
+                logDebug(
                     TAG,
                     "displayProfile keep-locked(reconnect): locked=${current.width}*${current.height},${current.densityDpi}, incoming=${candidate.width}*${candidate.height},${candidate.densityDpi}"
                 )
@@ -185,10 +186,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 newSession = mSplitController == null
             )
             mSplitController?.apply {
-                // Soft reconnect must always cancel Delay Destroy. When profile was
-                // keep-locked (e.g. incoming 720 vs locked 800), sizeChanged was false and
-                // onResume was skipped — countdown kept running and released the VDs while
-                // AA TextureViews stayed up → black panes with operable divider/picker.
+                // Soft reconnect: always cancel Delay Destroy and rebind surfaces/policies.
                 mDisplayWindow?.onResume(profile.width, profile.height)
                 setPaneSurface(SplitPane.PRIMARY, primarySurface)
                 setPaneSurface(SplitPane.SECONDARY, secondarySurface)
@@ -244,7 +242,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun setPaneSurface(pane: Int, surface: Surface?) {
         runMain {
-            log(TAG, "setPaneSurface pane=$pane surface=${surface != null}")
+            logDebug(TAG, "setPaneSurface pane=$pane surface=${surface != null}")
             mSplitController?.setPaneSurface(pane, surface)
         }
     }
@@ -370,6 +368,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         }
     }
 }
+
+
+
+
+
+
 
 
 

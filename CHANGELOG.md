@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **OSS hygiene cleanup:** remove dead ScreenOffReplace / `AndroidHook.Power` / `DisplayPowerCompat`; drop unused restore `manual` API and LastSplitStore landscape/sideBySide reads; rename `FuckAppUseApplicationContext` → `VdDensityPin`; refresh Known limitations for dual-VD (below).
 - **Version bump to `0.24#17.4-r1`:** target Android Auto 17.4; remove MainActivity GitHub menu link.
 - **Dead-code sweep (post rail-touch cleanup):** remove no-op `AaDpiHook` (DexKit load with empty hook body); drop orphaned IPC (`printLog`, `startTaskId`, `getVersionCode`, `getUid`, `restoreLastSplit` manual path); rename `touchHost` → `touchPrimaryPane` (inject PRIMARY pane VD, not host display); extract shared `RecentTaskUiHelper` for AA + phone overlay recent-task columns; stop writing unused `landscape`/`sideBySide` in `LastSplitStore`; remove `ServiceProxy` per-IPC logging and voice-assist no-op stub.
 - **Drop i18n string resources:** no multi-locale plan; keep only `app_name` / `xposeddescription` in `strings.xml`, hardcode Chinese UI text in layouts/code (same as existing toasts).
@@ -112,10 +113,10 @@
   - Virtual display density is forced via `setForcedDisplayDensityForUser`, and ActivityRecord configuration ensure re-pins VD `densityDpi` for tasks on the VD.
 
 ### Known limitations
-- Depends on OneUI multi-window policy; non-resizable apps may still fail (Developer option “Force activities to be resizable” helps).
-- Enabling system decorations may show status/nav chrome on the virtual display.
-- Not a custom split UI; pairing UI and cross-display split are out of scope. Non-Samsung devices are unsupported.
-- Restore Last Split ratio is best-effort (`resizeTask`); OneUI may still settle near 50/50. Package-pair restore is prioritized over exact divider position. Snapshot orientation must match the new VD or ratio apply is skipped.
+- Requires Root + LSPosed with at least **System Framework** and **Android Auto** in scope.
+- Custom dual VirtualDisplay split is vendor-independent; some OEMs still need compatibility handling for cross-display `moveRootTaskToDisplay`, empty-VD chrome (e.g. SecondaryDisplayLauncher), and OWN_DISPLAY_GROUP power/doze behavior.
+- Non-resizable apps may letterbox or fail to fill a narrow pane (Developer option “Force activities to be resizable” can help).
+- Restore Last Split prioritizes package pair over exact divider ratio; ratio apply is best-effort after pane settle.
 
 ## 0.23.6 (2026-07-26)
 

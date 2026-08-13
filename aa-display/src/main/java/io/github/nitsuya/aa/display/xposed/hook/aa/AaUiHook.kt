@@ -366,7 +366,7 @@ object AaUiHook: AaHook() {
             val railField = hasVerticalRailField
             if (railField != null && !railField.getBoolean(instance)) {
                 railField.setBoolean(instance, true)
-                log(tagName, "AaUiHook: force vertical rail field ${railField.name}=true")
+                logDebug(tagName, "AaUiHook: force vertical rail field ${railField.name}=true")
             }
             val layoutField = layoutResourceIdField
             if (resLayoutLeftResourceId != 0 && layoutField != null) {
@@ -493,7 +493,7 @@ object AaUiHook: AaHook() {
                         val range = railPxRange(layoutWidthPx().takeIf { it > 0 } ?: (value * 10))
                         if (value in range) {
                             mObservedRailWidthPx = value
-                            log(tagName, "AaUiHook: zero pillar_width $value → 0")
+                            logDebug(tagName, "AaUiHook: zero pillar_width $value → 0")
                             param.args[1] = 0
                         }
                     }
@@ -529,7 +529,7 @@ object AaUiHook: AaHook() {
                 val range = railPxRange(layoutWidthPx().takeIf { it > 0 } ?: (value * 10))
                 if (value in range) {
                     mObservedRailWidthPx = value
-                    log(tagName, "AaUiHook: zero pillar_width $value → 0")
+                    logDebug(tagName, "AaUiHook: zero pillar_width $value → 0")
                     param.args[1] = 0
                 }
             }
@@ -644,7 +644,7 @@ object AaUiHook: AaHook() {
                     if (value in range) {
                         mObservedRailWidthPx = value
                         bundle.putInt("pillar_width", 0)
-                        log(tagName, "AaUiHook: zero pillar_width in Bundle $value → 0")
+                        logDebug(tagName, "AaUiHook: zero pillar_width in Bundle $value → 0")
                     }
                 }
             }
@@ -686,7 +686,7 @@ object AaUiHook: AaHook() {
             mObservedRailWidthPx = rect.left
             val before = Rect(rect)
             rect.set(0, 0, fullW.coerceAtLeast(rect.right), fullH.coerceAtLeast(rect.bottom))
-            log(tagName, "AaUiHook: expand content_bounds $before → $rect")
+            logDebug(tagName, "AaUiHook: expand content_bounds $before → $rect")
             return rect
         }
         // RHD: right edge pulled in by rail width.
@@ -695,7 +695,7 @@ object AaUiHook: AaHook() {
             mObservedRailWidthPx = rightGap
             val before = Rect(rect)
             rect.set(0, 0, fullW, fullH.coerceAtLeast(rect.bottom))
-            log(tagName, "AaUiHook: expand content_bounds $before → $rect")
+            logDebug(tagName, "AaUiHook: expand content_bounds $before → $rect")
             return rect
         }
         return null
@@ -717,7 +717,7 @@ object AaUiHook: AaHook() {
             changed = true
         }
         if (!changed) return null
-        log(tagName, "AaUiHook: zero content_insets $before → $rect")
+        logDebug(tagName, "AaUiHook: zero content_insets $before → $rect")
         return rect
     }
 

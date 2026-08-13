@@ -11,12 +11,13 @@ import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.logDebug
 
 object OtherHook : BaseHook() {
     override val tagName: String = "AAD_OtherHook"
     override fun init(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
-            log(tagName, "${lpparam.packageName}, ${lpparam.appInfo?.uid}, ${lpparam.isFirstApplication}, ${lpparam.processName}")
+            logDebug(tagName, "${lpparam.packageName}, ${lpparam.appInfo?.uid}, ${lpparam.isFirstApplication}, ${lpparam.processName}")
             var onCreateApplication: XC_MethodHook.Unhook? = null
             onCreateApplication = findMethod(Instrumentation::class.java) {
                 name == "callApplicationOnCreate"

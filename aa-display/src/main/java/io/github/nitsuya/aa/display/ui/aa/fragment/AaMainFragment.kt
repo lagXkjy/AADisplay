@@ -149,7 +149,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     override fun initViews() {
-        Log.i(TAG, "initViews")
+        Log.d(TAG, "initViews")
         appPicker = SplitAppPickerController(baseBinding).also {
             it.onAppPicked = { pane, _ ->
                 paneHasApp[pane] = true
@@ -195,7 +195,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
 
     override fun onDestroy() {
         super.onDestroy()
-        Log.i(TAG, "onDestroy: displayId=$displayId")
+        Log.d(TAG, "onDestroy: displayId=$displayId")
         clearDisplaySurfaces("destroy")
         CoreApi.onDestroyDisplay()
         displayId = Display.INVALID_DISPLAY
@@ -321,7 +321,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     ) {
         textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                Log.i(TAG, "pane=$pane surface available ${width}x$height")
+                Log.d(TAG, "pane=$pane surface available ${width}x$height")
                 val s = Surface(surface)
                 onSurface(s)
                 if (displayId != Display.INVALID_DISPLAY) {
@@ -336,7 +336,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             }
 
             override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                Log.i(TAG, "pane=$pane surface destroyed")
+                Log.d(TAG, "pane=$pane surface destroyed")
                 CoreApi.setPaneSurface(pane, null)
                 onSurface(null)
                 return true
@@ -393,7 +393,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     Log.w(TAG, "onAvailableDisplay skipped: fragment not attached")
                     return@runMain
                 }
-                Log.i(TAG, "onAvailableDisplay: displayId=$displayId create=$create")
+                Log.d(TAG, "onAvailableDisplay: displayId=$displayId create=$create")
                 primarySurface?.let { CoreApi.setPaneSurface(SplitPane.PRIMARY, it) }
                 secondarySurface?.let { CoreApi.setPaneSurface(SplitPane.SECONDARY, it) }
                 registerControlReceivers()
@@ -418,18 +418,18 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         val displayWidth = baseBinding.splitContainer.width
         val displayHeight = baseBinding.splitContainer.height
         val displayDpi = resources.displayMetrics.densityDpi
-        Log.i(
+        Log.d(
             TAG,
             "requestDisplay[$reason]: ${displayWidth}x$displayHeight,$displayDpi " +
                 "requested=$isDisplayCreateRequested display=$displayId"
         )
         if (displayWidth <= 0 || displayHeight <= 0) return
         if (primarySurface == null || secondarySurface == null) {
-            Log.i(TAG, "requestDisplay[$reason] waiting for both surfaces")
+            Log.d(TAG, "requestDisplay[$reason] waiting for both surfaces")
             return
         }
         if (isDisplayCreateRequested && displayId == Display.INVALID_DISPLAY) {
-            Log.i(TAG, "requestDisplay[$reason] skipped: create already pending")
+            Log.d(TAG, "requestDisplay[$reason] skipped: create already pending")
             return
         }
         // Soft-reconnect only when profile actually changed; skip identical repeats.
@@ -438,7 +438,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             displayHeight == lastCreateHeight &&
             displayDpi == lastCreateDpi
         ) {
-            Log.i(TAG, "requestDisplay[$reason] skipped: profile unchanged")
+            Log.d(TAG, "requestDisplay[$reason] skipped: profile unchanged")
             return
         }
         if (displayId == Display.INVALID_DISPLAY) {
@@ -460,7 +460,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     private fun clearDisplaySurfaces(reason: String) {
-        Log.i(TAG, "clearDisplaySurfaces[$reason]")
+        Log.d(TAG, "clearDisplaySurfaces[$reason]")
         CoreApi.setPaneSurface(SplitPane.PRIMARY, null)
         CoreApi.setPaneSurface(SplitPane.SECONDARY, null)
         primarySurface?.release()

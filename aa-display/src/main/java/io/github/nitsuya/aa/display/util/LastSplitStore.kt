@@ -24,16 +24,11 @@ object LastSplitStore {
     /** Settings.Global key for SECONDARY pane package (historical name). */
     const val SETTINGS_RIGHT = "aadisplay_last_split_right"
     const val SETTINGS_RATIO = "aadisplay_last_split_ratio"
-    /** Historical keys — still read for migration; no longer written. */
-    const val SETTINGS_LANDSCAPE = "aadisplay_last_split_landscape"
-    const val SETTINGS_SIDE_BY_SIDE = "aadisplay_last_split_side_by_side"
 
     /** Properties-file keys (historical names; do not rename — existing snapshots). */
     private const val FILE_LEFT = "LastSplitLeftPackage"
     private const val FILE_RIGHT = "LastSplitRightPackage"
     private const val FILE_RATIO = "LastSplitPrimaryRatio"
-    private const val FILE_LANDSCAPE = "LastSplitDisplayLandscape"
-    private const val FILE_SIDE_BY_SIDE = "LastSplitSideBySide"
 
     data class Snapshot(
         val primaryPackage: String,
@@ -69,8 +64,6 @@ object LastSplitStore {
                 primary = props.getProperty(FILE_LEFT),
                 secondary = props.getProperty(FILE_RIGHT),
                 ratio = props.getProperty(FILE_RATIO),
-                landscape = props.getProperty(FILE_LANDSCAPE),
-                sideBySide = props.getProperty(FILE_SIDE_BY_SIDE),
             )
         } catch (e: Throwable) {
             Log.w(TAG, "load file failed", e)
@@ -85,8 +78,6 @@ object LastSplitStore {
                 primary = Settings.Global.getString(cr, SETTINGS_LEFT),
                 secondary = Settings.Global.getString(cr, SETTINGS_RIGHT),
                 ratio = Settings.Global.getString(cr, SETTINGS_RATIO),
-                landscape = Settings.Global.getString(cr, SETTINGS_LANDSCAPE),
-                sideBySide = Settings.Global.getString(cr, SETTINGS_SIDE_BY_SIDE),
             )
         } catch (e: Throwable) {
             Log.w(TAG, "load settings failed", e)
@@ -98,8 +89,6 @@ object LastSplitStore {
         primary: String?,
         secondary: String?,
         ratio: String?,
-        landscape: String?,
-        sideBySide: String?,
     ): Snapshot? {
         val p = primary?.trim().orEmpty()
         val s = secondary?.trim().orEmpty()

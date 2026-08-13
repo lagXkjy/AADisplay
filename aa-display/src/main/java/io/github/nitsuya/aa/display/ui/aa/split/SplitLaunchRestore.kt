@@ -47,16 +47,16 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             resolveLaunchComponent(snap.secondaryPackage) != null
     }
 
-    fun scheduleRestoreLastSplit(manual: Boolean) {
+    fun scheduleRestoreLastSplit() {
         c.mHandler.removeCallbacksAndMessages(RESTORE_TOKEN)
         // Next frame — no artificial 400ms wait before launching restored apps.
         c.mHandler.postAtTime({
             if (c.mIsDestroying) return@postAtTime
-            restoreLastSplitNow(manual)
+            restoreLastSplitNow()
         }, RESTORE_TOKEN, SystemClock.uptimeMillis())
     }
 
-    fun restoreLastSplitNow(manual: Boolean) {
+    fun restoreLastSplitNow() {
         val snap = LastSplitStore.load(c.context.contentResolver)
         if (snap == null) {
             c.notifySplitStateChanged()
@@ -69,14 +69,9 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         val secondaryOk = c.startActivityOnPane(snap.secondaryPackage, 0, SplitPane.SECONDARY)
         log(
             SplitDisplayController.TAG,
-            "restoreLastSplit manual=$manual primary=${snap.primaryPackage}:$primaryOk " +
+            "restoreLastSplit primary=${snap.primaryPackage}:$primaryOk " +
                 "secondary=${snap.secondaryPackage}:$secondaryOk ratio=${c.mRatio}"
         )
-        // Auto-restore: defer picker to verify — startActivity can fail transiently while tasks settle.
-        if (manual) {
-            if (!primaryOk) openPickerForPane(SplitPane.PRIMARY)
-            if (!secondaryOk) openPickerForPane(SplitPane.SECONDARY)
-        }
         c.notifySplitStateChanged()
         // Launch returning true only means startActivity was accepted — verify panes stuck.
         scheduleVerifyRestore(snap, attempt = 0)
@@ -193,7 +188,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         if (!settling && primaryPkg.isNullOrBlank() && secondaryPkg.isNullOrBlank()) {
             log(SplitDisplayController.TAG, "ensurePanes[$reason]: both empty → restore or idle")
             if (shouldRestoreLastSplitOnConnect()) {
-                scheduleRestoreLastSplit(manual = false)
+                scheduleRestoreLastSplit()
             } else {
                 c.notifySplitStateChanged()
             }
@@ -259,7 +254,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         displayId: Int,
     ): Boolean {
         return try {
-            AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(
+            AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(
                 componentName.packageName,
                 displayId
             )

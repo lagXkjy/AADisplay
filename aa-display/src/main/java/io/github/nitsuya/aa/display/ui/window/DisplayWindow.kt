@@ -26,7 +26,6 @@ import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.xposed.TipUtil
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.log
-import io.github.nitsuya.aa.display.xposed.util.DisplayPowerCompat
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.RomUtil
 import io.github.nitsuya.template.bases.runIO
@@ -82,7 +81,6 @@ class DisplayWindow(
         override fun onTick(millisUntilFinished: Long) {}
     }
 
-    private var mScreenOffReplaceLockScreen = false
     /** Seconds to keep dual VD after AA disconnect before destroy. */
     private val mDelayDestroyTime = 180
 
@@ -215,9 +213,6 @@ class DisplayWindow(
             releaseLockMap(wakePulseLocks, "VdWake")
         }
         fun init(){
-            if(mScreenOffReplaceLockScreen){
-                AndroidHook.Power.hook()
-            }
             // Always watch phone screen transitions so OWN_DISPLAY_GROUP is re-asserted
             // when Samsung DreamManager tries to DOZE the AA virtual display with the phone.
             if (!mMiuiReceiverRegistered) {
@@ -236,22 +231,18 @@ class DisplayWindow(
             if (isSupportInteractive) {
                 onReceive(mContext, if(Instances.powerManager.isInteractive) Intent.ACTION_SCREEN_ON else Intent.ACTION_SCREEN_OFF)
             }
-            // Always hold a display-scoped SCREEN_BRIGHT lock for each AA VD group.
-            // MIUI synergy / ScreenOffReplace only affect the phone panel; without this,
-            // Samsung OWN_DISPLAY_GROUP still DOZEs the car virtual displays.
+            // Hold a display-scoped SCREEN_BRIGHT lock for each AA VD group so
+            // Samsung OWN_DISPLAY_GROUP does not DOZE the car virtual displays.
             acquireMonitor()
             startKeepAwakeLoop()
             keepVirtualDisplayAwake("init", forceWake = true)
             // ensureHooked: do not reinstall/clear map on AA reconnect (onResume → init).
             if (AndroidHook.isReadyForSystemHooks()) {
-                AndroidHook.FuckAppUseApplicationContext.ensureHooked()
+                AndroidHook.VdDensityPin.ensureHooked()
             }
         }
         fun release(){
             stopKeepAwakeLoop()
-            if(mScreenOffReplaceLockScreen){
-                AndroidHook.Power.unHook()
-            }
             if (mMiuiReceiverRegistered) {
                 try {
                     mContext.unregisterReceiver(this)
@@ -264,7 +255,7 @@ class DisplayWindow(
                 } catch (_: Throwable) {}
             }
             releaseMonitor()
-            AndroidHook.FuckAppUseApplicationContext.unHook()
+            AndroidHook.VdDensityPin.unHook()
         }
     }
 
@@ -421,12 +412,6 @@ class DisplayWindow(
             ibHideController.setOnClickListener {
                 collapseController()
             }
-            if(mScreenOffReplaceLockScreen){
-                ibExtinguish.visibility = View.VISIBLE
-                ibExtinguish.setOnClickListener {
-                    toggleDisplayPower(false)
-                }
-            }
             ibMirrorDisplay.setOnClickListener {
                 hideController()
                 showMirror()
@@ -512,8 +497,7 @@ class DisplayWindow(
              WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                 or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
-                or (if(mScreenOffReplaceLockScreen) WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON else 0),
+                or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.START or Gravity.TOP
@@ -530,7 +514,6 @@ class DisplayWindow(
                 or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
-                or (if(mScreenOffReplaceLockScreen) WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON else 0)
                 or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
                 or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
             ,
@@ -624,11 +607,6 @@ class DisplayWindow(
         interactiveMonitor.release()
         mDestroyJob?.cancelAndJoin()
 
-        if(mDelayDestroyTime == 0){
-            close()
-            onDestroySucceed()
-            return
-        }
         mControllerBinding?.apply {
             ibMirrorDisplay.visibility = View.GONE
             tvDestroyTime.setOnClickListener {
@@ -656,15 +634,10 @@ class DisplayWindow(
         }
     }
 
-    /** Restore phone panel power only (ScreenOffReplace / legacy wakeup). */
+    /** Best-effort wake of the phone panel before destroying overlays. */
     private fun restorePhoneDisplayPower() {
         try {
-            if (mScreenOffReplaceLockScreen) {
-                mDisplayPower = true
-                DisplayPowerCompat.setPhoneDisplayPowerMode(SurfaceControlHidden.POWER_MODE_NORMAL)
-            } else {
-                pulsePhoneWake()
-            }
+            pulsePhoneWake()
         } catch (e: Throwable) {
             log(TAG, "restorePhoneDisplayPower failed:", e)
         }
@@ -672,21 +645,14 @@ class DisplayWindow(
 
     fun toggleDisplayPower(displayPower: Boolean = !mDisplayPower){
         try {
-            if(mScreenOffReplaceLockScreen){
-                mDisplayPower = displayPower
-                if(mDisplayPower){
-                    DisplayPowerCompat.setPhoneDisplayPowerMode(SurfaceControlHidden.POWER_MODE_NORMAL)
-                } else {
-                    DisplayPowerCompat.setPhoneDisplayPowerMode(SurfaceControlHidden.POWER_MODE_OFF)
-                }
-            } else if (displayPower) {
-                // Wake phone panel only when explicitly turning power on (legacy path).
+            mDisplayPower = displayPower
+            if (displayPower) {
                 pulsePhoneWake()
             }
             // Always restore the AA virtual display group — this is what the car sees.
             keepVirtualDisplayAwake("toggleDisplayPower:$displayPower", forceWake = displayPower)
         } catch (e : Throwable){
-            log(TAG, "", e)
+            log(TAG, "toggleDisplayPower failed:", e)
         }
     }
 

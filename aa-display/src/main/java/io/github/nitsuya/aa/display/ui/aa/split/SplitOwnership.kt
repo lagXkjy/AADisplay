@@ -54,7 +54,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     fun markOwnership(packageName: String?, displayId: Int) {
         val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
         c.mVdPackages.add(pkg)
-        AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(pkg, displayId)
+        AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(pkg, displayId)
         trackPackage(pkg, 0)
     }
 
@@ -65,7 +65,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             return
         }
         c.mVdPackages.remove(pkg)
-        AndroidHook.FuckAppUseApplicationContext.clearPackageVirtualDisplay(pkg)
+        AndroidHook.VdDensityPin.clearPackageVirtualDisplay(pkg)
     }
 
     fun forgetOwnership(taskId: Int, packageName: String?) {
@@ -96,7 +96,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             log(SplitDisplayController.TAG, "reclaim[$reason]: $pkg#$phoneTask -> display=$targetDisplay")
             try {
                 Instances.iActivityTaskManager.moveRootTaskToDisplay(phoneTask, targetDisplay)
-                AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(pkg, targetDisplay)
+                AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(pkg, targetDisplay)
             } catch (e: Throwable) {
                 log(SplitDisplayController.TAG, "reclaim move failed:", e)
             }
@@ -295,7 +295,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             try {
                 Instances.iActivityTaskManager.moveRootTaskToDisplay(ref.taskId, toDisplayId)
                 ref.packageName?.let { pkg ->
-                    AndroidHook.FuckAppUseApplicationContext.markPackageOnVirtualDisplay(pkg, toDisplayId)
+                    AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(pkg, toDisplayId)
                 }
             } catch (e: Throwable) {
                 log(SplitDisplayController.TAG, "moveTaskStack failed task=${ref.taskId} -> $toDisplayId:", e)
