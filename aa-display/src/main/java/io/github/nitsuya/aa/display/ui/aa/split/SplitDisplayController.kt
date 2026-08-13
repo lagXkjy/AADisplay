@@ -360,10 +360,43 @@ class SplitDisplayController(
     }
 
     fun onPressKey(action: Int) {
-        val displayId = input.displayIdFor(mFocusedPane) ?: primaryDisplayId
-        if (displayId == Display.INVALID_DISPLAY) return
-        input.injectInputEvent(displayId, input.createKeyEvent(KeyEvent.ACTION_DOWN, action))
-        input.injectInputEvent(displayId, input.createKeyEvent(KeyEvent.ACTION_UP, action))
+        // Douyin LivePlay attaches a foreign Presentation on the other pane that leaves
+        // that display with no FOCUSABLE window; keys injected there are dropped. Evict
+        // first, then bring the target task to front so InputDispatcher has a focus sink.
+        ownership.runOnHandlerBlocking(false) {
+            SplitPresentationGuard.evictForeignPresentations(this, "pressKey")
+            val displayId = resolveKeyInjectionDisplayId()
+            if (displayId == Display.INVALID_DISPLAY) return@runOnHandlerBlocking false
+            val topTask = ownership.snapshotUserRootTasks(displayId).lastOrNull()
+            topTask?.let { ref ->
+                ownership.bringTaskToFront(ref.taskId)
+                paneForDisplayId(displayId)?.let { mFocusedPane = it }
+            }
+            val down = input.createKeyEvent(KeyEvent.ACTION_DOWN, action)
+            val up = input.createKeyEvent(KeyEvent.ACTION_UP, action)
+            input.injectInputEvent(displayId, down)
+            input.injectInputEvent(displayId, up)
+            // Live UI often ignores injected MEDIA_* (FeedPlayerSession is torn down);
+            // try the system media-session path only then to avoid double-firing in feed.
+            if (input.isMediaKeyCode(action) && input.isLiveStyleTopActivity(displayId)) {
+                input.dispatchMediaKeyFallback(action)
+            }
+            true
+        }
+    }
+
+    /** Prefer the focused pane when it still has a user task; otherwise any live AA pane. */
+    private fun resolveKeyInjectionDisplayId(): Int {
+        val candidates = intArrayOf(
+            input.displayIdFor(mFocusedPane) ?: Display.INVALID_DISPLAY,
+            secondaryDisplayId,
+            primaryDisplayId,
+        )
+        for (displayId in candidates) {
+            if (displayId == Display.INVALID_DISPLAY) continue
+            if (ownership.snapshotUserRootTasks(displayId).isNotEmpty()) return displayId
+        }
+        return input.displayIdFor(mFocusedPane) ?: primaryDisplayId
     }
 
     fun getRecentTask(): RecentTask {

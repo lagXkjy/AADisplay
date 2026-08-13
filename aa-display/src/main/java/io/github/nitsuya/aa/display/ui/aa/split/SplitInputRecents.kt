@@ -16,6 +16,7 @@ import androidx.core.graphics.drawable.toBitmap
 import com.github.kyuubiran.ezxhelper.utils.argTypes
 import com.github.kyuubiran.ezxhelper.utils.args
 import com.github.kyuubiran.ezxhelper.utils.invokeMethod
+import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.model.RecentTaskInfo
 import io.github.nitsuya.aa.display.xposed.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
@@ -49,6 +50,50 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
             KeyEvent.FLAG_FROM_SYSTEM or KeyEvent.FLAG_VIRTUAL_HARD_KEY,
             InputDevice.SOURCE_KEYBOARD
         )
+    }
+
+    fun isMediaKeyCode(keyCode: Int): Boolean {
+        return when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY,
+            KeyEvent.KEYCODE_MEDIA_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_STOP,
+            KeyEvent.KEYCODE_MEDIA_NEXT,
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+            KeyEvent.KEYCODE_MEDIA_REWIND,
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+            KeyEvent.KEYCODE_MEDIA_RECORD,
+            KeyEvent.KEYCODE_HEADSETHOOK,
+            KeyEvent.KEYCODE_MUTE -> true
+            else -> false
+        }
+    }
+
+    /** True when the display's top activity looks like an in-app live/room player. */
+    fun isLiveStyleTopActivity(displayId: Int): Boolean {
+        if (displayId == Display.INVALID_DISPLAY) return false
+        val tasks = tryOrNull {
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+        }.orEmpty()
+        val name = tasks.firstOrNull()?.topActivity?.className ?: return false
+        return name.contains("live", ignoreCase = true) ||
+            name.contains("LivePlay", ignoreCase = true) ||
+            name.contains("webcast", ignoreCase = true)
+    }
+
+    /**
+     * Best-effort when the focused VD activity ignores injected MEDIA_* (e.g. Douyin
+     * LivePlay after FeedPlayerSession is removed). Runs as system_server.
+     */
+    fun dispatchMediaKeyFallback(keyCode: Int) {
+        if (!isMediaKeyCode(keyCode)) return
+        try {
+            val am = c.context.getSystemService(android.media.AudioManager::class.java) ?: return
+            am.dispatchMediaKeyEvent(createKeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+            am.dispatchMediaKeyEvent(createKeyEvent(KeyEvent.ACTION_UP, keyCode))
+        } catch (e: Throwable) {
+            log(SplitDisplayController.TAG, "dispatchMediaKeyFallback failed key=$keyCode:", e)
+        }
     }
 
     fun isSystemHomeTask(taskInfo: ActivityTaskManager.RootTaskInfo): Boolean {

@@ -10,8 +10,11 @@ import java.util.function.Consumer
 
 /**
  * Blocks / removes [Presentation] windows that leak onto the wrong AA VirtualDisplay pane.
- * Seen with Douyin after soft reconnect: task on SECONDARY while a fullscreen
+ * Seen with Douyin after soft reconnect / LivePlay: task on SECONDARY while a fullscreen
  * ty=PRESENTATION window covers PRIMARY (MediaRouter picks the other VD).
+ *
+ * OneUI: [WindowContainer.forAllWindows] is `(Consumer, boolean)` — a size-1 lookup never
+ * matches, so eviction was a no-op until the boolean overload was used.
  */
 internal object SplitPresentationGuard {
 
@@ -19,7 +22,11 @@ internal object SplitPresentationGuard {
     /** OEM / hidden alias seen on Samsung alongside [TYPE_PRESENTATION]. */
     private const val TYPE_PRIVATE_PRESENTATION = 2038
 
+    /** Debounce stack-change storms before arming the 0/600/1800ms eviction wave. */
+    private const val STACK_EVICT_DEBOUNCE_MS = 180L
+
     internal val EVICT_TOKEN = Any()
+    private val STACK_EVICT_TOKEN = Any()
 
     fun scheduleEvictForeignPresentations(c: SplitDisplayController, reason: String) {
         c.mHandler.removeCallbacksAndMessages(EVICT_TOKEN)
@@ -30,6 +37,15 @@ internal object SplitPresentationGuard {
                 evictForeignPresentations(c, "$reason@${delay}ms")
             }, EVICT_TOKEN, delay)
         }
+    }
+
+    /** Task-stack / LivePlay safety net — debounced so focus storms do not cancel mid-wave. */
+    fun scheduleEvictOnStackChanged(c: SplitDisplayController) {
+        c.mHandler.removeCallbacksAndMessages(STACK_EVICT_TOKEN)
+        c.mHandler.postDelayed({
+            if (c.mIsDestroying) return@postDelayed
+            scheduleEvictForeignPresentations(c, "stack")
+        }, STACK_EVICT_TOKEN, STACK_EVICT_DEBOUNCE_MS)
     }
 
     fun evictForeignPresentations(c: SplitDisplayController, reason: String) {
@@ -58,9 +74,7 @@ internal object SplitPresentationGuard {
                     m.parameterTypes.size == 1 &&
                     m.parameterTypes[0] == Int::class.javaPrimitiveType
             }?.invoke(root, displayId) ?: return@tryOrNull 0
-            val forAllWindows = displayContent.javaClass.methods.firstOrNull { m ->
-                m.name == "forAllWindows" && m.parameterTypes.size == 1
-            } ?: return@tryOrNull 0
+            val forAllWindows = resolveForAllWindows(displayContent.javaClass) ?: return@tryOrNull 0
             val victims = mutableListOf<Pair<Any, String>>()
             val consumer = Consumer<Any> { windowState ->
                 val attrs = runCatching {
@@ -71,7 +85,7 @@ internal object SplitPresentationGuard {
                 if (pkg == ownerPkg || pkg == BuildConfig.APPLICATION_ID) return@Consumer
                 victims += windowState to pkg
             }
-            forAllWindows.invoke(displayContent, consumer)
+            invokeForAllWindows(forAllWindows, displayContent, consumer)
             if (victims.isEmpty()) return@tryOrNull 0
             val removeWindow = wms.javaClass.methods.firstOrNull { m ->
                 m.name == "removeWindow" &&
@@ -102,6 +116,32 @@ internal object SplitPresentationGuard {
                 SplitDisplayController.TAG,
                 "evictPresentation[$reason]: display=$displayId owner=$ownerPkg nothing to remove"
             )
+        }
+    }
+
+    /** Prefer OneUI `(Consumer, boolean)`; fall back to AOSP single-arg if present. */
+    private fun resolveForAllWindows(displayContentClass: Class<*>): java.lang.reflect.Method? {
+        val methods = displayContentClass.methods.filter { it.name == "forAllWindows" }
+        methods.firstOrNull { m ->
+            m.parameterTypes.size == 2 &&
+                m.parameterTypes[0].name.contains("Consumer") &&
+                m.parameterTypes[1] == Boolean::class.javaPrimitiveType
+        }?.let { return it }
+        return methods.firstOrNull { m ->
+            m.parameterTypes.size == 1 && m.parameterTypes[0].name.contains("Consumer")
+        }
+    }
+
+    private fun invokeForAllWindows(
+        method: java.lang.reflect.Method,
+        displayContent: Any,
+        consumer: Consumer<Any>,
+    ) {
+        if (method.parameterTypes.size == 2) {
+            // traverseTopToBottom = true — Presentation usually sits above the pane owner.
+            method.invoke(displayContent, consumer, true)
+        } else {
+            method.invoke(displayContent, consumer)
         }
     }
 

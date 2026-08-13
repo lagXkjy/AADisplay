@@ -22,6 +22,8 @@ internal class SplitTaskStackListener(
         // Only notify AA when pane packages actually change (debounced). Never push ratio.
         c.launch.scheduleNotifySplitState()
         c.launch.schedulePersistSnapshot()
+        // Douyin LivePlay (and similar) may attach a foreign Presentation on the other pane.
+        SplitPresentationGuard.scheduleEvictOnStackChanged(c)
     }
 
     override fun onActivityPinned(packageName: String?, userId: Int, taskId: Int, stackId: Int) {}

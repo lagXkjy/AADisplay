@@ -359,7 +359,9 @@ object AndroidHook : BaseHook() {
 
     /**
      * Reject [Presentation] windows that target an AA pane owned by another package.
-     * Prevents e.g. Douyin (SECONDARY) from covering PRIMARY via MediaRouter after reconnect.
+     * Prevents e.g. Douyin (SECONDARY) from covering PRIMARY via MediaRouter after reconnect /
+     * LivePlay — Samsung `addWindow` places three ints after LayoutParams
+     * (viewVisibility / userId / displayId order varies), so we scan for AA VD ids.
      */
     object PanePresentationGuard {
         /** WindowManagerGlobal.ADD_INVALID_DISPLAY */
@@ -389,8 +391,8 @@ object AndroidHook : BaseHook() {
                     if (attrsIdx < 0) return@hookBefore
                     val attrs = param.args[attrsIdx] as WindowManager.LayoutParams
                     if (!SplitPresentationGuard.isPresentationType(attrs.type)) return@hookBefore
-                    val displayId = param.args.getOrNull(attrsIdx + 2) as? Int ?: return@hookBefore
-                    if (!CoreManagerService.isAaVirtualDisplay(displayId)) return@hookBefore
+                    val displayId = resolveAaPresentationDisplayId(param.args, attrsIdx)
+                        ?: return@hookBefore
                     val ownerPkg = CoreManagerService.panePackageForDisplay(displayId) ?: return@hookBefore
                     val session = param.args.firstOrNull { arg ->
                         arg != null && arg.javaClass.name.endsWith("Session")
@@ -412,6 +414,19 @@ object AndroidHook : BaseHook() {
             }
             hooked = true
             log(tagName, "PanePresentationGuard: hooked WindowManagerService.addWindow")
+        }
+
+        /**
+         * OneUI WMS.addWindow: `(Session, IWindow, LayoutParams, III, …)` — do not assume
+         * `attrsIdx+2` is always displayId (often userId=0). Prefer any AA VD id after attrs.
+         */
+        private fun resolveAaPresentationDisplayId(args: Array<Any?>, attrsIdx: Int): Int? {
+            for (i in (attrsIdx + 1) until args.size) {
+                val v = args[i] as? Int ?: continue
+                if (CoreManagerService.isAaVirtualDisplay(v)) return v
+            }
+            val fallback = args.getOrNull(attrsIdx + 2) as? Int ?: return null
+            return fallback.takeIf { CoreManagerService.isAaVirtualDisplay(it) }
         }
     }
 }
