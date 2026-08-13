@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.ActivityInfo
 import android.graphics.PixelFormat
 import android.os.CountDownTimer
 import android.os.PowerManager
@@ -14,15 +13,11 @@ import android.view.*
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.allViews
-import androidx.core.view.updateLayoutParams
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.WindowControllerBinding
-import io.github.nitsuya.aa.display.databinding.WindowMirrorBinding
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
-import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
-import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
@@ -38,9 +33,6 @@ import kotlin.math.sqrt
 class DisplayWindow(
       private val mContext: Context
     , private val displayAdapter: SplitDisplayController
-    , private var mDisplayWidth: Int
-    , private var mDisplayHeight: Int
-    , private var mDensityDpi: Int
 ): View.OnTouchListener {
     companion object {
         private const val TAG = "AADisplay_DisplayWindow"
@@ -56,16 +48,10 @@ class DisplayWindow(
     private var mControllerBinding: WindowControllerBinding? = null
     private lateinit var mControllerLayoutParams: WindowManager.LayoutParams
 
-    private var mMirrorBinding: WindowMirrorBinding? = null
-    private lateinit var mMirrorLayoutParams: WindowManager.LayoutParams
-
     private var mControllerStatus = false
-    private var mMirrorStatus = false
     private var mControllerCollapsed = true
     private var mControllerDockRight = true
     private val mControllerPeekPx by lazy { (mContext.resources.displayMetrics.density * 14f).toInt() }
-
-    private var mDisplayRatio = 1f
 
     private var mDestroyJob: Job? = null
     private var mChangeAlphaCountDownTimer = object : CountDownTimer(5000,5000){
@@ -377,13 +363,10 @@ class DisplayWindow(
         }
     }
 
-
-
     init {
         runCatching {
             with(ContextThemeWrapper(mContext, R.style.Theme_AADisplay_Window)){
                 mControllerBinding = WindowControllerBinding.inflate(LayoutInflater.from(this))
-                mMirrorBinding = WindowMirrorBinding.inflate(LayoutInflater.from(this))
             }
         }.onFailure {
             log(TAG, "init: new window failed may you forget reboot", it)
@@ -405,52 +388,8 @@ class DisplayWindow(
             ibHideController.setOnClickListener {
                 collapseController()
             }
-            ibMirrorDisplay.setOnClickListener {
-                hideController()
-                showMirror()
-            }
-            ibMirrorDisplay.setOnLongClickListener {
-                collapseController()
-                true
-            }
-        }
-        mMirrorBinding?.apply {
-            arrayOf(vHeightUmbrella1, vHeightUmbrella2).forEach {
-                it.setOnClickListener {
-                    hideMirror()
-                    showController()
-                }
-            }
-            tvVirtualDisplayInfo.text = "$mDisplayWidth*$mDisplayHeight,$mDensityDpi"
-        }
-        updateDisplaySize()
-        mMirrorBinding?.apply {
-            bindMirrorSurface(svMirrorPrimary, SplitPane.PRIMARY)
-            bindMirrorSurface(svMirrorSecondary, SplitPane.SECONDARY)
         }
         showController()
-    }
-
-    private fun bindMirrorSurface(surfaceView: SurfaceView, pane: Int) {
-        surfaceView.setOnTouchListener { _, event ->
-            val newEvent = rewriteMotionEvent(
-                source = event,
-                divideCoordsBy = mDisplayRatio,
-            )
-            displayAdapter.setFocusedPane(pane)
-            displayAdapter.onTouchPane(pane, newEvent)
-            newEvent.recycle()
-            true
-        }
-        surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) {
-                displayAdapter.addMirrorPane(pane, surfaceView.surfaceControl)
-            }
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                displayAdapter.removeMirrorPane(pane, surfaceView.surfaceControl)
-            }
-        })
     }
 
     private fun initLayoutParams() {
@@ -469,93 +408,13 @@ class DisplayWindow(
             y = 0
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         }
-
-        mMirrorLayoutParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
-                or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-                or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-            ,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.START or Gravity.TOP
-            screenOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-        }
     }
 
-    fun onSplitRatioChanged() {
-        updateDisplaySize()
-    }
-
-    private fun updateDisplaySize(){
-        mControllerBinding?.apply {
-            ibMirrorDisplay.visibility = View.VISIBLE
-        }
-        mDisplayRatio = Instances.windowManager.currentWindowMetrics.bounds.let {
-            (it.width().toFloat() / mDisplayWidth).coerceAtMost(it.height().toFloat() / mDisplayHeight)
-        }
-        val ratio = SplitPane.clampRatio(displayAdapter.mRatio)
-        val gap = (6 * mContext.resources.displayMetrics.density).toInt()
-        val sideBySide = displayAdapter.isSideBySide
-        mMirrorBinding?.apply {
-            llMirrorSplit.orientation =
-                if (sideBySide) android.widget.LinearLayout.HORIZONTAL
-                else android.widget.LinearLayout.VERTICAL
-            vMirrorDivider.updateLayoutParams {
-                if (sideBySide) {
-                    width = gap
-                    height = android.view.ViewGroup.LayoutParams.MATCH_PARENT
-                } else {
-                    width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
-                    height = gap
-                }
-            }
-            if (sideBySide) {
-                val primaryW = ((mDisplayWidth - gap) * ratio).toInt().coerceAtLeast(1)
-                val secondaryW = (mDisplayWidth - gap - primaryW).coerceAtLeast(1)
-                svMirrorPrimary.holder.setFixedSize(primaryW, mDisplayHeight)
-                svMirrorSecondary.holder.setFixedSize(secondaryW, mDisplayHeight)
-                svMirrorPrimary.updateLayoutParams {
-                    width = (primaryW * mDisplayRatio).toInt()
-                    height = (mDisplayHeight * mDisplayRatio).toInt()
-                }
-                svMirrorSecondary.updateLayoutParams {
-                    width = (secondaryW * mDisplayRatio).toInt()
-                    height = (mDisplayHeight * mDisplayRatio).toInt()
-                }
-            } else {
-                val primaryH = ((mDisplayHeight - gap) * ratio).toInt().coerceAtLeast(1)
-                val secondaryH = (mDisplayHeight - gap - primaryH).coerceAtLeast(1)
-                svMirrorPrimary.holder.setFixedSize(mDisplayWidth, primaryH)
-                svMirrorSecondary.holder.setFixedSize(mDisplayWidth, secondaryH)
-                svMirrorPrimary.updateLayoutParams {
-                    width = (mDisplayWidth * mDisplayRatio).toInt()
-                    height = (primaryH * mDisplayRatio).toInt()
-                }
-                svMirrorSecondary.updateLayoutParams {
-                    width = (mDisplayWidth * mDisplayRatio).toInt()
-                    height = (secondaryH * mDisplayRatio).toInt()
-                }
-            }
-        }
-    }
-
-    suspend fun onResume(width: Int, height: Int){
-        mDisplayWidth = width
-        mDisplayHeight = height
-        mMirrorBinding?.tvVirtualDisplayInfo?.text = "$mDisplayWidth*$mDisplayHeight,$mDensityDpi"
+    suspend fun onResume(){
         interactiveMonitor.init()
         mDestroyJob?.cancelAndJoin()
-        updateDisplaySize()
         mControllerBinding?.apply {
             tvDestroyTime.visibility = View.GONE
-            ibMirrorDisplay.visibility = View.VISIBLE
         }
         showController()
     }
@@ -572,7 +431,6 @@ class DisplayWindow(
         mDestroyJob?.cancelAndJoin()
 
         mControllerBinding?.apply {
-            ibMirrorDisplay.visibility = View.GONE
             tvDestroyTime.setOnClickListener {
                 mDestroyJob?.cancel()
                 close()
@@ -608,9 +466,6 @@ class DisplayWindow(
     }
 
     private fun showController(){
-        if(mMirrorStatus){
-            hideMirror()
-        }
         if(mControllerStatus) return
         mControllerBinding?.apply {
             tryOrNull { Instances.windowManager.addView(root, mControllerLayoutParams) }
@@ -627,21 +482,6 @@ class DisplayWindow(
         mControllerBinding?.apply {
             tryOrNull { Instances.windowManager.removeView(root) }
             mControllerStatus = false
-        }
-    }
-
-    private fun showMirror(){
-        if(mMirrorStatus) return
-        mMirrorBinding?.apply {
-            tryOrNull { Instances.windowManager.addView(root, mMirrorLayoutParams) }
-            mMirrorStatus = true
-        }
-    }
-    private fun hideMirror(){
-        if(!mMirrorStatus) return
-        mMirrorBinding?.apply {
-            tryOrNull { Instances.windowManager.removeView(root) }
-            mMirrorStatus = false
         }
     }
 
@@ -713,7 +553,6 @@ class DisplayWindow(
 
     private fun close() {
         mChangeAlphaCountDownTimer.cancel()
-        hideMirror()
         hideController()
     }
 
@@ -771,7 +610,4 @@ class DisplayWindow(
             return if(isDrag) true else v.onTouchEvent(event)
         } ?: false
     }
-
-
-
 }

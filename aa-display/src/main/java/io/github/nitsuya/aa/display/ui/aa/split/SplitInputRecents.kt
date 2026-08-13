@@ -11,7 +11,6 @@ import android.view.InputDevice
 import android.view.InputEvent
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
-import android.view.SurfaceControl
 import android.window.TaskSnapshot
 import androidx.core.graphics.drawable.toBitmap
 import com.github.kyuubiran.ezxhelper.utils.argTypes
@@ -105,18 +104,5 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
             }.getOrNull()
             RecentTaskInfo(icon, taskInfo.taskId, label, snapshot, topActivity.packageName)
         }
-    }
-
-    fun releaseMirrors(map: HashMap<SurfaceControl, SurfaceControl>) {
-        map.values.forEach { sc ->
-            try {
-                c.mTransaction.apply {
-                    invokeMethod("remove", args(sc), argTypes(SurfaceControl::class.java))
-                }.apply()
-            } catch (_: Throwable) {
-            }
-            sc.release()
-        }
-        map.clear()
     }
 }

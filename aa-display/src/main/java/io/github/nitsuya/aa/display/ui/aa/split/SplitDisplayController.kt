@@ -11,13 +11,8 @@ import android.view.Display
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
-import android.view.SurfaceControl
 import android.view.View
 import android.view.WindowManager
-import com.github.kyuubiran.ezxhelper.utils.argTypes
-import com.github.kyuubiran.ezxhelper.utils.args
-import com.github.kyuubiran.ezxhelper.utils.invokeMethod
-import com.github.kyuubiran.ezxhelper.utils.newInstance
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
@@ -55,9 +50,6 @@ class SplitDisplayController(
         internal const val RESTORE_VERIFY_RETRY_MS = 2000L
         internal const val MAX_RESTORE_VERIFY_ATTEMPTS = 3
     }
-
-    /** Phone overlay / other observers refresh layout when VD sizes change. */
-    var onSplitLayoutChanged: (() -> Unit)? = null
 
     internal val vd = SplitVdLifecycle(this)
     internal val launch = SplitLaunchRestore(this)
@@ -103,10 +95,6 @@ class SplitDisplayController(
     @Volatile
     internal var mSuppressReclaimUntil = 0L
 
-    internal val mPrimaryMirrors = HashMap<SurfaceControl, SurfaceControl>()
-    internal val mSecondaryMirrors = HashMap<SurfaceControl, SurfaceControl>()
-    internal val mTransaction = SurfaceControl.Transaction()
-
     internal var mPrimaryWm: WindowManager? = null
     internal var mSecondaryWm: WindowManager? = null
     internal val mPrimaryForceView = View(context)
@@ -121,7 +109,6 @@ class SplitDisplayController(
     internal var mLastPrimaryH = 0
     internal var mLastSecondaryW = 0
     internal var mLastSecondaryH = 0
-    internal val mDebouncedMirrorLayout = Runnable { onSplitLayoutChanged?.invoke() }
     internal val mPendingResize = Runnable { vd.resizePanesInternal("ratio-throttled") }
 
     init {
@@ -315,7 +302,6 @@ class SplitDisplayController(
         mHandler.removeCallbacks(launch.mDebouncedPersist)
         mHandler.removeCallbacks(mPendingResize)
         mHandler.removeCallbacks(launch.mDebouncedNotifyState)
-        mHandler.removeCallbacks(mDebouncedMirrorLayout)
         mHandler.removeCallbacksAndMessages(launch.RESTORE_TOKEN)
         mHandler.removeCallbacksAndMessages(launch.ENSURE_TOKEN)
         mHandler.removeCallbacksAndMessages(launch.VERIFY_RESTORE_TOKEN)
@@ -344,8 +330,6 @@ class SplitDisplayController(
             }
         mTrackedPackageUsers.clear()
 
-        input.releaseMirrors(mPrimaryMirrors)
-        input.releaseMirrors(mSecondaryMirrors)
         vd.removeKeepAwakeOverlay(SplitPane.PRIMARY)
         vd.removeKeepAwakeOverlay(SplitPane.SECONDARY)
         tryOrNull { mPrimary?.release() }
@@ -380,47 +364,6 @@ class SplitDisplayController(
         if (displayId == Display.INVALID_DISPLAY) return
         input.injectInputEvent(displayId, input.createKeyEvent(KeyEvent.ACTION_DOWN, action))
         input.injectInputEvent(displayId, input.createKeyEvent(KeyEvent.ACTION_UP, action))
-    }
-
-    fun addMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
-        val displayId = input.displayIdFor(pane) ?: return
-        val map = if (pane == SplitPane.PRIMARY) mPrimaryMirrors else mSecondaryMirrors
-        val sc = SurfaceControl::class.java.newInstance(args(), argTypes()) as SurfaceControl
-        try {
-            if (!Instances.iWindowManager.mirrorDisplay(displayId, sc)) {
-                sc.release()
-                return
-            }
-        } catch (e: Throwable) {
-            log(TAG, "addMirrorPane error:", e)
-            sc.release()
-            return
-        }
-        if (!sc.isValid) {
-            sc.release()
-            return
-        }
-        try {
-            mTransaction
-                .apply { invokeMethod("show", args(sc), argTypes(SurfaceControl::class.java)) }
-                .reparent(sc, surfaceControl)
-                .apply()
-        } catch (e: Throwable) {
-            log(TAG, "addMirrorPane show error:", e)
-            sc.release()
-            return
-        }
-        map.put(surfaceControl, sc)?.release()
-    }
-
-    fun removeMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
-        val map = if (pane == SplitPane.PRIMARY) mPrimaryMirrors else mSecondaryMirrors
-        map.remove(surfaceControl)?.also { sc ->
-            mTransaction.apply {
-                invokeMethod("remove", args(sc), argTypes(SurfaceControl::class.java))
-            }.apply()
-            sc.release()
-        }
     }
 
     fun getRecentTask(): RecentTask {

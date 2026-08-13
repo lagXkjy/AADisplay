@@ -7,7 +7,6 @@ import android.os.ServiceManager
 import android.util.Log
 import android.view.MotionEvent
 import android.view.Surface
-import android.view.SurfaceControl
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 
@@ -135,14 +134,6 @@ object CoreManager : ICoreManager, DeathRecipient {
             return
         }
         svc.touchPrimaryPane(motionEvent)
-    }
-
-    override fun addMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
-        getService()?.addMirrorPane(pane, surfaceControl)
-    }
-
-    override fun removeMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
-        getService()?.removeMirrorPane(pane, surfaceControl)
     }
 
     override fun getRecentTask(): RecentTask? {

@@ -3,16 +3,13 @@ package io.github.nitsuya.aa.display.util
 import android.view.MotionEvent
 
 /**
- * Rebuild a [MotionEvent] with optional coordinate division and time/source overrides.
+ * Rebuild a [MotionEvent] with optional time/source overrides.
  * Callers own recycle of the returned event.
- *
- * @param divideCoordsBy divide x/y by this factor (e.g. display mirror ratio); 1f = unchanged
  */
 fun rewriteMotionEvent(
     source: MotionEvent,
     downTime: Long = source.downTime,
     eventTime: Long = source.eventTime,
-    divideCoordsBy: Float = 1f,
     preserveMeta: Boolean = true,
     sourceOverride: Int? = null,
 ): MotionEvent {
@@ -25,10 +22,6 @@ fun rewriteMotionEvent(
         pointerProperties[i] = props
         val coords = MotionEvent.PointerCoords()
         source.getPointerCoords(i, coords)
-        if (divideCoordsBy != 1f) {
-            coords.x = coords.x / divideCoordsBy
-            coords.y = coords.y / divideCoordsBy
-        }
         pointerCoords[i] = coords
     }
     val newEvent = if (preserveMeta) {

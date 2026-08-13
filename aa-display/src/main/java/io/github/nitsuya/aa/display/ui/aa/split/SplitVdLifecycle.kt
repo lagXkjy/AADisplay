@@ -85,9 +85,6 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
                 "resize[$reason]: P ${sizes.primaryW}x${sizes.primaryH} " +
                     "S ${sizes.secondaryW}x${sizes.secondaryH} ratio=${c.mRatio}"
             )
-            // Debounce phone-mirror layout updates to avoid overlay thrash during drag.
-            c.mHandler.removeCallbacks(c.mDebouncedMirrorLayout)
-            c.mHandler.postDelayed(c.mDebouncedMirrorLayout, 48L)
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "resize failed:", e)
         }

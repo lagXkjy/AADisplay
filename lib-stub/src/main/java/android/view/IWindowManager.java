@@ -31,11 +31,7 @@ public interface IWindowManager extends IInterface {
 
     void removeRotationWatcher(IRotationWatcher watcher) throws RemoteException;
 
-    SurfaceControl mirrorWallpaperSurface(int displayId) throws RemoteException;
-
     android.graphics.Bitmap snapshotTaskForRecents(int taskId);
-
-    boolean mirrorDisplay(int displayId, SurfaceControl outSurfaceControl) throws RemoteException;
 
     abstract class Stub extends Binder implements IWindowManager {
         public static IWindowManager asInterface(IBinder obj) {

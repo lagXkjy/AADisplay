@@ -6,7 +6,6 @@ import android.content.ContextParams
 import android.view.Display
 import android.view.MotionEvent
 import android.view.Surface
-import android.view.SurfaceControl
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
@@ -186,7 +185,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             )
             mSplitController?.apply {
                 // Soft reconnect: always cancel Delay Destroy and rebind surfaces/policies.
-                mDisplayWindow?.onResume(profile.width, profile.height)
+                mDisplayWindow?.onResume()
                 setPaneSurface(SplitPane.PRIMARY, primarySurface)
                 setPaneSurface(SplitPane.SECONDARY, secondarySurface)
                 // Always kick resize/policies/ensure after surface rebind (null→live).
@@ -209,7 +208,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 try {
                     val controller = this
                     mSplitController = controller
-                    onSplitLayoutChanged = { mDisplayWindow?.onSplitRatioChanged() }
                     onConnected(
                         profile.width,
                         profile.height,
@@ -226,9 +224,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                             mDisplayWindow = DisplayWindow(
                                 CommonContextWrapper.createAppCompatContext(systemContext),
                                 controller,
-                                profile.width,
-                                profile.height,
-                                profile.densityDpi
                             )
                         }
                     }
@@ -249,7 +244,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     override fun setSplitRatio(ratio: Float) {
         runMain {
             mSplitController?.setSplitRatio(ratio)
-            // Mirror refresh is driven by controller.onSplitLayoutChanged after a real resize.
         }
     }
 
@@ -336,14 +330,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             runIO { mDisplayWindow?.onVirtualDisplayUserInteraction() }
         }
         mSplitController?.onTouchPrimaryPane(event)
-    }
-
-    override fun addMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
-        runIO { mSplitController?.addMirrorPane(pane, surfaceControl) }
-    }
-
-    override fun removeMirrorPane(pane: Int, surfaceControl: SurfaceControl) {
-        runIO { mSplitController?.removeMirrorPane(pane, surfaceControl) }
     }
 
     override fun getRecentTask(): RecentTask {

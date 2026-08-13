@@ -150,8 +150,8 @@ class DisplayRecyclerViewAdapter(
                 return
             }
             if (direction != ItemTouchHelper.LEFT) return
-            // Respect focused pane so phone→VD2 works after selecting the center column
-            // (or touching the secondary mirror). Previously always forced Primary/VD1.
+            // Respect focused pane so phone→VD2 works after selecting the center column.
+            // Previously always forced Primary/VD1.
             val pane = CoreApi.focusedPane.let {
                 if (SplitPane.isValid(it)) it else SplitPane.PRIMARY
             }

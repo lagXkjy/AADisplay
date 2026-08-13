@@ -70,16 +70,6 @@
                 android:visibility="gone"
                 tools:visibility="visible"/>
 
-            <ImageButton
-                android:id="@+id/ib_mirror_display"
-                android:layout_width="@dimen/notification_large_icon_width"
-                android:layout_height="@dimen/notification_large_icon_height"
-                android:layout_marginTop="4dp"
-                android:background="?android:attr/selectableItemBackground"
-                android:src="@drawable/ic_monitor_24"
-                android:visibility="gone"
-                tools:visibility="visible"/>
-
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 </FrameLayout>

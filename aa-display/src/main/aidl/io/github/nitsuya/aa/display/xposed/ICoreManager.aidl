@@ -2,7 +2,6 @@ package io.github.nitsuya.aa.display.xposed;
 
 import android.view.MotionEvent;
 import android.view.Surface;
-import android.view.SurfaceControl;
 import io.github.nitsuya.aa.display.xposed.IVirtualDisplayCreatedListener;
 import io.github.nitsuya.aa.display.model.RecentTask;
 
@@ -46,9 +45,6 @@ interface ICoreManager {
      * Relay Coolwalk left-rail HU touches from :car into the PRIMARY pane virtual display.
      */
     void touchPrimaryPane(in MotionEvent motionEvent);
-
-    void addMirrorPane(int pane, in SurfaceControl surfaceControl);
-    void removeMirrorPane(int pane, in SurfaceControl surfaceControl);
 
     RecentTask getRecentTask();
 }
