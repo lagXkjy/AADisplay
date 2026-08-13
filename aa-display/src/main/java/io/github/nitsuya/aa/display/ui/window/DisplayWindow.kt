@@ -27,8 +27,6 @@ import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.RomUtil
-import io.github.duzhaokun123.template.utils.runIO
-import io.github.duzhaokun123.template.utils.runMain
 import java.lang.reflect.Method
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -385,9 +383,7 @@ class DisplayWindow(
         runCatching {
             with(ContextThemeWrapper(mContext, R.style.Theme_AADisplay_Window)){
                 mControllerBinding = WindowControllerBinding.inflate(LayoutInflater.from(this))
-                mMirrorBinding = WindowMirrorBinding.inflate(LayoutInflater.from(this)).apply {
-                    llRecentTask.setPadding(0, getStatusBarHeight(), 0, 0)
-                }
+                mMirrorBinding = WindowMirrorBinding.inflate(LayoutInflater.from(this))
             }
         }.onFailure {
             log(TAG, "init: new window failed may you forget reboot", it)
@@ -425,33 +421,7 @@ class DisplayWindow(
                     showController()
                 }
             }
-            ibBack.setOnClickListener {
-                displayAdapter.onPressKey(KeyEvent.KEYCODE_BACK)
-            }
-            ibRecentTask.setOnClickListener { v ->
-                val tapCount = v.getTag(R.id.tap_count) as? Int ?: 0
-                v.setTag(R.id.tap_count,   tapCount + 1)
-                if(tapCount > 0) return@setOnClickListener
-                runIO {
-                    delay(300)
-                    runMain {
-                        when(v.getTag(R.id.tap_count) as? Int ?: 0){
-                            1 -> toggleRecentTask()
-                            2 -> displayAdapter.moveSecondTaskToFront()
-                        }
-                        v.setTag(R.id.tap_count,  0)
-                    }
-                }
-            }
             tvVirtualDisplayInfo.text = "$mDisplayWidth*$mDisplayHeight,$mDensityDpi"
-            RecentTaskUiHelper.wireThreeColumnRecents(
-                left = rvRecentTaskLeft,
-                center = rvRecentTaskCenter,
-                right = rvRecentTaskRight,
-                onExit = ::hideRecentTask,
-                focusedPaneProvider = { displayAdapter.mFocusedPane },
-                setFocusedPane = { displayAdapter.setFocusedPane(it) },
-            )
         }
         updateDisplaySize()
         mMirrorBinding?.apply {
@@ -662,7 +632,6 @@ class DisplayWindow(
 
     private fun showMirror(){
         if(mMirrorStatus) return
-        hideRecentTask()
         mMirrorBinding?.apply {
             tryOrNull { Instances.windowManager.addView(root, mMirrorLayoutParams) }
             mMirrorStatus = true
@@ -673,35 +642,6 @@ class DisplayWindow(
         mMirrorBinding?.apply {
             tryOrNull { Instances.windowManager.removeView(root) }
             mMirrorStatus = false
-        }
-    }
-
-    private fun toggleRecentTask(){
-        mMirrorBinding?.apply {
-            if(llRecentTask.visibility == View.VISIBLE){
-                hideRecentTask()
-                return
-            }
-            llRecentTask.visibility = View.VISIBLE
-            vHeightUmbrella1.visibility = View.GONE
-            runIO {
-                displayAdapter.getRecentTask().also {recentTask ->
-                    runMain {
-                        (rvRecentTaskLeft.adapter as DisplayRecyclerViewAdapter)?.setItems(recentTask.primaryDisplay)
-                        (rvRecentTaskCenter.adapter as DisplayRecyclerViewAdapter)?.setItems(recentTask.secondaryDisplay)
-                        (rvRecentTaskRight.adapter as DisplayRecyclerViewAdapter)?.setItems(recentTask.mainDisplay)
-                    }
-                }
-            }
-        }
-    }
-    private fun hideRecentTask(){
-        mMirrorBinding?.apply {
-            llRecentTask.visibility = View.GONE
-            vHeightUmbrella1.visibility = View.VISIBLE
-            (rvRecentTaskLeft.adapter as DisplayRecyclerViewAdapter)?.clearItem()
-            (rvRecentTaskCenter.adapter as DisplayRecyclerViewAdapter)?.clearItem()
-            (rvRecentTaskRight.adapter as DisplayRecyclerViewAdapter)?.clearItem()
         }
     }
 
@@ -775,15 +715,6 @@ class DisplayWindow(
         mChangeAlphaCountDownTimer.cancel()
         hideMirror()
         hideController()
-    }
-
-    private fun getStatusBarHeight(): Int {
-        var result = 0
-        val resourceId: Int = mContext.resources.getIdentifier("status_bar_height", "dimen", "android")
-        if (resourceId > 0) {
-            result = mContext.resources.getDimensionPixelSize(resourceId)
-        }
-        return result
     }
 
     override fun onTouch(v: View, event: MotionEvent): Boolean {

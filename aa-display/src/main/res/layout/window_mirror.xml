@@ -22,51 +22,6 @@
             android:visibility="visible"
             tools:visibility="gone" />
 
-        <LinearLayout
-            android:id="@+id/ll_recent_task"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_alignParentTop="true"
-            android:layout_above="@id/cv_app"
-            android:background="#59000000"
-            android:visibility="gone"
-            tools:visibility="visible">
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rv_recent_task_left"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                app:layoutManager="LinearLayoutManager"
-                tools:listitem="@layout/recent_task" />
-
-            <View
-                android:layout_width="1dp"
-                android:layout_height="match_parent"
-                android:background="?colorOnPrimaryContainer" />
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rv_recent_task_center"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                app:layoutManager="LinearLayoutManager"
-                tools:listitem="@layout/recent_task" />
-
-            <View
-                android:layout_width="1dp"
-                android:layout_height="match_parent"
-                android:background="?colorOnPrimaryContainer" />
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rv_recent_task_right"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                app:layoutManager="LinearLayoutManager"
-                tools:listitem="@layout/recent_task" />
-        </LinearLayout>
-
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/cv_app"
             android:layout_width="wrap_content"
@@ -111,27 +66,6 @@
                     android:layout_alignEnd="@id/ll_mirror_split"
                     android:layout_alignParentStart="true"
                     android:alpha="0.8">
-
-                    <ImageButton
-                        android:id="@+id/ib_back"
-                        android:layout_width="@dimen/notification_large_icon_width"
-                        android:layout_height="@dimen/notification_large_icon_height"
-                        android:layout_toStartOf="@id/ib_recent_task"
-                        android:background="?android:attr/selectableItemBackground"
-                        android:padding="4dp"
-                        android:src="@drawable/ic_arrow_back_24"
-                        app:tint="?colorOnPrimaryContainer" />
-
-                    <ImageButton
-                        android:id="@+id/ib_recent_task"
-                        android:layout_width="@dimen/notification_large_icon_width"
-                        android:layout_height="@dimen/notification_large_icon_height"
-                        android:layout_marginStart="4dp"
-                        android:layout_centerInParent="true"
-                        android:background="?android:attr/selectableItemBackground"
-                        android:padding="4dp"
-                        android:src="@drawable/ic_fullscreen_24"
-                        app:tint="?colorOnPrimaryContainer" />
 
                     <TextView
                         android:id="@+id/tv_virtual_display_info"
