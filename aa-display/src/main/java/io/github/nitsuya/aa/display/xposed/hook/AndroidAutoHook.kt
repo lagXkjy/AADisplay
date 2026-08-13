@@ -27,8 +27,8 @@ abstract class AaHook {
     abstract fun hook(lpparam: XC_LoadPackage.LoadPackageParam)
 }
 
-object AndroidAuoHook : BaseHook() {
-    override val tagName: String = "AAD_AndroidAuoHook"
+object AndroidAutoHook : BaseHook() {
+    override val tagName: String = "AAD_AndroidAutoHook"
     override fun init(lpparam: XC_LoadPackage.LoadPackageParam) {
         val processName = lpparam.processName
         val hooks = listOf(AaBasicsHook, AaSignatureHook, AaBtnEventHook, AaUiHook).filter { i -> i.isSupportProcess(processName) }

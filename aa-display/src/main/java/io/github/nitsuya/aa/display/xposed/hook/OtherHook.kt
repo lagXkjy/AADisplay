@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.xposed.hook
 
+import android.annotation.SuppressLint
 import android.app.Application
 import android.app.Instrumentation
 import android.content.res.Resources
@@ -15,6 +16,7 @@ import io.github.nitsuya.aa.display.xposed.logDebug
 
 object OtherHook : BaseHook() {
     override val tagName: String = "AAD_OtherHook"
+    @SuppressLint("DiscouragedApi", "InternalInsetResource")
     override fun init(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
             logDebug(tagName, "${lpparam.packageName}, ${lpparam.appInfo?.uid}, ${lpparam.isFirstApplication}, ${lpparam.processName}")

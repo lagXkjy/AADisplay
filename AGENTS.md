@@ -53,7 +53,7 @@ Vendored 基座（**非必要不改**）：
 ```mermaid
 flowchart LR
   XposedInit --> AndroidHook
-  XposedInit --> AndroidAuoHook
+  XposedInit --> AndroidAutoHook
   XposedInit --> OtherHook
   MainActivity --> CoreApi
   AaDisplayActivity --> CoreApi
@@ -61,7 +61,7 @@ flowchart LR
   CoreManager -->|"PMS bridge AADD"| CoreManagerService
   CoreManagerService --> SplitDisplayController
   CoreManagerService --> DisplayWindow
-  AndroidAuoHook --> AaHooks
+  AndroidAutoHook --> AaHooks
 ```
 
 ### Xposed 入口与路由
@@ -72,11 +72,11 @@ flowchart LR
 | 条件 | Hook |
 |------|------|
 | `packageName == "android"` 且 `appInfo == null` | `AndroidHook`（system_server：VirtualDisplay、Binder 桥等） |
-| `com.google.android.projection.gearhead` | `AndroidAuoHook`（再按进程分发 `Aa*Hook`） |
+| `com.google.android.projection.gearhead` | `AndroidAutoHook`（再按进程分发 `Aa*Hook`） |
 | 本模块 / uid 1000 等 | 跳过 |
 | 其余普通应用 | `OtherHook` |
 
-`AndroidAuoHook` 进程常量：
+`AndroidAutoHook` 进程常量：
 
 - `com.google.android.projection.gearhead`
 - `…:projection`
@@ -135,7 +135,6 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 - **语言**：新逻辑优先 Kotlin；Car SDK 路径（如 `AaDisplayActivity`、`AaActivityService`）可保持 Java。
 - **新钩子**：`object` 继承 `BaseHook` / `AaHook`；`tagName` 使用 `AAD_*` 前缀；日志标签沿用 `AADisplay_*` / `AAD_*`。
 - **禁止随意重命名**（跨进程 / 对外契约）：
-  - 类名 `AndroidAuoHook`（历史拼写，保持现状）
   - Binder magic `AADD`
   - `ICoreManager` / 其它 AIDL 方法签名与 parcelable
   - `xposed_scope` 数组项（除非明确要扩展作用域）
@@ -154,7 +153,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 ### 新增 / 调整 AA 行为钩子
 
 1. 实现放在 `xposed/hook/aa/`
-2. 在 `AndroidAuoHook` 的 hooks 列表中注册，并正确实现 `isSupportProcess`
+2. 在 `AndroidAutoHook` 的 hooks 列表中注册，并正确实现 `isSupportProcess`
 3. 优先 DexKit / 动态解析，避免写死易碎偏移或字段名
 4. 在目标 AA 版本真机验证；失败时看 `AAD_*` 日志与 DexKit 初始化是否成功
 
@@ -192,7 +191,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 |------|------------|
 | Xposed 入口 / 包路由 | `xposed/XposedInit.kt` |
 | 系统 VirtualDisplay / Binder 桥 | `xposed/hook/AndroidHook.kt`、`CoreManagerService.kt` |
-| AA 钩子总控 | `xposed/hook/AndroidAuoHook.kt` |
+| AA 钩子总控 | `xposed/hook/AndroidAutoHook.kt` |
 | 车机画面与触控 | `ui/aa/AaDisplayActivity*.java/kt`、`AaMainFragment.kt` |
 | 手机设置页 | `ui/main/MainActivity.kt` |
 | 分屏快照 | `util/LastSplitStore.kt` |

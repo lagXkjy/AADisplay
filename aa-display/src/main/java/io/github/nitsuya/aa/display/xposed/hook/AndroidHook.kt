@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.xposed.hook
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.pm.IPackageManager
@@ -60,6 +61,7 @@ object AndroidHook : BaseHook() {
     private fun fieldContext(ams: Any, name: String): Context? =
         runCatching { ams.getObjectAs(name, Context::class.java) as? Context }.getOrNull()
 
+    @SuppressLint("SoonBlockedPrivateApi", "DiscouragedPrivateApi")
     private fun activityThreadUiContext(): Context? =
         runCatching {
             val atClass = Class.forName("android.app.ActivityThread")
@@ -252,7 +254,7 @@ object AndroidHook : BaseHook() {
                         }
                         if (CoreManagerService.isAaVirtualDisplay(displayId)) {
                             markPackageOnVirtualDisplay(pkg, displayId)
-                        } else if (displayId != Display.DEFAULT_DISPLAY) {
+                        } else {
                             appInitUseDisplay[pkg] = displayId
                         }
                     } catch (e: Exception) {
