@@ -2,7 +2,6 @@ package io.github.nitsuya.aa.display.xposed.hook
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.content.pm.ActivityInfo
 import android.content.pm.IPackageManager
 import android.content.res.Configuration
 import android.view.Display
@@ -148,21 +147,6 @@ object AndroidHook : BaseHook() {
                     log(tagName, "systemReady failed", it)
                 }
             }
-
-
-        findMethod("com.android.server.wm.ActivityTaskSupervisor") {
-            name == "isCallerAllowedToLaunchOnDisplay"
-                    && parameterCount == 4
-                    && parameterTypes[0] == Int::class.javaPrimitiveType //callingPid
-                    && parameterTypes[1] == Int::class.javaPrimitiveType //callingUid
-                    && parameterTypes[2] == Int::class.javaPrimitiveType //launchDisplayId
-                    && parameterTypes[3] == ActivityInfo::class.java
-        }.hookAfter { param ->
-            if (param.result as Boolean) {
-                param.result = true
-                log(tagName, "hook isCallerAllowedToLaunchOnDisplay success")
-            }
-        }
     }
 
     /**
