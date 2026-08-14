@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.ui.aa.recent
 
+import android.annotation.SuppressLint
 import android.view.MotionEvent
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -15,6 +16,7 @@ data class RecentTaskAdapters(
 
 object RecentTaskColumns {
 
+    @SuppressLint("ClickableViewAccessibility")
     fun wireThreeColumnRecents(
         left: RecyclerView,
         center: RecyclerView,

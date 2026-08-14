@@ -368,7 +368,7 @@ class DisplayWindow(
 
     init {
         runCatching {
-            with(ContextThemeWrapper(mContext, R.style.Theme_AADisplay_Window)){
+            with(ContextThemeWrapper(mContext, R.style.Theme_AADisplay)){
                 mControllerBinding = WindowControllerBinding.inflate(LayoutInflater.from(this))
             }
         }.onFailure {

@@ -7,7 +7,6 @@ import android.view.WindowManager
 import android.widget.RelativeLayout
 import androidx.activity.viewModels
 import androidx.annotation.CallSuper
-import androidx.annotation.StyleRes
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -23,7 +22,7 @@ import io.github.duzhaokun123.template.utils.maxSystemBarsDisplayCutout
 import net.matsudamper.viewbindingutil.ViewBindingUtil
 
 abstract class BaseActivity<BaseBinding : ViewBinding>(
-    private val baseBindingClass: Class<BaseBinding>, vararg val configs: Config, @StyleRes val themeId: Int = R.style.Theme_AADisplay
+    private val baseBindingClass: Class<BaseBinding>, vararg val configs: Config
 ) : AppCompatActivity() {
     enum class Config {
         NO_TOOL_BAR,
@@ -44,7 +43,6 @@ abstract class BaseActivity<BaseBinding : ViewBinding>(
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        setTheme(themeId)
         super.onCreate(savedInstanceState)
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
