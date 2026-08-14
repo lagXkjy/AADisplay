@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Parcelable
 import android.os.SystemClock
+import android.view.Display
 import android.view.InputDevice
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -35,8 +36,9 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.service.AaActivityService
-import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
+import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.xposed.CoreManager
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -135,6 +137,12 @@ object AaUiHook: AaHook() {
     @Volatile private var mLayoutHeightDp: Int = 0
     /** Last observed GhFacetBar / thin-rail VD width in px (for content expand fallback). */
     @Volatile private var mObservedRailWidthPx: Int = 0
+    /**
+     * Android displayId of the live FacetBar / thin-rail VD (per-process).
+     * Used so :car can steal every touch routed to that display even when
+     * LayoutInfo width is unavailable and x-band heuristics would under-steal.
+     */
+    @Volatile private var mObservedRailDisplayId: Int = Display.INVALID_DISPLAY
 
     override fun isSupportProcess(processName: String): Boolean {
         // Facet/VD UI lives in :projection; Coolwalk writes content_bounds in :car
@@ -276,6 +284,8 @@ object AaUiHook: AaHook() {
         if (lpparam.processName == processCar) {
             // HU touch dispatch (imt.H/G/I) only runs in :car.
             hookHuTouchDispatchRedirect()
+            // Discover this HU's FacetBar / thin-rail display early (no LayoutInfo in :car).
+            ensureRailObservationFromDisplays()
             return
         }
         log(tagName, "AaUiHook: AutoOpen always-on startMethod=${startMethod?.name}")
@@ -848,13 +858,22 @@ object AaUiHook: AaHook() {
         if (width > 1) {
             mObservedRailWidthPx = width
         }
-        logDebug(tagName, "AaUiHook: observe rail VD id=${display.displayId} name=$name w=$width")
+        mObservedRailDisplayId = display.displayId
+        logDebug(
+            tagName,
+            "AaUiHook: observe rail VD id=${display.displayId} name=$name w=$width"
+        )
     }
 
     /**
      * Steal left-rail HU touches before Coolwalk hit-tests windows.
      * AA 17.4: imt.H(CarDisplayId, ProjectionTouchEvent), imt.G/I(CarDisplayId, MotionEvent).
      * Must run in :car — that is where CarActivityManagerService lives.
+     *
+     * FacetBar VD often stays full rail width with a GONE window (no touchable target);
+     * InputDispatcher then drops the event. Prefer stealing by **target display**
+     * (FacetBar / thin-rail geometry), with an observed-width x-band fallback for
+     * HU-absolute content routing. Widths come from live observation — never a fixed px.
      */
     private fun hookHuTouchDispatchRedirect() {
         val anchor = huTouchDispatchMethod
@@ -890,7 +909,7 @@ object AaUiHook: AaHook() {
         }
         log(
             tagName,
-            "AaUiHook: hooked HU touch dispatch → touchPrimaryPane " +
+            "AaUiHook: hooked HU touch dispatch → rail steal " +
                 "methods=${targets.joinToString { it.name }} hooked=$hooked"
         )
     }
@@ -904,10 +923,13 @@ object AaUiHook: AaHook() {
             else -> projectionTouchEventToMotionEvent(raw)
         } ?: return
         try {
+            ensureRailObservationFromDisplays()
+            val railTarget = isRailTargetCarDisplay(param.args[0])
             val rail = railHitWidthPx()
             val action = motion.actionMasked
             // Primary pointer only — secondary fingers in the strip must not hijack content drags.
-            val downInRail = motion.getX(0) < rail
+            val downInRailBand = motion.getX(0) < rail
+            val downInRail = railTarget || downInRailBand
             if (action == MotionEvent.ACTION_DOWN) {
                 mHuRailGesture = downInRail
             }
@@ -923,51 +945,173 @@ object AaUiHook: AaHook() {
                 else -> mHuRailGesture
             }
             if (!steal) return
-            val fs = try {
-                CoreManager.splitFullscreenPane
-            } catch (_: Throwable) {
-                SplitPane.FULLSCREEN_NONE
-            }
-            if (SplitPane.isFullscreenPane(fs)) {
-                CoreManager.touchPane(fs, motion)
-            } else {
-                CoreManager.touchPrimaryPane(motion)
-            }
-            param.result = null
+            // Coolwalk MotionEvent clocks are often not InputDispatcher uptime — rewrite
+            // before Binder inject or the event is dropped (same as PTE decode path).
+            val now = SystemClock.uptimeMillis()
             if (action == MotionEvent.ACTION_DOWN) {
-                logDebug(
-                    tagName,
-                    "AaUiHook: HU rail → " +
-                        (if (SplitPane.isFullscreenPane(fs)) "touchPane($fs)" else "touchPrimaryPane") +
-                        " x=${motion.x} y=${motion.y} rail=$rail"
-                )
+                mRailHostDownTime = now
+            }
+            val down = mRailHostDownTime.takeIf { it > 0L } ?: now
+            val toInject = rewriteMotionEvent(
+                source = motion,
+                downTime = down,
+                eventTime = now,
+                sourceOverride = InputDevice.SOURCE_TOUCHSCREEN,
+            )
+            try {
+                val fs = try {
+                    CoreManager.splitFullscreenPane
+                } catch (_: Throwable) {
+                    SplitPane.FULLSCREEN_NONE
+                }
+                if (SplitPane.isFullscreenPane(fs)) {
+                    CoreManager.touchPane(fs, toInject)
+                } else {
+                    CoreManager.touchPrimaryPane(toInject)
+                }
+                param.result = null
+                if (action == MotionEvent.ACTION_DOWN) {
+                    logDebug(
+                        tagName,
+                        "AaUiHook: HU rail → " +
+                            (if (SplitPane.isFullscreenPane(fs)) "touchPane($fs)" else "touchPrimaryPane") +
+                            " x=${motion.x} y=${motion.y} rail=$rail " +
+                            "facetTarget=$railTarget"
+                    )
+                }
+            } finally {
+                toInject.recycle()
             }
         } catch (e: Throwable) {
-            log(tagName, "AaUiHook: HU rail → touchPrimaryPane failed", e)
+            log(tagName, "AaUiHook: HU rail steal failed", e)
         } finally {
             if (owned) motion.recycle()
         }
     }
 
     /**
+     * :car does not run LayoutInfo / createVirtualDisplay hooks; discover the live
+     * FacetBar / thin-rail display via DisplayManager so width + id match this HU.
+     */
+    private fun ensureRailObservationFromDisplays() {
+        if (mObservedRailDisplayId != Display.INVALID_DISPLAY && mObservedRailWidthPx > 0) return
+        val dm = runCatching {
+            InitFields.appContext.getSystemService(DisplayManager::class.java)
+        }.getOrNull() ?: return
+        for (display in dm.displays) {
+            val name = display.name
+            val w = runCatching { display.mode.physicalWidth }.getOrDefault(0)
+            val h = runCatching { display.mode.physicalHeight }.getOrDefault(0)
+            val named = isRailVirtualDisplayName(name)
+            val thin = w > 1 && h > 0 && isThinRailSize(w, h)
+            if (!named && !thin) continue
+            if (w > 1) mObservedRailWidthPx = w
+            mObservedRailDisplayId = display.displayId
+            logDebug(
+                tagName,
+                "AaUiHook: discovered rail display id=${display.displayId} name=$name w=$w"
+            )
+            return
+        }
+    }
+
+    /**
+     * True when Coolwalk is routing this HU touch to the FacetBar / thin-rail display.
+     * Resolves [carDisplayId] → Android [Display] via reflection + DisplayManager so each
+     * HU's own rail VD (any width) is recognized without hardcoded pixels.
+     */
+    private fun isRailTargetCarDisplay(carDisplayId: Any?): Boolean {
+        if (carDisplayId == null) return false
+        val androidId = androidDisplayIdFromCarDisplayId(carDisplayId)
+            ?: return false
+        if (androidId == Display.INVALID_DISPLAY) return false
+        if (androidId == mObservedRailDisplayId) return true
+        val display = runCatching {
+            InitFields.appContext.getSystemService(DisplayManager::class.java)
+                ?.getDisplay(androidId)
+        }.getOrNull() ?: return false
+        val name = display.name
+        if (isRailVirtualDisplayName(name)) {
+            mObservedRailDisplayId = androidId
+            runCatching {
+                val w = display.mode.physicalWidth
+                if (w > 1) mObservedRailWidthPx = w
+            }
+            return true
+        }
+        val w = runCatching { display.mode.physicalWidth }.getOrDefault(0)
+        val h = runCatching { display.mode.physicalHeight }.getOrDefault(0)
+        if (w > 1 && h > 0 && isThinRailSize(w, h)) {
+            mObservedRailDisplayId = androidId
+            mObservedRailWidthPx = w
+            return true
+        }
+        return false
+    }
+
+    /** Best-effort CarDisplayId / wrapper → Android displayId. */
+    private fun androidDisplayIdFromCarDisplayId(carDisplayId: Any): Int? {
+        when (carDisplayId) {
+            is Int -> return carDisplayId
+            is Number -> return carDisplayId.toInt()
+        }
+        val candidates = linkedSetOf<Int>()
+        for (m in carDisplayId.javaClass.methods) {
+            if (m.parameterCount != 0) continue
+            if (m.returnType != Int::class.javaPrimitiveType && m.returnType != Integer::class.java) {
+                continue
+            }
+            runCatching {
+                m.isAccessible = true
+                val v = (m.invoke(carDisplayId) as? Number)?.toInt() ?: return@runCatching
+                if (v >= 0) candidates += v
+            }
+        }
+        for (f in carDisplayId.javaClass.declaredFields) {
+            if (java.lang.reflect.Modifier.isStatic(f.modifiers)) continue
+            if (f.type != Int::class.javaPrimitiveType && f.type != Integer::class.java) continue
+            runCatching {
+                f.isAccessible = true
+                val v = (f.get(carDisplayId) as? Number)?.toInt() ?: return@runCatching
+                if (v >= 0) candidates += v
+            }
+        }
+        if (candidates.isEmpty()) return null
+        if (mObservedRailDisplayId in candidates) return mObservedRailDisplayId
+        val dm = runCatching {
+            InitFields.appContext.getSystemService(DisplayManager::class.java)
+        }.getOrNull()
+        if (dm != null) {
+            for (id in candidates) {
+                val d = dm.getDisplay(id) ?: continue
+                if (isRailVirtualDisplayName(d.name)) return id
+                val w = runCatching { d.mode.physicalWidth }.getOrDefault(0)
+                val h = runCatching { d.mode.physicalHeight }.getOrDefault(0)
+                if (w > 1 && h > 0 && isThinRailSize(w, h)) return id
+            }
+        }
+        // Last resort: single non-zero candidate (common when CarDisplayId is a thin wrapper).
+        return candidates.singleOrNull { it != 0 } ?: candidates.firstOrNull()
+    }
+
+    /**
      * LHD left-rail hit band in HU px. Prefer live FacetBar / content_bounds width.
-     * Fallback is a thin fraction of LayoutInfo width (not a fixed phone/HU pixel size).
+     * Use the full observed width (no 0.9 shrink) so the Coolwalk routing band and our
+     * steal band do not leave a dead seam. Never hardcode a single HU's pixel size.
      */
     private fun railHitWidthPx(): Int {
         val observed = mObservedRailWidthPx
         val fullW = layoutWidthPx()
         if (fullW > 0) {
             val range = railPxRange(fullW)
-            if (observed in range) {
-                // Slight inset so pans that start on the content edge are not stolen.
-                return (observed * 0.90f).roundToInt().coerceIn(range.first, observed)
-            }
-            // No reliable observed strip yet — stay narrower than the old ~10% fallback.
-            return (fullW * 0.06f).roundToInt().coerceIn(range)
+            if (observed in range) return observed
+            // Observed from FacetBar but slightly outside the proportional range — still trust it.
+            if (observed in 8..(fullW / 2)) return observed
+            return (fullW * 0.08f).roundToInt().coerceIn(range)
         }
-        // LayoutInfo not ready: trust a thin observed strip only.
-        if (observed in 8..120) return (observed * 0.90f).roundToInt().coerceAtLeast(8)
-        return observed.takeIf { it > 0 }?.coerceAtMost(64) ?: 40
+        // :car often has no LayoutInfo — trust FacetBar / content_bounds observation only.
+        if (observed in 8..240) return observed
+        return 48
     }
 
     /**
