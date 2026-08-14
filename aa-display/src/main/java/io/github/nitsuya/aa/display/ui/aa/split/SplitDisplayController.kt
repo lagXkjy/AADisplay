@@ -69,6 +69,15 @@ class SplitDisplayController(
         internal set
     var mFocusedPane: Int = SplitPane.PRIMARY
         internal set
+    /**
+     * [SplitPane.FULLSCREEN_NONE] or PRIMARY/SECONDARY. When set, both VDs are full
+     * size; AA UI shows one pane and stacks the other underneath.
+     */
+    var mFullscreenPane: Int = SplitPane.FULLSCREEN_NONE
+        internal set
+    /** Split ratio cached when entering fullscreen; restored on exit / persist. */
+    var mRatioBeforeFullscreen: Float = SplitPane.DEFAULT_RATIO
+        internal set
     /** Landscape → side-by-side; portrait → stacked. */
     val isSideBySide: Boolean
         get() = mWidth >= mHeight
@@ -145,6 +154,8 @@ class SplitDisplayController(
         mHeight = height.coerceAtLeast(1)
         mDensityDpi = densityDpi.coerceAtLeast(1)
         mRatio = SplitPane.clampRatio(ratio)
+        mFullscreenPane = SplitPane.FULLSCREEN_NONE
+        mRatioBeforeFullscreen = mRatio
         mPrimarySurface = primarySurface
         mSecondarySurface = secondarySurface
         mPanePackages[0] = null
@@ -237,6 +248,8 @@ class SplitDisplayController(
     }
 
     fun setSplitRatio(ratio: Float) {
+        // Fullscreen owns layout until exit — ignore ratio echoes from AA during FS.
+        if (SplitPane.isFullscreenPane(mFullscreenPane)) return
         val clamped = SplitPane.clampRatio(ratio)
         if (abs(clamped - mRatio) < 0.001f) return
         mRatio = clamped
@@ -250,6 +263,35 @@ class SplitDisplayController(
         }
         vd.resizePanesInternal("ratio")
         launch.schedulePersistSnapshot()
+    }
+
+    /**
+     * Enter fullscreen for [pane] (PRIMARY/SECONDARY) or exit with [SplitPane.FULLSCREEN_NONE].
+     * Both VDs resize to full buffer while one pane is hidden under the other in AA UI.
+     */
+    fun setSplitFullscreen(pane: Int) {
+        if (pane != SplitPane.FULLSCREEN_NONE && !SplitPane.isFullscreenPane(pane)) return
+        if (pane == mFullscreenPane) return
+        if (SplitPane.isFullscreenPane(pane)) {
+            if (!SplitPane.isFullscreenPane(mFullscreenPane)) {
+                mRatioBeforeFullscreen = mRatio
+            }
+            mFullscreenPane = pane
+            mFocusedPane = pane
+        } else {
+            mFullscreenPane = SplitPane.FULLSCREEN_NONE
+            mRatio = SplitPane.clampRatio(mRatioBeforeFullscreen)
+        }
+        mSuppressReclaimUntil = SystemClock.uptimeMillis() + 800L
+        mHandler.removeCallbacks(mPendingResize)
+        vd.resizePanesInternal(if (pane == SplitPane.FULLSCREEN_NONE) "fullscreen-exit" else "fullscreen-enter")
+        launch.schedulePersistSnapshot()
+        notifySplitStateChanged()
+        log(
+            TAG,
+            "setSplitFullscreen pane=$mFullscreenPane ratio=$mRatio " +
+                "ratioBefore=$mRatioBeforeFullscreen"
+        )
     }
 
     fun setFocusedPane(pane: Int) {
@@ -718,8 +760,17 @@ class SplitDisplayController(
             ownership.markOwnership(pkg, target)
         }
 
-        // Sizes follow the apps.
-        mRatio = SplitPane.clampRatio(1f - mRatio)
+        // Sizes follow the apps (unless fullscreen — both stay full buffer).
+        if (SplitPane.isFullscreenPane(mFullscreenPane)) {
+            mFullscreenPane = if (mFullscreenPane == SplitPane.PRIMARY) {
+                SplitPane.SECONDARY
+            } else {
+                SplitPane.PRIMARY
+            }
+            // Keep the pre-fullscreen split ratio; do not invert while FS.
+        } else {
+            mRatio = SplitPane.clampRatio(1f - mRatio)
+        }
         mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
         vd.resizePanesInternal("swap")
 
@@ -729,6 +780,7 @@ class SplitDisplayController(
             TAG,
             "swapPanes ok primary=${mPanePackages[SplitPane.PRIMARY]} " +
                 "secondary=${mPanePackages[SplitPane.SECONDARY]} ratio=$mRatio " +
+                "fullscreen=$mFullscreenPane " +
                 "tasksP=${afterPrimary.map { it.taskId }} tasksS=${afterSecondary.map { it.taskId }}"
         )
         return true

@@ -14,5 +14,7 @@ interface AABroadcastConst {
         /** Optional package names so AA can update empty overlays without Binder round-trips. */
         const val EXTRA_PRIMARY_PACKAGE = "aa.display.extra.PRIMARY_PACKAGE"
         const val EXTRA_SECONDARY_PACKAGE = "aa.display.extra.SECONDARY_PACKAGE"
+        /** -1 split; 0 PRIMARY / 1 SECONDARY fullscreen. */
+        const val EXTRA_FULLSCREEN_PANE = "aa.display.extra.FULLSCREEN_PANE"
     }
 }

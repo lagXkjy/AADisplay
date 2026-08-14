@@ -64,13 +64,19 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }
         c.mSuppressReclaimUntil = SystemClock.uptimeMillis() + SplitDisplayController.SUPPRESS_RECLAIM_AFTER_RESTORE_MS
         c.mRatio = SplitPane.clampRatio(snap.primaryRatio)
+        c.mRatioBeforeFullscreen = c.mRatio
+        c.mFullscreenPane = SplitPane.FULLSCREEN_NONE
         c.vd.resizePanesInternal("restore")
         val primaryOk = c.startActivityOnPane(snap.primaryPackage, 0, SplitPane.PRIMARY)
         val secondaryOk = c.startActivityOnPane(snap.secondaryPackage, 0, SplitPane.SECONDARY)
+        if (SplitPane.isFullscreenPane(snap.fullscreenPane)) {
+            c.setSplitFullscreen(snap.fullscreenPane)
+        }
         log(
             SplitDisplayController.TAG,
             "restoreLastSplit primary=${snap.primaryPackage}:$primaryOk " +
-                "secondary=${snap.secondaryPackage}:$secondaryOk ratio=${c.mRatio}"
+                "secondary=${snap.secondaryPackage}:$secondaryOk ratio=${c.mRatio} " +
+                "fullscreen=${c.mFullscreenPane}"
         )
         c.notifySplitStateChanged()
         // Launch returning true only means startActivity was accepted — verify panes stuck.
@@ -236,6 +242,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                         AABroadcastConst.EXTRA_SECONDARY_PACKAGE,
                         c.mPanePackages[SplitPane.SECONDARY].orEmpty()
                     )
+                    putExtra(AABroadcastConst.EXTRA_FULLSCREEN_PANE, c.mFullscreenPane)
                 }
             )
         } catch (e: Throwable) {
@@ -342,7 +349,13 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         val snap = LastSplitStore.Snapshot(
             primaryPackage = primaryPkg,
             secondaryPackage = secondaryPkg,
-            primaryRatio = c.mRatio,
+            // Persist the split ratio even while fullscreen (not 0/1).
+            primaryRatio = if (SplitPane.isFullscreenPane(c.mFullscreenPane)) {
+                SplitPane.clampRatio(c.mRatioBeforeFullscreen)
+            } else {
+                c.mRatio
+            },
+            fullscreenPane = c.mFullscreenPane,
         )
         LastSplitStore.save(snap, c.context.contentResolver, mirrorSettings = mirrorSettings || force)
     }

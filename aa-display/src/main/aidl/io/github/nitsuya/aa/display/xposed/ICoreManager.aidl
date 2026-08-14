@@ -23,6 +23,13 @@ interface ICoreManager {
     void setPaneSurface(int pane, in Surface surface);
     void setSplitRatio(float ratio);
     float getSplitRatio();
+    /**
+     * Enter fullscreen for PRIMARY(0)/SECONDARY(1), or exit with -1.
+     * Both virtual displays stay full-size; AA UI shows one and stacks the other.
+     */
+    void setSplitFullscreen(int pane);
+    /** -1 when split; PRIMARY(0) or SECONDARY(1) when one pane is fullscreen. */
+    int getSplitFullscreenPane();
     /** Package currently owned by [pane], or null/empty when vacant. */
     String getPanePackage(int pane);
     void setFocusedPane(int pane);

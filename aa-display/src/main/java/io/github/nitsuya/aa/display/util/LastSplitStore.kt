@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.util
 import android.content.ContentResolver
 import android.provider.Settings
 import android.util.Log
+import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -24,16 +25,20 @@ object LastSplitStore {
     /** Settings.Global key for SECONDARY pane package (historical name). */
     const val SETTINGS_RIGHT = "aadisplay_last_split_right"
     const val SETTINGS_RATIO = "aadisplay_last_split_ratio"
+    const val SETTINGS_FULLSCREEN = "aadisplay_last_split_fullscreen"
 
     /** Properties-file keys (historical names; do not rename — existing snapshots). */
     private const val FILE_LEFT = "LastSplitLeftPackage"
     private const val FILE_RIGHT = "LastSplitRightPackage"
     private const val FILE_RATIO = "LastSplitPrimaryRatio"
+    private const val FILE_FULLSCREEN = "LastSplitFullscreenPane"
 
     data class Snapshot(
         val primaryPackage: String,
         val secondaryPackage: String,
         val primaryRatio: Float,
+        /** [SplitPane.FULLSCREEN_NONE] or PRIMARY/SECONDARY. */
+        val fullscreenPane: Int = SplitPane.FULLSCREEN_NONE,
     )
 
     fun load(contentResolver: ContentResolver? = null): Snapshot? {
@@ -64,6 +69,7 @@ object LastSplitStore {
                 primary = props.getProperty(FILE_LEFT),
                 secondary = props.getProperty(FILE_RIGHT),
                 ratio = props.getProperty(FILE_RATIO),
+                fullscreen = props.getProperty(FILE_FULLSCREEN),
             )
         } catch (e: Throwable) {
             Log.w(TAG, "load file failed", e)
@@ -78,6 +84,7 @@ object LastSplitStore {
                 primary = Settings.Global.getString(cr, SETTINGS_LEFT),
                 secondary = Settings.Global.getString(cr, SETTINGS_RIGHT),
                 ratio = Settings.Global.getString(cr, SETTINGS_RATIO),
+                fullscreen = Settings.Global.getString(cr, SETTINGS_FULLSCREEN),
             )
         } catch (e: Throwable) {
             Log.w(TAG, "load settings failed", e)
@@ -89,12 +96,15 @@ object LastSplitStore {
         primary: String?,
         secondary: String?,
         ratio: String?,
+        fullscreen: String?,
     ): Snapshot? {
         val p = primary?.trim().orEmpty()
         val s = secondary?.trim().orEmpty()
         if (p.isEmpty() || s.isEmpty() || p == s) return null
         val ratioVal = ratio?.toFloatOrNull()?.takeIf { it in 0.15f..0.85f } ?: 0.5f
-        return Snapshot(p, s, ratioVal)
+        val fsVal = fullscreen?.toIntOrNull()?.takeIf { SplitPane.isFullscreenPane(it) }
+            ?: SplitPane.FULLSCREEN_NONE
+        return Snapshot(p, s, ratioVal, fsVal)
     }
 
     private fun saveToFile(snapshot: Snapshot): Boolean {
@@ -102,6 +112,7 @@ object LastSplitStore {
         props.setProperty(FILE_LEFT, snapshot.primaryPackage)
         props.setProperty(FILE_RIGHT, snapshot.secondaryPackage)
         props.setProperty(FILE_RATIO, snapshot.primaryRatio.toString())
+        props.setProperty(FILE_FULLSCREEN, snapshot.fullscreenPane.toString())
         val file = File(PATH)
         fun writeOnce(): Boolean {
             file.parentFile?.mkdirs()
@@ -117,7 +128,7 @@ object LastSplitStore {
             Log.d(
                 TAG,
                 "file saved primary=${snapshot.primaryPackage} secondary=${snapshot.secondaryPackage} " +
-                    "ratio=${snapshot.primaryRatio}"
+                    "ratio=${snapshot.primaryRatio} fullscreen=${snapshot.fullscreenPane}"
             )
             true
         } catch (e: Throwable) {
@@ -142,9 +153,11 @@ object LastSplitStore {
             Settings.Global.putString(cr, SETTINGS_LEFT, snapshot.primaryPackage)
             Settings.Global.putString(cr, SETTINGS_RIGHT, snapshot.secondaryPackage)
             Settings.Global.putString(cr, SETTINGS_RATIO, snapshot.primaryRatio.toString())
+            Settings.Global.putString(cr, SETTINGS_FULLSCREEN, snapshot.fullscreenPane.toString())
             Log.d(
                 TAG,
-                "settings saved primary=${snapshot.primaryPackage} secondary=${snapshot.secondaryPackage}"
+                "settings saved primary=${snapshot.primaryPackage} secondary=${snapshot.secondaryPackage} " +
+                    "fullscreen=${snapshot.fullscreenPane}"
             )
             true
         } catch (e: Throwable) {

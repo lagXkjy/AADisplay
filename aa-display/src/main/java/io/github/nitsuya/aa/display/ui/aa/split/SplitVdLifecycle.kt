@@ -30,6 +30,13 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
     }
 
     fun computePaneSizes(): PaneSizes {
+        // Fullscreen: both VDs stay full-buffer so the hidden pane keeps rendering
+        // (nav/media behind) while the AA UI stacks TextureViews.
+        if (SplitPane.isFullscreenPane(c.mFullscreenPane)) {
+            val w = c.mWidth.coerceAtLeast(1)
+            val h = c.mHeight.coerceAtLeast(1)
+            return PaneSizes(w, h, w, h)
+        }
         val gap = dividerPx()
         return if (c.isSideBySide) {
             val usable = (c.mWidth - gap).coerceAtLeast(2)

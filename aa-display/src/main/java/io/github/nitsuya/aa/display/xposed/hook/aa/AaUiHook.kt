@@ -36,6 +36,7 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.service.AaActivityService
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.xposed.CoreManager
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -922,12 +923,23 @@ object AaUiHook: AaHook() {
                 else -> mHuRailGesture
             }
             if (!steal) return
-            CoreManager.touchPrimaryPane(motion)
+            val fs = try {
+                CoreManager.splitFullscreenPane
+            } catch (_: Throwable) {
+                SplitPane.FULLSCREEN_NONE
+            }
+            if (SplitPane.isFullscreenPane(fs)) {
+                CoreManager.touchPane(fs, motion)
+            } else {
+                CoreManager.touchPrimaryPane(motion)
+            }
             param.result = null
             if (action == MotionEvent.ACTION_DOWN) {
                 logDebug(
                     tagName,
-                    "AaUiHook: HU rail → touchPrimaryPane x=${motion.x} y=${motion.y} rail=$rail"
+                    "AaUiHook: HU rail → " +
+                        (if (SplitPane.isFullscreenPane(fs)) "touchPane($fs)" else "touchPrimaryPane") +
+                        " x=${motion.x} y=${motion.y} rail=$rail"
                 )
             }
         } catch (e: Throwable) {

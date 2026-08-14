@@ -5,18 +5,17 @@
     android:layout_height="match_parent"
     tools:context=".ui.aa.fragment.AaMainFragment">
 
-    <LinearLayout
+    <!-- FrameLayout host: split positions panes by ratio; fullscreen stacks both MATCH_PARENT. -->
+    <FrameLayout
         android:id="@+id/split_container"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:clipChildren="false"
-        android:orientation="horizontal">
+        android:clipChildren="false">
 
         <FrameLayout
             android:id="@+id/pane_primary"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1">
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
 
             <TextureView
                 android:id="@+id/tv_display_primary"
@@ -39,17 +38,10 @@
                 android:visibility="gone" />
         </FrameLayout>
 
-        <io.github.nitsuya.aa.display.ui.aa.split.SplitDividerView
-            android:id="@+id/split_divider"
-            android:layout_width="8dp"
-            android:layout_height="match_parent"
-            android:background="@android:color/transparent" />
-
         <FrameLayout
             android:id="@+id/pane_secondary"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1">
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
 
             <TextureView
                 android:id="@+id/tv_display_secondary"
@@ -71,7 +63,13 @@
                 android:textSize="16sp"
                 android:visibility="gone" />
         </FrameLayout>
-    </LinearLayout>
+
+        <io.github.nitsuya.aa.display.ui.aa.split.SplitDividerView
+            android:id="@+id/split_divider"
+            android:layout_width="8dp"
+            android:layout_height="match_parent"
+            android:background="@android:color/transparent" />
+    </FrameLayout>
 
     <FrameLayout
         android:id="@+id/app_picker_host"

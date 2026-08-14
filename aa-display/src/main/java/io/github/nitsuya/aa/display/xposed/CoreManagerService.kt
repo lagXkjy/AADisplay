@@ -250,6 +250,16 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         return mSplitController?.mRatio ?: SplitPane.DEFAULT_RATIO
     }
 
+    override fun setSplitFullscreen(pane: Int) {
+        runMain {
+            mSplitController?.setSplitFullscreen(pane)
+        }
+    }
+
+    override fun getSplitFullscreenPane(): Int {
+        return mSplitController?.mFullscreenPane ?: SplitPane.FULLSCREEN_NONE
+    }
+
     override fun getPanePackage(pane: Int): String? {
         return mSplitController?.getPanePackage(pane)
     }

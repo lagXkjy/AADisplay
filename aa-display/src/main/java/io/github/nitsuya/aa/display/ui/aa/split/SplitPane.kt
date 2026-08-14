@@ -5,9 +5,32 @@ object SplitPane {
     const val PRIMARY = 0
     const val SECONDARY = 1
 
+    /** Not in fullscreen; [getSplitFullscreenPane] / persist sentinel. */
+    const val FULLSCREEN_NONE = -1
+
     const val MIN_RATIO = 0.2f
     const val MAX_RATIO = 0.8f
     const val DEFAULT_RATIO = 0.5f
+
+    /**
+     * Raw divider settle ratio at/below this → SECONDARY fullscreen;
+     * at/above `1 - this` → PRIMARY fullscreen.
+     * Slightly inside the old clamp edges so a firm drag past the usual 20/80 stop
+     * enters fullscreen without needing to hit the absolute screen edge.
+     */
+    const val FULLSCREEN_ENTER_RATIO = 0.12f
+
+    /**
+     * Peel drag: when revealed primary share exceeds this (from left peel) or
+     * falls below `1 - this` (from right peel), exit fullscreen back to split.
+     */
+    const val FULLSCREEN_EXIT_RATIO = 0.15f
+
+    /**
+     * Left peel inset from the screen edge so the handle sits outside Coolwalk's
+     * LHD rail steal band (~80px on many HUs).
+     */
+    const val FULLSCREEN_PEEL_INSET_DP = 80
 
     /** Divider thickness in logical pixels (applied in display pixels via density). */
     const val DIVIDER_DP = 8
@@ -30,4 +53,13 @@ object SplitPane {
     fun clampRatio(ratio: Float): Float = ratio.coerceIn(MIN_RATIO, MAX_RATIO)
 
     fun isValid(pane: Int): Boolean = pane == PRIMARY || pane == SECONDARY
+
+    fun isFullscreenPane(pane: Int): Boolean = pane == PRIMARY || pane == SECONDARY
+
+    /** Which pane becomes fullscreen when a raw settle ratio crosses the edge. */
+    fun fullscreenPaneForRawRatio(rawRatio: Float): Int? = when {
+        rawRatio < FULLSCREEN_ENTER_RATIO -> SECONDARY
+        rawRatio > 1f - FULLSCREEN_ENTER_RATIO -> PRIMARY
+        else -> null
+    }
 }

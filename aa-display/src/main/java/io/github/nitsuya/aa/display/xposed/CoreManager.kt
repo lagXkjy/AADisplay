@@ -71,6 +71,14 @@ object CoreManager : ICoreManager, DeathRecipient {
         return getService()?.splitRatio ?: SplitPane.DEFAULT_RATIO
     }
 
+    override fun setSplitFullscreen(pane: Int) {
+        getService()?.setSplitFullscreen(pane)
+    }
+
+    override fun getSplitFullscreenPane(): Int {
+        return getService()?.splitFullscreenPane ?: SplitPane.FULLSCREEN_NONE
+    }
+
     override fun getPanePackage(pane: Int): String? {
         return getService()?.getPanePackage(pane)
     }
