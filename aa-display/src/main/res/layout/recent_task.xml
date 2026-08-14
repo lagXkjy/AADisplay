@@ -15,16 +15,16 @@
 
         <ImageView
             android:id="@+id/iv_icon"
-            android:layout_width="@dimen/notification_action_icon_size"
-            android:layout_height="@dimen/notification_action_icon_size"
+            android:layout_width="@dimen/recent_app_icon_size"
+            android:layout_height="@dimen/recent_app_icon_size"
             android:scaleType="centerCrop"
             android:layout_marginBottom="5dp"
             app:layout_constraintTop_toTopOf="parent"
             app:layout_constraintStart_toStartOf="@+id/v_card"
             app:layout_constraintBottom_toTopOf="@+id/v_card"
-            tools:srcCompat="@drawable/ic_round_check_circle_24"/>
+            tools:src="@drawable/ic_round_check_circle_24"/>
 
-        <com.google.android.material.textview.MaterialTextView
+        <TextView
             android:id="@+id/tv_name"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
@@ -33,8 +33,7 @@
             android:ellipsize="end"
             android:gravity="center_vertical"
             android:maxLines="1"
-            android:textAppearance="?textAppearanceBodyMedium"
-            android:textColor="?colorOnPrimary"
+            android:textColor="@color/color_recent_label"
             android:textSize="15sp"
             app:layout_constraintStart_toEndOf="@+id/iv_icon"
             app:layout_constraintEnd_toEndOf="@+id/v_card"
@@ -66,6 +65,6 @@
             app:layout_constraintBottom_toBottomOf="@+id/v_card"
             app:layout_constraintStart_toStartOf="@+id/v_card"
             app:layout_constraintEnd_toEndOf="@+id/v_card"
-            app:tint="?colorOnPrimary" />
+            android:tint="@color/color_recent_label" />
     </androidx.constraintlayout.widget.ConstraintLayout>
 </LinearLayout>

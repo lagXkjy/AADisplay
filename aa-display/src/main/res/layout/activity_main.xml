@@ -11,49 +11,42 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingHorizontal="@dimen/m3_appbar_expanded_title_margin_horizontal"
-        android:paddingVertical="?dialogPreferredPadding"
-        tools:ignore="PrivateResource">
+        android:paddingHorizontal="@dimen/content_padding"
+        android:paddingVertical="@dimen/content_padding">
 
-        <com.google.android.material.card.MaterialCardView
+        <FrameLayout
             android:id="@+id/mcv_status"
-            style="@style/Widget.Material3.CardView.Elevated"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:outlineAmbientShadowColor="?colorPrimary"
-            android:outlineSpotShadowColor="?colorPrimary"
-            android:stateListAnimator="@null"
-            app:cardBackgroundColor="?colorPrimary"
-            app:cardElevation="6dp"
-            app:cardPreventCornerOverlap="false">
+            android:background="@drawable/bg_status_card"
+            android:elevation="6dp">
 
             <RelativeLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:padding="?dialogPreferredPadding">
+                android:padding="@dimen/content_padding">
 
                 <ImageView
                     android:id="@+id/iv_icon"
                     android:layout_width="24dp"
                     android:layout_height="24dp"
                     android:layout_centerVertical="true"
-                    app:srcCompat="@drawable/ic_round_check_circle_24"
-                    app:tint="?colorOnPrimary"
+                    android:src="@drawable/ic_round_check_circle_24"
+                    android:tint="@color/color_on_primary"
                     tools:ignore="ContentDescription" />
 
-                <com.google.android.material.textview.MaterialTextView
+                <TextView
                     android:id="@+id/tv_active"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="24dp"
                     android:layout_toEndOf="@id/iv_icon"
                     android:fontFamily="sans-serif-medium"
-                    android:textAppearance="?textAppearanceTitleMedium"
-                    android:textColor="?colorOnPrimary"
+                    android:textColor="@color/color_on_primary"
                     android:textSize="16sp"
                     tools:text="Activated" />
 
-                <com.google.android.material.textview.MaterialTextView
+                <TextView
                     android:id="@+id/tv_version"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -61,43 +54,46 @@
                     android:layout_marginStart="24dp"
                     android:layout_marginTop="2dp"
                     android:layout_toEndOf="@id/iv_icon"
-                    android:textAppearance="?textAppearanceBodyMedium"
-                    android:textColor="?colorOnPrimary"
+                    android:textColor="@color/color_on_primary"
+                    android:textSize="14sp"
                     tools:text="0.24#17.4-r1" />
 
             </RelativeLayout>
-        </com.google.android.material.card.MaterialCardView>
+        </FrameLayout>
 
-        <com.google.android.material.card.MaterialCardView
+        <FrameLayout
             android:id="@+id/mcv_info"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp">
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_info_card"
+            android:elevation="2dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="?dialogPreferredPadding">
+                android:padding="@dimen/content_padding">
 
-                <com.google.android.material.textview.MaterialTextView
+                <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="系统版本"
                     android:textAlignment="viewStart"
-                    android:textAppearance="@style/TextAppearance.MaterialComponents.Body1"
-                    android:textColor="?android:attr/textColorSecondary" />
+                    android:textColor="@color/color_text_secondary"
+                    android:textSize="16sp" />
 
-                <com.google.android.material.textview.MaterialTextView
+                <TextView
                     android:id="@+id/system_version"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:paddingBottom="24dp"
                     android:textAlignment="viewStart"
-                    android:textAppearance="@style/TextAppearance.MaterialComponents.Body2" />
+                    android:textColor="@color/color_text_primary"
+                    android:textSize="14sp" />
             </LinearLayout>
 
-        </com.google.android.material.card.MaterialCardView>
+        </FrameLayout>
 
     </LinearLayout>
 </ScrollView>

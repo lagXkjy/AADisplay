@@ -1,3 +1,15 @@
 <resources>
+    <color name="color_primary">#1976D2</color>
+    <color name="color_on_primary">#FFFFFF</color>
+    <color name="color_primary_container">#E3F2FD</color>
+    <color name="color_on_primary_container">#0D47A1</color>
+    <color name="color_outline">#757575</color>
+    <color name="color_error">#B3261E</color>
+    <color name="color_on_error">#FFFFFF</color>
     <color name="color_warning">#FBC02D</color>
+    <color name="color_info_card_bg">#FFFFFF</color>
+    <color name="color_text_primary">#DE000000</color>
+    <color name="color_text_secondary">#99000000</color>
+    <color name="color_divider">#66FFFFFF</color>
+    <color name="color_recent_label">#FFFFFF</color>
 </resources>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="color_info_card_bg">#2C2C2C</color>
+    <color name="color_text_primary">#DEFFFFFF</color>
+    <color name="color_text_secondary">#99FFFFFF</color>
+</resources>

@@ -368,7 +368,7 @@ class DisplayWindow(
 
     init {
         runCatching {
-            with(ContextThemeWrapper(mContext, com.google.android.material.R.style.Theme_Material3_DayNight_NoActionBar)){
+            with(ContextThemeWrapper(mContext, R.style.Theme_AADisplay)){
                 mControllerBinding = WindowControllerBinding.inflate(LayoutInflater.from(this))
             }
         }.onFailure {

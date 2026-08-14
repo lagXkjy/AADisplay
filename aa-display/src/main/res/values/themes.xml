@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Platform theme only — no AppCompat/MaterialX widget chrome or abc_* drawables. -->
+    <style name="Theme.AADisplay" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:colorPrimary">@color/color_primary</item>
+        <item name="android:colorPrimaryDark">@color/color_primary</item>
+        <item name="android:colorAccent">@color/color_primary</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

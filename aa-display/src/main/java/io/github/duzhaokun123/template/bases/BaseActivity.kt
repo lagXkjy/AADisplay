@@ -2,17 +2,17 @@ package io.github.duzhaokun123.template.bases
 
 import android.os.Bundle
 import android.view.WindowManager
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.updatePadding
+import androidx.fragment.app.FragmentActivity
 import androidx.viewbinding.ViewBinding
 import io.github.duzhaokun123.template.utils.inflateBinding
 import io.github.duzhaokun123.template.utils.maxSystemBarsDisplayCutout
 
 abstract class BaseActivity<BaseBinding : ViewBinding>(
     private val baseBindingClass: Class<BaseBinding>
-) : AppCompatActivity() {
+) : FragmentActivity() {
 
     lateinit var baseBinding: BaseBinding
         private set

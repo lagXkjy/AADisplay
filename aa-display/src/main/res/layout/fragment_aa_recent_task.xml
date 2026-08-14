@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 
-<androidx.appcompat.widget.LinearLayoutCompat xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
@@ -20,7 +20,7 @@
     <View
         android:layout_width="1dp"
         android:layout_height="match_parent"
-        android:background="?colorOnPrimaryContainer" />
+        android:background="@color/color_divider" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rv_recent_task_center"
@@ -34,7 +34,7 @@
     <View
         android:layout_width="1dp"
         android:layout_height="match_parent"
-        android:background="?colorOnPrimaryContainer" />
+        android:background="@color/color_divider" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rv_recent_task_right"
@@ -45,4 +45,4 @@
         tools:context=".ui.aa.fragment.AaRecentTaskFragment"
         tools:listitem="@layout/recent_task" />
 
-</androidx.appcompat.widget.LinearLayoutCompat>
+</LinearLayout>

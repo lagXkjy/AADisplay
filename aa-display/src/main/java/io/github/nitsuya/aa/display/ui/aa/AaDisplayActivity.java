@@ -12,7 +12,7 @@ import android.view.WindowInsetsController;
 import android.view.WindowManager;
 
 import com.google.android.apps.auto.sdk.CarActivity;
-import com.google.android.material.R;
+import io.github.nitsuya.aa.display.R;
 import io.github.nitsuya.aa.display.databinding.ActivityAaDisplayBinding;
 
 public class AaDisplayActivity extends CarActivity {
@@ -29,7 +29,7 @@ public class AaDisplayActivity extends CarActivity {
         super.onCreate(bundle);
         Log.d(TAG, "onCreate");
         setIgnoreConfigChanges(0xFFFF);
-        this.setTheme(R.style.Theme_Material3_DayNight_NoActionBar);
+        this.setTheme(R.style.Theme_AADisplay);
         this.mBinding = ActivityAaDisplayBinding.inflate(getLayoutInflater());
         this.addGenericView(this.mBinding.getRoot());
         this.setContentView(this.mBinding.getRoot());

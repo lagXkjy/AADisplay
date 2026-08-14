@@ -222,7 +222,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                             if (mSplitController !== controller) return@runMain
                             mDisplayWindow?.onDestroyPromptly()
                             mDisplayWindow = DisplayWindow(
-                                CommonContextWrapper.createAppCompatContext(systemContext),
+                                CommonContextWrapper.createModuleContext(systemContext),
                                 controller,
                             )
                         }

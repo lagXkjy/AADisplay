@@ -1764,7 +1764,7 @@ object AaUiHook: AaHook() {
         matchReason: String
     ): ConstraintLayout {
         val ctx = resultViewGroup.context
-        val ctx2 = CommonContextWrapper.createAppCompatContext(ctx)
+        val ctx2 = CommonContextWrapper.createModuleContext(ctx)
         val layoutInflater = LayoutInflater.from(ctx2)
         val aaFacetBar = layoutInflater.inflate(R.layout.aa_facet_bar, resultViewGroupParent, false) as ConstraintLayout
         aaFacetBar.tag = facetBarInjectedTag

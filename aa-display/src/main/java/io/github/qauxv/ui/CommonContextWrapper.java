@@ -23,18 +23,16 @@
 package io.github.qauxv.ui;
 
 import android.content.Context;
-import android.content.res.TypedArray;
 import android.view.ContextThemeWrapper;
 
 import androidx.annotation.NonNull;
-import androidx.appcompat.app.AppCompatActivity;
 
 import com.github.kyuubiran.ezxhelper.init.EzXHelperInit;
 
 import io.github.qauxv.util.SavedInstanceStatePatchedClassReferencer;
 
 /**
- * If you just want to create a MaterialDialog or AppCompatDialog, see {@link #createAppCompatContext(Context)}.
+ * Theme + module ClassLoader wrapper for inflating AADisplay layouts in foreign processes.
  **/
 public class CommonContextWrapper extends ContextThemeWrapper {
 
@@ -61,35 +59,19 @@ public class CommonContextWrapper extends ContextThemeWrapper {
         return mXref;
     }
 
-    public static boolean isAppCompatContext(@NonNull Context context) {
-        if (!checkContextClassLoader(context)) {
-            return false;
-        }
-        TypedArray a = context.obtainStyledAttributes(androidx.appcompat.R.styleable.AppCompatTheme);
-        try {
-            return a.hasValue(androidx.appcompat.R.styleable.AppCompatTheme_windowActionBar);
-        } finally {
-            a.recycle();
-        }
-    }
-
-    public static boolean checkContextClassLoader(@NonNull Context context) {
-        try {
-            ClassLoader cl = context.getClassLoader();
-            if (cl == null) {
-                return false;
-            }
-            return cl.loadClass(AppCompatActivity.class.getName()) == AppCompatActivity.class;
-        } catch (ClassNotFoundException e) {
-            return false;
-        }
-    }
-
+    /** Prefer existing wrapper; otherwise apply {@link io.github.nitsuya.aa.display.R.style#Theme_AADisplay}. */
     @NonNull
-    public static Context createAppCompatContext(@NonNull Context base) {
-        if (isAppCompatContext(base)) {
+    public static Context createModuleContext(@NonNull Context base) {
+        if (base instanceof CommonContextWrapper) {
             return base;
         }
-        return new CommonContextWrapper(base, com.google.android.material.R.style.Theme_Material3_DayNight_NoActionBar);
+        return new CommonContextWrapper(base, io.github.nitsuya.aa.display.R.style.Theme_AADisplay);
+    }
+
+    /** @deprecated Use {@link #createModuleContext(Context)}. */
+    @Deprecated
+    @NonNull
+    public static Context createAppCompatContext(@NonNull Context base) {
+        return createModuleContext(base);
     }
 }

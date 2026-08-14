@@ -101,6 +101,7 @@ android {
 }
 
 configurations.all {
+    // Keep transitive androidx.appcompat out if any lib pulls it — we use platform themes.
     exclude("androidx.appcompat", "appcompat")
 }
 
@@ -109,8 +110,7 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.11.0")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
     implementation("androidx.constraintlayout:constraintlayout:2.2.1")
-    implementation("com.google.android.material:material:1.13.0")
-    implementation("dev.rikka.rikkax.appcompat:appcompat:1.6.1")
+    implementation("androidx.recyclerview:recyclerview:1.4.0")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 

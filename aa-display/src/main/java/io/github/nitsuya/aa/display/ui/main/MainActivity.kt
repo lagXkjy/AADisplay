@@ -1,15 +1,14 @@
 package io.github.nitsuya.aa.display.ui.main
 
+import android.app.AlertDialog
 import android.annotation.SuppressLint
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
-import com.google.android.material.color.MaterialColors
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.github.duzhaokun123.template.bases.BaseActivity
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
-import io.github.duzhaokun123.template.utils.getAttr
 
 class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::class.java) {
 
@@ -21,13 +20,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
                 baseBinding.ivIcon.setImageResource(R.drawable.ic_error_outline_24)
                 baseBinding.tvActive.text = "未激活"
                 baseBinding.tvVersion.text = ""
-                val colorError = android.R.attr.colorError
-                val colorOnError = theme.getAttr(com.google.android.material.R.attr.colorOnError).data
-                baseBinding.mcvStatus.setCardBackgroundColor(colorError)
-                baseBinding.mcvStatus.outlineAmbientShadowColor = colorError
-                baseBinding.mcvStatus.outlineSpotShadowColor = colorError
-                baseBinding.tvActive.setTextColor(colorOnError)
-                baseBinding.tvVersion.setTextColor(colorOnError)
+                setStatusCardColor(getColor(R.color.color_error))
+                val onError = getColor(R.color.color_on_error)
+                baseBinding.tvActive.setTextColor(onError)
+                baseBinding.tvVersion.setTextColor(onError)
             }
 
             BuildConfig.BUILD_TIME -> {
@@ -41,11 +37,9 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
                 baseBinding.tvActive.text = "需要重启"
                 baseBinding.tvVersion.text =
                     "system: ${CoreApi.versionName}\nmodule: ${BuildConfig.VERSION_NAME}"
-                baseBinding.mcvStatus.setCardBackgroundColor(
-                    MaterialColors.harmonizeWithPrimary(this, getColor(R.color.color_warning))
-                )
+                setStatusCardColor(getColor(R.color.color_warning))
                 baseBinding.mcvStatus.setOnClickListener {
-                    MaterialAlertDialogBuilder(this)
+                    AlertDialog.Builder(this)
                         .setTitle("需要重启")
                         .setPositiveButton(android.R.string.ok, null)
                         .show()
@@ -59,5 +53,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
         } else {
             baseBinding.systemVersion.text = "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
         }
+    }
+
+    private fun setStatusCardColor(color: Int) {
+        (baseBinding.mcvStatus.background.mutate() as? GradientDrawable)?.setColor(color)
+            ?: baseBinding.mcvStatus.setBackgroundColor(color)
     }
 }
