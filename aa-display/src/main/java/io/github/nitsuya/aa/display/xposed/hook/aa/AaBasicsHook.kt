@@ -7,7 +7,7 @@ import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
-import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.util.log
 
 
 object AaBasicsHook : AaHook() {

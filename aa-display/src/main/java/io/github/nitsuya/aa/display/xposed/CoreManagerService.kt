@@ -13,6 +13,8 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplayWindow
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.util.Instances
+import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.duzhaokun123.template.utils.runIO
 import io.github.duzhaokun123.template.utils.runMain
 import io.github.qauxv.ui.CommonContextWrapper

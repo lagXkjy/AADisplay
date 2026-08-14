@@ -18,7 +18,7 @@ import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.WindowControllerBinding
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
-import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.RomUtil
 import java.lang.reflect.Method

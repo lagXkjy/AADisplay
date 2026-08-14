@@ -12,7 +12,7 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.BridgeService
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
-import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPresentationGuard
 import io.github.qauxv.util.Initiator
 import java.io.File

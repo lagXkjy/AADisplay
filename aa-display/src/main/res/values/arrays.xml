@@ -2,7 +2,6 @@
     <string-array name="xposed_scope" >
         <item>android</item>
         <item>com.google.android.projection.gearhead</item>
-        <item>com.autonavi.amapauto</item>
     </string-array>
 
 </resources>

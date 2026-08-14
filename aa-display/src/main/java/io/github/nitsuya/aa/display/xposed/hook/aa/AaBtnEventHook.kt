@@ -14,8 +14,8 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.hook.abortMethod
-import io.github.nitsuya.aa.display.xposed.log
-import io.github.nitsuya.aa.display.xposed.logDebug
+import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import java.util.Collections
 import java.util.HashMap
 import java.util.HashSet

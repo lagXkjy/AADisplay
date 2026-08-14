@@ -18,8 +18,8 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
-import io.github.nitsuya.aa.display.xposed.log
-import io.github.nitsuya.aa.display.xposed.logDebug
+import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

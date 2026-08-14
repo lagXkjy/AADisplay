@@ -8,7 +8,7 @@ import android.view.Display
 import com.github.kyuubiran.ezxhelper.utils.getObjectAs
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
-import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit

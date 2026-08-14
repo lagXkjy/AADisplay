@@ -54,7 +54,6 @@ Vendored 基座（**非必要不改**）：
 flowchart LR
   XposedInit --> AndroidHook
   XposedInit --> AndroidAutoHook
-  XposedInit --> OtherHook
   MainActivity --> CoreApi
   AaDisplayActivity --> CoreApi
   CoreApi --> CoreManager
@@ -73,8 +72,7 @@ flowchart LR
 |------|------|
 | `packageName == "android"` 且 `appInfo == null` | `AndroidHook`（system_server：VirtualDisplay、Binder 桥等） |
 | `com.google.android.projection.gearhead` | `AndroidAutoHook`（再按进程分发 `Aa*Hook`） |
-| 本模块 / uid 1000 等 | 跳过 |
-| 其余普通应用 | `OtherHook` |
+| 其余包 | 不注入钩子 |
 
 `AndroidAutoHook` 进程常量：
 
@@ -101,7 +99,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 
 ### LSPosed scope
 
-见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`、`com.autonavi.amapauto`。改 scope 会影响模块生效范围，勿随意删改。
+见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`。改 scope 会影响模块生效范围，勿随意删改。
 
 ## 4. 构建与验证
 

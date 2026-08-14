@@ -11,7 +11,7 @@ import io.github.nitsuya.aa.display.xposed.hook.aa.AaBasicsHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaBtnEventHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaSignatureHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaUiHook
-import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.util.log
 import org.luckypray.dexkit.DexKitBridge
 import kotlin.system.measureTimeMillis
 

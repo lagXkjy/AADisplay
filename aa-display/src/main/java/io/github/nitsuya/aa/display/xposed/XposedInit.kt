@@ -5,11 +5,10 @@ import com.github.kyuubiran.ezxhelper.utils.Log.logexIfThrow
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.xposed.hook.AndroidAutoHook
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.hook.BaseHook
-import io.github.nitsuya.aa.display.xposed.hook.OtherHook
+import io.github.nitsuya.aa.display.xposed.util.log
 
 class XposedInit : IXposedHookZygoteInit, IXposedHookLoadPackage{
     companion object {
@@ -22,11 +21,10 @@ class XposedInit : IXposedHookZygoteInit, IXposedHookLoadPackage{
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         val packageName = lpparam.packageName
-        when{
+        when {
             packageName == "android" && lpparam.appInfo == null -> arrayOf(AndroidHook)
             packageName == "com.google.android.projection.gearhead" -> arrayOf(AndroidAutoHook)
-            packageName == BuildConfig.APPLICATION_ID || lpparam.appInfo == null || lpparam.appInfo.uid == 1000 -> null
-            else -> arrayOf(OtherHook)
+            else -> null
         }?.also {
             initHooks(lpparam, *it)
         }
@@ -44,5 +42,3 @@ class XposedInit : IXposedHookZygoteInit, IXposedHookLoadPackage{
         }
     }
 }
-
-

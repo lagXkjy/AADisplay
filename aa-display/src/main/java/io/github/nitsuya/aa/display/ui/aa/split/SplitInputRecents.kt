@@ -20,7 +20,7 @@ import com.github.kyuubiran.ezxhelper.utils.args
 import com.github.kyuubiran.ezxhelper.utils.invokeMethod
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.model.RecentTaskInfo
-import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
 
 internal class SplitInputRecents(private val c: SplitDisplayController) {

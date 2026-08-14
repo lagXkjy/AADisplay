@@ -11,8 +11,8 @@ import android.view.Gravity
 import android.view.Surface
 import android.view.View
 import android.view.WindowManager
-import io.github.nitsuya.aa.display.xposed.log
-import io.github.nitsuya.aa.display.xposed.logDebug
+import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
 
 internal data class PaneSizes(

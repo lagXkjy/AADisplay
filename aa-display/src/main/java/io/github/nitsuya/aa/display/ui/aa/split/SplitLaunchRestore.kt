@@ -17,8 +17,8 @@ import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.LastSplitStore
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
-import io.github.nitsuya.aa.display.xposed.log
-import io.github.nitsuya.aa.display.xposed.logDebug
+import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
 
 internal class SplitLaunchRestore(private val c: SplitDisplayController) {

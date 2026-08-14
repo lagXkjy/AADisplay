@@ -38,8 +38,8 @@ import io.github.nitsuya.aa.display.service.AaActivityService
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.xposed.CoreManager
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
-import io.github.nitsuya.aa.display.xposed.log
-import io.github.nitsuya.aa.display.xposed.logDebug
+import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.qauxv.ui.CommonContextWrapper
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType

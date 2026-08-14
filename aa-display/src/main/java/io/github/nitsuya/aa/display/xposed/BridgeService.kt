@@ -8,6 +8,8 @@ import android.os.Process
 import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import io.github.nitsuya.aa.display.BuildConfig
+import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 
 object BridgeService {
 

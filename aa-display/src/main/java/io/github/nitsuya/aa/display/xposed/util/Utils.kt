@@ -1,4 +1,4 @@
-package io.github.nitsuya.aa.display.xposed
+package io.github.nitsuya.aa.display.xposed.util
 
 import android.util.Log
 import de.robv.android.xposed.XposedBridge
