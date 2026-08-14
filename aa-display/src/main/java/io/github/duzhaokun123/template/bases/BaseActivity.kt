@@ -7,8 +7,8 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.updatePadding
 import androidx.viewbinding.ViewBinding
+import io.github.duzhaokun123.template.utils.inflateBinding
 import io.github.duzhaokun123.template.utils.maxSystemBarsDisplayCutout
-import net.matsudamper.viewbindingutil.ViewBindingUtil
 
 abstract class BaseActivity<BaseBinding : ViewBinding>(
     private val baseBindingClass: Class<BaseBinding>
@@ -24,7 +24,7 @@ abstract class BaseActivity<BaseBinding : ViewBinding>(
         window.attributes.layoutInDisplayCutoutMode =
             WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
 
-        baseBinding = ViewBindingUtil.inflate(layoutInflater, baseBindingClass)
+        baseBinding = inflateBinding(layoutInflater, baseBindingClass)
         setContentView(baseBinding.root)
         ViewCompat.setOnApplyWindowInsetsListener(baseBinding.root) { v, insets ->
             v.updatePadding(top = insets.maxSystemBarsDisplayCutout.top)

@@ -2,9 +2,11 @@ package io.github.duzhaokun123.template.utils
 
 import android.content.res.Resources
 import android.util.TypedValue
+import android.view.LayoutInflater
 import androidx.annotation.AttrRes
 import androidx.core.graphics.Insets
 import androidx.core.view.WindowInsetsCompat
+import androidx.viewbinding.ViewBinding
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -21,3 +23,9 @@ fun runIO(block: suspend CoroutineScope.() -> Unit) =
 
 fun Resources.Theme.getAttr(@AttrRes id: Int) =
     TypedValue().apply { resolveAttribute(id, this, true) }
+
+@Suppress("UNCHECKED_CAST")
+fun <T : ViewBinding> inflateBinding(inflater: LayoutInflater, clazz: Class<T>): T {
+    val method = clazz.getMethod("inflate", LayoutInflater::class.java)
+    return method.invoke(null, inflater) as T
+}

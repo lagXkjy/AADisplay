@@ -24,7 +24,9 @@ android {
         resources.excludes.addAll(
             arrayOf(
                 "META-INF/**",
-                "kotlin/**"
+                "kotlin/**",
+                "DebugProbesKt.bin",
+                "kotlin-tooling-metadata.json",
             )
         )
     }
@@ -112,9 +114,6 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
-    //ViewBindingUtil
-    implementation("com.github.matsudamper:ViewBindingUtil:0.1")
-
     compileOnly(project(":lib-stub"))
     implementation("dev.rikka.tools.refine:runtime:4.4.0")
     compileOnly("dev.rikka.hidden:stub:4.4.0")
@@ -122,10 +121,4 @@ dependencies {
     implementation("com.github.kyuubiran:EzXHelper:1.0.3")
     implementation("org.luckypray:dexkit:2.0.0-rc3")
     implementation(files("./libs/aauto.aar"))
-
-    //lifecycle
-    val lifecycleVersion = "2.9.3"
-    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:$lifecycleVersion")
-    implementation("androidx.lifecycle:lifecycle-livedata-ktx:$lifecycleVersion")
-    implementation("androidx.lifecycle:lifecycle-common-java8:$lifecycleVersion")
 }
