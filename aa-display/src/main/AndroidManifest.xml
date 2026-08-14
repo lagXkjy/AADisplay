@@ -16,7 +16,7 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AADisplay" >
+        android:theme="@style/Theme.Material3.DayNight.NoActionBar" >
         <meta-data
             android:name="xposedmodule"
             android:value="true" />

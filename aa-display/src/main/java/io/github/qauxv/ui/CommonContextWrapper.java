@@ -31,7 +31,6 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.github.kyuubiran.ezxhelper.init.EzXHelperInit;
 
-import io.github.nitsuya.aa.display.R;
 import io.github.qauxv.util.SavedInstanceStatePatchedClassReferencer;
 
 /**
@@ -91,6 +90,6 @@ public class CommonContextWrapper extends ContextThemeWrapper {
         if (isAppCompatContext(base)) {
             return base;
         }
-        return new CommonContextWrapper(base, R.style.Theme_AADisplay);
+        return new CommonContextWrapper(base, com.google.android.material.R.style.Theme_Material3_DayNight_NoActionBar);
     }
 }

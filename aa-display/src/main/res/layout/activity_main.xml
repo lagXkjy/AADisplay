@@ -81,16 +81,20 @@
                 android:padding="?dialogPreferredPadding">
 
                 <com.google.android.material.textview.MaterialTextView
-                    style="@style/DeviceInfoDialogLabel"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="系统版本" />
+                    android:text="系统版本"
+                    android:textAlignment="viewStart"
+                    android:textAppearance="@style/TextAppearance.MaterialComponents.Body1"
+                    android:textColor="?android:attr/textColorSecondary" />
 
                 <com.google.android.material.textview.MaterialTextView
                     android:id="@+id/system_version"
-                    style="@style/DeviceInfoDialogValue"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content" />
+                    android:layout_height="wrap_content"
+                    android:paddingBottom="24dp"
+                    android:textAlignment="viewStart"
+                    android:textAppearance="@style/TextAppearance.MaterialComponents.Body2" />
             </LinearLayout>
 
         </com.google.android.material.card.MaterialCardView>
