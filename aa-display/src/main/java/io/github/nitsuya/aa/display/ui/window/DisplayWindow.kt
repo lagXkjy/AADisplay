@@ -379,7 +379,7 @@ class DisplayWindow(
         interactiveMonitor.init()
     }
 
-    fun doInit() {
+    private fun doInit() {
         initLayoutParams()
         mControllerBinding?.root?.allViews?.forEach {
             it.setOnTouchListener(this@DisplayWindow)

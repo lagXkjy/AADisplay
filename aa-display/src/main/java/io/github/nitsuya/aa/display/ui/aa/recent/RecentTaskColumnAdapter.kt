@@ -87,10 +87,6 @@ class RecentTaskColumnAdapter(
 
     override fun getItemCount(): Int = items.size
 
-    fun clearItem(){
-        setItems(emptyList())
-    }
-
     fun removeItem(item: RecentTaskInfo){
         val index = items.indexOf(item)
         this.items.removeAt(index)

@@ -1,114 +1,38 @@
 package io.github.duzhaokun123.template.bases
 
 import android.os.Bundle
-import android.view.MenuItem
-import android.view.View
 import android.view.WindowManager
-import android.widget.RelativeLayout
-import androidx.activity.viewModels
-import androidx.annotation.CallSuper
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
-import androidx.lifecycle.MutableLiveData
-import androidx.lifecycle.ViewModel
 import androidx.viewbinding.ViewBinding
-import io.github.nitsuya.aa.display.R
-import io.github.nitsuya.aa.display.databinding.ActivityBaseRoot2Binding
 import io.github.duzhaokun123.template.utils.maxSystemBarsDisplayCutout
 import net.matsudamper.viewbindingutil.ViewBindingUtil
 
 abstract class BaseActivity<BaseBinding : ViewBinding>(
-    private val baseBindingClass: Class<BaseBinding>, vararg val configs: Config
+    private val baseBindingClass: Class<BaseBinding>
 ) : AppCompatActivity() {
-    enum class Config {
-        NO_TOOL_BAR,
-        LAYOUT_NO_TOOL_BAR,
-        TRANSPARENT_TOOL_BAR,
-        NO_BACK,
-        LAYOUT_MATCH_HORI,
-    }
 
-    lateinit var rootBinding: ActivityBaseRoot2Binding
     lateinit var baseBinding: BaseBinding
         private set
-
-    private val windowInsetsCompatModel by viewModels<WindowInsetsCompatModel>()
-
-    class WindowInsetsCompatModel : ViewModel() {
-        val windowInsetsCompat = MutableLiveData<WindowInsetsCompat>()
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        window.attributes.layoutInDisplayCutoutMode =
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
 
-        rootBinding = ViewBindingUtil.inflate(layoutInflater)
-        setContentView(rootBinding.root)
-        if (Config.NO_TOOL_BAR in configs) rootBinding.rootTb.visibility = View.GONE
-        if (Config.LAYOUT_NO_TOOL_BAR in configs)
-            rootBinding.rootFl.updateLayoutParams<RelativeLayout.LayoutParams> {
-                removeRule(RelativeLayout.BELOW)
-            }
-        if (Config.TRANSPARENT_TOOL_BAR in configs) {
-            rootBinding.rootAbl.outlineProvider = null
-            rootBinding.rootAbl.background = null
-        }
-        ViewCompat.setOnApplyWindowInsetsListener(rootBinding.root) { _, insets ->
-            windowInsetsCompatModel.windowInsetsCompat.value = insets
+        baseBinding = ViewBindingUtil.inflate(layoutInflater, baseBindingClass)
+        setContentView(baseBinding.root)
+        ViewCompat.setOnApplyWindowInsetsListener(baseBinding.root) { v, insets ->
+            v.updatePadding(top = insets.maxSystemBarsDisplayCutout.top)
             insets
         }
 
-        baseBinding = ViewBindingUtil.inflate(layoutInflater, rootBinding.rootFl, true, baseBindingClass)
-
-        findViews()
-        setSupportActionBar(initActionBar())
-        if (Config.NO_BACK !in configs) supportActionBar?.apply {
-            setDisplayHomeAsUpEnabled(true)
-            setDisplayShowHomeEnabled(true)
-            setHomeAsUpIndicator(R.drawable.ic_arrow_back_24)
-        }
-        initViews()
-        initEvents()
         initData()
-
-        windowInsetsCompatModel.windowInsetsCompat.observe(this, ::onApplyWindowInsetsCompat)
     }
 
-    override fun setTitle(title: CharSequence?) {
-        supportActionBar?.title = title
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        return if (item.itemId == android.R.id.home) {
-            onBackPressed()
-            true
-        } else
-            super.onOptionsItemSelected(item)
-    }
-
-    @CallSuper
-    open fun onApplyWindowInsetsCompat(insets: WindowInsetsCompat) {
-        with(insets.maxSystemBarsDisplayCutout) {
-            if (Config.LAYOUT_MATCH_HORI !in configs) {
-                rootBinding.rootAbl.updatePadding(left = left, right = right)
-                rootBinding.rootFl.updatePadding(left = left, right = right)
-            }
-            if (Config.NO_TOOL_BAR !in configs)
-                rootBinding.rootAbl.updatePadding(top = top)
-        }
-    }
-
-    open fun findViews() {}
-    open fun initActionBar() =
-        if (Config.NO_TOOL_BAR in configs) null else rootBinding.rootTb
-
-    open fun initViews() {}
-    open fun initEvents() {}
     open fun initData() {}
 }

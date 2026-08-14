@@ -2,8 +2,6 @@ package io.github.nitsuya.aa.display.ui.main
 
 import android.annotation.SuppressLint
 import android.os.Build
-import android.os.Bundle
-import android.view.LayoutInflater
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.github.duzhaokun123.template.bases.BaseActivity
@@ -13,20 +11,7 @@ import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
 import io.github.duzhaokun123.template.utils.getAttr
 
-class MainActivity :
-    BaseActivity<ActivityMainBinding>(
-        ActivityMainBinding::class.java,
-        Config.NO_BACK,
-        Config.LAYOUT_MATCH_HORI
-    ) {
-    companion object {
-        const val TAG = "AADisplay_MainActivity"
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        ActivityMainBinding.inflate(LayoutInflater.from(this))
-        super.onCreate(savedInstanceState)
-    }
+class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::class.java) {
 
     @SuppressLint("SetTextI18n")
     override fun initData() {

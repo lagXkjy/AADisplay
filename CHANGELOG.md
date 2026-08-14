@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.24#17.4-r4
+
+### Fixed
+- **分屏分隔条两端误触交换：** 分隔条加宽命中区原先盖住虚拟屏四角/边角控件；两端留出 inset 不消费触控，避免点到角上被当成点分隔条而交换分屏。
+
+### Changed
+- **减轻日志压力：** 热路径减少噪声日志，降低连接/分屏期间的 log IO。
+- **主题逻辑精简：** 收敛多余 theme 资源与包装，Main / AA / 悬浮窗主题路径更直接。
+- **移除 `OtherHook`：** 删除无效的状态栏高度补丁，并从 `xposed_scope` 去掉 `com.autonavi.amapauto`；模块仅注入 System Framework + Android Auto。
+- **`Utils` 包对齐：** `log` / `logDebug` 归属 `io.github.nitsuya.aa.display.xposed.util`。
+- **Version bump to `0.24#17.4-r4`** (`versionCode` 3060)。
+
 ## 0.24#17.4-r3
 
 ### Fixed
@@ -10,6 +22,9 @@
 - **Version bump to `0.24#17.4-r3`** (`versionCode` 3059).
 
 ## Unreleased
+
+### Changed
+- **Dead-code sweep:** drop unreachable `RecentTaskColumnAdapter.clearItem`, empty steering-wheel `EXTRA_TYPE==2` arm (old screen-control), unused `rewriteMotionEvent(preserveMeta=true)` path; collapse status-only MainActivity template (no empty AppBar / `activity_base_root_2`, unused Base* init hooks).
 
 ### Changed
 - **Low-risk hygiene:** drop unused `Application` (never in Manifest), dead Gradle deps (`hidden:compat`, `coroutines-jdk8`, empty test deps, KSP srcDir), unused ATMS stub methods; align lib-stub hidden stub to 4.4.0; docs sync (`AGENTS` util map).

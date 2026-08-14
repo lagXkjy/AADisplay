@@ -16,15 +16,9 @@ abstract class BaseFragment<BaseBinding : ViewBinding>(private val baseBindingCl
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
     ): View {
         baseBinding = ViewBindingUtil.inflate(layoutInflater, baseBindingClass)
-        findViews()
         initViews()
-        initEvents()
-        initData()
         return baseBinding.root
     }
 
-    open fun findViews() {}
     open fun initViews() {}
-    open fun initEvents() {}
-    open fun initData() {}
 }

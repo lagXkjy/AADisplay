@@ -76,6 +76,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 }
                 AABroadcastConst.ACTION_STEERING_WHEEL_CONTROL -> {
                     val action = intent.getIntExtra(AABroadcastConst.EXTRA_ACTION, 0)
+                    // EXTRA_TYPE: 0 = click (AaBtnEventHook default), 1 = long-press.
                     when (intent.getIntExtra(AABroadcastConst.EXTRA_TYPE, 0)) {
                         0 -> {
                             when (action) {
@@ -91,16 +92,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                                 KeyEvent.KEYCODE_MEDIA_PLAY,
                                 KeyEvent.KEYCODE_MEDIA_PAUSE,
                                 KeyEvent.KEYCODE_MEDIA_RECORD -> CoreApi.pressKey(action)
-                                else -> { }
                             }
                         }
                         1 -> {
-                            when (action) {
-                                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> CoreApi.moveSecondTaskToFront()
-                                else -> { }
+                            if (action == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) {
+                                CoreApi.moveSecondTaskToFront()
                             }
                         }
-                        2 -> { }
                     }
                 }
             }
@@ -432,7 +430,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 source = e,
                 downTime = down,
                 eventTime = uptimeMillis,
-                preserveMeta = false,
                 sourceOverride = InputDeviceCompat.SOURCE_TOUCHSCREEN,
             )
             CoreApi.touchPane(pane, newEvent)
