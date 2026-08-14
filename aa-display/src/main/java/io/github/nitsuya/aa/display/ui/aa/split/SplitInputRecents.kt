@@ -13,7 +13,6 @@ import android.view.InputEvent
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.window.TaskSnapshot
 import androidx.core.graphics.drawable.toBitmap
 import com.github.kyuubiran.ezxhelper.utils.argTypes
 import com.github.kyuubiran.ezxhelper.utils.args
@@ -219,22 +218,7 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
                     }
                     label = activityInfo.loadLabel(Instances.packageManager).toString()
                 }
-                val snapshot: Bitmap? = runCatching {
-                    val snap: TaskSnapshot? = try {
-                        if (Build.VERSION.SDK_INT >= 34) {
-                            Instances.iActivityTaskManager.getTaskSnapshot(taskInfo.taskId, true, true)
-                        } else {
-                            Instances.iActivityTaskManager.getTaskSnapshot(taskInfo.taskId, true)
-                        }
-                    } catch (_: Throwable) {
-                        Instances.iActivityTaskManager.getTaskSnapshot(taskInfo.taskId, true)
-                    }
-                    snap?.hardwareBuffer?.let { buffer ->
-                        val hw = Bitmap.wrapHardwareBuffer(buffer, snap.colorSpace) ?: return@let null
-                        downsampleForIpc(hw, MAX_RECENT_SNAPSHOT_EDGE_PX)
-                    }
-                }.getOrNull()
-                RecentTaskInfo(icon, taskInfo.taskId, label, snapshot, topActivity.packageName)
+                RecentTaskInfo(icon, taskInfo.taskId, label, topActivity.packageName)
             }.take(MAX_RECENT_PER_DISPLAY).toList()
         } finally {
             Binder.restoreCallingIdentity(identity)
@@ -244,13 +228,9 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
     companion object {
         /** Cap tasks per display to keep Binder payload bounded. */
         private const val MAX_RECENT_PER_DISPLAY = 12
-        private const val MAX_RECENT_SNAPSHOT_EDGE_PX = 240
         private const val MAX_RECENT_ICON_EDGE_PX = 96
 
-        /**
-         * Hardware / full-res snapshots dominate Recent IPC. Scale to a soft thumbnail
-         * so opening Recent/picker does not hitch on large Binder transfers.
-         */
+        /** Soft-copy / scale icons so Recent IPC stays light. */
         private fun downsampleForIpc(src: Bitmap, maxEdgePx: Int): Bitmap {
             val maxDim = maxOf(src.width, src.height).coerceAtLeast(1)
             val needsScale = maxDim > maxEdgePx

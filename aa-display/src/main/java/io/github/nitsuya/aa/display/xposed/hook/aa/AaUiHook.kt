@@ -97,7 +97,6 @@ object AaUiHook: AaHook() {
     private val railHostLayoutIds = mutableSetOf<Int>()
     /** Dimens that size the reserved left/right rail strip (resolved per AA version). */
     private val railWidthDimenIds = mutableSetOf<Int>()
-    private var canHookLayout: Boolean = false
     private var canHookFacetBar: Boolean = false
     private var mInjectingFacetBar: Boolean = false
     private val facetBarInjectedTag = Any()
@@ -247,8 +246,7 @@ object AaUiHook: AaHook() {
             if (id != 0) railWidthDimenIds.add(id)
         }
 
-        canHookLayout = resLayoutLeftResourceId != 0
-        if (!canHookLayout) {
+        if (resLayoutLeftResourceId == 0) {
             log(
                 tagName,
                 "AaUiHook: LHD canonical layout missing; still forcing hasVerticalRail=true"
@@ -283,7 +281,7 @@ object AaUiHook: AaHook() {
         // Zero rail-column dimens first so LayoutInfo / VD allocation sees full HU width.
         hookRailWidthDimens()
         hookVirtualDisplaySizing()
-        // Always force vertical rail on LayoutInfo — do not gate on canHookLayout.
+        // Always force vertical rail on LayoutInfo.
         // Missing canonical layout resources still need hasVerticalRail=true or AA
         // falls back to the bottom facet bar (GhFacetBar 800×80 on 800×480 HUs).
         hookLayoutInfo()
@@ -320,8 +318,7 @@ object AaUiHook: AaHook() {
         log(
             tagName,
             "AaUiHook: LayoutInfo vertical-rail force hooked=$hooked/" +
-                "${layoutInfoConstructors.size} canHookLayout=$canHookLayout " +
-                "lhd=$resLayoutLeftResourceId"
+                "${layoutInfoConstructors.size} lhd=$resLayoutLeftResourceId"
         )
     }
 

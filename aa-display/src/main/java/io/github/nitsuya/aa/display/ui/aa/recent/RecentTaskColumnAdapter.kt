@@ -54,16 +54,15 @@ class RecentTaskColumnAdapter(
         if (stackPane != null) {
             ConstraintSet().apply {
                 clone(holder.binding.clItem)
-                constrainPercentWidth(R.id.iv_snapshot,0.8f)
-                setDimensionRatio(R.id.iv_snapshot,"W,9:16")
+                constrainPercentWidth(R.id.v_card, 0.8f)
+                setDimensionRatio(R.id.v_card, "W,9:16")
                 applyTo(holder.binding.clItem)
             }
         }
-        holder.binding.ivSnapshot.setImageBitmap(item.snapshot)
         holder.binding.root.setOnClickListener {
             onExit()
         }
-        arrayOf(holder.binding.tvName, holder.binding.ivIcon, holder.binding.ivSnapshot).forEach {
+        arrayOf(holder.binding.tvName, holder.binding.ivIcon, holder.binding.vCard).forEach {
             it.setOnClickListener {
                 val pkg = item.packageName
                 // Phone-stack tap: launch onto the focused AA split pane.

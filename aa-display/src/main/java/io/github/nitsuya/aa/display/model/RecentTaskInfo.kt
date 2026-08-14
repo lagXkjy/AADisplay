@@ -9,14 +9,12 @@ data class RecentTaskInfo(
     var logo: Bitmap?,
     var taskId: Int,
     var label: String?,
-    var snapshot: Bitmap?,
     var packageName: String? = null
 ) : Parcelable {
     constructor(parcel: Parcel) : this(
         ParcelCompat.readParcelable(parcel, Bitmap::class.java.classLoader, Bitmap::class.java),
         parcel.readInt(),
         parcel.readString(),
-        ParcelCompat.readParcelable(parcel, Bitmap::class.java.classLoader, Bitmap::class.java),
         parcel.readString()
     )
 
@@ -24,7 +22,6 @@ data class RecentTaskInfo(
         parcel.writeParcelable(logo, flags)
         parcel.writeInt(taskId)
         parcel.writeString(label)
-        parcel.writeParcelable(snapshot, flags)
         parcel.writeString(packageName)
     }
 
