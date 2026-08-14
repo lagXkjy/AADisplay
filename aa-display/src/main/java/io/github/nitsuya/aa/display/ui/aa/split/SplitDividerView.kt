@@ -12,7 +12,6 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.LinearLayout
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -22,8 +21,9 @@ import kotlin.math.hypot
  * Split mode: tap swaps panes; long-press opens recent-task stack; drag adjusts ratio.
  * Drag past [SplitPane.FULLSCREEN_ENTER_RATIO] edges settles into fullscreen.
  *
- * Fullscreen peel mode: docked on the opposite edge (right for PRIMARY FS; left inset
- * past Coolwalk rail for SECONDARY FS). Drag inward to exit; tap toggles fullscreen pane.
+ * Fullscreen peel mode: always docked on a fixed driver-side edge (left when
+ * side-by-side, top when stacked) so tap-to-swap does not move the handle.
+ * Inset past Coolwalk's LHD rail. Drag inward to exit; tap toggles fullscreen pane.
  *
  * Hit target is wider than the visual seam and overlaps adjacent panes via negative
  * margins + elevation. Ends of the strip ([SplitPane.DIVIDER_TOUCH_END_INSET_DP])
@@ -36,13 +36,6 @@ class SplitDividerView @JvmOverloads constructor(
 ) : View(context, attrs, defStyleAttr) {
 
     var sideBySide: Boolean = true
-
-    /**
-     * [SplitPane.FULLSCREEN_NONE] = normal split divider;
-     * PRIMARY/SECONDARY = peel handle for that fullscreen pane.
-     */
-    var fullscreenPane: Int = SplitPane.FULLSCREEN_NONE
-        private set
 
     var onRatioChanged: ((Float) -> Unit)? = null
     var onRatioSettled: ((Float) -> Unit)? = null
@@ -59,11 +52,21 @@ class SplitDividerView @JvmOverloads constructor(
         strokeWidth = 1.5f * density
         strokeCap = Paint.Cap.ROUND
     }
+    private val peelSeamPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xB3FFFFFF.toInt()
+        strokeWidth = 2.5f * density
+        strokeCap = Paint.Cap.ROUND
+    }
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFE8E8E8.toInt()
         style = Paint.Style.FILL
     }
+    private val peelDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFFFFFFF.toInt()
+        style = Paint.Style.FILL
+    }
     private val dotRadius = 2.5f * density
+    private val peelDotRadius = 3.25f * density
     private val dotGap = 7f * density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
@@ -76,6 +79,7 @@ class SplitDividerView @JvmOverloads constructor(
     private var lastRatio = SplitPane.DEFAULT_RATIO
     /** Unclamped ratio used for fullscreen enter/exit decisions. */
     private var lastRawRatio = SplitPane.DEFAULT_RATIO
+    private var peelMode = false
 
     private val longPressRunnable = Runnable {
         if (!tracking || dragging || longPressFired) return@Runnable
@@ -101,45 +105,19 @@ class SplitDividerView @JvmOverloads constructor(
         lastRawRatio = lastRatio
     }
 
+    /** [SplitPane.FULLSCREEN_NONE] = split divider; PRIMARY/SECONDARY = peel handle. */
     fun setFullscreenPane(pane: Int) {
-        if (fullscreenPane == pane) return
-        fullscreenPane = pane
+        val next = SplitPane.isFullscreenPane(pane)
+        if (peelMode == next) return
+        peelMode = next
         invalidate()
     }
 
-    val isPeelMode: Boolean
-        get() = SplitPane.isFullscreenPane(fullscreenPane)
-
     /**
-     * Layout size = visual seam + expand on each side; negative margins keep the
-     * LinearLayout gap at [SplitPane.DIVIDER_DP] while the view overlaps panes for touch.
+     * Peel handle in a [FrameLayout] host — fixed driver-side edge: left (inset past
+     * Coolwalk rail) when [sideBySide], top when stacked.
      */
-    fun applyLayoutParams(lp: LinearLayout.LayoutParams, sideBySide: Boolean) {
-        val seamPx = (SplitPane.DIVIDER_DP * density).toInt().coerceAtLeast(1)
-        val expandPx = (SplitPane.DIVIDER_TOUCH_EXPAND_DP * density).toInt().coerceAtLeast(0)
-        val touchSpan = seamPx + 2 * expandPx
-        if (sideBySide) {
-            lp.width = touchSpan
-            lp.height = LinearLayout.LayoutParams.MATCH_PARENT
-            lp.marginStart = -expandPx
-            lp.marginEnd = -expandPx
-            lp.topMargin = 0
-            lp.bottomMargin = 0
-        } else {
-            lp.width = LinearLayout.LayoutParams.MATCH_PARENT
-            lp.height = touchSpan
-            lp.topMargin = -expandPx
-            lp.bottomMargin = -expandPx
-            lp.marginStart = 0
-            lp.marginEnd = 0
-        }
-    }
-
-    /**
-     * Peel handle in a [FrameLayout] host: PRIMARY FS → right edge; SECONDARY FS →
-     * left edge inset by [SplitPane.FULLSCREEN_PEEL_INSET_DP] (past Coolwalk rail).
-     */
-    fun applyPeelLayoutParams(lp: FrameLayout.LayoutParams, sideBySide: Boolean, fullscreenPane: Int) {
+    fun applyPeelLayoutParams(lp: FrameLayout.LayoutParams, sideBySide: Boolean) {
         val seamPx = (SplitPane.DIVIDER_DP * density).toInt().coerceAtLeast(1)
         val expandPx = (SplitPane.DIVIDER_TOUCH_EXPAND_DP * density).toInt().coerceAtLeast(0)
         val touchSpan = seamPx + 2 * expandPx
@@ -150,24 +128,12 @@ class SplitDividerView @JvmOverloads constructor(
         lp.marginEnd = 0
         lp.topMargin = 0
         lp.bottomMargin = 0
-        when {
-            fullscreenPane == SplitPane.PRIMARY && sideBySide -> {
-                lp.gravity = Gravity.END or Gravity.TOP
-            }
-            fullscreenPane == SplitPane.SECONDARY && sideBySide -> {
-                lp.gravity = Gravity.START or Gravity.TOP
-                lp.marginStart = insetPx
-            }
-            fullscreenPane == SplitPane.PRIMARY && !sideBySide -> {
-                lp.gravity = Gravity.BOTTOM or Gravity.START
-            }
-            fullscreenPane == SplitPane.SECONDARY && !sideBySide -> {
-                lp.gravity = Gravity.TOP or Gravity.START
-                lp.topMargin = insetPx
-            }
-            else -> {
-                lp.gravity = Gravity.CENTER
-            }
+        if (sideBySide) {
+            lp.gravity = Gravity.START or Gravity.TOP
+            lp.marginStart = insetPx
+        } else {
+            lp.gravity = Gravity.TOP or Gravity.START
+            lp.topMargin = insetPx
         }
     }
 
@@ -177,7 +143,7 @@ class SplitDividerView @JvmOverloads constructor(
      * Peel mode keeps the full strip tappable (short docked handle).
      */
     private fun isOnEndInset(event: MotionEvent): Boolean {
-        if (isPeelMode) return false
+        if (peelMode) return false
         val inset = SplitPane.DIVIDER_TOUCH_END_INSET_DP * density
         return if (sideBySide) {
             val usable = height - 2f * inset
@@ -197,22 +163,25 @@ class SplitDividerView @JvmOverloads constructor(
         super.onDraw(canvas)
         val cx = width / 2f
         val cy = height / 2f
+        val linePaint = if (peelMode) peelSeamPaint else seamPaint
         if (sideBySide) {
-            canvas.drawLine(cx, 0f, cx, height.toFloat(), seamPaint)
+            canvas.drawLine(cx, 0f, cx, height.toFloat(), linePaint)
             drawDots(canvas, cx, cy, vertical = true)
         } else {
-            canvas.drawLine(0f, cy, width.toFloat(), cy, seamPaint)
+            canvas.drawLine(0f, cy, width.toFloat(), cy, linePaint)
             drawDots(canvas, cx, cy, vertical = false)
         }
     }
 
     private fun drawDots(canvas: Canvas, cx: Float, cy: Float, vertical: Boolean) {
+        val paint = if (peelMode) peelDotPaint else dotPaint
+        val radius = if (peelMode) peelDotRadius else dotRadius
         val offsets = floatArrayOf(-dotGap, 0f, dotGap)
         for (offset in offsets) {
             if (vertical) {
-                canvas.drawCircle(cx, cy + offset, dotRadius, dotPaint)
+                canvas.drawCircle(cx, cy + offset, radius, paint)
             } else {
-                canvas.drawCircle(cx + offset, cy, dotRadius, dotPaint)
+                canvas.drawCircle(cx + offset, cy, radius, paint)
             }
         }
     }
@@ -258,20 +227,12 @@ class SplitDividerView @JvmOverloads constructor(
                     removeCallbacks(longPressRunnable)
                 }
                 if (!dragging || longPressFired) return true
+                // Preview unclamped; settle decides enter-FS / exit-FS / clamp.
                 val raw = rawRatioFromEvent(event, parentView)
                 lastRawRatio = raw
-                if (isPeelMode) {
-                    // Preview split weights while peeling; do not clamp to 0.2..0.8 yet.
-                    if (abs(raw - lastRatio) > 0.002f) {
-                        lastRatio = raw
-                        onRatioChanged?.invoke(raw)
-                    }
-                } else {
-                    // Split drag: allow visual preview past clamp; settle decides FS vs clamp.
-                    if (abs(raw - lastRatio) > 0.002f) {
-                        lastRatio = raw
-                        onRatioChanged?.invoke(raw)
-                    }
+                if (abs(raw - lastRatio) > 0.002f) {
+                    lastRatio = raw
+                    onRatioChanged?.invoke(raw)
                 }
                 return true
             }
@@ -304,15 +265,9 @@ class SplitDividerView @JvmOverloads constructor(
     }
 
     private fun settleDrag() {
-        if (isPeelMode) {
-            val exit = when (fullscreenPane) {
-                // Right peel (PRIMARY FS): dragging left lowers ratio; exit when enough secondary shows.
-                SplitPane.PRIMARY -> lastRawRatio <= 1f - SplitPane.FULLSCREEN_EXIT_RATIO
-                // Left peel (SECONDARY FS): dragging right raises ratio; exit when enough primary shows.
-                SplitPane.SECONDARY -> lastRawRatio >= SplitPane.FULLSCREEN_EXIT_RATIO
-                else -> false
-            }
-            if (exit) {
+        if (peelMode) {
+            // Fixed left/top peel: drag inward raises ratio; exit past threshold.
+            if (lastRawRatio >= SplitPane.FULLSCREEN_EXIT_RATIO) {
                 onFullscreenExit?.invoke()
             } else {
                 onPeelCancelled?.invoke()

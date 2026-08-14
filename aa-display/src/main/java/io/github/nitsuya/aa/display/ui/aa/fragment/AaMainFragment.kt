@@ -240,8 +240,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 }
                 dividerDragging = true
                 splitRatio = ratio
-                val peeling = SplitPane.isFullscreenPane(fullscreenPane)
-                applySplitLayoutWeights(ratio, force = true, peelPreview = peeling)
+                applySplitLayoutWeights(
+                    ratio,
+                    force = true,
+                    peelPreview = SplitPane.isFullscreenPane(fullscreenPane),
+                )
             }
             onRatioSettled = { ratio ->
                 splitRatio = ratio
@@ -291,9 +294,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
 
     private fun enterFullscreen(pane: Int) {
         if (!SplitPane.isFullscreenPane(pane)) return
-        if (!SplitPane.isFullscreenPane(fullscreenPane)) {
-            ratioBeforeFullscreen = SplitPane.clampRatio(ratioBeforeFullscreen)
-        }
         fullscreenPane = pane
         CoreApi.setSplitFullscreen(pane)
         applyFullscreenLayout(pane)
@@ -365,14 +365,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         val back = if (pane == SplitPane.PRIMARY) baseBinding.paneSecondary else baseBinding.panePrimary
         back.elevation = 0f
         front.elevation = 2f
-        // Keep both Surfaces full-size; only front receives touches.
-        back.isClickable = false
-        front.isClickable = false
+        // Keep both Surfaces full-size; touch routing uses TextureView enable flags.
         baseBinding.splitContainer.bringChildToFront(back)
         baseBinding.splitContainer.bringChildToFront(front)
 
         val dividerLp = (baseBinding.splitDivider.layoutParams as FrameLayout.LayoutParams)
-        baseBinding.splitDivider.applyPeelLayoutParams(dividerLp, sideBySide, pane)
+        baseBinding.splitDivider.applyPeelLayoutParams(dividerLp, sideBySide)
         baseBinding.splitDivider.layoutParams = dividerLp
         baseBinding.splitContainer.bringChildToFront(baseBinding.splitDivider)
         baseBinding.splitDivider.invalidate()

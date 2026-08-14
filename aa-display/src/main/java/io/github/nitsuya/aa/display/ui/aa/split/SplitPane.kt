@@ -21,14 +21,14 @@ object SplitPane {
     const val FULLSCREEN_ENTER_RATIO = 0.12f
 
     /**
-     * Peel drag: when revealed primary share exceeds this (from left peel) or
-     * falls below `1 - this` (from right peel), exit fullscreen back to split.
+     * Peel drag from the fixed left/top handle: when revealed primary share
+     * exceeds this, exit fullscreen back to split.
      */
     const val FULLSCREEN_EXIT_RATIO = 0.15f
 
     /**
      * Left peel inset from the screen edge so the handle sits outside Coolwalk's
-     * LHD rail steal band (~80px on many HUs).
+     * LHD rail steal band (~80dp on many HUs), while staying driver-reachable.
      */
     const val FULLSCREEN_PEEL_INSET_DP = 80
 
