@@ -34,11 +34,6 @@ import io.github.duzhaokun123.template.utils.runMain
 class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding::class.java) {
     companion object {
         private const val TAG = "AADisplay_AaMainFragment"
-        /**
-         * HU Coolwalk VDs are density-160 (dp≈px). Using the phone AA process density
-         * (often 420–480) makes pane apps overscale assets and layout work.
-         */
-        private const val HU_VD_DENSITY_DPI = 160
         private const val SETTLE_MID_MS = 400L
         private const val SETTLE_LATE_MS = 900L
     }
@@ -153,8 +148,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             baseBinding.root.removeCallbacks(settleLate)
             baseBinding.root.removeCallbacks(afterDividerSettle)
             baseBinding.root.removeCallbacks(afterSwapSettle)
+            baseBinding.root.removeCallbacks(afterOccupancySync)
         } catch (_: Throwable) {
         }
+        // Drop coalesced MOVE before tearing down VDs — never inject after destroy.
+        cancelPendingPaneTouches()
         super.onDestroy()
         Log.d(TAG, "onDestroy: displayId=$displayId")
         clearDisplaySurfaces("destroy")
@@ -184,6 +182,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private val settleMid = Runnable { runConnectSettleStep(1) }
     private val settleLate = Runnable { runConnectSettleStep(2) }
     private val afterDividerSettle = Runnable { syncPaneOccupancyFromService() }
+    private val afterOccupancySync = Runnable { syncPaneOccupancyFromService() }
     private val afterSwapSettle = Runnable {
         if (!isAdded || view == null || dividerDragging) return@Runnable
         val ratio = tryOrNull { CoreApi.splitRatio }?.takeIf { it > 0f } ?: return@Runnable
@@ -193,6 +192,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         baseBinding.splitDivider.setRatio(clamped)
         syncPaneOccupancyFromService()
     }
+
+    /** Per-pane MOVE coalesce — instance fields so [onDestroy] can cancel them. */
+    private var primaryPendingMove: MotionEvent? = null
+    private var secondaryPendingMove: MotionEvent? = null
+    private val primaryFlushMove = Runnable { flushPendingMove(SplitPane.PRIMARY) }
+    private val secondaryFlushMove = Runnable { flushPendingMove(SplitPane.SECONDARY) }
 
     private fun setupDivider() {
         baseBinding.splitDivider.apply {
@@ -372,10 +377,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     private fun scheduleOccupancySync(delayMs: Long) {
-        baseBinding.root.removeCallbacks(settleLate)
-        baseBinding.root.postDelayed({
-            syncPaneOccupancyFromService()
-        }, delayMs)
+        baseBinding.root.removeCallbacks(afterOccupancySync)
+        baseBinding.root.postDelayed(afterOccupancySync, delayMs)
     }
 
     /**
@@ -390,8 +393,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         root.removeCallbacks(settleLate)
         settleExpectCreate = create
         root.post(settleImmediate)
-        root.postDelayed(settleMid, 400L)
-        root.postDelayed(settleLate, 900L)
+        root.postDelayed(settleMid, SETTLE_MID_MS)
+        root.postDelayed(settleLate, SETTLE_LATE_MS)
     }
 
     private fun runConnectSettleStep(step: Int) {
@@ -491,6 +494,36 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         secondarySurface = null
     }
 
+    private fun pendingMoveFor(pane: Int): MotionEvent? =
+        if (pane == SplitPane.PRIMARY) primaryPendingMove else secondaryPendingMove
+
+    private fun setPendingMove(pane: Int, event: MotionEvent?) {
+        if (pane == SplitPane.PRIMARY) primaryPendingMove = event else secondaryPendingMove = event
+    }
+
+    private fun flushRunnableFor(pane: Int): Runnable =
+        if (pane == SplitPane.PRIMARY) primaryFlushMove else secondaryFlushMove
+
+    private fun flushPendingMove(pane: Int) {
+        val move = pendingMoveFor(pane) ?: return
+        setPendingMove(pane, null)
+        CoreApi.touchPane(pane, move)
+        move.recycle()
+    }
+
+    /** Cancel coalesced MOVE; do not inject — VD may already be tearing down. */
+    private fun cancelPendingPaneTouches() {
+        try {
+            baseBinding.tvDisplayPrimary.removeCallbacks(primaryFlushMove)
+            baseBinding.tvDisplaySecondary.removeCallbacks(secondaryFlushMove)
+        } catch (_: Throwable) {
+        }
+        primaryPendingMove?.recycle()
+        primaryPendingMove = null
+        secondaryPendingMove?.recycle()
+        secondaryPendingMove = null
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private fun setupTouchForwarding(
         textureView: TextureView,
@@ -498,13 +531,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         setDownTime: (Long) -> Unit,
     ) {
         // Coalesce MOVE to ~1/frame so Binder inject is not flooded during fast drags.
-        var pendingMove: MotionEvent? = null
-        val flushMove = Runnable {
-            val move = pendingMove ?: return@Runnable
-            pendingMove = null
-            CoreApi.touchPane(pane, move)
-            move.recycle()
-        }
+        val flushMove = flushRunnableFor(pane)
         textureView.setOnTouchListener { _, e ->
             val uptimeMillis = SystemClock.uptimeMillis()
             if (e.actionMasked == MotionEvent.ACTION_DOWN) {
@@ -520,15 +547,15 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             )
             when (e.actionMasked) {
                 MotionEvent.ACTION_MOVE -> {
-                    pendingMove?.recycle()
-                    pendingMove = newEvent
+                    pendingMoveFor(pane)?.recycle()
+                    setPendingMove(pane, newEvent)
                     textureView.removeCallbacks(flushMove)
                     textureView.postOnAnimation(flushMove)
                 }
                 else -> {
                     textureView.removeCallbacks(flushMove)
-                    pendingMove?.let { pending ->
-                        pendingMove = null
+                    pendingMoveFor(pane)?.let { pending ->
+                        setPendingMove(pane, null)
                         CoreApi.touchPane(pane, pending)
                         pending.recycle()
                     }
