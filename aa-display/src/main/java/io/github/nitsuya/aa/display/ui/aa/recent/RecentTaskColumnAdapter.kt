@@ -62,7 +62,8 @@ class RecentTaskColumnAdapter(
         holder.binding.root.setOnClickListener {
             onExit()
         }
-        arrayOf(holder.binding.tvName, holder.binding.ivIcon, holder.binding.vCard).forEach {
+        // Icon/title open the task; gray card only hosts Close (avoids mis-taps on car UI).
+        arrayOf(holder.binding.tvName, holder.binding.ivIcon).forEach {
             it.setOnClickListener {
                 val pkg = item.packageName
                 // Phone-stack tap: launch onto the focused AA split pane.
