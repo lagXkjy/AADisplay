@@ -114,7 +114,7 @@ object LastSplitStore {
         }
         return try {
             writeOnce()
-            Log.i(
+            Log.d(
                 TAG,
                 "file saved primary=${snapshot.primaryPackage} secondary=${snapshot.secondaryPackage} " +
                     "ratio=${snapshot.primaryRatio}"
@@ -142,7 +142,7 @@ object LastSplitStore {
             Settings.Global.putString(cr, SETTINGS_LEFT, snapshot.primaryPackage)
             Settings.Global.putString(cr, SETTINGS_RIGHT, snapshot.secondaryPackage)
             Settings.Global.putString(cr, SETTINGS_RATIO, snapshot.primaryRatio.toString())
-            Log.i(
+            Log.d(
                 TAG,
                 "settings saved primary=${snapshot.primaryPackage} secondary=${snapshot.secondaryPackage}"
             )

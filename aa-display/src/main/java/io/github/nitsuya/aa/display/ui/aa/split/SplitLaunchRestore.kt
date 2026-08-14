@@ -141,7 +141,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
     ): Boolean {
         if (displayId == Display.INVALID_DISPLAY) return false
         if (c.ownership.hasPackageOnDisplay(packageName, displayId)) return false
-        log(
+        logDebug(
             SplitDisplayController.TAG,
             "restore verify: pane=$pane missing $packageName attempt=$attempt"
         )
@@ -149,7 +149,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         if (c.ownership.hasPackageOnDisplay(packageName, displayId)) return false
         val canRetry = attempt + 1 < SplitDisplayController.MAX_RESTORE_VERIFY_ATTEMPTS
         if (canRetry) {
-            log(
+            logDebug(
                 SplitDisplayController.TAG,
                 "restore verify: pane=$pane still missing $packageName ok=$ok → retry"
             )
@@ -186,7 +186,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         val primaryPkg = c.mPanePackages[SplitPane.PRIMARY]
         val secondaryPkg = c.mPanePackages[SplitPane.SECONDARY]
         if (!settling && primaryPkg.isNullOrBlank() && secondaryPkg.isNullOrBlank()) {
-            log(SplitDisplayController.TAG, "ensurePanes[$reason]: both empty → restore or idle")
+            logDebug(SplitDisplayController.TAG, "ensurePanes[$reason]: both empty → restore or idle")
             if (shouldRestoreLastSplitOnConnect()) {
                 scheduleRestoreLastSplit()
             } else {
@@ -199,7 +199,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             val expected = c.mPanePackages[pane]?.trim()?.takeIf { it.isNotEmpty() } ?: continue
             val displayId = c.input.displayIdFor(pane) ?: continue
             if (c.ownership.hasPackageOnDisplay(expected, displayId)) continue
-            log(SplitDisplayController.TAG, "ensurePanes[$reason]: relaunch $expected on pane=$pane")
+            logDebug(SplitDisplayController.TAG, "ensurePanes[$reason]: relaunch $expected on pane=$pane")
             if (c.startActivityOnPane(expected, 0, pane)) {
                 relaunched = true
             }

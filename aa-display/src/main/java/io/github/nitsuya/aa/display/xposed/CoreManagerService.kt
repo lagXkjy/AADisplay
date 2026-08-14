@@ -236,7 +236,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun setPaneSurface(pane: Int, surface: Surface?) {
         runMain {
-            logDebug(TAG, "setPaneSurface pane=$pane surface=${surface != null}")
             mSplitController?.setPaneSurface(pane, surface)
         }
     }

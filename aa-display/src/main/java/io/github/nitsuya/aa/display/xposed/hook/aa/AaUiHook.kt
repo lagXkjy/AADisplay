@@ -349,7 +349,7 @@ object AaUiHook: AaHook() {
         if (beforeRail != true ||
             (resLayoutLeftResourceId != 0 && beforeLayoutId != resLayoutLeftResourceId)
         ) {
-            log(
+            logDebug(
                 tagName,
                 "AaUiHook: force vertical rail args " +
                     "layoutId=$beforeLayoutId→${args[0]} type=$beforeType→${args[3]} " +
@@ -371,7 +371,7 @@ object AaUiHook: AaHook() {
                 val cur = layoutField.getInt(instance)
                 if (cur != resLayoutLeftResourceId) {
                     layoutField.setInt(instance, resLayoutLeftResourceId)
-                    log(
+                    logDebug(
                         tagName,
                         "AaUiHook: force vertical rail layoutId field ${layoutField.name} $cur→$resLayoutLeftResourceId"
                     )
@@ -491,7 +491,6 @@ object AaUiHook: AaHook() {
                         val range = railPxRange(layoutWidthPx().takeIf { it > 0 } ?: (value * 10))
                         if (value in range) {
                             mObservedRailWidthPx = value
-                            logDebug(tagName, "AaUiHook: zero pillar_width $value → 0")
                             param.args[1] = 0
                         }
                     }
@@ -527,7 +526,6 @@ object AaUiHook: AaHook() {
                 val range = railPxRange(layoutWidthPx().takeIf { it > 0 } ?: (value * 10))
                 if (value in range) {
                     mObservedRailWidthPx = value
-                    logDebug(tagName, "AaUiHook: zero pillar_width $value → 0")
                     param.args[1] = 0
                 }
             }
@@ -642,7 +640,6 @@ object AaUiHook: AaHook() {
                     if (value in range) {
                         mObservedRailWidthPx = value
                         bundle.putInt("pillar_width", 0)
-                        logDebug(tagName, "AaUiHook: zero pillar_width in Bundle $value → 0")
                     }
                 }
             }
@@ -682,18 +679,14 @@ object AaUiHook: AaHook() {
         // LHD: left gutter reserved for vertical rail.
         if (rect.left in range && rect.right >= fullW - 2 && rect.top <= 0) {
             mObservedRailWidthPx = rect.left
-            val before = Rect(rect)
             rect.set(0, 0, fullW.coerceAtLeast(rect.right), fullH.coerceAtLeast(rect.bottom))
-            logDebug(tagName, "AaUiHook: expand content_bounds $before → $rect")
             return rect
         }
         // RHD: right edge pulled in by rail width.
         val rightGap = fullW - rect.right
         if (rect.left <= 0 && rightGap in range && rect.top <= 0) {
             mObservedRailWidthPx = rightGap
-            val before = Rect(rect)
             rect.set(0, 0, fullW, fullH.coerceAtLeast(rect.bottom))
-            logDebug(tagName, "AaUiHook: expand content_bounds $before → $rect")
             return rect
         }
         return null
@@ -703,7 +696,6 @@ object AaUiHook: AaHook() {
     private fun applyZeroedContentInsets(rect: Rect): Rect? {
         val range = railPxRange(layoutWidthPx().takeIf { it > 0 } ?: rect.left.coerceAtLeast(rect.right) * 10)
         var changed = false
-        val before = Rect(rect)
         if (rect.left in range) {
             mObservedRailWidthPx = rect.left
             rect.left = 0
@@ -715,7 +707,6 @@ object AaUiHook: AaHook() {
             changed = true
         }
         if (!changed) return null
-        logDebug(tagName, "AaUiHook: zero content_insets $before → $rect")
         return rect
     }
 
@@ -1167,7 +1158,7 @@ object AaUiHook: AaHook() {
         mAutoOpenSessionAtMs = now
         mAaDisplayShownThisSession = false
         mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
-        log(tagName, "AaUiHook: arm AutoOpen retries ($reason) delays=${AUTO_OPEN_DELAYS_MS.contentToString()}")
+        logDebug(tagName, "AaUiHook: arm AutoOpen retries ($reason) delays=${AUTO_OPEN_DELAYS_MS.contentToString()}")
         for (delayMs in AUTO_OPEN_DELAYS_MS) {
             mFacetEnsureHandler.postAtTime(
                 { tryAutoOpenAaDisplay(delayMs) },
@@ -1361,7 +1352,7 @@ object AaUiHook: AaHook() {
                 if (tryInjectIntoFacetColumn(root, label)) attempted++
             }
             if (attempted > 0) {
-                log(tagName, "AaUiHook: ensure facet injected [$label] count=$attempted")
+                logDebug(tagName, "AaUiHook: ensure facet injected [$label] count=$attempted")
                 for (root in roots) {
                     reclaimLeftGutter(root)
                 }
@@ -1624,14 +1615,14 @@ object AaUiHook: AaHook() {
                         }
                     }
                     parent.requestLayout()
-                    log(tagName, "AaUiHook: reclaimed left gutter via horizontal parent")
+                    logDebug(tagName, "AaUiHook: reclaimed left gutter via horizontal parent")
                     return
                 }
                 parent is ConstraintLayout -> {
                     applyZeroWidthGone(node)
                     expandConstraintContent(parent, node)
                     parent.requestLayout()
-                    log(tagName, "AaUiHook: reclaimed left gutter via constraint parent")
+                    logDebug(tagName, "AaUiHook: reclaimed left gutter via constraint parent")
                     return
                 }
                 isThinSideRail(parent, maxSidePx) || parent.childCount <= 1 -> {
@@ -1724,7 +1715,7 @@ object AaUiHook: AaHook() {
         val aaFacetBar = layoutInflater.inflate(R.layout.aa_facet_bar, resultViewGroupParent, false) as ConstraintLayout
         aaFacetBar.tag = facetBarInjectedTag
         resultViewGroup.tag = facetBarInjectedTag
-        log(tagName, "AaUiHook: collapse facet rail ($matchReason)")
+        logDebug(tagName, "AaUiHook: collapse facet rail ($matchReason)")
         scheduleAutoOpenIfNeeded("facet:$matchReason")
         // Keep original chrome in hierarchy but hidden so AA lifecycle stays intact.
         resultViewGroup.visibility = View.GONE

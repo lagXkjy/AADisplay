@@ -42,7 +42,7 @@ object BridgeService {
     private fun myTransact(code: Int, data: Parcel, reply: Parcel?): Boolean {
         if (code == TRANSACTION) {
             if (isAllowedClient(Binder.getCallingUid())) {
-                log(TAG, "Transaction from client uid=${Binder.getCallingUid()}")
+                logDebug(TAG, "Transaction from client uid=${Binder.getCallingUid()}")
                 runCatching {
                     data.enforceInterface(DESCRIPTOR)
                     when (data.readInt()) {

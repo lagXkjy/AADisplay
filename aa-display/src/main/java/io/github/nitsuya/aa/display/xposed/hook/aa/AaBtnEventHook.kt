@@ -15,6 +15,7 @@ import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.hook.abortMethod
 import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.logDebug
 import java.util.Collections
 import java.util.HashMap
 import java.util.HashSet
@@ -124,25 +125,25 @@ object AaBtnEventHook: AaHook() {
                         }
                         // MEDIA_BUTTON and KEY_EVENT may both deliver the same physical press.
                         if (!claimKeyEvent(keyEvent)) {
-                            log(tagName, "drop duplicate keyCode:$keyCode action:${keyEvent.action} from $eventAction")
+                            logDebug(tagName, "drop duplicate keyCode:$keyCode action:${keyEvent.action} from $eventAction")
                             return@hookBefore
                         }
 
-                        log(tagName, "BroadcastReceiver onReceive $clazzName, action:$eventAction, keyCode:$keyCode, keyEvent:$keyEvent")
+                        logDebug(tagName, "BroadcastReceiver onReceive $clazzName, action:$eventAction, keyCode:$keyCode")
                         val longPress = longPressByKeyCode.computeIfAbsent(keyCode) { AtomicBoolean(false) }
                         if (keyEvent.action != KeyEvent.ACTION_DOWN) {
                             if (longPress.get()) {
                                 longPress.set(false)
                                 return@hookBefore
                             }
-                            log(tagName, "send click $keyCode")
+                            logDebug(tagName, "send click $keyCode")
                             (receiveParam.args[0] as Context).sendBroadcast(Intent().apply {
                                 action = AABroadcastConst.ACTION_STEERING_WHEEL_CONTROL
                                 putExtra(AABroadcastConst.EXTRA_ACTION, keyCode)
                             })
                         } else if (keyEvent.isLongPress) {
                             longPress.set(true)
-                            log(tagName, "send long click $keyCode")
+                            logDebug(tagName, "send long click $keyCode")
                             (receiveParam.args[0] as Context).sendBroadcast(Intent().apply {
                                 action = AABroadcastConst.ACTION_STEERING_WHEEL_CONTROL
                                 putExtra(AABroadcastConst.EXTRA_ACTION, keyCode)

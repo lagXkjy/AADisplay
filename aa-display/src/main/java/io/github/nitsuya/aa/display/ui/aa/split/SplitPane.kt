@@ -20,6 +20,13 @@ object SplitPane {
      */
     const val DIVIDER_TOUCH_EXPAND_DP = 24
 
+    /**
+     * Dead zone at each end of the divider along its long axis (top/bottom when
+     * side-by-side). Keeps pane-corner chrome (back, etc.) from swapping splits.
+     * Thickness of the hit target is unchanged ([DIVIDER_TOUCH_EXPAND_DP]).
+     */
+    const val DIVIDER_TOUCH_END_INSET_DP = 64
+
     fun clampRatio(ratio: Float): Float = ratio.coerceIn(MIN_RATIO, MAX_RATIO)
 
     fun isValid(pane: Int): Boolean = pane == PRIMARY || pane == SECONDARY

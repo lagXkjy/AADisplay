@@ -13,7 +13,6 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.BridgeService
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.log
-import io.github.nitsuya.aa.display.xposed.logDebug
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPresentationGuard
 import io.github.qauxv.util.Initiator
 import java.io.File
@@ -205,14 +204,11 @@ object AndroidHook : BaseHook() {
             val pkg = normalizePackage(packageName) ?: return
             if (displayId == Display.DEFAULT_DISPLAY || displayId == Display.INVALID_DISPLAY) return
             appInitUseDisplay[pkg] = displayId
-            logDebug(tagName, "VD density map mark: $pkg -> display=$displayId")
         }
 
         fun clearPackageVirtualDisplay(packageName: String?) {
             val pkg = normalizePackage(packageName) ?: return
-            if (appInitUseDisplay.remove(pkg) != null) {
-                logDebug(tagName, "VD density map clear: $pkg")
-            }
+            appInitUseDisplay.remove(pkg)
         }
 
         /** Keep package→display DPI mapping in sync when a task moves VD ↔ phone. */

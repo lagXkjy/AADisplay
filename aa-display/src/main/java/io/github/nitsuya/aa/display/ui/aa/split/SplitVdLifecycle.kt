@@ -83,11 +83,6 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             // rotate a newly-narrow pane.
             applyPolicies(SplitPane.PRIMARY, "resize-$reason")
             applyPolicies(SplitPane.SECONDARY, "resize-$reason")
-            logDebug(
-                SplitDisplayController.TAG,
-                "resize[$reason]: P ${sizes.primaryW}x${sizes.primaryH} " +
-                    "S ${sizes.secondaryW}x${sizes.secondaryH} ratio=${c.mRatio}"
-            )
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "resize failed:", e)
         }
@@ -106,7 +101,6 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             // then rotate the VD to ROTATION_90 (logical 480×278) while the TextureView stays
             // physical W×H → letterbox bars top/bottom. Lock physical orientation.
             lockPaneDisplayOrientation(displayId, reason)
-            logDebug(SplitDisplayController.TAG, "policies[$reason] pane=$pane display=$displayId ime=$imePolicy")
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "applyPolicies failed pane=$pane:", e)
         }
@@ -148,7 +142,6 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             }.onFailure {
                 logDebug(SplitDisplayController.TAG, "freezeDisplayRotation unavailable: ${it.message}")
             }
-            logDebug(SplitDisplayController.TAG, "lockOrientation[$reason] display=$displayId rot=0")
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "lockPaneDisplayOrientation failed display=$displayId:", e)
         } finally {

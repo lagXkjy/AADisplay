@@ -5,6 +5,7 @@ import android.view.WindowManager
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.xposed.log
+import io.github.nitsuya.aa.display.xposed.logDebug
 import java.util.function.Consumer
 
 /**
@@ -62,17 +63,17 @@ internal object SplitPresentationGuard {
         reason: String,
     ) {
         if (displayId == Display.INVALID_DISPLAY) return
-        val removed = tryOrNull {
+        tryOrNull {
             val wms = Class.forName("android.view.WindowManagerGlobal")
                 .getDeclaredMethod("getWindowManagerService")
                 .apply { isAccessible = true }
                 .invoke(null) ?: run {
-                    log(SplitDisplayController.TAG, "evictPresentation[$reason]: no WMS")
+                    logDebug(SplitDisplayController.TAG, "evictPresentation[$reason]: no WMS")
                     return@tryOrNull 0
                 }
             val root = runCatching { wms.javaClass.getField("mRoot").get(wms) }.getOrNull()
                 ?: run {
-                    log(SplitDisplayController.TAG, "evictPresentation[$reason]: no mRoot")
+                    logDebug(SplitDisplayController.TAG, "evictPresentation[$reason]: no mRoot")
                     return@tryOrNull 0
                 }
             val displayContent = root.javaClass.methods.firstOrNull { m ->
@@ -80,11 +81,11 @@ internal object SplitPresentationGuard {
                     m.parameterTypes.size == 1 &&
                     m.parameterTypes[0] == Int::class.javaPrimitiveType
             }?.invoke(root, displayId) ?: run {
-                log(SplitDisplayController.TAG, "evictPresentation[$reason]: no DisplayContent id=$displayId")
+                logDebug(SplitDisplayController.TAG, "evictPresentation[$reason]: no DisplayContent id=$displayId")
                 return@tryOrNull 0
             }
             val forAllWindows = resolveForAllWindows(displayContent.javaClass) ?: run {
-                log(SplitDisplayController.TAG, "evictPresentation[$reason]: forAllWindows missing")
+                logDebug(SplitDisplayController.TAG, "evictPresentation[$reason]: forAllWindows missing")
                 return@tryOrNull 0
             }
             val victims = mutableListOf<Any>()
@@ -121,13 +122,6 @@ internal object SplitPresentationGuard {
                 }
             }
             count
-        } ?: 0
-        if (removed == 0) {
-            // Keep visible in logcat (logDebug is too easy to miss while debugging LivePlay).
-            log(
-                SplitDisplayController.TAG,
-                "evictPresentation[$reason]: display=$displayId owner=$ownerPkg nothing to remove"
-            )
         }
     }
 

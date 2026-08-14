@@ -18,8 +18,10 @@ import kotlin.math.hypot
  * Tap swaps panes; long-press opens recent-task stack; drag adjusts ratio.
  *
  * Hit target is wider than the visual seam and overlaps adjacent panes via negative
- * margins + elevation. Parent [TouchDelegate] cannot steal touches already consumed by
- * sibling TextureViews (which long-press open the app picker).
+ * margins + elevation. Ends of the strip ([SplitPane.DIVIDER_TOUCH_END_INSET_DP])
+ * do not consume touches so pane-corner chrome stays tappable. Parent [TouchDelegate]
+ * cannot steal touches already consumed by sibling TextureViews (which long-press
+ * open the app picker).
  */
 class SplitDividerView @JvmOverloads constructor(
     context: Context,
@@ -99,6 +101,21 @@ class SplitDividerView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Touches on the long-axis ends fall through to the panes. If the divider is
+     * shorter than two insets, keep the full span so a tiny display still works.
+     */
+    private fun isOnEndInset(event: MotionEvent): Boolean {
+        val inset = SplitPane.DIVIDER_TOUCH_END_INSET_DP * density
+        return if (sideBySide) {
+            val usable = height - 2f * inset
+            usable > 0f && (event.y < inset || event.y > height - inset)
+        } else {
+            val usable = width - 2f * inset
+            usable > 0f && (event.x < inset || event.x > width - inset)
+        }
+    }
+
     override fun onDetachedFromWindow() {
         removeCallbacks(longPressRunnable)
         super.onDetachedFromWindow()
@@ -133,6 +150,7 @@ class SplitDividerView @JvmOverloads constructor(
         val parentView = parent as? View ?: return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (isOnEndInset(event)) return false
                 tracking = true
                 dragging = false
                 longPressFired = false
