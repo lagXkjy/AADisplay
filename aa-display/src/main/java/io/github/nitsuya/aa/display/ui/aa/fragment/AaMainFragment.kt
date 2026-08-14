@@ -34,6 +34,13 @@ import io.github.duzhaokun123.template.utils.runMain
 class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding::class.java) {
     companion object {
         private const val TAG = "AADisplay_AaMainFragment"
+        /**
+         * HU Coolwalk VDs are density-160 (dp≈px). Using the phone AA process density
+         * (often 420–480) makes pane apps overscale assets and layout work.
+         */
+        private const val HU_VD_DENSITY_DPI = 160
+        private const val SETTLE_MID_MS = 400L
+        private const val SETTLE_LATE_MS = 900L
     }
 
     private var displayId: Int = Display.INVALID_DISPLAY
@@ -140,6 +147,14 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     override fun onDestroy() {
+        try {
+            baseBinding.root.removeCallbacks(settleImmediate)
+            baseBinding.root.removeCallbacks(settleMid)
+            baseBinding.root.removeCallbacks(settleLate)
+            baseBinding.root.removeCallbacks(afterDividerSettle)
+            baseBinding.root.removeCallbacks(afterSwapSettle)
+        } catch (_: Throwable) {
+        }
         super.onDestroy()
         Log.d(TAG, "onDestroy: displayId=$displayId")
         clearDisplaySurfaces("destroy")
@@ -163,6 +178,21 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private var lastCreateHeight = 0
     private var lastCreateDpi = 0
     private var dividerDragging = false
+    /** Soft-reconnect settle: cancel prior pipeline before arming a new one. */
+    private var settleExpectCreate = false
+    private val settleImmediate = Runnable { runConnectSettleStep(0) }
+    private val settleMid = Runnable { runConnectSettleStep(1) }
+    private val settleLate = Runnable { runConnectSettleStep(2) }
+    private val afterDividerSettle = Runnable { syncPaneOccupancyFromService() }
+    private val afterSwapSettle = Runnable {
+        if (!isAdded || view == null || dividerDragging) return@Runnable
+        val ratio = tryOrNull { CoreApi.splitRatio }?.takeIf { it > 0f } ?: return@Runnable
+        val clamped = SplitPane.clampRatio(ratio)
+        splitRatio = clamped
+        applySplitLayoutWeights(clamped)
+        baseBinding.splitDivider.setRatio(clamped)
+        syncPaneOccupancyFromService()
+    }
 
     private fun setupDivider() {
         baseBinding.splitDivider.apply {
@@ -183,7 +213,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 CoreApi.setSplitRatio(ratio)
                 dividerDragging = false
                 // One occupancy sync after settle (restore / remote may have launched apps).
-                baseBinding.root.postDelayed({ syncPaneOccupancyFromService() }, 300L)
+                baseBinding.root.removeCallbacks(afterDividerSettle)
+                baseBinding.root.postDelayed(afterDividerSettle, 300L)
             }
             onStackClick = {
                 runMain {
@@ -193,15 +224,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             onSwapClick = {
                 CoreApi.swapSplitPanes()
                 // Broadcast carries occupancy only; sync inverted ratio after controller settles.
-                baseBinding.root.postDelayed({
-                    if (!isAdded || view == null || dividerDragging) return@postDelayed
-                    val ratio = tryOrNull { CoreApi.splitRatio }?.takeIf { it > 0f } ?: return@postDelayed
-                    val clamped = SplitPane.clampRatio(ratio)
-                    splitRatio = clamped
-                    applySplitLayoutWeights(clamped)
-                    baseBinding.splitDivider.setRatio(clamped)
-                    syncPaneOccupancyFromService()
-                }, 280L)
+                baseBinding.root.removeCallbacks(afterSwapSettle)
+                baseBinding.root.postDelayed(afterSwapSettle, 280L)
             }
         }
     }
@@ -341,27 +365,81 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 primarySurface?.let { CoreApi.setPaneSurface(SplitPane.PRIMARY, it) }
                 secondarySurface?.let { CoreApi.setPaneSurface(SplitPane.SECONDARY, it) }
                 registerControlReceivers()
-                // Occupancy settles after restore / pane launches; light Binder retries only.
-                scheduleOccupancySync(0L)
-                scheduleOccupancySync(900L)
-                if (create) {
-                    applyRemoteRatioOnce()
-                    baseBinding.root.postDelayed({ applyRemoteRatioOnce() }, 700L)
-                }
+                // One reconnect settle pipeline (occupancy + optional ratio), not N parallel delays.
+                scheduleConnectSettle(create)
             }
         }
     }
 
     private fun scheduleOccupancySync(delayMs: Long) {
+        baseBinding.root.removeCallbacks(settleLate)
         baseBinding.root.postDelayed({
             syncPaneOccupancyFromService()
         }, delayMs)
     }
 
+    /**
+     * Soft reconnect / first frame: cancel prior timers, then occupancy at 0/mid/late
+     * and (on create) remote ratio at immediate + mid. Avoids Binder poll storms.
+     */
+    private fun scheduleConnectSettle(create: Boolean) {
+        if (!isAdded || view == null) return
+        val root = baseBinding.root
+        root.removeCallbacks(settleImmediate)
+        root.removeCallbacks(settleMid)
+        root.removeCallbacks(settleLate)
+        settleExpectCreate = create
+        root.post(settleImmediate)
+        root.postDelayed(settleMid, 400L)
+        root.postDelayed(settleLate, 900L)
+    }
+
+    private fun runConnectSettleStep(step: Int) {
+        if (!isAdded || view == null || dividerDragging) return
+        when (step) {
+            0 -> {
+                syncPaneOccupancyFromService()
+                if (settleExpectCreate) applyRemoteRatioOnce()
+            }
+            1 -> {
+                if (settleExpectCreate) applyRemoteRatioOnce()
+                syncPaneOccupancyFromService()
+            }
+            else -> syncPaneOccupancyFromService()
+        }
+    }
+
+    /**
+     * Prefer density of the Display hosting the AA shell (HU / projection), not the phone
+     * default metrics — phones and HUs vary; never hardcode a single dpi.
+     */
+    private fun resolveHostDensityDpi(): Int {
+        val display = baseBinding.splitContainer.display
+            ?: view?.display
+            ?: context?.display
+        if (display != null && display.displayId != Display.DEFAULT_DISPLAY) {
+            runCatching {
+                val dpi = requireContext()
+                    .createDisplayContext(display)
+                    .resources
+                    .displayMetrics
+                    .densityDpi
+                if (dpi > 0) return dpi
+            }
+            runCatching {
+                val metrics = android.util.DisplayMetrics()
+                @Suppress("DEPRECATION")
+                display.getRealMetrics(metrics)
+                if (metrics.densityDpi > 0) return metrics.densityDpi
+            }
+        }
+        return resources.displayMetrics.densityDpi.coerceAtLeast(1)
+    }
+
     private fun requestDisplay(reason: String) {
         val displayWidth = baseBinding.splitContainer.width
         val displayHeight = baseBinding.splitContainer.height
-        val displayDpi = resources.displayMetrics.densityDpi
+        val displayDpi = resolveHostDensityDpi()
         Log.d(
             TAG,
             "requestDisplay[$reason]: ${displayWidth}x$displayHeight,$displayDpi " +

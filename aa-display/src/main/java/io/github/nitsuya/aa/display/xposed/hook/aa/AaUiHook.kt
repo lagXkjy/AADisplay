@@ -104,12 +104,15 @@ object AaUiHook: AaHook() {
     private val mFacetEnsureHandler = Handler(Looper.getMainLooper())
     /**
      * Soft reconnect (no USB replug) often rebuilds LayoutInfo before GhFacetBar chrome
-     * is attached; keep probing past the first 1.5s window.
+     * is attached; keep a single poll chain across the connect window (no N fixed kicks).
      */
-    private val FACET_ENSURE_DELAYS_MS = longArrayOf(0L, 250L, 700L, 1500L, 3000L, 5000L, 8000L)
+    private val FACET_ENSURE_WINDOW_MS = 8_000L
     private val FACET_ENSURE_POLL_MS = 400L
     private val FACET_ENSURE_TOKEN = Any()
     private var mFacetEnsureDeadlineMs = 0L
+    private val PROJECTION_CONFIG_KEYS = setOf(
+        "content_bounds", "contentBounds", "content_insets", "contentInsets"
+    )
     /**
      * CarSystemUiControllerService.a(Intent) swallows IllegalStateException when the
      * controller is not ready yet ("Unable to start activity"). A single early attempt
@@ -124,6 +127,8 @@ object AaUiHook: AaHook() {
     private val AUTO_OPEN_REARM_GAP_MS = 12_000L
     @Volatile private var mAaDisplayShownThisSession = false
     private var mAutoOpenShownReceiver: android.content.BroadcastReceiver? = null
+    /** Coalesce reclaim follow-ups per view across soft-reconnect storms. */
+    private val mReclaimFollowUps = java.util.WeakHashMap<View, Runnable>()
 
     /** Latest main-display LayoutInfo size in dp (from constructor args). */
     @Volatile private var mLayoutWidthDp: Int = 0
@@ -542,6 +547,7 @@ object AaUiHook: AaHook() {
                 method.isAccessible = true
                 method.hookAfter { param ->
                     val key = param.args[0] as? String ?: return@hookAfter
+                    if (key !in PROJECTION_CONFIG_KEYS) return@hookAfter
                     val rect = param.result as? Rect ?: return@hookAfter
                     rewriteProjectionConfigParcelable(key, rect)?.let { param.result = it }
                 }
@@ -555,7 +561,9 @@ object AaUiHook: AaHook() {
                     parameterTypes[0] == String::class.java &&
                     parameterTypes[1] == Parcelable::class.java
             }.hookBefore { param ->
-                rewriteProjectionConfigParcelable(param.args[0] as? String, param.args[1])?.let {
+                val key = param.args[0] as? String ?: return@hookBefore
+                if (key !in PROJECTION_CONFIG_KEYS) return@hookBefore
+                rewriteProjectionConfigParcelable(key, param.args[1])?.let {
                     param.args[1] = it
                 }
             }
@@ -567,7 +575,9 @@ object AaUiHook: AaHook() {
             findMethod(arrayMapClass) {
                 name == "put" && parameterCount == 2
             }.hookBefore { param ->
-                rewriteProjectionConfigParcelable(param.args[0] as? String, param.args[1])?.let {
+                val key = param.args[0] as? String ?: return@hookBefore
+                if (key !in PROJECTION_CONFIG_KEYS) return@hookBefore
+                rewriteProjectionConfigParcelable(key, param.args[1])?.let {
                     param.args[1] = it
                 }
             }
@@ -649,7 +659,7 @@ object AaUiHook: AaHook() {
     }
 
     private fun rewriteProjectionConfigParcelable(key: String?, value: Any?): Rect? {
-        if (key.isNullOrEmpty()) return null
+        if (key.isNullOrEmpty() || key !in PROJECTION_CONFIG_KEYS) return null
         val rect = value as? Rect ?: return null
         return when (key) {
             "content_bounds", "contentBounds" -> applyExpandedContentBounds(rect)
@@ -664,11 +674,19 @@ object AaUiHook: AaHook() {
         val fullW = layoutWidthPx()
         val fullH = layoutHeightPx()
         if (fullW > 0 && fullH > 0) {
-            return abs(rect.bottom - fullH) <= 2 &&
-                (abs(rect.right - fullW) <= 2 || abs(rect.right + rect.left - fullW) <= 2)
+            val heightOk = abs(rect.bottom - fullH) <= 2
+            val widthOk = abs(rect.right - fullW) <= 2 || abs(rect.right + rect.left - fullW) <= 2
+            if (!heightOk || !widthOk) return false
+            // Require an actual rail inset so full-bleed / unrelated HU rects stay untouched.
+            val range = railPxRange(fullW)
+            val leftInset = rect.left in range
+            val rightInset = rect.left <= 0 && (fullW - rect.right) in range
+            return leftInset || rightInset
         }
-        // Without LayoutInfo: require a landscape HU-sized rect (car px, not phone density).
-        return rect.right >= 320 && rect.bottom >= 180 && rect.width() >= rect.left * 3
+        // Without LayoutInfo: landscape HU-sized rect with a proportional left gutter.
+        if (rect.right < 320 || rect.bottom < 180 || rect.width() < rect.left * 3) return false
+        val approxFullW = rect.right
+        return rect.left in railPxRange(approxFullW)
     }
 
     /** Expand a rail-inset content rect to full HU origin; mutates [rect] in place when possible. */
@@ -890,13 +908,21 @@ object AaUiHook: AaHook() {
         try {
             val rail = railHitWidthPx()
             val action = motion.actionMasked
-            val inRail = (0 until motion.pointerCount).any { i -> motion.getX(i) < rail }
+            // Primary pointer only — secondary fingers in the strip must not hijack content drags.
+            val downInRail = motion.getX(0) < rail
             if (action == MotionEvent.ACTION_DOWN) {
-                mHuRailGesture = inRail
+                mHuRailGesture = downInRail
             }
-            val steal = mHuRailGesture || inRail
-            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                mHuRailGesture = false
+            // Follow through only when the gesture *started* in the rail. Do not steal a
+            // content gesture that merely slides into the left strip (common map/list mis-touch).
+            val steal = when (action) {
+                MotionEvent.ACTION_DOWN -> downInRail
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val was = mHuRailGesture
+                    mHuRailGesture = false
+                    was
+                }
+                else -> mHuRailGesture
             }
             if (!steal) return
             CoreManager.touchPrimaryPane(motion)
@@ -914,17 +940,25 @@ object AaUiHook: AaHook() {
         }
     }
 
-    /** LHD left-rail hit band in HU px. Observed FacetBar / content_bounds, else ~10% of HU. */
+    /**
+     * LHD left-rail hit band in HU px. Prefer live FacetBar / content_bounds width.
+     * Fallback is a thin fraction of LayoutInfo width (not a fixed phone/HU pixel size).
+     */
     private fun railHitWidthPx(): Int {
         val observed = mObservedRailWidthPx
         val fullW = layoutWidthPx()
         if (fullW > 0) {
             val range = railPxRange(fullW)
-            if (observed in range) return observed
-            return (fullW * 0.10f).roundToInt().coerceIn(range)
+            if (observed in range) {
+                // Slight inset so pans that start on the content edge are not stolen.
+                return (observed * 0.90f).roundToInt().coerceIn(range.first, observed)
+            }
+            // No reliable observed strip yet — stay narrower than the old ~10% fallback.
+            return (fullW * 0.06f).roundToInt().coerceIn(range)
         }
-        if (observed in 16..200) return observed
-        return 80
+        // LayoutInfo not ready: trust a thin observed strip only.
+        if (observed in 8..120) return (observed * 0.90f).roundToInt().coerceAtLeast(8)
+        return observed.takeIf { it > 0 }?.coerceAtMost(64) ?: 40
     }
 
     /**
@@ -1288,8 +1322,7 @@ object AaUiHook: AaHook() {
                     scheduleEnsureFacetBar("rail:$layoutResId")
                 }
                 // Always try to reclaim the left gutter on the rail host, even if inject missed.
-                resultViewGroup.post { reclaimLeftGutter(resultViewGroup) }
-                resultViewGroup.postDelayed({ reclaimLeftGutter(resultViewGroup) }, 400L)
+                scheduleReclaimLeftGutter(resultViewGroup)
             }
         }
     }
@@ -1324,21 +1357,17 @@ object AaUiHook: AaHook() {
     private fun scheduleEnsureFacetBar(reason: String) {
         mFacetEnsureHandler.removeCallbacksAndMessages(FACET_ENSURE_TOKEN)
         val now = android.os.SystemClock.uptimeMillis()
-        // Keep a short tail after the last fixed kick so a late GhFacetBar can still attach.
-        mFacetEnsureDeadlineMs = now + FACET_ENSURE_DELAYS_MS.last() + 2_000L
-        // Immediate + delayed kicks; unfinished work continues via a single poll chain.
-        for (delayMs in FACET_ENSURE_DELAYS_MS) {
-            mFacetEnsureHandler.postAtTime(
-                { ensureFacetBarInjected(reason, delayMs) },
-                FACET_ENSURE_TOKEN,
-                now + delayMs
-            )
-        }
+        mFacetEnsureDeadlineMs = now + FACET_ENSURE_WINDOW_MS
+        // One immediate kick; continue via a single poll chain until success or deadline.
+        mFacetEnsureHandler.postAtTime(
+            { ensureFacetBarInjected(reason) },
+            FACET_ENSURE_TOKEN,
+            now
+        )
     }
 
-    private fun ensureFacetBarInjected(reason: String, delayMs: Long = -1L) {
+    private fun ensureFacetBarInjected(reason: String) {
         if (!canHookFacetBar || mInjectingFacetBar) return
-        val label = if (delayMs >= 0) "$reason-$delayMs" else reason
         try {
             val roots = collectWindowRootViews()
             if (roots.any { hasInjectedFacet(it) }) {
@@ -1349,10 +1378,10 @@ object AaUiHook: AaHook() {
             for (root in roots) {
                 if (!containsFacetChrome(root)) continue
                 if (hasInjectedFacet(root)) continue
-                if (tryInjectIntoFacetColumn(root, label)) attempted++
+                if (tryInjectIntoFacetColumn(root, reason)) attempted++
             }
             if (attempted > 0) {
-                logDebug(tagName, "AaUiHook: ensure facet injected [$label] count=$attempted")
+                logDebug(tagName, "AaUiHook: ensure facet injected [$reason] count=$attempted")
                 for (root in roots) {
                     reclaimLeftGutter(root)
                 }
@@ -1367,23 +1396,20 @@ object AaUiHook: AaHook() {
             }
             val now = android.os.SystemClock.uptimeMillis()
             if (now < mFacetEnsureDeadlineMs) {
-                // Only the poll leg schedules the next tick to avoid N parallel chains.
-                if (delayMs < 0 || delayMs == FACET_ENSURE_DELAYS_MS.last()) {
-                    mFacetEnsureHandler.postAtTime(
-                        { ensureFacetBarInjected("$reason-poll") },
-                        FACET_ENSURE_TOKEN,
-                        now + FACET_ENSURE_POLL_MS
-                    )
-                }
-            } else if (delayMs == FACET_ENSURE_DELAYS_MS.last() || reason.endsWith("-poll")) {
+                mFacetEnsureHandler.postAtTime(
+                    { ensureFacetBarInjected("$reason-poll") },
+                    FACET_ENSURE_TOKEN,
+                    now + FACET_ENSURE_POLL_MS
+                )
+            } else if (reason.endsWith("-poll") || reason.indexOf('-') < 0) {
                 log(
                     tagName,
-                    "AaUiHook: ensure facet still missing [$label] roots=${roots.size} " +
+                    "AaUiHook: ensure facet still missing [$reason] roots=${roots.size} " +
                         "chrome=${roots.count { containsFacetChrome(it) }}"
                 )
             }
         } catch (e: Throwable) {
-            log(tagName, "AaUiHook: ensure facet failed [$label]", e)
+            log(tagName, "AaUiHook: ensure facet failed [$reason]", e)
         }
     }
 
@@ -1511,15 +1537,46 @@ object AaUiHook: AaHook() {
      */
     private fun reclaimRailSpace(rail: View) {
         applyZeroWidthGone(rail)
-        collapseThinRailChainAndExpandContent(rail)
-        rail.post { collapseThinRailChainAndExpandContent(rail) }
-        rail.postDelayed({ collapseThinRailChainAndExpandContent(rail) }, 300L)
-        rail.postDelayed({ collapseThinRailChainAndExpandContent(rail) }, 1000L)
+        mReclaimFollowUps.remove(rail)?.let { rail.removeCallbacks(it) }
+        val step = intArrayOf(0)
+        val run = object : Runnable {
+            override fun run() {
+                if (step[0] > 0 && !rail.isAttachedToWindow) {
+                    mReclaimFollowUps.remove(rail)
+                    return
+                }
+                collapseThinRailChainAndExpandContent(rail)
+                when (step[0]++) {
+                    0 -> rail.post(this)
+                    1 -> rail.postDelayed(this, 500L)
+                    else -> mReclaimFollowUps.remove(rail)
+                }
+            }
+        }
+        mReclaimFollowUps[rail] = run
+        run.run()
     }
 
-    private fun maxSideRailPx(view: View): Int =
-        (140f * view.resources.displayMetrics.density).toInt().coerceIn(160, 480)
+    /** Immediate + one layout-settle reclaim; cancels prior posts for the same root. */
+    private fun scheduleReclaimLeftGutter(root: ViewGroup) {
+        mReclaimFollowUps.remove(root)?.let { root.removeCallbacks(it) }
+        val followUp = Runnable {
+            mReclaimFollowUps.remove(root)
+            if (root.isAttachedToWindow) reclaimLeftGutter(root)
+        }
+        mReclaimFollowUps[root] = followUp
+        root.post { reclaimLeftGutter(root) }
+        root.postDelayed(followUp, 400L)
+    }
 
+    /** Max thin-rail width from live LayoutInfo / root size (no fixed phone/HU pixels). */
+    private fun maxSideRailPx(view: View): Int {
+        val fullW = layoutWidthPx().takeIf { it > 0 }
+            ?: view.rootView?.width?.takeIf { it > 0 }
+            ?: view.width.takeIf { it > 0 }
+            ?: view.resources.displayMetrics.widthPixels
+        return railPxRange(fullW.coerceAtLeast(1)).last
+    }
     private fun applyZeroWidthGone(view: View, sourceLp: ViewGroup.LayoutParams? = null) {
         view.visibility = View.GONE
         view.isClickable = false
