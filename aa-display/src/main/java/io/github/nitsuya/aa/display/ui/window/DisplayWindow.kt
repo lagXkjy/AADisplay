@@ -11,7 +11,6 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.view.*
 import androidx.core.content.ContextCompat
-import androidx.core.view.ViewCompat
 import androidx.core.view.allViews
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
@@ -43,6 +42,12 @@ class DisplayWindow(
         private const val USER_ACTIVITY_EVENT_TOUCH = 2
         /** PowerManager.USER_ACTIVITY_EVENT_OTHER */
         private const val USER_ACTIVITY_EVENT_OTHER = 0
+        /**
+         * Display-scoped VD bright locks still need these legacy levels;
+         * [PowerManager.SCREEN_BRIGHT_WAKE_LOCK] / [PowerManager.ACQUIRE_CAUSES_WAKEUP] are deprecated.
+         */
+        private const val SCREEN_BRIGHT_WAKE_LOCK = 0x0000000a
+        private const val ACQUIRE_CAUSES_WAKEUP = 0x10000000
     }
 
     private var mControllerBinding: WindowControllerBinding? = null
@@ -56,7 +61,7 @@ class DisplayWindow(
     private var mChangeAlphaCountDownTimer = object : CountDownTimer(5000,5000){
         override fun onFinish() {
             mControllerBinding?.apply {
-                ViewCompat.animate(root).setDuration(500).alpha(0.5F).start()
+                root.animate().setDuration(500).alpha(0.5F).start()
             }
         }
         override fun onTick(millisUntilFinished: Long) {}
@@ -157,7 +162,7 @@ class DisplayWindow(
                 try {
                     val lock = monitorLocks.getOrPut(displayId) {
                         newDisplayWakeLock(
-                            PowerManager.SCREEN_BRIGHT_WAKE_LOCK,
+                            SCREEN_BRIGHT_WAKE_LOCK,
                             "Monitor",
                             displayId
                         )
@@ -175,7 +180,7 @@ class DisplayWindow(
             try {
                 val lock = wakePulseLocks.getOrPut(displayId) {
                     newDisplayWakeLock(
-                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                        SCREEN_BRIGHT_WAKE_LOCK or ACQUIRE_CAUSES_WAKEUP,
                         "VdWake",
                         displayId
                     )
@@ -339,7 +344,7 @@ class DisplayWindow(
             4 -> method.invoke(service, displayId, now, event, 0)
             3 -> method.invoke(service, now, event, 0)
             2 -> method.invoke(service, now, false)
-            else -> method.invoke(service, *Array(method.parameterCount) { i ->
+            else -> method.invoke(service, *Array<Any?>(method.parameterCount) { i ->
                 val t = method.parameterTypes[i]
                 when {
                     t == Int::class.javaPrimitiveType && i == 0 -> displayId
@@ -516,7 +521,7 @@ class DisplayWindow(
                         setTag(R.id.drag_distance, 0f)
                     }
                     mChangeAlphaCountDownTimer.cancel()
-                    ViewCompat.animate(root).setDuration(200).alpha(0.9f).start()
+                    root.animate().setDuration(200).alpha(0.9f).start()
                 }
                 MotionEvent.ACTION_MOVE -> {
                     isDrag = v.getTag(R.id.is_drag) as Boolean

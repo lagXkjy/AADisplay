@@ -837,10 +837,11 @@ object AaUiHook: AaHook() {
     private fun rememberRailVirtualDisplay(name: String?, vd: VirtualDisplay?) {
         if (vd == null || !isRailVirtualDisplayName(name)) return
         val display = vd.display ?: return
-        if (display.width > 1) {
-            mObservedRailWidthPx = display.width
+        val width = display.mode.physicalWidth
+        if (width > 1) {
+            mObservedRailWidthPx = width
         }
-        logDebug(tagName, "AaUiHook: observe rail VD id=${display.displayId} name=$name w=${display.width}")
+        logDebug(tagName, "AaUiHook: observe rail VD id=${display.displayId} name=$name w=$width")
     }
 
     /**
