@@ -190,49 +190,55 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
     }
 
     fun recentTaskInfo(displayId: Int): List<RecentTaskInfo> {
-        val all = Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
-        return all.asSequence().mapNotNull { taskInfo ->
-            if (isSystemHomeTask(taskInfo)) return@mapNotNull null
-            val topActivity = taskInfo.topActivity ?: return@mapNotNull null
-            if (SplitChromePackages.BOUNCE_EXCLUDED.contains(topActivity.packageName)) return@mapNotNull null
-            var taskDescription = taskInfo.taskDescription
-                ?: Instances.iActivityTaskManager.getTaskDescription(taskInfo.taskId)
-                ?: return@mapNotNull null
-            var icon = runCatching { taskDescription.icon }.getOrNull()
-            if (icon == null) {
-                icon = Instances.packageManager.getActivityIcon(topActivity).toBitmap()
-            }
-            icon = downsampleForIpc(icon, MAX_RECENT_ICON_EDGE_PX)
-            var label = taskDescription.label
-            if (label == null) {
-                val activityInfo = if (Build.VERSION.SDK_INT >= 33) {
-                    Instances.packageManager.getActivityInfo(
-                        topActivity,
-                        PackageManager.ComponentInfoFlags.of(0)
-                    )
-                } else {
-                    @Suppress("DEPRECATION")
-                    Instances.packageManager.getActivityInfo(topActivity, 0)
+        // IPC from the app process keeps the caller uid; ATMS requires MANAGE_ACTIVITY_TASKS.
+        val identity = Binder.clearCallingIdentity()
+        return try {
+            val all = Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+            all.asSequence().mapNotNull { taskInfo ->
+                if (isSystemHomeTask(taskInfo)) return@mapNotNull null
+                val topActivity = taskInfo.topActivity ?: return@mapNotNull null
+                if (SplitChromePackages.BOUNCE_EXCLUDED.contains(topActivity.packageName)) return@mapNotNull null
+                var taskDescription = taskInfo.taskDescription
+                    ?: Instances.iActivityTaskManager.getTaskDescription(taskInfo.taskId)
+                    ?: return@mapNotNull null
+                var icon = runCatching { taskDescription.icon }.getOrNull()
+                if (icon == null) {
+                    icon = Instances.packageManager.getActivityIcon(topActivity).toBitmap()
                 }
-                label = activityInfo.loadLabel(Instances.packageManager).toString()
-            }
-            val snapshot: Bitmap? = runCatching {
-                val snap: TaskSnapshot? = try {
-                    if (Build.VERSION.SDK_INT >= 34) {
-                        Instances.iActivityTaskManager.getTaskSnapshot(taskInfo.taskId, true, true)
+                icon = downsampleForIpc(icon, MAX_RECENT_ICON_EDGE_PX)
+                var label = taskDescription.label
+                if (label == null) {
+                    val activityInfo = if (Build.VERSION.SDK_INT >= 33) {
+                        Instances.packageManager.getActivityInfo(
+                            topActivity,
+                            PackageManager.ComponentInfoFlags.of(0)
+                        )
                     } else {
+                        @Suppress("DEPRECATION")
+                        Instances.packageManager.getActivityInfo(topActivity, 0)
+                    }
+                    label = activityInfo.loadLabel(Instances.packageManager).toString()
+                }
+                val snapshot: Bitmap? = runCatching {
+                    val snap: TaskSnapshot? = try {
+                        if (Build.VERSION.SDK_INT >= 34) {
+                            Instances.iActivityTaskManager.getTaskSnapshot(taskInfo.taskId, true, true)
+                        } else {
+                            Instances.iActivityTaskManager.getTaskSnapshot(taskInfo.taskId, true)
+                        }
+                    } catch (_: Throwable) {
                         Instances.iActivityTaskManager.getTaskSnapshot(taskInfo.taskId, true)
                     }
-                } catch (_: Throwable) {
-                    Instances.iActivityTaskManager.getTaskSnapshot(taskInfo.taskId, true)
-                }
-                snap?.hardwareBuffer?.let { buffer ->
-                    val hw = Bitmap.wrapHardwareBuffer(buffer, snap.colorSpace) ?: return@let null
-                    downsampleForIpc(hw, MAX_RECENT_SNAPSHOT_EDGE_PX)
-                }
-            }.getOrNull()
-            RecentTaskInfo(icon, taskInfo.taskId, label, snapshot, topActivity.packageName)
-        }.take(MAX_RECENT_PER_DISPLAY).toList()
+                    snap?.hardwareBuffer?.let { buffer ->
+                        val hw = Bitmap.wrapHardwareBuffer(buffer, snap.colorSpace) ?: return@let null
+                        downsampleForIpc(hw, MAX_RECENT_SNAPSHOT_EDGE_PX)
+                    }
+                }.getOrNull()
+                RecentTaskInfo(icon, taskInfo.taskId, label, snapshot, topActivity.packageName)
+            }.take(MAX_RECENT_PER_DISPLAY).toList()
+        } finally {
+            Binder.restoreCallingIdentity(identity)
+        }
     }
 
     companion object {
