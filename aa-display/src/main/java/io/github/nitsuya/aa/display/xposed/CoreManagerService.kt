@@ -18,8 +18,6 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.duzhaokun123.template.utils.runIO
 import io.github.duzhaokun123.template.utils.runMain
 import io.github.qauxv.ui.CommonContextWrapper
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
 
 class CoreManagerService private constructor() : ICoreManager.Stub() {
     companion object {
@@ -334,9 +332,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     override fun getRecentTask(): RecentTask {
-        return runBlocking(Dispatchers.IO) {
-            mSplitController?.getRecentTask() ?: RecentTask(emptyList(), emptyList(), emptyList())
-        }
+        // Client already loads on IO ([AaRecentTaskFragment]); avoid runBlocking on the
+        // Binder thread which only adds a dispatcher hop while still blocking the caller.
+        return mSplitController?.getRecentTask()
+            ?: RecentTask(emptyList(), emptyList(), emptyList())
     }
 }
 

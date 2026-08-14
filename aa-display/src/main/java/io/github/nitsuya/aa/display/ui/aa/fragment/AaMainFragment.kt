@@ -419,6 +419,14 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         pane: Int,
         setDownTime: (Long) -> Unit,
     ) {
+        // Coalesce MOVE to ~1/frame so Binder inject is not flooded during fast drags.
+        var pendingMove: MotionEvent? = null
+        val flushMove = Runnable {
+            val move = pendingMove ?: return@Runnable
+            pendingMove = null
+            CoreApi.touchPane(pane, move)
+            move.recycle()
+        }
         textureView.setOnTouchListener { _, e ->
             val uptimeMillis = SystemClock.uptimeMillis()
             if (e.actionMasked == MotionEvent.ACTION_DOWN) {
@@ -432,8 +440,24 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 eventTime = uptimeMillis,
                 sourceOverride = InputDeviceCompat.SOURCE_TOUCHSCREEN,
             )
-            CoreApi.touchPane(pane, newEvent)
-            newEvent.recycle()
+            when (e.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    pendingMove?.recycle()
+                    pendingMove = newEvent
+                    textureView.removeCallbacks(flushMove)
+                    textureView.postOnAnimation(flushMove)
+                }
+                else -> {
+                    textureView.removeCallbacks(flushMove)
+                    pendingMove?.let { pending ->
+                        pendingMove = null
+                        CoreApi.touchPane(pane, pending)
+                        pending.recycle()
+                    }
+                    CoreApi.touchPane(pane, newEvent)
+                    newEvent.recycle()
+                }
+            }
             true
         }
     }

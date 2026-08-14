@@ -191,7 +191,7 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
 
     fun recentTaskInfo(displayId: Int): List<RecentTaskInfo> {
         val all = Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
-        return all.mapNotNull { taskInfo ->
+        return all.asSequence().mapNotNull { taskInfo ->
             if (isSystemHomeTask(taskInfo)) return@mapNotNull null
             val topActivity = taskInfo.topActivity ?: return@mapNotNull null
             if (SplitChromePackages.BOUNCE_EXCLUDED.contains(topActivity.packageName)) return@mapNotNull null
@@ -202,6 +202,7 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
             if (icon == null) {
                 icon = Instances.packageManager.getActivityIcon(topActivity).toBitmap()
             }
+            icon = downsampleForIpc(icon, MAX_RECENT_ICON_EDGE_PX)
             var label = taskDescription.label
             if (label == null) {
                 val activityInfo = if (Build.VERSION.SDK_INT >= 33) {
@@ -226,10 +227,43 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
                     Instances.iActivityTaskManager.getTaskSnapshot(taskInfo.taskId, true)
                 }
                 snap?.hardwareBuffer?.let { buffer ->
-                    Bitmap.wrapHardwareBuffer(buffer, snap.colorSpace)
+                    val hw = Bitmap.wrapHardwareBuffer(buffer, snap.colorSpace) ?: return@let null
+                    downsampleForIpc(hw, MAX_RECENT_SNAPSHOT_EDGE_PX)
                 }
             }.getOrNull()
             RecentTaskInfo(icon, taskInfo.taskId, label, snapshot, topActivity.packageName)
+        }.take(MAX_RECENT_PER_DISPLAY).toList()
+    }
+
+    companion object {
+        /** Cap tasks per display to keep Binder payload bounded. */
+        private const val MAX_RECENT_PER_DISPLAY = 12
+        private const val MAX_RECENT_SNAPSHOT_EDGE_PX = 240
+        private const val MAX_RECENT_ICON_EDGE_PX = 96
+
+        /**
+         * Hardware / full-res snapshots dominate Recent IPC. Scale to a soft thumbnail
+         * so opening Recent/picker does not hitch on large Binder transfers.
+         */
+        private fun downsampleForIpc(src: Bitmap, maxEdgePx: Int): Bitmap {
+            val maxDim = maxOf(src.width, src.height).coerceAtLeast(1)
+            val needsScale = maxDim > maxEdgePx
+            val needsCopy = src.config == Bitmap.Config.HARDWARE || needsScale
+            if (!needsCopy) return src
+            val soft = if (src.config == Bitmap.Config.HARDWARE) {
+                src.copy(Bitmap.Config.ARGB_8888, false) ?: return src
+            } else {
+                src
+            }
+            if (!needsScale) {
+                return if (soft !== src) soft else src
+            }
+            val scale = maxEdgePx.toFloat() / maxDim
+            val w = (src.width * scale).toInt().coerceAtLeast(1)
+            val h = (src.height * scale).toInt().coerceAtLeast(1)
+            val scaled = Bitmap.createScaledBitmap(soft, w, h, true)
+            if (soft !== src && soft !== scaled) soft.recycle()
+            return scaled
         }
     }
 }

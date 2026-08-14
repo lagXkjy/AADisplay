@@ -92,10 +92,17 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
         val displayId = c.input.displayIdFor(pane) ?: return
         val imePolicy = 0 // DISPLAY_IME_POLICY_LOCAL
         try {
-            Instances.iWindowManager.apply {
-                setDisplayImePolicy(displayId, imePolicy)
-                setShouldShowWithInsecureKeyguard(displayId, false)
-                setShouldShowSystemDecors(displayId, false)
+            // Resize hot path: IME/decor are sticky after first apply; re-calling WMS on every
+            // ratio settle adds system_server work without changing behavior.
+            val resizeHotPath = reason.startsWith("resize-")
+            val imeAlready = c.mImePolicyAppliedDisplays.contains(displayId)
+            if (!(resizeHotPath && imeAlready)) {
+                Instances.iWindowManager.apply {
+                    setDisplayImePolicy(displayId, imePolicy)
+                    setShouldShowWithInsecureKeyguard(displayId, false)
+                    setShouldShowSystemDecors(displayId, false)
+                }
+                c.mImePolicyAppliedDisplays.add(displayId)
             }
             // Narrow side-by-side panes are taller than wide (e.g. 278×480). Landscape apps
             // then rotate the VD to ROTATION_90 (logical 480×278) while the TextureView stays

@@ -104,6 +104,8 @@ class SplitDisplayController(
     internal var mLastResizeAt = 0L
     /** Displays already freeze-locked to ROTATION_0; skip re-freeze on resize (OEM walks all DCs). */
     internal val mOrientationLockedDisplays = HashSet<Int>()
+    /** Displays with IME/decor policies already applied; skip WMS calls on pure size resize. */
+    internal val mImePolicyAppliedDisplays = HashSet<Int>()
 
     internal var mLastPrimaryW = 0
     internal var mLastPrimaryH = 0
@@ -298,6 +300,7 @@ class SplitDisplayController(
         }
         mIsDestroying = true
         mOrientationLockedDisplays.clear()
+        mImePolicyAppliedDisplays.clear()
         mHandler.removeCallbacks(ownership.mDebouncedReclaim)
         mHandler.removeCallbacks(launch.mDebouncedPersist)
         mHandler.removeCallbacks(mPendingResize)
