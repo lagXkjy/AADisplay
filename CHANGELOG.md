@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.24#17.4-r5
+
+### Changed
+- **最近任务去掉缩略图：** 不再通过 ATMS `getTaskSnapshot` 拉硬件截图；卡片只保留图标 + 名称 + 灰色底板。打开 Recent 时 Binder 更轻，车机列表更不容易卡。
+- **关闭按钮放大居中：** 灰色卡片中央放 56dp 圆形 Close；点卡片空白不再打开任务（只点图标/标题才切换），减少车机误触。
+- **去掉 Material / AppCompat：** Main / AA / 悬浮窗改用平台 `Theme.AADisplay`；去掉 `material`、`rikkax.appcompat`，并拦截传递依赖的 `androidx.appcompat`。APK 更瘦，主题路径更短。
+- **依赖与打包精简：** 自实现 ViewBinding inflate，去掉 `ViewBindingUtil` 与未使用的 Lifecycle；打包排除 `DebugProbesKt.bin` / `kotlin-tooling-metadata.json`；开启 R8 optimized resource shrinking。
+- **清理无效钩子：** 删除无操作的 `isCallerAllowedToLaunchOnDisplay` 补丁；移除 `AaBasicsHook`（Play 安装来源伪装，当前 AA 路径不再需要）。
+- **Version bump to `0.24#17.4-r5`** (`versionCode` 3061)。
+
 ## 0.24#17.4-r4
 
 ### Fixed

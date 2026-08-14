@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.nitsuya.aa.display"
         minSdk = 31
         targetSdk = 36
-        versionCode = 3060
-        versionName = "0.24#17.4-r4"
+        versionCode = 3061
+        versionName = "0.24#17.4-r5"
         buildConfigField("long", "BUILD_TIME", buildTime.toString())
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -107,7 +107,6 @@ configurations.all {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
-    implementation("androidx.activity:activity-ktx:1.11.0")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
     implementation("androidx.constraintlayout:constraintlayout:2.2.1")
     implementation("androidx.recyclerview:recyclerview:1.4.0")

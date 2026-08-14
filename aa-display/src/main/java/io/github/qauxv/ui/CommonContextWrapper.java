@@ -67,11 +67,4 @@ public class CommonContextWrapper extends ContextThemeWrapper {
         }
         return new CommonContextWrapper(base, io.github.nitsuya.aa.display.R.style.Theme_AADisplay);
     }
-
-    /** @deprecated Use {@link #createModuleContext(Context)}. */
-    @Deprecated
-    @NonNull
-    public static Context createAppCompatContext(@NonNull Context base) {
-        return createModuleContext(base);
-    }
 }

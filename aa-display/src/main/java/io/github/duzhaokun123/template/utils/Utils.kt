@@ -1,9 +1,6 @@
 package io.github.duzhaokun123.template.utils
 
-import android.content.res.Resources
-import android.util.TypedValue
 import android.view.LayoutInflater
-import androidx.annotation.AttrRes
 import androidx.core.graphics.Insets
 import androidx.core.view.WindowInsetsCompat
 import androidx.viewbinding.ViewBinding
@@ -20,9 +17,6 @@ fun runMain(block: suspend CoroutineScope.() -> Unit) =
 
 fun runIO(block: suspend CoroutineScope.() -> Unit) =
     GlobalScope.launch(Dispatchers.IO, block = block)
-
-fun Resources.Theme.getAttr(@AttrRes id: Int) =
-    TypedValue().apply { resolveAttribute(id, this, true) }
 
 @Suppress("UNCHECKED_CAST")
 fun <T : ViewBinding> inflateBinding(inflater: LayoutInflater, clazz: Class<T>): T {
