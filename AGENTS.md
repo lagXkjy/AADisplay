@@ -80,7 +80,7 @@ flowchart LR
 - `…:projection`
 - `…:car`
 
-已注册 AA 钩子：`AaBasicsHook`、`AaSignatureHook`、`AaBtnEventHook`、`AaUiHook`（按 `isSupportProcess` 过滤；大量依赖 DexKit）。
+已注册 AA 钩子：`AaSignatureHook`、`AaBtnEventHook`、`AaUiHook`（按 `isSupportProcess` 过滤；大量依赖 DexKit）。
 
 ### 跨进程 IPC
 
