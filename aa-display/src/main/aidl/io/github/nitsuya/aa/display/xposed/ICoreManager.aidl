@@ -40,11 +40,15 @@ interface ICoreManager {
     void moveSecondTaskToFront();
     void removeTask(int taskId);
     void pressKey(int action);
-    void touchPane(int pane, in MotionEvent motionEvent);
+    /**
+     * Inject into a pane VD. oneway so AA / :car UI threads are not blocked on
+     * InputManager; install + reboot required so system_server Stub matches.
+     */
+    oneway void touchPane(int pane, in MotionEvent motionEvent);
     /**
      * Relay Coolwalk left-rail HU touches from :car into the PRIMARY pane virtual display.
      */
-    void touchPrimaryPane(in MotionEvent motionEvent);
+    oneway void touchPrimaryPane(in MotionEvent motionEvent);
 
     RecentTask getRecentTask();
 

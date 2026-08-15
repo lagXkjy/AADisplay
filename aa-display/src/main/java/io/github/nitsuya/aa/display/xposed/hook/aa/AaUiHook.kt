@@ -86,6 +86,12 @@ object AaUiHook: AaHook() {
     @Volatile private var mRailHostDownTime = 0L
     /** HU-space gesture started in the left rail strip (follow through MOVE/UP). */
     @Volatile private var mHuRailGesture = false
+    /**
+     * Cached split fullscreen pane for rail steal. MOVE must not Binder-query
+     * [CoreManager.splitFullscreenPane]; refresh on DOWN and SPLIT_STATE_CHANGED.
+     */
+    @Volatile private var mCachedFullscreenPane: Int = SplitPane.FULLSCREEN_NONE
+    private var mSplitStateReceiver: android.content.BroadcastReceiver? = null
 
 
     private var resLayoutLeftResourceId: Int = 0
@@ -287,6 +293,7 @@ object AaUiHook: AaHook() {
             hookHuTouchDispatchRedirect()
             // Discover this HU's FacetBar / thin-rail display early (no LayoutInfo in :car).
             ensureRailObservationFromDisplays()
+            registerSplitStateReceiver()
             return
         }
         log(tagName, "AaUiHook: AutoOpen always-on startMethod=${startMethod?.name}")
@@ -953,6 +960,11 @@ object AaUiHook: AaHook() {
             val now = SystemClock.uptimeMillis()
             if (action == MotionEvent.ACTION_DOWN) {
                 mRailHostDownTime = now
+                mCachedFullscreenPane = try {
+                    CoreManager.splitFullscreenPane
+                } catch (_: Throwable) {
+                    mCachedFullscreenPane
+                }
             }
             val down = mRailHostDownTime.takeIf { it > 0L } ?: now
             val toInject = rewriteMotionEvent(
@@ -962,11 +974,7 @@ object AaUiHook: AaHook() {
                 sourceOverride = InputDevice.SOURCE_TOUCHSCREEN,
             )
             try {
-                val fs = try {
-                    CoreManager.splitFullscreenPane
-                } catch (_: Throwable) {
-                    SplitPane.FULLSCREEN_NONE
-                }
+                val fs = mCachedFullscreenPane
                 val injected = if (SplitPane.isFullscreenPane(fs)) {
                     CoreManager.tryTouchPane(fs, toInject)
                 } else {
@@ -1372,6 +1380,40 @@ object AaUiHook: AaHook() {
     private fun aaDisplayLaunchIntent(): Intent = Intent().apply {
         component = ComponentName(BuildConfig.APPLICATION_ID, AaActivityService::class.java.name)
         putExtra("android.intent.extra.PACKAGE_NAME", BuildConfig.APPLICATION_ID)
+    }
+
+    private fun registerSplitStateReceiver() {
+        if (mSplitStateReceiver != null) return
+        val ctx = InitFields.appContext
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != AABroadcastConst.ACTION_SPLIT_STATE_CHANGED) return
+                if (!intent.hasExtra(AABroadcastConst.EXTRA_FULLSCREEN_PANE)) return
+                mCachedFullscreenPane = intent.getIntExtra(
+                    AABroadcastConst.EXTRA_FULLSCREEN_PANE,
+                    SplitPane.FULLSCREEN_NONE
+                )
+            }
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                ctx.registerReceiver(
+                    receiver,
+                    IntentFilter(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED),
+                    Context.RECEIVER_EXPORTED
+                )
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                ctx.registerReceiver(
+                    receiver,
+                    IntentFilter(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED)
+                )
+            }
+            mSplitStateReceiver = receiver
+            logDebug(tagName, "AaUiHook: registered SPLIT_STATE_CHANGED for rail fullscreen cache")
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: register SPLIT_STATE_CHANGED failed", e)
+        }
     }
 
     private fun registerAutoOpenShownReceiver() {

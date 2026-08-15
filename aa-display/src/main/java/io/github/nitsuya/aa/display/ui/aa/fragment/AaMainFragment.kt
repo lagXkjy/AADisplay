@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.os.SystemClock
 import android.util.Log
@@ -14,6 +15,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
+import android.view.View
 import android.widget.FrameLayout
 import androidx.core.content.ContextCompat
 import androidx.core.view.InputDeviceCompat
@@ -164,6 +166,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             baseBinding.root.removeCallbacks(afterOccupancySync)
         } catch (_: Throwable) {
         }
+        try {
+            clearDragPreview()
+        } catch (_: Throwable) {
+        }
         // Drop coalesced MOVE before tearing down VDs — never inject after destroy.
         cancelPendingPaneTouches()
         super.onDestroy()
@@ -196,6 +202,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private var lastCreateHeight = 0
     private var lastCreateDpi = 0
     private var dividerDragging = false
+    /** GPU split/peel preview — pane layout sizes stay put until settle. */
+    private var dragPreviewActive = false
+    private var dragPeelPreview = false
+    private var dragBasePrimaryMain = 1
+    private var dragBaseSecondaryMain = 1
+    private var dragBaseDividerMargin = 0
     /** Soft-reconnect settle: cancel prior pipeline before arming a new one. */
     private var settleExpectCreate = false
     private val settleImmediate = Runnable { runConnectSettleStep(0) }
@@ -230,7 +242,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             setRatio(splitRatio)
             setFullscreenPane(fullscreenPane)
             onRatioChanged = { ratio ->
-                // Drag: update layout only. Live CoreApi.setSplitRatio →
+                // Drag: GPU scale/clip only. Live CoreApi.setSplitRatio →
                 // VirtualDisplay.resize + freezeDisplayRotation costs 600–900ms/call on
                 // system_server main and visibly jitters both panes.
                 if (!dividerDragging) {
@@ -240,14 +252,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 }
                 dividerDragging = true
                 splitRatio = ratio
-                applySplitLayoutWeights(
-                    ratio,
-                    force = true,
-                    peelPreview = SplitPane.isFullscreenPane(fullscreenPane),
-                )
+                applyDragPreview(ratio)
             }
             onRatioSettled = { ratio ->
                 splitRatio = ratio
+                clearDragPreview()
                 applySplitLayoutWeights(ratio, force = true)
                 CoreApi.setSplitRatio(ratio)
                 dividerDragging = false
@@ -265,6 +274,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             }
             onPeelCancelled = {
                 dividerDragging = false
+                clearDragPreview()
                 if (SplitPane.isFullscreenPane(fullscreenPane)) {
                     applyFullscreenLayout(fullscreenPane)
                 }
@@ -295,6 +305,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private fun enterFullscreen(pane: Int) {
         if (!SplitPane.isFullscreenPane(pane)) return
         fullscreenPane = pane
+        clearDragPreview()
         CoreApi.setSplitFullscreen(pane)
         applyFullscreenLayout(pane)
         updateEmptyOverlays()
@@ -304,6 +315,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
 
     private fun exitFullscreen() {
         fullscreenPane = SplitPane.FULLSCREEN_NONE
+        clearDragPreview()
         CoreApi.setSplitFullscreen(SplitPane.FULLSCREEN_NONE)
         splitRatio = SplitPane.clampRatio(ratioBeforeFullscreen)
         applySplitLayoutWeights(splitRatio, force = true)
@@ -335,6 +347,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     private fun applyFullscreenLayout(pane: Int) {
+        clearDragPreview()
         val sideBySide = baseBinding.splitContainer.width >= baseBinding.splitContainer.height
             || baseBinding.splitContainer.width == 0
         appliedFullscreenPane = pane
@@ -377,15 +390,46 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         syncPaneTouchEnabled(pane)
     }
 
+    private data class SplitVisual(
+        val sideBySide: Boolean,
+        val parentW: Int,
+        val parentH: Int,
+        val gap: Int,
+        val expand: Int,
+        val primaryMain: Int,
+        val secondaryMain: Int,
+    ) {
+        val touchSpan: Int get() = gap + 2 * expand
+        val dividerMargin: Int get() = (primaryMain - expand).coerceAtLeast(0)
+    }
+
+    private fun splitVisual(ratio: Float): SplitVisual? {
+        val parentW = baseBinding.splitContainer.width
+        val parentH = baseBinding.splitContainer.height
+        if (parentW <= 0 || parentH <= 0) return null
+        val sideBySide = parentW >= parentH
+        val density = resources.displayMetrics.density
+        val gap = (SplitPane.DIVIDER_DP * density).toInt().coerceAtLeast(1)
+        val expand = (SplitPane.DIVIDER_TOUCH_EXPAND_DP * density).toInt().coerceAtLeast(0)
+        val visual = ratio.coerceIn(0.01f, 0.99f)
+        return if (sideBySide) {
+            val usable = (parentW - gap).coerceAtLeast(2)
+            val pw = (usable * visual).toInt().coerceAtLeast(1)
+            SplitVisual(true, parentW, parentH, gap, expand, pw, (usable - pw).coerceAtLeast(1))
+        } else {
+            val usable = (parentH - gap).coerceAtLeast(2)
+            val ph = (usable * visual).toInt().coerceAtLeast(1)
+            SplitVisual(false, parentW, parentH, gap, expand, ph, (usable - ph).coerceAtLeast(1))
+        }
+    }
+
     private fun applySplitLayoutWeights(
         ratio: Float,
         force: Boolean = false,
-        peelPreview: Boolean = false,
     ) {
         val sideBySide = baseBinding.splitContainer.width >= baseBinding.splitContainer.height
             || baseBinding.splitContainer.width == 0
         if (!force &&
-            !peelPreview &&
             appliedFullscreenPane == SplitPane.FULLSCREEN_NONE &&
             appliedSideBySide == sideBySide &&
             !appliedRatio.isNaN() &&
@@ -393,69 +437,61 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         ) {
             return
         }
+        clearDragPreview()
         appliedRatio = ratio
         appliedSideBySide = sideBySide
-        if (!peelPreview) {
-            appliedFullscreenPane = SplitPane.FULLSCREEN_NONE
-            fullscreenPane = SplitPane.FULLSCREEN_NONE
-            baseBinding.splitDivider.setFullscreenPane(SplitPane.FULLSCREEN_NONE)
-        }
+        appliedFullscreenPane = SplitPane.FULLSCREEN_NONE
+        fullscreenPane = SplitPane.FULLSCREEN_NONE
+        baseBinding.splitDivider.setFullscreenPane(SplitPane.FULLSCREEN_NONE)
         baseBinding.splitContainer.clipChildren = false
         baseBinding.splitDivider.sideBySide = sideBySide
 
-        val parentW = baseBinding.splitContainer.width.coerceAtLeast(0)
-        val parentH = baseBinding.splitContainer.height.coerceAtLeast(0)
-        val density = resources.displayMetrics.density
-        val gap = (SplitPane.DIVIDER_DP * density).toInt().coerceAtLeast(1)
-        val expand = (SplitPane.DIVIDER_TOUCH_EXPAND_DP * density).toInt().coerceAtLeast(0)
-        val touchSpan = gap + 2 * expand
-        // Allow peel/enter preview past clamp; keep ≥1px so layout stays stable.
-        val visual = ratio.coerceIn(0.01f, 0.99f)
+        val vis = splitVisual(ratio)
+        val unmeasured = vis == null
+        val gap = vis?.gap ?: 1
+        val expand = vis?.expand ?: 0
+        val touchSpan = vis?.touchSpan ?: (gap + 2 * expand)
+        val primaryMain = vis?.primaryMain ?: 0
+        val secondaryMain = vis?.secondaryMain ?: 0
 
         val primaryLp = baseBinding.panePrimary.layoutParams as FrameLayout.LayoutParams
         val secondaryLp = baseBinding.paneSecondary.layoutParams as FrameLayout.LayoutParams
         if (sideBySide) {
-            val usable = (parentW - gap).coerceAtLeast(2)
-            val pw = if (parentW <= 0) 0 else (usable * visual).toInt().coerceAtLeast(1)
-            val sw = if (parentW <= 0) 0 else (usable - pw).coerceAtLeast(1)
-            primaryLp.width = if (parentW <= 0) FrameLayout.LayoutParams.MATCH_PARENT else pw
+            primaryLp.width = if (unmeasured) FrameLayout.LayoutParams.MATCH_PARENT else primaryMain
             primaryLp.height = FrameLayout.LayoutParams.MATCH_PARENT
             primaryLp.marginStart = 0
             primaryLp.topMargin = 0
             primaryLp.gravity = Gravity.START or Gravity.TOP
-            secondaryLp.width = if (parentW <= 0) FrameLayout.LayoutParams.MATCH_PARENT else sw
+            secondaryLp.width = if (unmeasured) FrameLayout.LayoutParams.MATCH_PARENT else secondaryMain
             secondaryLp.height = FrameLayout.LayoutParams.MATCH_PARENT
-            secondaryLp.marginStart = if (parentW <= 0) 0 else pw + gap
+            secondaryLp.marginStart = if (unmeasured) 0 else primaryMain + gap
             secondaryLp.topMargin = 0
             secondaryLp.gravity = Gravity.START or Gravity.TOP
 
             val dividerLp = baseBinding.splitDivider.layoutParams as FrameLayout.LayoutParams
             dividerLp.width = touchSpan
             dividerLp.height = FrameLayout.LayoutParams.MATCH_PARENT
-            dividerLp.marginStart = if (parentW <= 0) 0 else (pw - expand).coerceAtLeast(0)
+            dividerLp.marginStart = if (unmeasured) 0 else (primaryMain - expand).coerceAtLeast(0)
             dividerLp.topMargin = 0
             dividerLp.gravity = Gravity.START or Gravity.TOP
             baseBinding.splitDivider.layoutParams = dividerLp
         } else {
-            val usable = (parentH - gap).coerceAtLeast(2)
-            val ph = if (parentH <= 0) 0 else (usable * visual).toInt().coerceAtLeast(1)
-            val sh = if (parentH <= 0) 0 else (usable - ph).coerceAtLeast(1)
             primaryLp.width = FrameLayout.LayoutParams.MATCH_PARENT
-            primaryLp.height = if (parentH <= 0) FrameLayout.LayoutParams.MATCH_PARENT else ph
+            primaryLp.height = if (unmeasured) FrameLayout.LayoutParams.MATCH_PARENT else primaryMain
             primaryLp.marginStart = 0
             primaryLp.topMargin = 0
             primaryLp.gravity = Gravity.START or Gravity.TOP
             secondaryLp.width = FrameLayout.LayoutParams.MATCH_PARENT
-            secondaryLp.height = if (parentH <= 0) FrameLayout.LayoutParams.MATCH_PARENT else sh
+            secondaryLp.height = if (unmeasured) FrameLayout.LayoutParams.MATCH_PARENT else secondaryMain
             secondaryLp.marginStart = 0
-            secondaryLp.topMargin = if (parentH <= 0) 0 else ph + gap
+            secondaryLp.topMargin = if (unmeasured) 0 else primaryMain + gap
             secondaryLp.gravity = Gravity.START or Gravity.TOP
 
             val dividerLp = baseBinding.splitDivider.layoutParams as FrameLayout.LayoutParams
             dividerLp.width = FrameLayout.LayoutParams.MATCH_PARENT
             dividerLp.height = touchSpan
             dividerLp.marginStart = 0
-            dividerLp.topMargin = if (parentH <= 0) 0 else (ph - expand).coerceAtLeast(0)
+            dividerLp.topMargin = if (unmeasured) 0 else (primaryMain - expand).coerceAtLeast(0)
             dividerLp.gravity = Gravity.START or Gravity.TOP
             baseBinding.splitDivider.layoutParams = dividerLp
         }
@@ -471,32 +507,165 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             baseBinding.splitDivider.setRatio(SplitPane.clampRatio(ratio))
         }
         baseBinding.splitDivider.invalidate()
-        if (!peelPreview) {
-            syncPaneTouchEnabled(SplitPane.FULLSCREEN_NONE)
+        syncPaneTouchEnabled(SplitPane.FULLSCREEN_NONE)
+    }
+
+    /**
+     * Drag preview without resizing TextureViews. Split: GPU scale from settled pane
+     * sizes. Peel: clipBounds on full-buffer panes so the other app shows through.
+     */
+    private fun applyDragPreview(ratio: Float) {
+        val vis = splitVisual(ratio) ?: return
+        beginDragPreviewIfNeeded(vis.sideBySide)
+        if (dragPeelPreview) {
+            applyPeelClipPreview(vis)
+        } else {
+            applySplitScalePreview(vis)
+        }
+        baseBinding.splitDivider.invalidate()
+    }
+
+    private fun beginDragPreviewIfNeeded(sideBySide: Boolean) {
+        if (dragPreviewActive) return
+        dragPreviewActive = true
+        dragPeelPreview = SplitPane.isFullscreenPane(fullscreenPane)
+        val primary = baseBinding.panePrimary
+        val secondary = baseBinding.paneSecondary
+        dragBasePrimaryMain = if (sideBySide) {
+            primary.width.coerceAtLeast(1)
+        } else {
+            primary.height.coerceAtLeast(1)
+        }
+        dragBaseSecondaryMain = if (sideBySide) {
+            secondary.width.coerceAtLeast(1)
+        } else {
+            secondary.height.coerceAtLeast(1)
+        }
+        val dividerLp = baseBinding.splitDivider.layoutParams as FrameLayout.LayoutParams
+        dragBaseDividerMargin = if (sideBySide) dividerLp.marginStart else dividerLp.topMargin
+        if (dragPeelPreview) {
+            // Back pane is INVISIBLE in fullscreen; show it so clip reveals live content.
+            baseBinding.tvDisplayPrimary.visibility = View.VISIBLE
+            baseBinding.tvDisplaySecondary.visibility = View.VISIBLE
         }
     }
 
-    /** Behind fullscreen pane must not eat touches; both panes active in split. */
+    private fun applySplitScalePreview(vis: SplitVisual) {
+        val primary = baseBinding.panePrimary
+        val secondary = baseBinding.paneSecondary
+        val divider = baseBinding.splitDivider
+        val primaryScale = vis.primaryMain.toFloat() / dragBasePrimaryMain
+        val secondaryScale = vis.secondaryMain.toFloat() / dragBaseSecondaryMain
+        val shift = (vis.primaryMain - dragBasePrimaryMain).toFloat()
+        val dividerShift = (vis.dividerMargin - dragBaseDividerMargin).toFloat()
+        primary.pivotX = 0f
+        primary.pivotY = 0f
+        secondary.pivotX = 0f
+        secondary.pivotY = 0f
+        if (vis.sideBySide) {
+            primary.scaleX = primaryScale
+            primary.scaleY = 1f
+            primary.translationX = 0f
+            primary.translationY = 0f
+            secondary.scaleX = secondaryScale
+            secondary.scaleY = 1f
+            secondary.translationX = shift
+            secondary.translationY = 0f
+            divider.translationX = dividerShift
+            divider.translationY = 0f
+        } else {
+            primary.scaleX = 1f
+            primary.scaleY = primaryScale
+            primary.translationX = 0f
+            primary.translationY = 0f
+            secondary.scaleX = 1f
+            secondary.scaleY = secondaryScale
+            secondary.translationX = 0f
+            secondary.translationY = shift
+            divider.translationX = 0f
+            divider.translationY = dividerShift
+        }
+    }
+
+    private fun applyPeelClipPreview(vis: SplitVisual) {
+        val primary = baseBinding.panePrimary
+        val secondary = baseBinding.paneSecondary
+        val divider = baseBinding.splitDivider
+        primary.scaleX = 1f
+        primary.scaleY = 1f
+        primary.translationX = 0f
+        primary.translationY = 0f
+        secondary.scaleX = 1f
+        secondary.scaleY = 1f
+        secondary.translationX = 0f
+        secondary.translationY = 0f
+        if (vis.sideBySide) {
+            primary.clipBounds = Rect(0, 0, vis.primaryMain, vis.parentH)
+            val secLeft = (vis.primaryMain + vis.gap).coerceAtMost(vis.parentW)
+            secondary.clipBounds = Rect(secLeft, 0, vis.parentW, vis.parentH)
+            divider.translationX = (vis.dividerMargin - dragBaseDividerMargin).toFloat()
+            divider.translationY = 0f
+        } else {
+            primary.clipBounds = Rect(0, 0, vis.parentW, vis.primaryMain)
+            val secTop = (vis.primaryMain + vis.gap).coerceAtMost(vis.parentH)
+            secondary.clipBounds = Rect(0, secTop, vis.parentW, vis.parentH)
+            divider.translationX = 0f
+            divider.translationY = (vis.dividerMargin - dragBaseDividerMargin).toFloat()
+        }
+    }
+
+    private fun clearDragPreview() {
+        if (!dragPreviewActive) return
+        dragPreviewActive = false
+        dragPeelPreview = false
+        val primary = baseBinding.panePrimary
+        val secondary = baseBinding.paneSecondary
+        val divider = baseBinding.splitDivider
+        for (v in arrayOf(primary, secondary)) {
+            v.scaleX = 1f
+            v.scaleY = 1f
+            v.translationX = 0f
+            v.translationY = 0f
+            v.pivotX = 0f
+            v.pivotY = 0f
+            v.clipBounds = null
+        }
+        divider.translationX = 0f
+        divider.translationY = 0f
+    }
+
+    /**
+     * Behind fullscreen pane must not eat touches or be composited; both panes
+     * active in split. INVISIBLE (not GONE) keeps the SurfaceTexture alive.
+     */
     private fun syncPaneTouchEnabled(visibleFullscreenPane: Int) {
         val primaryTv = baseBinding.tvDisplayPrimary
         val secondaryTv = baseBinding.tvDisplaySecondary
         when (visibleFullscreenPane) {
             SplitPane.PRIMARY -> {
                 primaryTv.isEnabled = true
+                primaryTv.visibility = View.VISIBLE
                 secondaryTv.isEnabled = false
+                secondaryTv.visibility = View.INVISIBLE
             }
             SplitPane.SECONDARY -> {
                 primaryTv.isEnabled = false
+                primaryTv.visibility = View.INVISIBLE
                 secondaryTv.isEnabled = true
+                secondaryTv.visibility = View.VISIBLE
             }
             else -> {
                 primaryTv.isEnabled = true
+                primaryTv.visibility = View.VISIBLE
                 secondaryTv.isEnabled = true
+                secondaryTv.visibility = View.VISIBLE
             }
         }
     }
 
     private fun setupPaneSurfaces() {
+        baseBinding.tvDisplayPrimary.isOpaque = true
+        baseBinding.tvDisplaySecondary.isOpaque = true
         bindTexture(baseBinding.tvDisplayPrimary, SplitPane.PRIMARY) { surface ->
             primarySurface = surface
         }
@@ -782,7 +951,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             val uptimeMillis = SystemClock.uptimeMillis()
             if (e.actionMasked == MotionEvent.ACTION_DOWN) {
                 setDownTime(uptimeMillis)
-                CoreApi.setFocusedPane(pane)
             }
             val down = if (pane == SplitPane.PRIMARY) repairDownTimePrimary else repairDownTimeSecondary
             val newEvent = rewriteMotionEvent(

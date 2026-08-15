@@ -139,7 +139,8 @@ object CoreManager : ICoreManager, DeathRecipient {
         tryTouchPrimaryPane(motionEvent)
     }
 
-    /** @return false when binder missing or the remote call throws (caller must not swallow HU events). */
+    /** @return false when binder missing or the remote call throws (caller must not swallow HU events).
+     *  touchPane is oneway — success means the parcel was queued, not that inject finished. */
     fun tryTouchPane(pane: Int, motionEvent: MotionEvent): Boolean {
         val svc = getService()
         if (svc == null) {
@@ -155,7 +156,8 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
-    /** @return false when binder missing or the remote call throws (caller must not swallow HU events). */
+    /** @return false when binder missing or the remote call throws (caller must not swallow HU events).
+     *  touchPrimaryPane is oneway — success means the parcel was queued, not that inject finished. */
     fun tryTouchPrimaryPane(motionEvent: MotionEvent): Boolean {
         val svc = getService()
         if (svc == null) {
