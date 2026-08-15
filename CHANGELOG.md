@@ -2,15 +2,22 @@
 
 ## Unreleased
 
-### Changed
-- **全屏 peel 把手固定左侧：** 点按切换可见全屏 pane 时分隔条不再左右跳；左右分屏始终贴左缘（inset ~80dp 避开 Coolwalk LHD rail，方便驾驶员够到），上下分屏贴顶缘。向内拖仍退出全屏；全屏时线条/三点略加亮加粗便于找。
-- **分屏容器改为 FrameLayout 定位：** 以显式宽高/边距替代 LinearLayout weight，便于全屏叠层与 peel 预览共用同一套 pane 视图。
+### Fixed
+- **部分机型 Coolwalk 菜单栏触控被误吞（r6 回归）：** `:car` 用瘦长几何扫 DisplayManager 时，竖屏手机主屏（如 1080×2340）会被当成 FacetBar 并锁死 `displayId=0`；`CarDisplayId` 反射又扫到 `describeContents()==0`，整屏 HU 触控被 steal 后 `param.result=null`，原栏点不动。改为：禁止 DEFAULT_DISPLAY；优先 named FacetBar；无 LayoutInfo 只用绝对窄条（≤120px）；`CarDisplayId` 只认白名单 accessor；binder 注入失败不吞事件。`setSplitFullscreen` AIDL 挪到接口末尾以免旧 Stub 事务号错位。
+- **全屏后媒体无声（抖音 LivePlay）：** 进全屏双 VD resize 触发三星 `ExtraDisplayController.positionChildAt`，垫后 pane 丢失 top-resumed / window focus → 抖音 `silence audio`。全屏切换后对两 pane `moveTaskToFront` + `setFocusedTask`（0/120/400ms）；仅 resize 尺寸真正变化的一侧。
+
+## 0.24#17.4-r6
+
+### Added
+- **双 VD 全屏（一显一隐）：** 拖分屏条越过左右/上下边缘阈值后松手，一侧铺满、另一侧叠在背后继续渲染（开车导航全屏 + 影音背后；停车可反过来）。两 VirtualDisplay 都保持满屏缓冲，不销毁背后任务。全屏时分隔条变为贴边 peel（固定左/顶缘，inset 避开 Coolwalk rail）；向内拖 peel 过阈值退出并恢复进入前比例；点按 peel 切换可见全屏 pane；长按仍打开最近任务。`LastSplitStore` 持久化 `fullscreenPane`（ratio 仍存分屏比例）。Coolwalk rail steal 在全屏时注入可见 pane，不再固定 PRIMARY。
 
 ### Fixed
 - **全屏/分屏左侧原导航栏（Coolwalk rail）触控失效：** FacetBar VD 常保留各车机自己的宽度但窗口 GONE，Coolwalk 仍把该带触控打进去 → InputDispatcher 直接丢弃。steal 改为优先按 **目标 display**（FacetBar / 瘦长 rail 几何）整段截获，再用 **观测到的 rail 宽度**（`content_bounds` / FacetBar VD，不用写死 px、不再 0.9 收缩留死缝）做 x 带兜底；注入前 `rewriteMotionEvent`（uptime + TOUCHSCREEN），全屏仍打可见 pane。
 
-### Added
-- **双 VD 全屏（一显一隐）：** 拖分屏条越过左右/上下边缘阈值后松手，一侧铺满、另一侧叠在背后继续渲染（开车导航全屏 + 影音背后；停车可反过来）。两 VirtualDisplay 都保持满屏缓冲，不销毁背后任务。全屏时分隔条变为贴边 peel（固定左/顶缘，inset 避开 Coolwalk rail）；向内拖 peel 过阈值退出并恢复进入前比例；点按 peel 切换可见全屏 pane；长按仍打开最近任务。`LastSplitStore` 持久化 `fullscreenPane`（ratio 仍存分屏比例）。Coolwalk rail steal 在全屏时注入可见 pane，不再固定 PRIMARY。
+### Changed
+- **全屏 peel 把手固定左侧：** 点按切换可见全屏 pane 时分隔条不再左右跳；左右分屏始终贴左缘（inset ~80dp 避开 Coolwalk LHD rail，方便驾驶员够到），上下分屏贴顶缘。向内拖仍退出全屏；全屏时线条/三点略加亮加粗便于找。
+- **分屏容器改为 FrameLayout 定位：** 以显式宽高/边距替代 LinearLayout weight，便于全屏叠层与 peel 预览共用同一套 pane 视图。
+- **Version bump to `0.24#17.4-r6`** (`versionCode` 3062)。
 
 ## 0.24#17.4-r5
 

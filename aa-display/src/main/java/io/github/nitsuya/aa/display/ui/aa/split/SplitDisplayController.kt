@@ -49,6 +49,8 @@ class SplitDisplayController(
         internal const val RESTORE_VERIFY_DELAY_MS = 2000L
         internal const val RESTORE_VERIFY_RETRY_MS = 2000L
         internal const val MAX_RESTORE_VERIFY_ATTEMPTS = 3
+        /** Token for post-fullscreen focus restore kicks (cancel on destroy / re-enter). */
+        internal val FULLSCREEN_FOCUS_TOKEN = Any()
     }
 
     internal val vd = SplitVdLifecycle(this)
@@ -268,6 +270,10 @@ class SplitDisplayController(
     /**
      * Enter fullscreen for [pane] (PRIMARY/SECONDARY) or exit with [SplitPane.FULLSCREEN_NONE].
      * Both VDs resize to full buffer while one pane is hidden under the other in AA UI.
+     *
+     * Samsung ExtraDisplayController often drops window / top-resumed focus on a pane during
+     * that resize (seen: LivePlay → silence audio). Restore both pane tasks afterward so the
+     * behind media app keeps playing and the visible pane remains focusable.
      */
     fun setSplitFullscreen(pane: Int) {
         if (pane != SplitPane.FULLSCREEN_NONE && !SplitPane.isFullscreenPane(pane)) return
@@ -285,6 +291,7 @@ class SplitDisplayController(
         mSuppressReclaimUntil = SystemClock.uptimeMillis() + 800L
         mHandler.removeCallbacks(mPendingResize)
         vd.resizePanesInternal(if (pane == SplitPane.FULLSCREEN_NONE) "fullscreen-exit" else "fullscreen-enter")
+        scheduleRestoreFocusAfterFullscreen()
         launch.schedulePersistSnapshot()
         notifySplitStateChanged()
         log(
@@ -292,6 +299,63 @@ class SplitDisplayController(
             "setSplitFullscreen pane=$mFullscreenPane ratio=$mRatio " +
                 "ratioBefore=$mRatioBeforeFullscreen"
         )
+    }
+
+    private fun scheduleRestoreFocusAfterFullscreen() {
+        mHandler.removeCallbacksAndMessages(FULLSCREEN_FOCUS_TOKEN)
+        val now = SystemClock.uptimeMillis()
+        // ExtraDisplayController reorders asynchronously after VD resize — kick a few times.
+        for (delay in longArrayOf(0L, 120L, 400L)) {
+            mHandler.postAtTime(
+                { restoreFocusAfterFullscreen() },
+                FULLSCREEN_FOCUS_TOKEN,
+                now + delay
+            )
+        }
+    }
+
+    /**
+     * Bring each pane's top user task forward. Behind pane first, then visible fullscreen pane
+     * (or focused pane on exit) so media behind FS keeps resumed and the front pane owns focus.
+     */
+    private fun restoreFocusAfterFullscreen() {
+        val identity = Binder.clearCallingIdentity()
+        try {
+            val visible = mFullscreenPane
+            val panes = if (SplitPane.isFullscreenPane(visible)) {
+                val behind =
+                    if (visible == SplitPane.PRIMARY) SplitPane.SECONDARY else SplitPane.PRIMARY
+                intArrayOf(behind, visible)
+            } else {
+                val focus = if (SplitPane.isValid(mFocusedPane)) mFocusedPane else SplitPane.PRIMARY
+                val other =
+                    if (focus == SplitPane.PRIMARY) SplitPane.SECONDARY else SplitPane.PRIMARY
+                intArrayOf(other, focus)
+            }
+            for (pane in panes) {
+                val displayId = input.displayIdFor(pane) ?: continue
+                if (displayId == Display.INVALID_DISPLAY) continue
+                val top = ownership.snapshotUserRootTasks(displayId).lastOrNull() ?: continue
+                ownership.bringTaskToFront(top.taskId)
+                trySetFocusedTask(top.taskId)
+            }
+        } catch (e: Throwable) {
+            log(TAG, "restoreFocusAfterFullscreen failed:", e)
+        } finally {
+            Binder.restoreCallingIdentity(identity)
+        }
+    }
+
+    private fun trySetFocusedTask(taskId: Int) {
+        runCatching {
+            val atm = Instances.iActivityTaskManager
+            val method = atm.javaClass.methods.firstOrNull { m ->
+                m.name == "setFocusedTask" &&
+                    m.parameterTypes.size == 1 &&
+                    m.parameterTypes[0] == Int::class.javaPrimitiveType
+            } ?: return
+            method.invoke(atm, taskId)
+        }
     }
 
     fun setFocusedPane(pane: Int) {
@@ -350,6 +414,7 @@ class SplitDisplayController(
         mHandler.removeCallbacksAndMessages(launch.RESTORE_TOKEN)
         mHandler.removeCallbacksAndMessages(launch.ENSURE_TOKEN)
         mHandler.removeCallbacksAndMessages(launch.VERIFY_RESTORE_TOKEN)
+        mHandler.removeCallbacksAndMessages(FULLSCREEN_FOCUS_TOKEN)
         tryOrNull { Instances.iActivityTaskManager.unregisterTaskStackListener(mTaskStackListener) }
 
         val protectedPackages = linkedSetOf(BuildConfig.APPLICATION_ID)

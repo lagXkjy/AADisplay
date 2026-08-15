@@ -132,16 +132,43 @@ object CoreManager : ICoreManager, DeathRecipient {
     }
 
     override fun touchPane(pane: Int, motionEvent: MotionEvent) {
-        getService()?.touchPane(pane, motionEvent)
+        tryTouchPane(pane, motionEvent)
     }
 
     override fun touchPrimaryPane(motionEvent: MotionEvent) {
+        tryTouchPrimaryPane(motionEvent)
+    }
+
+    /** @return false when binder missing or the remote call throws (caller must not swallow HU events). */
+    fun tryTouchPane(pane: Int, motionEvent: MotionEvent): Boolean {
+        val svc = getService()
+        if (svc == null) {
+            Log.e(TAG, "touchPane skipped; binder unavailable pane=$pane")
+            return false
+        }
+        return try {
+            svc.touchPane(pane, motionEvent)
+            true
+        } catch (e: Throwable) {
+            Log.e(TAG, "touchPane failed pane=$pane", e)
+            false
+        }
+    }
+
+    /** @return false when binder missing or the remote call throws (caller must not swallow HU events). */
+    fun tryTouchPrimaryPane(motionEvent: MotionEvent): Boolean {
         val svc = getService()
         if (svc == null) {
             Log.e(TAG, "touchPrimaryPane skipped; binder unavailable")
-            return
+            return false
         }
-        svc.touchPrimaryPane(motionEvent)
+        return try {
+            svc.touchPrimaryPane(motionEvent)
+            true
+        } catch (e: Throwable) {
+            Log.e(TAG, "touchPrimaryPane failed", e)
+            false
+        }
     }
 
     override fun getRecentTask(): RecentTask? {

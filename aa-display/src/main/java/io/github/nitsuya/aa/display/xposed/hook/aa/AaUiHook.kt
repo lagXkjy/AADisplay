@@ -141,6 +141,7 @@ object AaUiHook: AaHook() {
      * Android displayId of the live FacetBar / thin-rail VD (per-process).
      * Used so :car can steal every touch routed to that display even when
      * LayoutInfo width is unavailable and x-band heuristics would under-steal.
+     * Never DEFAULT_DISPLAY — phone panels must not be treated as FacetBar.
      */
     @Volatile private var mObservedRailDisplayId: Int = Display.INVALID_DISPLAY
 
@@ -854,6 +855,7 @@ object AaUiHook: AaHook() {
     private fun rememberRailVirtualDisplay(name: String?, vd: VirtualDisplay?) {
         if (vd == null || !isRailVirtualDisplayName(name)) return
         val display = vd.display ?: return
+        if (!isTrustedRailDisplayId(display.displayId)) return
         val width = display.mode.physicalWidth
         if (width > 1) {
             mObservedRailWidthPx = width
@@ -871,9 +873,9 @@ object AaUiHook: AaHook() {
      * Must run in :car — that is where CarActivityManagerService lives.
      *
      * FacetBar VD often stays full rail width with a GONE window (no touchable target);
-     * InputDispatcher then drops the event. Prefer stealing by **target display**
-     * (FacetBar / thin-rail geometry), with an observed-width x-band fallback for
-     * HU-absolute content routing. Widths come from live observation — never a fixed px.
+     * InputDispatcher then drops the event. Full-display steal only for a **trusted**
+     * FacetBar / absolute-narrow private VD; otherwise fall back to the observed-width
+     * x-band (never treat the phone DEFAULT_DISPLAY as rail).
      */
     private fun hookHuTouchDispatchRedirect() {
         val anchor = huTouchDispatchMethod
@@ -927,9 +929,10 @@ object AaUiHook: AaHook() {
             val railTarget = isRailTargetCarDisplay(param.args[0])
             val rail = railHitWidthPx()
             val action = motion.actionMasked
-            // Primary pointer only — secondary fingers in the strip must not hijack content drags.
+            // Trusted FacetBar display → steal the whole gesture (Samsung GONE chrome).
+            // Otherwise only the left x-band (r5-compatible; avoids phone-main-display mis-steal).
             val downInRailBand = motion.getX(0) < rail
-            val downInRail = railTarget || downInRailBand
+            val downInRail = if (railTarget) true else downInRailBand
             if (action == MotionEvent.ACTION_DOWN) {
                 mHuRailGesture = downInRail
             }
@@ -964,11 +967,13 @@ object AaUiHook: AaHook() {
                 } catch (_: Throwable) {
                     SplitPane.FULLSCREEN_NONE
                 }
-                if (SplitPane.isFullscreenPane(fs)) {
-                    CoreManager.touchPane(fs, toInject)
+                val injected = if (SplitPane.isFullscreenPane(fs)) {
+                    CoreManager.tryTouchPane(fs, toInject)
                 } else {
-                    CoreManager.touchPrimaryPane(toInject)
+                    CoreManager.tryTouchPrimaryPane(toInject)
                 }
+                // Only swallow Coolwalk dispatch when inject actually reached system_server.
+                if (!injected) return
                 param.result = null
                 if (action == MotionEvent.ACTION_DOWN) {
                     logDebug(
@@ -989,49 +994,88 @@ object AaUiHook: AaHook() {
         }
     }
 
+    /** Never treat the phone main display as Coolwalk FacetBar. */
+    private fun isTrustedRailDisplayId(displayId: Int): Boolean {
+        return displayId != Display.INVALID_DISPLAY && displayId != Display.DEFAULT_DISPLAY
+    }
+
+    private fun clearUntrustedRailObservation() {
+        if (!isTrustedRailDisplayId(mObservedRailDisplayId)) {
+            mObservedRailDisplayId = Display.INVALID_DISPLAY
+        }
+        // Portrait phone panels mis-locked as "rail" leave a huge width; drop it when
+        // we have no trusted FacetBar id (x-band then uses the narrow fallback).
+        if (mObservedRailDisplayId == Display.INVALID_DISPLAY && mObservedRailWidthPx > 240) {
+            mObservedRailWidthPx = 0
+        }
+    }
+
+    /**
+     * Absolute-narrow private strip when LayoutInfo is unavailable (:car).
+     * Must not match phone portrait panels (e.g. 1080×2340).
+     */
+    private fun isAbsoluteNarrowRailSize(width: Int, height: Int): Boolean {
+        return width in 8..120 && height >= width * 3
+    }
+
     /**
      * :car does not run LayoutInfo / createVirtualDisplay hooks; discover the live
-     * FacetBar / thin-rail display via DisplayManager so width + id match this HU.
+     * FacetBar display via DisplayManager. Prefer named FacetBar; never first-hit the
+     * phone DEFAULT_DISPLAY via loose thin-geometry heuristics.
      */
     private fun ensureRailObservationFromDisplays() {
-        if (mObservedRailDisplayId != Display.INVALID_DISPLAY && mObservedRailWidthPx > 0) return
+        clearUntrustedRailObservation()
+        if (isTrustedRailDisplayId(mObservedRailDisplayId) && mObservedRailWidthPx > 0) return
         val dm = runCatching {
             InitFields.appContext.getSystemService(DisplayManager::class.java)
         }.getOrNull() ?: return
+        // Pass 1: named FacetBar / VerticalRail / EdgeColumn only.
         for (display in dm.displays) {
-            val name = display.name
+            if (!isTrustedRailDisplayId(display.displayId)) continue
+            if (!isRailVirtualDisplayName(display.name)) continue
             val w = runCatching { display.mode.physicalWidth }.getOrDefault(0)
-            val h = runCatching { display.mode.physicalHeight }.getOrDefault(0)
-            val named = isRailVirtualDisplayName(name)
-            val thin = w > 1 && h > 0 && isThinRailSize(w, h)
-            if (!named && !thin) continue
             if (w > 1) mObservedRailWidthPx = w
             mObservedRailDisplayId = display.displayId
             logDebug(
                 tagName,
-                "AaUiHook: discovered rail display id=${display.displayId} name=$name w=$w"
+                "AaUiHook: discovered rail display id=${display.displayId} name=${display.name} w=$w"
+            )
+            return
+        }
+        // Pass 2: absolute-narrow private strip only (no LayoutInfo width*10 heuristic).
+        for (display in dm.displays) {
+            if (!isTrustedRailDisplayId(display.displayId)) continue
+            if (isRailVirtualDisplayName(display.name)) continue
+            val w = runCatching { display.mode.physicalWidth }.getOrDefault(0)
+            val h = runCatching { display.mode.physicalHeight }.getOrDefault(0)
+            if (!isAbsoluteNarrowRailSize(w, h)) continue
+            mObservedRailWidthPx = w
+            mObservedRailDisplayId = display.displayId
+            logDebug(
+                tagName,
+                "AaUiHook: discovered narrow rail display id=${display.displayId} name=${display.name} w=$w"
             )
             return
         }
     }
 
     /**
-     * True when Coolwalk is routing this HU touch to the FacetBar / thin-rail display.
-     * Resolves [carDisplayId] → Android [Display] via reflection + DisplayManager so each
-     * HU's own rail VD (any width) is recognized without hardcoded pixels.
+     * True when Coolwalk is routing this HU touch to a trusted FacetBar / narrow-rail display.
      */
     private fun isRailTargetCarDisplay(carDisplayId: Any?): Boolean {
         if (carDisplayId == null) return false
+        clearUntrustedRailObservation()
         val androidId = androidDisplayIdFromCarDisplayId(carDisplayId)
             ?: return false
-        if (androidId == Display.INVALID_DISPLAY) return false
-        if (androidId == mObservedRailDisplayId) return true
+        if (!isTrustedRailDisplayId(androidId)) return false
+        if (androidId == mObservedRailDisplayId && isTrustedRailDisplayId(mObservedRailDisplayId)) {
+            return true
+        }
         val display = runCatching {
             InitFields.appContext.getSystemService(DisplayManager::class.java)
                 ?.getDisplay(androidId)
         }.getOrNull() ?: return false
-        val name = display.name
-        if (isRailVirtualDisplayName(name)) {
+        if (isRailVirtualDisplayName(display.name)) {
             mObservedRailDisplayId = androidId
             runCatching {
                 val w = display.mode.physicalWidth
@@ -1041,7 +1085,13 @@ object AaUiHook: AaHook() {
         }
         val w = runCatching { display.mode.physicalWidth }.getOrDefault(0)
         val h = runCatching { display.mode.physicalHeight }.getOrDefault(0)
-        if (w > 1 && h > 0 && isThinRailSize(w, h)) {
+        // With LayoutInfo: proportional thin rail. Without: absolute narrow only.
+        val thin = if (layoutWidthPx() > 0) {
+            isThinRailSize(w, h)
+        } else {
+            isAbsoluteNarrowRailSize(w, h)
+        }
+        if (w > 1 && h > 0 && thin) {
             mObservedRailDisplayId = androidId
             mObservedRailWidthPx = w
             return true
@@ -1049,15 +1099,20 @@ object AaUiHook: AaHook() {
         return false
     }
 
-    /** Best-effort CarDisplayId / wrapper → Android displayId. */
+    private val carDisplayIdAccessorNames = setOf(
+        "getDisplayId", "displayId", "getId", "id", "getAndroidDisplayId", "androidDisplayId",
+    )
+
+    /** Best-effort CarDisplayId / wrapper → Android displayId (whitelist accessors only). */
     private fun androidDisplayIdFromCarDisplayId(carDisplayId: Any): Int? {
         when (carDisplayId) {
-            is Int -> return carDisplayId
-            is Number -> return carDisplayId.toInt()
+            is Int -> return carDisplayId.takeIf { it != Display.INVALID_DISPLAY }
+            is Number -> return carDisplayId.toInt().takeIf { it != Display.INVALID_DISPLAY }
         }
         val candidates = linkedSetOf<Int>()
         for (m in carDisplayId.javaClass.methods) {
             if (m.parameterCount != 0) continue
+            if (m.name !in carDisplayIdAccessorNames) continue
             if (m.returnType != Int::class.javaPrimitiveType && m.returnType != Integer::class.java) {
                 continue
             }
@@ -1069,6 +1124,11 @@ object AaUiHook: AaHook() {
         }
         for (f in carDisplayId.javaClass.declaredFields) {
             if (java.lang.reflect.Modifier.isStatic(f.modifiers)) continue
+            if (f.name !in carDisplayIdAccessorNames &&
+                f.name !in setOf("mDisplayId", "displayId", "id")
+            ) {
+                continue
+            }
             if (f.type != Int::class.javaPrimitiveType && f.type != Integer::class.java) continue
             runCatching {
                 f.isAccessible = true
@@ -1077,21 +1137,29 @@ object AaUiHook: AaHook() {
             }
         }
         if (candidates.isEmpty()) return null
-        if (mObservedRailDisplayId in candidates) return mObservedRailDisplayId
+        if (mObservedRailDisplayId in candidates && isTrustedRailDisplayId(mObservedRailDisplayId)) {
+            return mObservedRailDisplayId
+        }
         val dm = runCatching {
             InitFields.appContext.getSystemService(DisplayManager::class.java)
         }.getOrNull()
         if (dm != null) {
             for (id in candidates) {
+                if (!isTrustedRailDisplayId(id)) continue
                 val d = dm.getDisplay(id) ?: continue
                 if (isRailVirtualDisplayName(d.name)) return id
+            }
+            for (id in candidates) {
+                if (!isTrustedRailDisplayId(id)) continue
+                val d = dm.getDisplay(id) ?: continue
                 val w = runCatching { d.mode.physicalWidth }.getOrDefault(0)
                 val h = runCatching { d.mode.physicalHeight }.getOrDefault(0)
-                if (w > 1 && h > 0 && isThinRailSize(w, h)) return id
+                val thin = if (layoutWidthPx() > 0) isThinRailSize(w, h) else isAbsoluteNarrowRailSize(w, h)
+                if (w > 1 && h > 0 && thin) return id
             }
         }
-        // Last resort: single non-zero candidate (common when CarDisplayId is a thin wrapper).
-        return candidates.singleOrNull { it != 0 } ?: candidates.firstOrNull()
+        // Prefer a single non-default candidate; never fall back to DEFAULT_DISPLAY alone.
+        return candidates.singleOrNull { isTrustedRailDisplayId(it) }
     }
 
     /**
@@ -1100,6 +1168,7 @@ object AaUiHook: AaHook() {
      * steal band do not leave a dead seam. Never hardcode a single HU's pixel size.
      */
     private fun railHitWidthPx(): Int {
+        clearUntrustedRailObservation()
         val observed = mObservedRailWidthPx
         val fullW = layoutWidthPx()
         if (fullW > 0) {
@@ -1260,7 +1329,13 @@ object AaUiHook: AaHook() {
 
     private fun isThinRailSize(width: Int, height: Int): Boolean {
         if (width <= 0 || height <= 0) return false
-        val maxRail = railPxRange(layoutWidthPx().takeIf { it > 0 } ?: (width * 10)).last
+        val fullW = layoutWidthPx()
+        if (fullW <= 0) {
+            // No LayoutInfo (:car / early connect) — absolute narrow only; never width*10
+            // which matches portrait phone panels (1080×2340).
+            return isAbsoluteNarrowRailSize(width, height)
+        }
+        val maxRail = railPxRange(fullW).last
         return width <= maxRail && height >= width * 2
     }
 
