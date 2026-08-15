@@ -89,6 +89,14 @@ class SplitDisplayController(
     val secondaryDisplayId: Int
         get() = mSecondary?.display?.displayId ?: Display.INVALID_DISPLAY
 
+    /**
+     * AaDisplayActivity presentation displayId reported from the app process.
+     * Private VDs are invisible to system_server [DisplayManager.getDisplays].
+     */
+    @Volatile
+    var mAaUiDisplayId: Int = Display.INVALID_DISPLAY
+        private set
+
     internal var mPrimary: VirtualDisplay? = null
     internal var mSecondary: VirtualDisplay? = null
     internal var mPrimarySurface: Surface? = null
@@ -405,6 +413,7 @@ class SplitDisplayController(
             log(TAG, "onDestroy snapshot failed:", e)
         }
         mIsDestroying = true
+        mAaUiDisplayId = Display.INVALID_DISPLAY
         mOrientationLockedDisplays.clear()
         mImePolicyAppliedDisplays.clear()
         mHandler.removeCallbacks(ownership.mDebouncedReclaim)
@@ -467,6 +476,52 @@ class SplitDisplayController(
      */
     fun onTouchPrimaryPane(event: MotionEvent) {
         onTouchPane(SplitPane.PRIMARY, event)
+    }
+
+    /**
+     * Relay flush-left peel / AA UI touches into the AaDisplayActivity presentation
+     * display (not a pane VirtualDisplay).
+     */
+    fun onTouchAaDisplay(event: MotionEvent) {
+        val displayId = resolveAaUiDisplayId()
+        if (displayId == Display.INVALID_DISPLAY) {
+            log(TAG, "onTouchAaDisplay: AaDisplayActivity display not found")
+            return
+        }
+        input.injectInputEvent(displayId, event)
+    }
+
+    /** Called from the AA UI process; [displayId] may be INVALID_DISPLAY to clear. */
+    fun setAaUiDisplayId(displayId: Int) {
+        val next = if (displayId == Display.DEFAULT_DISPLAY) Display.INVALID_DISPLAY else displayId
+        if (mAaUiDisplayId == next) return
+        mAaUiDisplayId = next
+        log(TAG, "setAaUiDisplayId id=$next")
+    }
+
+    /**
+     * Prefer the id reported by AaDisplayActivity. Do **not** validate via
+     * [DisplayManager.getDisplay]: FLAG_PRIVATE presentations owned by the app uid
+     * are invisible to system_server's DisplayManager client and would discard a
+     * good reported id (peel inject then fails with "display not found").
+     */
+    private fun resolveAaUiDisplayId(): Int {
+        val reported = mAaUiDisplayId
+        if (reported != Display.INVALID_DISPLAY && reported != Display.DEFAULT_DISPLAY) {
+            return reported
+        }
+        // Fallback: ATMS can see tasks on private presentation displays.
+        for (id in 1..64) {
+            val tasks = tryOrNull {
+                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(id)
+            }.orEmpty()
+            if (tasks.any { it.topActivity?.packageName == BuildConfig.APPLICATION_ID }) {
+                mAaUiDisplayId = id
+                log(TAG, "resolveAaUiDisplayId via ATMS id=$id")
+                return id
+            }
+        }
+        return Display.INVALID_DISPLAY
     }
 
     fun onPressKey(action: Int) {

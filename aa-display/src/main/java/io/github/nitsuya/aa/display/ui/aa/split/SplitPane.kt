@@ -27,10 +27,19 @@ object SplitPane {
     const val FULLSCREEN_EXIT_RATIO = 0.15f
 
     /**
-     * Left peel inset from the screen edge so the handle sits outside Coolwalk's
-     * LHD rail steal band (~80dp on many HUs), while staying driver-reachable.
+     * Peel inset from the outer screen edge. 0 = flush adsorb to the frame
+     * (FacetBar is usually GONE; an 80dp inset left the short tab floating in content).
+     * Coolwalk left-rail steal must route the peel hit-band into AaDisplay UI
+     * ([ICoreManager.touchAaDisplay]) so the flush handle stays tappable.
      */
-    const val FULLSCREEN_PEEL_INSET_DP = 80
+    const val FULLSCREEN_PEEL_INSET_DP = 0
+
+    /**
+     * Minimum peel hit strip along the short axis when flush to the edge, so Coolwalk
+     * rail-band coordinates (typically ~80px) still land on [SplitDividerView] after
+     * [ICoreManager.touchAaDisplay] inject. Visual tab stays [PEEL_TAB_THICKNESS_DP].
+     */
+    const val PEEL_EDGE_HIT_MIN_DP = 80
 
     /** Fullscreen peel visual: edge-docked tab length (long axis). */
     const val PEEL_TAB_LENGTH_DP = 56

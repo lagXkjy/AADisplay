@@ -139,6 +139,18 @@ object CoreManager : ICoreManager, DeathRecipient {
         tryTouchPrimaryPane(motionEvent)
     }
 
+    override fun touchAaDisplay(motionEvent: MotionEvent) {
+        tryTouchAaDisplay(motionEvent)
+    }
+
+    override fun reportAaUiDisplayId(displayId: Int) {
+        try {
+            getService()?.reportAaUiDisplayId(displayId)
+        } catch (e: Throwable) {
+            Log.e(TAG, "reportAaUiDisplayId failed id=$displayId", e)
+        }
+    }
+
     /** @return false when binder missing or the remote call throws (caller must not swallow HU events).
      *  touchPane is oneway — success means the parcel was queued, not that inject finished. */
     fun tryTouchPane(pane: Int, motionEvent: MotionEvent): Boolean {
@@ -169,6 +181,23 @@ object CoreManager : ICoreManager, DeathRecipient {
             true
         } catch (e: Throwable) {
             Log.e(TAG, "touchPrimaryPane failed", e)
+            false
+        }
+    }
+
+    /** @return false when binder missing or the remote call throws (caller must not swallow HU events).
+     *  touchAaDisplay is oneway — success means the parcel was queued, not that inject finished. */
+    fun tryTouchAaDisplay(motionEvent: MotionEvent): Boolean {
+        val svc = getService()
+        if (svc == null) {
+            Log.e(TAG, "touchAaDisplay skipped; binder unavailable")
+            return false
+        }
+        return try {
+            svc.touchAaDisplay(motionEvent)
+            true
+        } catch (e: Throwable) {
+            Log.e(TAG, "touchAaDisplay failed", e)
             false
         }
     }

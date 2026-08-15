@@ -126,26 +126,76 @@ internal object SplitPresentationGuard {
     }
 
     private fun removeWindowState(wms: Any, windowState: Any): Boolean {
-        // Prefer WindowState.removeImmediately — reliable on OneUI for Presentation tokens.
-        val removedImmediate = runCatching {
+        // Already gone / mid-teardown — calling removeImmediately then SIGSEGVs in
+        // SurfaceControl.Transaction.reparent (native NPE; Java catch cannot save us).
+        if (isWindowStateAlreadyGone(windowState)) return false
+        // Prefer the Session path: stays in Java and fails safely if the token is stale.
+        if (removeViaWmsSession(wms, windowState)) return true
+        if (!hasLiveSurfaceControl(windowState)) {
+            logDebug(
+                SplitDisplayController.TAG,
+                "evictPresentation: skip removeImmediately (no live SurfaceControl)"
+            )
+            return false
+        }
+        return runCatching {
             val m = windowState.javaClass.methods.firstOrNull {
                 it.name == "removeImmediately" && it.parameterTypes.isEmpty()
             } ?: return@runCatching false
             m.invoke(windowState)
             true
+        }.onFailure { e ->
+            log(SplitDisplayController.TAG, "evictPresentation: removeImmediately failed", e)
         }.getOrDefault(false)
-        if (removedImmediate) return true
+    }
+
+    private fun removeViaWmsSession(wms: Any, windowState: Any): Boolean {
         return runCatching {
             val removeWindow = wms.javaClass.methods.firstOrNull { m ->
                 m.name == "removeWindow" &&
                     m.parameterTypes.size == 2 &&
                     m.parameterTypes[0].name.contains("Session")
             } ?: return@runCatching false
-            val session = windowState.javaClass.getField("mSession").get(windowState) ?: return@runCatching false
-            val client = windowState.javaClass.getField("mClient").get(windowState) ?: return@runCatching false
+            val session = windowState.javaClass.getField("mSession").get(windowState)
+                ?: return@runCatching false
+            val client = windowState.javaClass.getField("mClient").get(windowState)
+                ?: return@runCatching false
             removeWindow.invoke(wms, session, client)
             true
         }.getOrDefault(false)
+    }
+
+    /** True when removeImmediately would touch a dead / missing layer. */
+    private fun isWindowStateAlreadyGone(windowState: Any): Boolean {
+        runCatching {
+            val f = windowState.javaClass.getField("mRemoved")
+            if (f.getBoolean(windowState)) return true
+        }
+        runCatching {
+            val m = windowState.javaClass.methods.firstOrNull {
+                it.name == "isRemoved" && it.parameterTypes.isEmpty()
+            }
+            if (m?.invoke(windowState) == true) return true
+        }
+        runCatching {
+            val f = windowState.javaClass.getField("mHasSurface")
+            // No surface yet or already torn down — Session remove is enough / safer.
+            if (!f.getBoolean(windowState)) return true
+        }
+        return false
+    }
+
+    private fun hasLiveSurfaceControl(windowState: Any): Boolean {
+        val sc = runCatching {
+            windowState.javaClass.methods.firstOrNull {
+                it.name == "getSurfaceControl" && it.parameterTypes.isEmpty()
+            }?.invoke(windowState)
+        }.getOrNull() ?: return false
+        return runCatching {
+            sc.javaClass.methods.firstOrNull {
+                it.name == "isValid" && it.parameterTypes.isEmpty()
+            }?.invoke(sc) == true
+        }.getOrDefault(true)
     }
 
     /** Prefer OneUI `(Consumer, boolean)`; fall back to AOSP single-arg if present. */

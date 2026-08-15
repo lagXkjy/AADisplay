@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.ui.aa.split
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -12,7 +13,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
-import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.widget.FrameLayout
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -25,8 +26,9 @@ import kotlin.math.hypot
  *
  * Fullscreen peel mode: always docked on a fixed driver-side edge (left when
  * side-by-side, top when stacked) so tap-to-swap does not move the handle.
- * Inset past Coolwalk's LHD rail. Visual is a short edge-adsorbed tab (not a
- * full-length seam). Drag inward to exit; tap toggles fullscreen pane.
+ * Flush to the outer frame ([SplitPane.FULLSCREEN_PEEL_INSET_DP]). Idle visual is a
+ * short edge-adsorbed tab. Once the user drags, the host morphs this view to the
+ * normal full-length split seam + dots ([setPeelDragSplitVisual]).
  *
  * Hit target is wider than the visual seam and overlaps adjacent panes via negative
  * margins + elevation. Ends of the strip ([SplitPane.DIVIDER_TOUCH_END_INSET_DP] in
@@ -81,8 +83,6 @@ class SplitDividerView @JvmOverloads constructor(
     private val peelDotRadius = 2.25f * density
     private val peelTabLengthPx = SplitPane.PEEL_TAB_LENGTH_DP * density
     private val peelTabThicknessPx = SplitPane.PEEL_TAB_THICKNESS_DP * density
-    private val peelHitLengthPx =
-        (SplitPane.PEEL_TAB_LENGTH_DP + 2 * SplitPane.PEEL_TAB_HIT_EXPAND_DP) * density
     private val dotGap = 7f * density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
@@ -96,6 +96,8 @@ class SplitDividerView @JvmOverloads constructor(
     /** Unclamped ratio used for fullscreen enter/exit decisions. */
     private var lastRawRatio = SplitPane.DEFAULT_RATIO
     private var peelMode = false
+    /** While peeling: draw the normal split seam instead of the idle edge tab. */
+    private var peelDragSplitVisual = false
 
     private val longPressRunnable = Runnable {
         if (!tracking || dragging || longPressFired) return@Runnable
@@ -106,8 +108,15 @@ class SplitDividerView @JvmOverloads constructor(
 
     init {
         isClickable = true
-        // Above empty-pane overlays (elevation 4) so overlap hit target wins Z-order.
+        // Elevation for Z-order above panes (2) / empty overlays (4); empty outline
+        // so Material does not cast a shadow around the hit strip / peel tab.
         elevation = 8f
+        outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setEmpty()
+            }
+        }
+        clipToOutline = false
         setBackgroundColor(0x00000000)
     }
 
@@ -124,31 +133,54 @@ class SplitDividerView @JvmOverloads constructor(
     /** [SplitPane.FULLSCREEN_NONE] = split divider; PRIMARY/SECONDARY = peel handle. */
     fun setFullscreenPane(pane: Int) {
         val next = SplitPane.isFullscreenPane(pane)
-        if (peelMode == next) return
         peelMode = next
+        peelDragSplitVisual = false
+        elevation = 8f
+        translationX = 0f
+        translationY = 0f
         invalidate()
     }
 
     /**
-     * Peel handle in a [FrameLayout] host — fixed driver-side edge: left (inset past
-     * Coolwalk rail) when [sideBySide], top when stacked.
+     * Peel handle is only an entry affordance. Once drag starts, show the same
+     * full-length seam + dots as split mode until settle / cancel.
+     */
+    fun setPeelDragSplitVisual(enabled: Boolean) {
+        if (peelDragSplitVisual == enabled) return
+        peelDragSplitVisual = enabled
+        invalidate()
+    }
+
+    /**
+     * Peel handle in a [FrameLayout] host — fixed driver-side edge: left when
+     * [sideBySide], top when stacked. Flush to the outer frame (see inset const).
      */
     fun applyPeelLayoutParams(lp: FrameLayout.LayoutParams, sideBySide: Boolean) {
         val seamPx = (SplitPane.DIVIDER_DP * density).toInt().coerceAtLeast(1)
         val expandPx = (SplitPane.DIVIDER_TOUCH_EXPAND_DP * density).toInt().coerceAtLeast(0)
         val touchSpan = seamPx + 2 * expandPx
         val insetPx = (SplitPane.FULLSCREEN_PEEL_INSET_DP * density).toInt().coerceAtLeast(0)
-        lp.width = if (sideBySide) touchSpan else ViewGroup.LayoutParams.MATCH_PARENT
-        lp.height = if (sideBySide) ViewGroup.LayoutParams.MATCH_PARENT else touchSpan
+        // When flush, widen the strip to cover the Coolwalk rail steal band so
+        // reinjected rail coordinates still hit this view; tab draws at the outer edge.
+        val edgeHitMin = (SplitPane.PEEL_EDGE_HIT_MIN_DP * density).toInt().coerceAtLeast(0)
+        val edgeSpan = if (insetPx == 0) touchSpan.coerceAtLeast(edgeHitMin) else touchSpan
+        // Long-axis size matches the tappable tab band (not full screen) so the
+        // hit rect and capsule share the same visual center — avoids a tall empty
+        // strip looking like a misaligned divider.
+        val longHit = (
+            SplitPane.PEEL_TAB_LENGTH_DP + 2 * SplitPane.PEEL_TAB_HIT_EXPAND_DP
+            ).let { (it * density).toInt().coerceAtLeast(1) }
+        lp.width = if (sideBySide) edgeSpan else longHit
+        lp.height = if (sideBySide) longHit else edgeSpan
         lp.marginStart = 0
         lp.marginEnd = 0
         lp.topMargin = 0
         lp.bottomMargin = 0
         if (sideBySide) {
-            lp.gravity = Gravity.START or Gravity.TOP
+            lp.gravity = Gravity.START or Gravity.CENTER_VERTICAL
             lp.marginStart = insetPx
         } else {
-            lp.gravity = Gravity.TOP or Gravity.START
+            lp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             lp.topMargin = insetPx
         }
     }
@@ -159,13 +191,9 @@ class SplitDividerView @JvmOverloads constructor(
      * display still works.
      */
     private fun isOnEndInset(event: MotionEvent): Boolean {
-        val inset = if (peelMode) {
-            val axis = if (sideBySide) height.toFloat() else width.toFloat()
-            val hit = peelHitLengthPx.coerceAtMost(axis)
-            ((axis - hit) / 2f).coerceAtLeast(0f)
-        } else {
-            SplitPane.DIVIDER_TOUCH_END_INSET_DP * density
-        }
+        // Peel view is already sized to the tab hit band — consume the whole view.
+        if (peelMode) return false
+        val inset = SplitPane.DIVIDER_TOUCH_END_INSET_DP * density
         return if (sideBySide) {
             val usable = height - 2f * inset
             usable > 0f && (event.y < inset || event.y > height - inset)
@@ -184,7 +212,8 @@ class SplitDividerView @JvmOverloads constructor(
         super.onDraw(canvas)
         val cx = width / 2f
         val cy = height / 2f
-        if (peelMode) {
+        val drawPeelTab = peelMode && !peelDragSplitVisual
+        if (drawPeelTab) {
             val (dotX, dotY) = drawPeelEdgeTab(canvas)
             drawDots(canvas, dotX, dotY, vertical = sideBySide, peel = true)
         } else if (sideBySide) {
@@ -199,6 +228,8 @@ class SplitDividerView @JvmOverloads constructor(
     /**
      * Edge-adsorbed drawer tab: flush to the outer (driver) edge of this view,
      * rounded only on the inward side so it reads as stuck to the rail side.
+     * View is sized to the tab hit band, so the capsule is centered in both axes
+     * of the short axis / mid of the long axis.
      * @return center of the tab for the grip dots
      */
     private fun drawPeelEdgeTab(canvas: Canvas): Pair<Float, Float> {

@@ -341,6 +341,17 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         mSplitController?.onTouchPrimaryPane(event)
     }
 
+    override fun touchAaDisplay(event: MotionEvent) {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            runIO { mDisplayWindow?.onVirtualDisplayUserInteraction() }
+        }
+        mSplitController?.onTouchAaDisplay(event)
+    }
+
+    override fun reportAaUiDisplayId(displayId: Int) {
+        mSplitController?.setAaUiDisplayId(displayId)
+    }
+
     override fun getRecentTask(): RecentTask {
         // Client already loads on IO ([AaRecentTaskFragment]); avoid runBlocking on the
         // Binder thread which only adds a dispatcher hop while still blocking the caller.

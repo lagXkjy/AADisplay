@@ -3,11 +3,16 @@
 ## Unreleased
 
 ### Fixed
+- **AutoOpen 调了但进不去 AaDisplay：** 收左侧 rail 时 `applyZeroWidthGone` 沿父链把 `DecorView` 也 GONE，Coolwalk `CarSystemUiControllerService.a()` 对 OEM 启动变成静默空操作。改为推迟 rail reclaim、禁止折叠 DecorView，并拉长 AutoOpen 重试窗口。
+- **system_server SIGSEGV（进车机直接重启）：** `SplitPresentationGuard` 对已无 Surface 的 `WindowState` 调 `removeImmediately` → OneUI `SurfaceControl.Transaction.reparent` 空指针。改为先走 `WMS.removeWindow`，并在无 live SurfaceControl / 已 `mRemoved` 时跳过 `removeImmediately`。
+- **全屏 peel 触控条进导航栏点不动：** `AaDisplayActivity` 的 presentation VD 是 `FLAG_PRIVATE`（应用 uid），system_server 的 `DisplayManager.getDisplays()` / `getDisplay(id)` 都枚举不到。上报的 id 若再经 `getDisplay` 校验会被误丢，`touchAaDisplay` 一直 “display not found”。改为信任 `reportAaUiDisplayId`，并用 ATMS 扫任务作兜底。
 - **AA `:projection` 崩于 `RailStatusBarFragment` / `status_bar`：** 收左侧 rail 时 `removeView`/重挂载拆掉了 Coolwalk 的 `R.id.status_bar` 容器，FragmentManager 报 `No view found for id …/status_bar`。改为原地 GONE/零宽折叠，不再拆树。
 - **全屏记忆进车机只剩「点击选择应用」：** 恢复 `LastSplit` 全屏时，`initViews` 过早把垫后 pane 的 TextureView 设为 `INVISIBLE`，第二个 Surface 永不就绪 → 双 VD 不创建 → 自动拉起记忆应用失败。Surface 未齐前保持双 pane 可见，创建后再隐藏垫后层。
 
 ### Changed
-- **全屏 peel 短胶囊把手：** 全屏不再画通高/通宽加亮缝（易像坏屏亮线），改为外缘吸附的抽屉式短把手（内侧圆角）+ 三点；深色半透明底 + 浅描边/点，亮暗画面都更好认。两端触摸穿透到全屏 app。点按切换 / 向内拖退出 / 长按最近任务；strip 仍 inset ~80dp 避开 Coolwalk rail。
+- **全屏 peel 拖动手把位置 / 条宽：** 全屏把手只作入口；一旦拖动即 morph 成与分屏相同的通长缝+三点，clip 缝也用同一套 `DIVIDER_DP` 几何。分屏条 elevation 用空 outline，去掉周边 Material 阴影。
+- **全屏 peel 把手对齐：** 命中区不再通高/通宽（避免 elevation 投出第二条“分屏条”阴影）；短胶囊与命中框同中心贴边。
+- **全屏 peel 短胶囊把手：** 全屏不再画通高/通宽加亮缝（易像坏屏亮线），改为外缘吸附的抽屉式短把手（内侧圆角）+ 三点；深色半透明底 + 浅描边/点，亮暗画面都更好认。两端触摸穿透到全屏 app。点按切换 / 向内拖退出 / 长按最近任务；**贴真左/顶缘**（不再 inset 80dp 悬空）。Coolwalk rail steal 在 peel 命中带改走 `touchAaDisplay` 注入 AaDisplayActivity，避免贴边后点不到。
 - **车机合成减负：** 分屏 TextureView 标为不透明；全屏时垫后 pane 用 `INVISIBLE`（不断 Surface）跳过合成，背后导航/直播仍继续渲染。
 - **分屏条拖动 GPU 预览：** 拖动中不再每帧改 pane `layoutParams` / TextureView 尺寸；分屏用 scale+translate 预览，全屏 peel 用 `clipBounds`。松手再 layout + 一次 VirtualDisplay.resize。
 - **触控注入改为 oneway AIDL：** `touchPane` / `touchPrimaryPane` 不再阻塞 AA / `:car` UI 线程等 `injectInputEvent`；DOWN 不再额外打 `setFocusedPane`（服务端已设）。**安装后需重启**，否则新 client 等不到旧 system_server 的 two-way reply。

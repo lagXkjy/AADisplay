@@ -60,4 +60,19 @@ interface ICoreManager {
     void setSplitFullscreen(int pane);
     /** -1 when split; PRIMARY(0) or SECONDARY(1) when one pane is fullscreen. */
     int getSplitFullscreenPane();
+
+    /**
+     * Inject into the AaDisplayActivity presentation display (peel handle / AA UI),
+     * not a pane VirtualDisplay. Used when Coolwalk rail steal would otherwise bury
+     * flush-left peel touches into the fullscreen app. Appended at end for Stub ordinals.
+     */
+    oneway void touchAaDisplay(in MotionEvent motionEvent);
+
+    /**
+     * AaDisplayActivity's presentation VirtualDisplay is FLAG_PRIVATE (app-owned), so
+     * system_server DisplayManager cannot enumerate it. The AA UI process reports the
+     * live displayId so [touchAaDisplay] can inject. Pass INVALID_DISPLAY (-1) to clear.
+     * Appended at end for Stub ordinals.
+     */
+    oneway void reportAaUiDisplayId(int displayId);
 }

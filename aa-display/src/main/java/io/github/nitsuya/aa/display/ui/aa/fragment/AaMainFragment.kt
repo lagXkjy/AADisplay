@@ -145,6 +145,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         setupEmptyPaneClicks()
 
         baseBinding.splitContainer.doOnLayout {
+            reportAaUiDisplayId()
             requestDisplay("layout")
         }
     }
@@ -152,6 +153,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     override fun onResume() {
         super.onResume()
         baseBinding.splitContainer.post {
+            reportAaUiDisplayId()
             if (displayId == Display.INVALID_DISPLAY) {
                 isDisplayCreateRequested = false
             }
@@ -175,6 +177,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         }
         // Drop coalesced MOVE before tearing down VDs — never inject after destroy.
         cancelPendingPaneTouches()
+        tryOrNull { CoreApi.reportAaUiDisplayId(Display.INVALID_DISPLAY) }
         super.onDestroy()
         Log.d(TAG, "onDestroy: displayId=$displayId")
         clearDisplaySurfaces("destroy")
@@ -388,6 +391,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         val dividerLp = (baseBinding.splitDivider.layoutParams as FrameLayout.LayoutParams)
         baseBinding.splitDivider.applyPeelLayoutParams(dividerLp, sideBySide)
         baseBinding.splitDivider.layoutParams = dividerLp
+        // Above pane elevation (2); divider itself uses empty outline (no shadow).
+        baseBinding.splitDivider.elevation = 8f
         baseBinding.splitContainer.bringChildToFront(baseBinding.splitDivider)
         baseBinding.splitDivider.invalidate()
         syncPaneTouchEnabled(pane)
@@ -519,7 +524,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
      */
     private fun applyDragPreview(ratio: Float) {
         val vis = splitVisual(ratio) ?: return
-        beginDragPreviewIfNeeded(vis.sideBySide)
+        beginDragPreviewIfNeeded(vis)
         if (dragPeelPreview) {
             applyPeelClipPreview(vis)
         } else {
@@ -528,10 +533,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         baseBinding.splitDivider.invalidate()
     }
 
-    private fun beginDragPreviewIfNeeded(sideBySide: Boolean) {
+    private fun beginDragPreviewIfNeeded(vis: SplitVisual) {
         if (dragPreviewActive) return
         dragPreviewActive = true
         dragPeelPreview = SplitPane.isFullscreenPane(fullscreenPane)
+        val sideBySide = vis.sideBySide
         val primary = baseBinding.panePrimary
         val secondary = baseBinding.paneSecondary
         dragBasePrimaryMain = if (sideBySide) {
@@ -544,12 +550,32 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         } else {
             secondary.height.coerceAtLeast(1)
         }
-        val dividerLp = baseBinding.splitDivider.layoutParams as FrameLayout.LayoutParams
-        dragBaseDividerMargin = if (sideBySide) dividerLp.marginStart else dividerLp.topMargin
+        val divider = baseBinding.splitDivider
+        val dividerLp = divider.layoutParams as FrameLayout.LayoutParams
         if (dragPeelPreview) {
-            // Back pane is INVISIBLE in fullscreen; show it so clip reveals live content.
+            // Peel tab is only the entry; morph to the normal split divider chrome.
             baseBinding.tvDisplayPrimary.visibility = View.VISIBLE
             baseBinding.tvDisplaySecondary.visibility = View.VISIBLE
+            divider.setPeelDragSplitVisual(true)
+            if (sideBySide) {
+                dividerLp.width = vis.touchSpan
+                dividerLp.height = FrameLayout.LayoutParams.MATCH_PARENT
+                dividerLp.marginStart = vis.dividerMargin
+                dividerLp.topMargin = 0
+                dividerLp.gravity = Gravity.START or Gravity.TOP
+            } else {
+                dividerLp.width = FrameLayout.LayoutParams.MATCH_PARENT
+                dividerLp.height = vis.touchSpan
+                dividerLp.marginStart = 0
+                dividerLp.topMargin = vis.dividerMargin
+                dividerLp.gravity = Gravity.START or Gravity.TOP
+            }
+            divider.layoutParams = dividerLp
+            dragBaseDividerMargin = vis.dividerMargin
+            divider.translationX = 0f
+            divider.translationY = 0f
+        } else {
+            dragBaseDividerMargin = if (sideBySide) dividerLp.marginStart else dividerLp.topMargin
         }
     }
 
@@ -602,18 +628,20 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         secondary.scaleY = 1f
         secondary.translationX = 0f
         secondary.translationY = 0f
+        // Same seam geometry as split drag: DIVIDER_DP gap + centered full-length bar.
+        val dividerShift = (vis.dividerMargin - dragBaseDividerMargin).toFloat()
         if (vis.sideBySide) {
             primary.clipBounds = Rect(0, 0, vis.primaryMain, vis.parentH)
             val secLeft = (vis.primaryMain + vis.gap).coerceAtMost(vis.parentW)
             secondary.clipBounds = Rect(secLeft, 0, vis.parentW, vis.parentH)
-            divider.translationX = (vis.dividerMargin - dragBaseDividerMargin).toFloat()
+            divider.translationX = dividerShift
             divider.translationY = 0f
         } else {
             primary.clipBounds = Rect(0, 0, vis.parentW, vis.primaryMain)
             val secTop = (vis.primaryMain + vis.gap).coerceAtMost(vis.parentH)
             secondary.clipBounds = Rect(0, secTop, vis.parentW, vis.parentH)
             divider.translationX = 0f
-            divider.translationY = (vis.dividerMargin - dragBaseDividerMargin).toFloat()
+            divider.translationY = dividerShift
         }
     }
 
@@ -633,6 +661,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             v.pivotY = 0f
             v.clipBounds = null
         }
+        divider.setPeelDragSplitVisual(false)
         divider.translationX = 0f
         divider.translationY = 0f
     }
@@ -783,6 +812,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     return@runMain
                 }
                 Log.d(TAG, "onAvailableDisplay: displayId=$displayId create=$create")
+                reportAaUiDisplayId()
                 primarySurface?.let { CoreApi.setPaneSurface(SplitPane.PRIMARY, it) }
                 secondarySurface?.let { CoreApi.setPaneSurface(SplitPane.SECONDARY, it) }
                 registerControlReceivers()
@@ -853,6 +883,20 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             }
         }
         return resources.displayMetrics.densityDpi.coerceAtLeast(1)
+    }
+
+    /**
+     * Publish this presentation's displayId to system_server for Coolwalk peel inject.
+     * Private CarActivity VDs are not visible via system [DisplayManager.getDisplays].
+     */
+    private fun reportAaUiDisplayId() {
+        val host = baseBinding.splitContainer.display
+            ?: view?.display
+            ?: context?.display
+            ?: return
+        val id = host.displayId
+        if (id == Display.INVALID_DISPLAY || id == Display.DEFAULT_DISPLAY) return
+        tryOrNull { CoreApi.reportAaUiDisplayId(id) }
     }
 
     private fun requestDisplay(reason: String) {

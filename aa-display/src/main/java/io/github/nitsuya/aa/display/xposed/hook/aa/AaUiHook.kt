@@ -85,6 +85,11 @@ object AaUiHook: AaHook() {
     /** HU-space gesture started in the left rail strip (follow through MOVE/UP). */
     @Volatile private var mHuRailGesture = false
     /**
+     * Fullscreen peel handle hit in the rail band — route to AaDisplay UI instead of
+     * the pane VD so a flush-left peel stays tappable under Coolwalk steal.
+     */
+    @Volatile private var mHuPeelGesture = false
+    /**
      * Cached split fullscreen pane for rail steal. MOVE must not Binder-query
      * [CoreManager.splitFullscreenPane]; refresh on DOWN and SPLIT_STATE_CHANGED.
      */
@@ -126,8 +131,11 @@ object AaUiHook: AaHook() {
      * Keep attempts few and spaced so a successful start can cancel before the next retry
      * (repeated start recreates/refocuses CarActivity and feels janky).
      */
-    private val AUTO_OPEN_DELAYS_MS = longArrayOf(1200L, 4000L, 8000L)
+    private val AUTO_OPEN_DELAYS_MS = longArrayOf(1200L, 4000L, 8000L, 14000L, 22000L)
     private val AUTO_OPEN_TOKEN = Any()
+    /** Defer rail DecorView collapse until AutoOpen has had a chance to start AaDisplay. */
+    private val RAIL_RECLAIM_TOKEN = Any()
+    private val RAIL_RECLAIM_DELAY_MS = 10_000L
     /** Uptime of the last armed Auto Open session; used to debounce LayoutInfo storms. */
     private var mAutoOpenSessionAtMs = 0L
     private val AUTO_OPEN_REARM_GAP_MS = 12_000L
@@ -135,6 +143,8 @@ object AaUiHook: AaHook() {
     private var mAutoOpenShownReceiver: android.content.BroadcastReceiver? = null
     /** Coalesce reclaim follow-ups per view across soft-reconnect storms. */
     private val mReclaimFollowUps = java.util.WeakHashMap<View, Runnable>()
+    /** Facet hosts waiting for deferred reclaim (weak). */
+    private val mPendingRailReclaim = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
 
     /** Latest main-display LayoutInfo size in dp (from constructor args). */
     @Volatile private var mLayoutWidthDp: Int = 0
@@ -940,6 +950,14 @@ object AaUiHook: AaHook() {
             val downInRail = if (railTarget) true else downInRailBand
             if (action == MotionEvent.ACTION_DOWN) {
                 mHuRailGesture = downInRail
+                mCachedFullscreenPane = try {
+                    CoreManager.splitFullscreenPane
+                } catch (_: Throwable) {
+                    mCachedFullscreenPane
+                }
+                mHuPeelGesture = downInRail &&
+                    SplitPane.isFullscreenPane(mCachedFullscreenPane) &&
+                    isPeelHandleHitBand(motion)
             }
             // Follow through only when the gesture *started* in the rail. Do not steal a
             // content gesture that merely slides into the left strip (common map/list mis-touch).
@@ -948,7 +966,10 @@ object AaUiHook: AaHook() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     val was = mHuRailGesture
                     mHuRailGesture = false
-                    was
+                    // Keep peel routing for this UP/CANCEL, then clear.
+                    val result = was
+                    if (!was) mHuPeelGesture = false
+                    result
                 }
                 else -> mHuRailGesture
             }
@@ -958,11 +979,6 @@ object AaUiHook: AaHook() {
             val now = SystemClock.uptimeMillis()
             if (action == MotionEvent.ACTION_DOWN) {
                 mRailHostDownTime = now
-                mCachedFullscreenPane = try {
-                    CoreManager.splitFullscreenPane
-                } catch (_: Throwable) {
-                    mCachedFullscreenPane
-                }
             }
             val down = mRailHostDownTime.takeIf { it > 0L } ?: now
             val toInject = rewriteMotionEvent(
@@ -973,10 +989,14 @@ object AaUiHook: AaHook() {
             )
             try {
                 val fs = mCachedFullscreenPane
-                val injected = if (SplitPane.isFullscreenPane(fs)) {
-                    CoreManager.tryTouchPane(fs, toInject)
-                } else {
-                    CoreManager.tryTouchPrimaryPane(toInject)
+                val peel = mHuPeelGesture
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    mHuPeelGesture = false
+                }
+                val injected = when {
+                    peel -> CoreManager.tryTouchAaDisplay(toInject)
+                    SplitPane.isFullscreenPane(fs) -> CoreManager.tryTouchPane(fs, toInject)
+                    else -> CoreManager.tryTouchPrimaryPane(toInject)
                 }
                 // Only swallow Coolwalk dispatch when inject actually reached system_server.
                 if (!injected) return
@@ -985,7 +1005,11 @@ object AaUiHook: AaHook() {
                     logDebug(
                         tagName,
                         "AaUiHook: HU rail → " +
-                            (if (SplitPane.isFullscreenPane(fs)) "touchPane($fs)" else "touchPrimaryPane") +
+                            (when {
+                                peel -> "touchAaDisplay"
+                                SplitPane.isFullscreenPane(fs) -> "touchPane($fs)"
+                                else -> "touchPrimaryPane"
+                            }) +
                             " x=${motion.x} y=${motion.y} rail=$rail " +
                             "facetTarget=$railTarget"
                     )
@@ -997,6 +1021,28 @@ object AaUiHook: AaHook() {
             log(tagName, "AaUiHook: HU rail steal failed", e)
         } finally {
             if (owned) motion.recycle()
+        }
+    }
+
+    /**
+     * Vertical (side-by-side) or horizontal (stacked) band around the peel tab center.
+     * Matches [SplitDividerView] peel hit length so flush-edge tabs under the rail steal
+     * band still reach AaDisplay UI.
+     */
+    private fun isPeelHandleHitBand(motion: MotionEvent): Boolean {
+        val w = layoutWidthPx().takeIf { it > 0 } ?: return true
+        val h = layoutHeightPx().takeIf { it > 0 } ?: return true
+        val sideBySide = w >= h
+        val hit = (
+            SplitPane.PEEL_TAB_LENGTH_DP + 2f * SplitPane.PEEL_TAB_HIT_EXPAND_DP
+            ).coerceAtMost(if (sideBySide) h.toFloat() else w.toFloat())
+        val half = hit / 2f
+        return if (sideBySide) {
+            val cy = h / 2f
+            motion.getY(0) in (cy - half)..(cy + half)
+        } else {
+            val cx = w / 2f
+            motion.getX(0) in (cx - half)..(cx + half)
         }
     }
 
@@ -1445,7 +1491,9 @@ object AaUiHook: AaHook() {
         if (mAaDisplayShownThisSession) return
         mAaDisplayShownThisSession = true
         mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
-        logDebug(tagName, "AaUiHook: AutoOpen stop retries ($reason)")
+        log(tagName, "AaUiHook: AutoOpen stop retries ($reason)")
+        // Safe to collapse rail chrome once AaDisplay is up.
+        flushPendingRailReclaim("shown:$reason")
     }
 
     private fun scheduleAutoOpenIfNeeded(reason: String = "unknown") {
@@ -1460,7 +1508,7 @@ object AaUiHook: AaHook() {
         mAutoOpenSessionAtMs = now
         mAaDisplayShownThisSession = false
         mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
-        logDebug(tagName, "AaUiHook: arm AutoOpen retries ($reason) delays=${AUTO_OPEN_DELAYS_MS.contentToString()}")
+        log(tagName, "AaUiHook: arm AutoOpen retries ($reason) delays=${AUTO_OPEN_DELAYS_MS.contentToString()}")
         for (delayMs in AUTO_OPEN_DELAYS_MS) {
             mFacetEnsureHandler.postAtTime(
                 { tryAutoOpenAaDisplay(delayMs) },
@@ -1473,7 +1521,7 @@ object AaUiHook: AaHook() {
     private fun tryAutoOpenAaDisplay(delayMs: Long) {
         // Only stop on real resume (AA_DISPLAY_SHOWN). CarSystemUiControllerService
         // swallows "Unable to start activity" — invoke can "succeed" without opening,
-        // so do not cancel remaining 4s/8s retries on a bare invoke.
+        // so do not cancel remaining retries on a bare invoke.
         if (mAaDisplayShownThisSession) {
             markAaDisplayShown("flag")
             return
@@ -1481,7 +1529,7 @@ object AaUiHook: AaHook() {
         val method = startMethod ?: return
         try {
             method.invoke(null, aaDisplayLaunchIntent())
-            logDebug(tagName, "AaUiHook: AutoOpen invoke at ${delayMs}ms")
+            log(tagName, "AaUiHook: AutoOpen invoke at ${delayMs}ms")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: AutoOpen invoke failed at ${delayMs}ms", e)
         }
@@ -1788,12 +1836,38 @@ object AaUiHook: AaHook() {
     /**
      * Hide/zero the rail column in place and arm AutoOpen. Keeps [resIdStatusBarId]
      * attached so AA fragment transactions stay valid.
+     *
+     * Defer heavy reclaim (which can GONE thin wrappers up the tree) until AutoOpen
+     * has had time — collapsing FacetBar DecorView too early makes
+     * CarSystemUiControllerService.a() silently no-op OEM starts.
      */
     private fun collapseFacetChromeInPlace(facetHost: ViewGroup, reason: String) {
         facetHost.tag = facetBarInjectedTag
         scheduleAutoOpenIfNeeded("facet:$reason")
-        logDebug(tagName, "AaUiHook: collapse facet rail ($reason)")
-        reclaimRailSpace(facetHost)
+        logDebug(tagName, "AaUiHook: collapse facet rail ($reason) — reclaim deferred")
+        scheduleDeferredRailReclaim(facetHost)
+    }
+
+    private fun scheduleDeferredRailReclaim(rail: View) {
+        mPendingRailReclaim.add(rail)
+        mFacetEnsureHandler.removeCallbacksAndMessages(RAIL_RECLAIM_TOKEN)
+        val now = android.os.SystemClock.uptimeMillis()
+        mFacetEnsureHandler.postAtTime(
+            { flushPendingRailReclaim("defer-timeout") },
+            RAIL_RECLAIM_TOKEN,
+            now + RAIL_RECLAIM_DELAY_MS
+        )
+    }
+
+    private fun flushPendingRailReclaim(reason: String) {
+        mFacetEnsureHandler.removeCallbacksAndMessages(RAIL_RECLAIM_TOKEN)
+        val pending = mPendingRailReclaim.toList()
+        mPendingRailReclaim.clear()
+        if (pending.isEmpty()) return
+        log(tagName, "AaUiHook: reclaim rail chrome ($reason) count=${pending.size}")
+        for (rail in pending) {
+            if (rail.isAttachedToWindow) reclaimRailSpace(rail)
+        }
     }
 
     /**
@@ -1843,6 +1917,12 @@ object AaUiHook: AaHook() {
         return railPxRange(fullW.coerceAtLeast(1)).last
     }
     private fun applyZeroWidthGone(view: View, sourceLp: ViewGroup.LayoutParams? = null) {
+        // Never GONE DecorView / window roots — that kills FacetBar presentation and
+        // CarSystemUiControllerService can no longer AutoOpen OEM apps.
+        if (isWindowDecorOrRoot(view)) {
+            logDebug(tagName, "AaUiHook: skip zero-width on ${view.javaClass.simpleName}")
+            return
+        }
         view.visibility = View.GONE
         view.isClickable = false
         view.isFocusable = false
@@ -1867,6 +1947,13 @@ object AaUiHook: AaHook() {
         } else {
             view.layoutParams = ViewGroup.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT)
         }
+    }
+
+    private fun isWindowDecorOrRoot(view: View): Boolean {
+        val name = view.javaClass.name
+        return name.contains("DecorView") ||
+            name.endsWith("ViewRootImpl") ||
+            view.parent == null && view === view.rootView
     }
 
     private fun measuredOrLpWidth(view: View): Int {
@@ -1949,6 +2036,8 @@ object AaUiHook: AaHook() {
                 }
                 isThinSideRail(parent, maxSidePx) || parent.childCount <= 1 -> {
                     // Thin wrapper around the rail — keep collapsing upward.
+                    // Stop before DecorView / window root (breaks CarSystemUi AutoOpen).
+                    if (isWindowDecorOrRoot(parent)) break
                     applyZeroWidthGone(parent)
                     node = parent
                     depth++
