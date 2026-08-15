@@ -34,7 +34,6 @@ import com.github.kyuubiran.ezxhelper.utils.loadClass
 import com.github.kyuubiran.ezxhelper.utils.staticMethod
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.BuildConfig
-import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.service.AaActivityService
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.AABroadcastConst
@@ -43,7 +42,6 @@ import io.github.nitsuya.aa.display.xposed.CoreManager
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
-import io.github.qauxv.ui.CommonContextWrapper
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType
 import java.lang.reflect.Constructor
@@ -1777,28 +1775,25 @@ object AaUiHook: AaHook() {
         resultViewGroup: ViewGroup,
         matchReason: String
     ) {
-        val parent = (resultViewGroup.parent as ViewGroup?)?.apply {
-            removeView(resultViewGroup)
-        }
-        val aaFacetBar = buildAaFacetBar(resultViewGroup, parent, matchReason)
-        reclaimRailSpace(aaFacetBar)
-        param.result = aaFacetBar
+        // Never removeView / reparent the stock facet tree. Coolwalk hosts
+        // RailStatusBarFragment in R.id.status_bar; detaching that subtree makes
+        // FragmentManager crash with "No view found for id …/status_bar".
+        collapseFacetChromeInPlace(resultViewGroup, matchReason)
     }
 
     private fun injectAaFacetBarInPlace(facetHost: ViewGroup, reason: String) {
-        val parent = facetHost.parent as? ViewGroup
-            ?: throw IllegalStateException("facet host has no parent")
-        val index = parent.indexOfChild(facetHost)
-        val lp = facetHost.layoutParams
-        parent.removeView(facetHost)
-        val aaFacetBar = buildAaFacetBar(facetHost, parent, "inplace:$reason")
-        applyZeroWidthGone(aaFacetBar, lp)
-        if (index >= 0) {
-            parent.addView(aaFacetBar, index, aaFacetBar.layoutParams ?: lp)
-        } else {
-            parent.addView(aaFacetBar, aaFacetBar.layoutParams ?: lp)
-        }
-        reclaimRailSpace(aaFacetBar)
+        collapseFacetChromeInPlace(facetHost, "inplace:$reason")
+    }
+
+    /**
+     * Hide/zero the rail column in place and arm AutoOpen. Keeps [resIdStatusBarId]
+     * attached so AA fragment transactions stay valid.
+     */
+    private fun collapseFacetChromeInPlace(facetHost: ViewGroup, reason: String) {
+        facetHost.tag = facetBarInjectedTag
+        scheduleAutoOpenIfNeeded("facet:$reason")
+        logDebug(tagName, "AaUiHook: collapse facet rail ($reason)")
+        reclaimRailSpace(facetHost)
     }
 
     /**
@@ -2029,26 +2024,6 @@ object AaUiHook: AaHook() {
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: reclaimLeftGutter failed", e)
         }
-    }
-
-    private fun buildAaFacetBar(
-        resultViewGroup: ViewGroup,
-        resultViewGroupParent: ViewGroup?,
-        matchReason: String
-    ): ConstraintLayout {
-        val ctx = resultViewGroup.context
-        val ctx2 = CommonContextWrapper.createModuleContext(ctx)
-        val layoutInflater = LayoutInflater.from(ctx2)
-        val aaFacetBar = layoutInflater.inflate(R.layout.aa_facet_bar, resultViewGroupParent, false) as ConstraintLayout
-        aaFacetBar.tag = facetBarInjectedTag
-        resultViewGroup.tag = facetBarInjectedTag
-        logDebug(tagName, "AaUiHook: collapse facet rail ($matchReason)")
-        scheduleAutoOpenIfNeeded("facet:$matchReason")
-        // Keep original chrome in hierarchy but hidden so AA lifecycle stays intact.
-        resultViewGroup.visibility = View.GONE
-        aaFacetBar.addView(resultViewGroup)
-        applyZeroWidthGone(aaFacetBar)
-        return aaFacetBar
     }
 
     private fun hookRadius() {

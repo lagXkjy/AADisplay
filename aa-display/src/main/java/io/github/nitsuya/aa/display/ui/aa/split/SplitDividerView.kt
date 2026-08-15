@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -23,11 +25,13 @@ import kotlin.math.hypot
  *
  * Fullscreen peel mode: always docked on a fixed driver-side edge (left when
  * side-by-side, top when stacked) so tap-to-swap does not move the handle.
- * Inset past Coolwalk's LHD rail. Drag inward to exit; tap toggles fullscreen pane.
+ * Inset past Coolwalk's LHD rail. Visual is a short edge-adsorbed tab (not a
+ * full-length seam). Drag inward to exit; tap toggles fullscreen pane.
  *
  * Hit target is wider than the visual seam and overlaps adjacent panes via negative
- * margins + elevation. Ends of the strip ([SplitPane.DIVIDER_TOUCH_END_INSET_DP])
- * do not consume touches so pane-corner chrome stays tappable.
+ * margins + elevation. Ends of the strip ([SplitPane.DIVIDER_TOUCH_END_INSET_DP] in
+ * split; peel uses a center hit band around [SplitPane.PEEL_TAB_LENGTH_DP]) do not
+ * consume touches so pane chrome stays tappable.
  */
 class SplitDividerView @JvmOverloads constructor(
     context: Context,
@@ -52,21 +56,33 @@ class SplitDividerView @JvmOverloads constructor(
         strokeWidth = 1.5f * density
         strokeCap = Paint.Cap.ROUND
     }
-    private val peelSeamPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xB3FFFFFF.toInt()
-        strokeWidth = 2.5f * density
-        strokeCap = Paint.Cap.ROUND
+    /** Dark tab fills so the handle reads on both bright maps and dark media. */
+    private val peelPillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xE6282828.toInt()
+        style = Paint.Style.FILL
+    }
+    private val peelPillStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0x99FFFFFF.toInt()
+        style = Paint.Style.STROKE
+        strokeWidth = 1.25f * density
     }
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFE8E8E8.toInt()
         style = Paint.Style.FILL
     }
     private val peelDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFFFFFFF.toInt()
+        color = 0xFFF5F5F5.toInt()
         style = Paint.Style.FILL
     }
+    private val peelPillRect = RectF()
+    private val peelPillPath = Path()
+    private val peelCornerRadii = FloatArray(8)
     private val dotRadius = 2.5f * density
-    private val peelDotRadius = 3.25f * density
+    private val peelDotRadius = 2.25f * density
+    private val peelTabLengthPx = SplitPane.PEEL_TAB_LENGTH_DP * density
+    private val peelTabThicknessPx = SplitPane.PEEL_TAB_THICKNESS_DP * density
+    private val peelHitLengthPx =
+        (SplitPane.PEEL_TAB_LENGTH_DP + 2 * SplitPane.PEEL_TAB_HIT_EXPAND_DP) * density
     private val dotGap = 7f * density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
@@ -138,13 +154,18 @@ class SplitDividerView @JvmOverloads constructor(
     }
 
     /**
-     * Touches on the long-axis ends fall through to the panes. If the divider is
-     * shorter than two insets, keep the full span so a tiny display still works.
-     * Peel mode keeps the full strip tappable (short docked handle).
+     * Touches on the long-axis ends fall through to the panes. If the divider /
+     * peel hit band is shorter than two insets, keep the full span so a tiny
+     * display still works.
      */
     private fun isOnEndInset(event: MotionEvent): Boolean {
-        if (peelMode) return false
-        val inset = SplitPane.DIVIDER_TOUCH_END_INSET_DP * density
+        val inset = if (peelMode) {
+            val axis = if (sideBySide) height.toFloat() else width.toFloat()
+            val hit = peelHitLengthPx.coerceAtMost(axis)
+            ((axis - hit) / 2f).coerceAtLeast(0f)
+        } else {
+            SplitPane.DIVIDER_TOUCH_END_INSET_DP * density
+        }
         return if (sideBySide) {
             val usable = height - 2f * inset
             usable > 0f && (event.y < inset || event.y > height - inset)
@@ -163,19 +184,63 @@ class SplitDividerView @JvmOverloads constructor(
         super.onDraw(canvas)
         val cx = width / 2f
         val cy = height / 2f
-        val linePaint = if (peelMode) peelSeamPaint else seamPaint
-        if (sideBySide) {
-            canvas.drawLine(cx, 0f, cx, height.toFloat(), linePaint)
-            drawDots(canvas, cx, cy, vertical = true)
+        if (peelMode) {
+            val (dotX, dotY) = drawPeelEdgeTab(canvas)
+            drawDots(canvas, dotX, dotY, vertical = sideBySide, peel = true)
+        } else if (sideBySide) {
+            canvas.drawLine(cx, 0f, cx, height.toFloat(), seamPaint)
+            drawDots(canvas, cx, cy, vertical = true, peel = false)
         } else {
-            canvas.drawLine(0f, cy, width.toFloat(), cy, linePaint)
-            drawDots(canvas, cx, cy, vertical = false)
+            canvas.drawLine(0f, cy, width.toFloat(), cy, seamPaint)
+            drawDots(canvas, cx, cy, vertical = false, peel = false)
         }
     }
 
-    private fun drawDots(canvas: Canvas, cx: Float, cy: Float, vertical: Boolean) {
-        val paint = if (peelMode) peelDotPaint else dotPaint
-        val radius = if (peelMode) peelDotRadius else dotRadius
+    /**
+     * Edge-adsorbed drawer tab: flush to the outer (driver) edge of this view,
+     * rounded only on the inward side so it reads as stuck to the rail side.
+     * @return center of the tab for the grip dots
+     */
+    private fun drawPeelEdgeTab(canvas: Canvas): Pair<Float, Float> {
+        val halfLong = peelTabLengthPx / 2f
+        val thick = peelTabThicknessPx.coerceAtMost(
+            if (sideBySide) width.toFloat() else height.toFloat()
+        )
+        val r = thick / 2f
+        // Only round the two corners facing into content.
+        for (i in peelCornerRadii.indices) peelCornerRadii[i] = 0f
+        if (sideBySide) {
+            val cy = height / 2f
+            peelPillRect.set(0f, cy - halfLong, thick, cy + halfLong)
+            // top-right + bottom-right
+            peelCornerRadii[2] = r
+            peelCornerRadii[3] = r
+            peelCornerRadii[4] = r
+            peelCornerRadii[5] = r
+            peelPillPath.reset()
+            peelPillPath.addRoundRect(peelPillRect, peelCornerRadii, Path.Direction.CW)
+            canvas.drawPath(peelPillPath, peelPillPaint)
+            canvas.drawPath(peelPillPath, peelPillStrokePaint)
+            return thick / 2f to cy
+        } else {
+            val cx = width / 2f
+            peelPillRect.set(cx - halfLong, 0f, cx + halfLong, thick)
+            // bottom-left + bottom-right
+            peelCornerRadii[4] = r
+            peelCornerRadii[5] = r
+            peelCornerRadii[6] = r
+            peelCornerRadii[7] = r
+            peelPillPath.reset()
+            peelPillPath.addRoundRect(peelPillRect, peelCornerRadii, Path.Direction.CW)
+            canvas.drawPath(peelPillPath, peelPillPaint)
+            canvas.drawPath(peelPillPath, peelPillStrokePaint)
+            return cx to thick / 2f
+        }
+    }
+
+    private fun drawDots(canvas: Canvas, cx: Float, cy: Float, vertical: Boolean, peel: Boolean) {
+        val paint = if (peel) peelDotPaint else dotPaint
+        val radius = if (peel) peelDotRadius else dotRadius
         val offsets = floatArrayOf(-dotGap, 0f, dotGap)
         for (offset in offsets) {
             if (vertical) {

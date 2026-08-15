@@ -131,6 +131,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             splitRatio = SplitPane.clampRatio(snap.primaryRatio)
             ratioBeforeFullscreen = splitRatio
             fullscreenPane = snap.fullscreenPane
+            // Optimistic: hide "tap to choose" while system_server restores the pair.
+            paneHasApp[SplitPane.PRIMARY] = true
+            paneHasApp[SplitPane.SECONDARY] = true
         }
         if (SplitPane.isFullscreenPane(fullscreenPane)) {
             applyFullscreenLayout(fullscreenPane)
@@ -637,26 +640,32 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     /**
      * Behind fullscreen pane must not eat touches or be composited; both panes
      * active in split. INVISIBLE (not GONE) keeps the SurfaceTexture alive.
+     *
+     * While either TextureView still lacks a Surface, keep both VISIBLE: applying
+     * LastSplit fullscreen in [initViews] used to hide the back pane before
+     * [onSurfaceTextureAvailable], so [requestDisplay] waited forever, VDs never
+     * created, and restore fell back to "tap to choose".
      */
     private fun syncPaneTouchEnabled(visibleFullscreenPane: Int) {
         val primaryTv = baseBinding.tvDisplayPrimary
         val secondaryTv = baseBinding.tvDisplaySecondary
-        when (visibleFullscreenPane) {
-            SplitPane.PRIMARY -> {
+        val bootstrapping = primarySurface == null || secondarySurface == null
+        when {
+            bootstrapping || visibleFullscreenPane == SplitPane.FULLSCREEN_NONE -> {
+                primaryTv.isEnabled = true
+                primaryTv.visibility = View.VISIBLE
+                secondaryTv.isEnabled = true
+                secondaryTv.visibility = View.VISIBLE
+            }
+            visibleFullscreenPane == SplitPane.PRIMARY -> {
                 primaryTv.isEnabled = true
                 primaryTv.visibility = View.VISIBLE
                 secondaryTv.isEnabled = false
                 secondaryTv.visibility = View.INVISIBLE
             }
-            SplitPane.SECONDARY -> {
+            else -> {
                 primaryTv.isEnabled = false
                 primaryTv.visibility = View.INVISIBLE
-                secondaryTv.isEnabled = true
-                secondaryTv.visibility = View.VISIBLE
-            }
-            else -> {
-                primaryTv.isEnabled = true
-                primaryTv.visibility = View.VISIBLE
                 secondaryTv.isEnabled = true
                 secondaryTv.visibility = View.VISIBLE
             }

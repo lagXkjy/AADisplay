@@ -2,7 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+- **AA `:projection` 崩于 `RailStatusBarFragment` / `status_bar`：** 收左侧 rail 时 `removeView`/重挂载拆掉了 Coolwalk 的 `R.id.status_bar` 容器，FragmentManager 报 `No view found for id …/status_bar`。改为原地 GONE/零宽折叠，不再拆树。
+- **全屏记忆进车机只剩「点击选择应用」：** 恢复 `LastSplit` 全屏时，`initViews` 过早把垫后 pane 的 TextureView 设为 `INVISIBLE`，第二个 Surface 永不就绪 → 双 VD 不创建 → 自动拉起记忆应用失败。Surface 未齐前保持双 pane 可见，创建后再隐藏垫后层。
+
 ### Changed
+- **全屏 peel 短胶囊把手：** 全屏不再画通高/通宽加亮缝（易像坏屏亮线），改为外缘吸附的抽屉式短把手（内侧圆角）+ 三点；深色半透明底 + 浅描边/点，亮暗画面都更好认。两端触摸穿透到全屏 app。点按切换 / 向内拖退出 / 长按最近任务；strip 仍 inset ~80dp 避开 Coolwalk rail。
 - **车机合成减负：** 分屏 TextureView 标为不透明；全屏时垫后 pane 用 `INVISIBLE`（不断 Surface）跳过合成，背后导航/直播仍继续渲染。
 - **分屏条拖动 GPU 预览：** 拖动中不再每帧改 pane `layoutParams` / TextureView 尺寸；分屏用 scale+translate 预览，全屏 peel 用 `clipBounds`。松手再 layout + 一次 VirtualDisplay.resize。
 - **触控注入改为 oneway AIDL：** `touchPane` / `touchPrimaryPane` 不再阻塞 AA / `:car` UI 线程等 `injectInputEvent`；DOWN 不再额外打 `setFocusedPane`（服务端已设）。**安装后需重启**，否则新 client 等不到旧 system_server 的 two-way reply。

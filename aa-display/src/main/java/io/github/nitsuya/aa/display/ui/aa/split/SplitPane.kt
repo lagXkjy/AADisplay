@@ -32,6 +32,18 @@ object SplitPane {
      */
     const val FULLSCREEN_PEEL_INSET_DP = 80
 
+    /** Fullscreen peel visual: edge-docked tab length (long axis). */
+    const val PEEL_TAB_LENGTH_DP = 56
+
+    /** Fullscreen peel visual: tab thickness protruding inward from the edge. */
+    const val PEEL_TAB_THICKNESS_DP = 8
+
+    /**
+     * Extra hit length beyond [PEEL_TAB_LENGTH_DP] on each end of the peel tab
+     * (same idea as [DIVIDER_TOUCH_EXPAND_DP] for the seam).
+     */
+    const val PEEL_TAB_HIT_EXPAND_DP = 12
+
     /** Divider thickness in logical pixels (applied in display pixels via density). */
     const val DIVIDER_DP = 8
 
