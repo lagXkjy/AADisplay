@@ -35,6 +35,8 @@ class DisplayWindow(
 ): View.OnTouchListener {
     companion object {
         private const val TAG = "AADisplay_DisplayWindow"
+        /** Phone overlay UI; session policies still run when false. */
+        private const val SHOW_PHONE_OVERLAY = false
         /** Keep OWN_DISPLAY_GROUP user-activity from timing out / dozing on Samsung. */
         private const val KEEP_AWAKE_INTERVAL_MS = 15_000L
         private const val TOUCH_KEEP_AWAKE_MIN_INTERVAL_MS = 1_000L
@@ -367,14 +369,16 @@ class DisplayWindow(
     }
 
     init {
-        runCatching {
-            with(ContextThemeWrapper(mContext, R.style.Theme_AADisplay)){
-                mControllerBinding = WindowControllerBinding.inflate(LayoutInflater.from(this))
+        if (SHOW_PHONE_OVERLAY) {
+            runCatching {
+                with(ContextThemeWrapper(mContext, R.style.Theme_AADisplay)) {
+                    mControllerBinding = WindowControllerBinding.inflate(LayoutInflater.from(this))
+                }
+            }.onFailure {
+                log(TAG, "init: new window failed may you forget reboot", it)
+            }.onSuccess {
+                doInit()
             }
-        }.onFailure {
-            log(TAG, "init: new window failed may you forget reboot", it)
-        }.onSuccess {
-            doInit()
         }
         interactiveMonitor.init()
     }
@@ -405,14 +409,16 @@ class DisplayWindow(
         }
     }
 
-    suspend fun onResume(){
+    suspend fun onResume() {
         interactiveMonitor.init()
         mDestroyJob?.cancelAndJoin()
-        mControllerBinding?.apply {
-            tvDestroyTime.visibility = View.GONE
-            root.post { applyControllerDockPosition() }
+        if (SHOW_PHONE_OVERLAY) {
+            mControllerBinding?.apply {
+                tvDestroyTime.visibility = View.GONE
+                root.post { applyControllerDockPosition() }
+            }
+            showController()
         }
-        showController()
     }
 
     suspend fun onDestroyPromptly() {
@@ -421,36 +427,45 @@ class DisplayWindow(
         mDestroyJob?.cancelAndJoin()
         close()
     }
+
     suspend fun onDestroy(onDestroySucceed: () -> Unit) {
         restorePhoneDisplayPower()
         interactiveMonitor.release()
         mDestroyJob?.cancelAndJoin()
+        startDelayDestroy(onDestroySucceed)
+    }
 
-        mControllerBinding?.apply {
-            tvDestroyTime.setOnClickListener {
-                mDestroyJob?.cancel()
+    /**
+     * Delay Destroy is session policy, not overlay UI. When [SHOW_PHONE_OVERLAY] is false,
+     * still run the headless 180s timer so [onDestroySucceed] fires and VDs are released.
+     */
+    private fun startDelayDestroy(onDestroySucceed: () -> Unit) {
+        val binding = mControllerBinding.takeIf { SHOW_PHONE_OVERLAY }
+        binding?.tvDestroyTime?.setOnClickListener {
+            mDestroyJob?.cancel()
+            close()
+            onDestroySucceed()
+        }
+        mDestroyJob = flow {
+            for (i in mDelayDestroyTime downTo 0) {
+                emit(i)
+                delay(1000)
+            }
+        }.onStart {
+            binding?.apply {
+                tvDestroyTime.visibility = View.VISIBLE
+                root.post { applyControllerDockPosition() }
+            }
+        }.onEach { remaining ->
+            if (binding != null && mControllerStatus) {
+                binding.tvDestroyTime.text = "${remaining}s"
+            }
+        }.onCompletion {
+            if (it == null) {
                 close()
                 onDestroySucceed()
             }
-            mDestroyJob = flow {
-                for (i in mDelayDestroyTime downTo 0) {
-                    emit(i)
-                    delay(1000)
-                }
-            }.onStart {
-                tvDestroyTime.visibility = View.VISIBLE
-                root.post { applyControllerDockPosition() }
-            }.onEach {
-                if (mControllerStatus) {
-                    tvDestroyTime.text = "${it}s"
-                }
-            }.onCompletion {
-                if (it == null) {
-                    close()
-                    onDestroySucceed()
-                }
-            }.launchIn(CoroutineScope(Dispatchers.Main))
-        }
+        }.launchIn(CoroutineScope(Dispatchers.Main))
     }
 
     /** Best-effort wake of the phone panel before destroying overlays. */
@@ -462,8 +477,8 @@ class DisplayWindow(
         }
     }
 
-    private fun showController(){
-        if(mControllerStatus) return
+    private fun showController() {
+        if (!SHOW_PHONE_OVERLAY || mControllerStatus) return
         mControllerBinding?.apply {
             tryOrNull { Instances.windowManager.addView(root, mControllerLayoutParams) }
             root.post { applyControllerDockPosition() }
@@ -471,12 +486,13 @@ class DisplayWindow(
             mControllerStatus = true
         }
     }
-    private fun hideController(){
-        if(!mControllerStatus) return
+
+    private fun hideController() {
+        if (!mControllerStatus) return
         mControllerBinding?.apply {
             tryOrNull { Instances.windowManager.removeView(root) }
-            mControllerStatus = false
         }
+        mControllerStatus = false
     }
 
     private fun applyControllerDockPosition() {
