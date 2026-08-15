@@ -2,8 +2,18 @@
 
 ## Unreleased
 
+## 0.24#17.4-r7
+
 ### Changed
 - **r6→r7 逻辑收敛（行为冻结）：** peel 命中几何收拢到 `SplitPane.peelHitContains`；`touchAaDisplay` 的 ATMS 1..64 改为会话一次性门闩；Facet rail reclaim 去掉 10s 推迟链，依赖「永不 GONE DecorView」不变量立即折叠 + 一次 layout settle；`reportAaUiDisplayId` 在 surface 就绪时补报。不改贴边 peel / 双 VD 全屏 / GPU 预览 / AutoOpen 重试语义。
+- **全屏 peel 拖动手把位置 / 条宽：** 全屏把手只作入口；一旦拖动即 morph 成与分屏相同的通长缝+三点，clip 缝也用同一套 `DIVIDER_DP` 几何。分屏条 elevation 用空 outline，去掉周边 Material 阴影。
+- **全屏 peel 把手对齐：** 命中区不再通高/通宽（避免 elevation 投出第二条“分屏条”阴影）；短胶囊与命中框同中心贴边。
+- **全屏 peel 短胶囊把手：** 全屏不再画通高/通宽加亮缝（易像坏屏亮线），改为外缘吸附的抽屉式短把手（内侧圆角）+ 三点；深色半透明底 + 浅描边/点，亮暗画面都更好认。两端触摸穿透到全屏 app。点按切换 / 向内拖退出 / 长按最近任务；**贴真左/顶缘**（不再 inset 80dp 悬空）。Coolwalk rail steal 在 peel 命中带改走 `touchAaDisplay` 注入 AaDisplayActivity，避免贴边后点不到。
+- **车机合成减负：** 分屏 TextureView 标为不透明；全屏时垫后 pane 用 `INVISIBLE`（不断 Surface）跳过合成，背后导航/直播仍继续渲染。
+- **分屏条拖动 GPU 预览：** 拖动中不再每帧改 pane `layoutParams` / TextureView 尺寸；分屏用 scale+translate 预览，全屏 peel 用 `clipBounds`。松手再 layout + 一次 VirtualDisplay.resize。
+- **触控注入改为 oneway AIDL：** `touchPane` / `touchPrimaryPane` 不再阻塞 AA / `:car` UI 线程等 `injectInputEvent`；DOWN 不再额外打 `setFocusedPane`（服务端已设）。**安装后需重启**，否则新 client 等不到旧 system_server 的 two-way reply。
+- **Coolwalk 栏 steal 缓存全屏：** MOVE 不再同步查询 `splitFullscreenPane`；DOWN 查一次，并用 `ACTION_SPLIT_STATE_CHANGED` 更新缓存。
+- **Version bump to `0.24#17.4-r7`** (`versionCode` 3063)。
 
 ### Fixed
 - **全屏 peel 松手比例对不上：** 过退出阈值后原先一律恢复进全屏前比例，预览却按手指位置画，松手后要二次拖。改为把松手比例 clamp 后写回 UI + `setSplitRatio`（仍先 `setSplitFullscreen(NONE)`）。
@@ -12,17 +22,6 @@
 - **全屏 peel 触控条进导航栏点不动：** `AaDisplayActivity` 的 presentation VD 是 `FLAG_PRIVATE`（应用 uid），system_server 的 `DisplayManager.getDisplays()` / `getDisplay(id)` 都枚举不到。上报的 id 若再经 `getDisplay` 校验会被误丢，`touchAaDisplay` 一直 “display not found”。改为信任 `reportAaUiDisplayId`；ATMS 扫任务仅作会话一次性兜底（失败即门闩，不在每次 touch 盲扫）。
 - **AA `:projection` 崩于 `RailStatusBarFragment` / `status_bar`：** 收左侧 rail 时 `removeView`/重挂载拆掉了 Coolwalk 的 `R.id.status_bar` 容器，FragmentManager 报 `No view found for id …/status_bar`。改为原地 GONE/零宽折叠，不再拆树。
 - **全屏记忆进车机只剩「点击选择应用」：** 恢复 `LastSplit` 全屏时，`initViews` 过早把垫后 pane 的 TextureView 设为 `INVISIBLE`，第二个 Surface 永不就绪 → 双 VD 不创建 → 自动拉起记忆应用失败。Surface 未齐前保持双 pane 可见，创建后再隐藏垫后层。
-
-### Changed
-- **全屏 peel 拖动手把位置 / 条宽：** 全屏把手只作入口；一旦拖动即 morph 成与分屏相同的通长缝+三点，clip 缝也用同一套 `DIVIDER_DP` 几何。分屏条 elevation 用空 outline，去掉周边 Material 阴影。
-- **全屏 peel 把手对齐：** 命中区不再通高/通宽（避免 elevation 投出第二条“分屏条”阴影）；短胶囊与命中框同中心贴边。
-- **全屏 peel 短胶囊把手：** 全屏不再画通高/通宽加亮缝（易像坏屏亮线），改为外缘吸附的抽屉式短把手（内侧圆角）+ 三点；深色半透明底 + 浅描边/点，亮暗画面都更好认。两端触摸穿透到全屏 app。点按切换 / 向内拖退出 / 长按最近任务；**贴真左/顶缘**（不再 inset 80dp 悬空）。Coolwalk rail steal 在 peel 命中带改走 `touchAaDisplay` 注入 AaDisplayActivity，避免贴边后点不到。
-- **车机合成减负：** 分屏 TextureView 标为不透明；全屏时垫后 pane 用 `INVISIBLE`（不断 Surface）跳过合成，背后导航/直播仍继续渲染。
-- **分屏条拖动 GPU 预览：** 拖动中不再每帧改 pane `layoutParams` / TextureView 尺寸；分屏用 scale+translate 预览，全屏 peel 用 `clipBounds`。松手再 layout + 一次 VirtualDisplay.resize。
-- **触控注入改为 oneway AIDL：** `touchPane` / `touchPrimaryPane` 不再阻塞 AA / `:car` UI 线程等 `injectInputEvent`；DOWN 不再额外打 `setFocusedPane`（服务端已设）。**安装后需重启**，否则新 client 等不到旧 system_server 的 two-way reply。
-- **Coolwalk 栏 steal 缓存全屏：** MOVE 不再同步查询 `splitFullscreenPane`；DOWN 查一次，并用 `ACTION_SPLIT_STATE_CHANGED` 更新缓存。
-
-### Fixed
 - **部分机型 Coolwalk 菜单栏触控被误吞（r6 回归）：** `:car` 用瘦长几何扫 DisplayManager 时，竖屏手机主屏（如 1080×2340）会被当成 FacetBar 并锁死 `displayId=0`；`CarDisplayId` 反射又扫到 `describeContents()==0`，整屏 HU 触控被 steal 后 `param.result=null`，原栏点不动。改为：禁止 DEFAULT_DISPLAY；优先 named FacetBar；无 LayoutInfo 只用绝对窄条（≤120px）；`CarDisplayId` 只认白名单 accessor；binder 注入失败不吞事件。`setSplitFullscreen` AIDL 挪到接口末尾以免旧 Stub 事务号错位。
 - **全屏后媒体无声（抖音 LivePlay）：** 进全屏双 VD resize 触发三星 `ExtraDisplayController.positionChildAt`，垫后 pane 丢失 top-resumed / window focus → 抖音 `silence audio`。全屏切换后对两 pane `moveTaskToFront` + `setFocusedTask`（0/120/400ms）；仅 resize 尺寸真正变化的一侧。
 
