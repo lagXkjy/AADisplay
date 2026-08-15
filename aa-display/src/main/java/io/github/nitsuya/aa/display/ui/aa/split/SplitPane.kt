@@ -83,4 +83,26 @@ object SplitPane {
         rawRatio > 1f - FULLSCREEN_ENTER_RATIO -> PRIMARY
         else -> null
     }
+
+    /**
+     * Whether a Coolwalk rail-steal point lands on the flush peel tab hit band
+     * (centered on the long axis). Shared by AA UI geometry and `:car` steal routing.
+     * When [parentW]/[parentH] are unknown (≤0), returns true so steal still tries
+     * [ICoreManager.touchAaDisplay] rather than falling through to a pane inject.
+     */
+    fun peelHitContains(x: Float, y: Float, parentW: Int, parentH: Int): Boolean {
+        if (parentW <= 0 || parentH <= 0) return true
+        val sideBySide = parentW >= parentH
+        val hit = (
+            PEEL_TAB_LENGTH_DP + 2f * PEEL_TAB_HIT_EXPAND_DP
+            ).coerceAtMost(if (sideBySide) parentH.toFloat() else parentW.toFloat())
+        val half = hit / 2f
+        return if (sideBySide) {
+            val cy = parentH / 2f
+            y in (cy - half)..(cy + half)
+        } else {
+            val cx = parentW / 2f
+            x in (cx - half)..(cx + half)
+        }
+    }
 }

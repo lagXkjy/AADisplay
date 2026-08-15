@@ -320,8 +320,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     /**
-     * @param releaseRatio peel finger position when exiting; null falls back to
-     * [ratioBeforeFullscreen] (e.g. remote exit without a local peel gesture).
+     * @param releaseRatio peel finger position when exiting (authoritative for local peel).
+     * Null falls back to [ratioBeforeFullscreen] for remote / non-gesture exits.
+     * Controller also keeps [mRatioBeforeFullscreen]; the following [setSplitRatio]
+     * overwrites that when [releaseRatio] is provided.
      */
     private fun exitFullscreen(releaseRatio: Float? = null) {
         fullscreenPane = SplitPane.FULLSCREEN_NONE
@@ -730,6 +732,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 Log.d(TAG, "pane=$pane surface available ${width}x$height")
                 val s = Surface(surface)
                 onSurface(s)
+                // Presentation displayId can bind after first layout on some OEMs — re-report
+                // so Coolwalk peel inject does not race an empty mAaUiDisplayId.
+                reportAaUiDisplayId()
                 if (displayId != Display.INVALID_DISPLAY) {
                     CoreApi.setPaneSurface(pane, s)
                 }
@@ -894,6 +899,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     /**
      * Publish this presentation's displayId to system_server for Coolwalk peel inject.
      * Private CarActivity VDs are not visible via system [DisplayManager.getDisplays].
+     * Called from layout, resume, surface-available, and VD-created so late display
+     * binding on some OEMs still reaches [SplitDisplayController.setAaUiDisplayId].
      */
     private fun reportAaUiDisplayId() {
         val host = baseBinding.splitContainer.display

@@ -133,9 +133,6 @@ object AaUiHook: AaHook() {
      */
     private val AUTO_OPEN_DELAYS_MS = longArrayOf(1200L, 4000L, 8000L, 14000L, 22000L)
     private val AUTO_OPEN_TOKEN = Any()
-    /** Defer rail DecorView collapse until AutoOpen has had a chance to start AaDisplay. */
-    private val RAIL_RECLAIM_TOKEN = Any()
-    private val RAIL_RECLAIM_DELAY_MS = 10_000L
     /** Uptime of the last armed Auto Open session; used to debounce LayoutInfo storms. */
     private var mAutoOpenSessionAtMs = 0L
     private val AUTO_OPEN_REARM_GAP_MS = 12_000L
@@ -143,8 +140,6 @@ object AaUiHook: AaHook() {
     private var mAutoOpenShownReceiver: android.content.BroadcastReceiver? = null
     /** Coalesce reclaim follow-ups per view across soft-reconnect storms. */
     private val mReclaimFollowUps = java.util.WeakHashMap<View, Runnable>()
-    /** Facet hosts waiting for deferred reclaim (weak). */
-    private val mPendingRailReclaim = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
 
     /** Latest main-display LayoutInfo size in dp (from constructor args). */
     @Volatile private var mLayoutWidthDp: Int = 0
@@ -1026,24 +1021,15 @@ object AaUiHook: AaHook() {
 
     /**
      * Vertical (side-by-side) or horizontal (stacked) band around the peel tab center.
-     * Matches [SplitDividerView] peel hit length so flush-edge tabs under the rail steal
-     * band still reach AaDisplay UI.
+     * Delegates to [SplitPane.peelHitContains] so flush-edge geometry stays one source.
      */
     private fun isPeelHandleHitBand(motion: MotionEvent): Boolean {
-        val w = layoutWidthPx().takeIf { it > 0 } ?: return true
-        val h = layoutHeightPx().takeIf { it > 0 } ?: return true
-        val sideBySide = w >= h
-        val hit = (
-            SplitPane.PEEL_TAB_LENGTH_DP + 2f * SplitPane.PEEL_TAB_HIT_EXPAND_DP
-            ).coerceAtMost(if (sideBySide) h.toFloat() else w.toFloat())
-        val half = hit / 2f
-        return if (sideBySide) {
-            val cy = h / 2f
-            motion.getY(0) in (cy - half)..(cy + half)
-        } else {
-            val cx = w / 2f
-            motion.getX(0) in (cx - half)..(cx + half)
-        }
+        return SplitPane.peelHitContains(
+            motion.getX(0),
+            motion.getY(0),
+            layoutWidthPx(),
+            layoutHeightPx(),
+        )
     }
 
     /** Never treat the phone main display as Coolwalk FacetBar. */
@@ -1492,8 +1478,6 @@ object AaUiHook: AaHook() {
         mAaDisplayShownThisSession = true
         mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
         log(tagName, "AaUiHook: AutoOpen stop retries ($reason)")
-        // Safe to collapse rail chrome once AaDisplay is up.
-        flushPendingRailReclaim("shown:$reason")
     }
 
     private fun scheduleAutoOpenIfNeeded(reason: String = "unknown") {
@@ -1837,75 +1821,43 @@ object AaUiHook: AaHook() {
      * Hide/zero the rail column in place and arm AutoOpen. Keeps [resIdStatusBarId]
      * attached so AA fragment transactions stay valid.
      *
-     * Defer heavy reclaim (which can GONE thin wrappers up the tree) until AutoOpen
-     * has had time — collapsing FacetBar DecorView too early makes
-     * CarSystemUiControllerService.a() silently no-op OEM starts.
+     * Reclaim immediately: [applyZeroWidthGone] refuses DecorView / window roots, so
+     * AutoOpen is no longer gated on a multi-second deferral.
      */
     private fun collapseFacetChromeInPlace(facetHost: ViewGroup, reason: String) {
         facetHost.tag = facetBarInjectedTag
         scheduleAutoOpenIfNeeded("facet:$reason")
-        logDebug(tagName, "AaUiHook: collapse facet rail ($reason) — reclaim deferred")
-        scheduleDeferredRailReclaim(facetHost)
-    }
-
-    private fun scheduleDeferredRailReclaim(rail: View) {
-        mPendingRailReclaim.add(rail)
-        mFacetEnsureHandler.removeCallbacksAndMessages(RAIL_RECLAIM_TOKEN)
-        val now = android.os.SystemClock.uptimeMillis()
-        mFacetEnsureHandler.postAtTime(
-            { flushPendingRailReclaim("defer-timeout") },
-            RAIL_RECLAIM_TOKEN,
-            now + RAIL_RECLAIM_DELAY_MS
-        )
-    }
-
-    private fun flushPendingRailReclaim(reason: String) {
-        mFacetEnsureHandler.removeCallbacksAndMessages(RAIL_RECLAIM_TOKEN)
-        val pending = mPendingRailReclaim.toList()
-        mPendingRailReclaim.clear()
-        if (pending.isEmpty()) return
-        log(tagName, "AaUiHook: reclaim rail chrome ($reason) count=${pending.size}")
-        for (rail in pending) {
-            if (rail.isAttachedToWindow) reclaimRailSpace(rail)
-        }
+        logDebug(tagName, "AaUiHook: collapse facet rail ($reason)")
+        reclaimRailSpace(facetHost)
     }
 
     /**
      * Collapse the rail/facet column AND its thin wrappers, then expand content siblings
      * so the black gutter does not remain after chrome is hidden.
+     * One immediate pass + one layout-settle follow-up (no multi-second timer chain).
      */
     private fun reclaimRailSpace(rail: View) {
         applyZeroWidthGone(rail)
+        collapseThinRailChainAndExpandContent(rail)
         mReclaimFollowUps.remove(rail)?.let { rail.removeCallbacks(it) }
-        val step = intArrayOf(0)
-        val run = object : Runnable {
-            override fun run() {
-                if (step[0] > 0 && !rail.isAttachedToWindow) {
-                    mReclaimFollowUps.remove(rail)
-                    return
-                }
-                collapseThinRailChainAndExpandContent(rail)
-                when (step[0]++) {
-                    0 -> rail.post(this)
-                    1 -> rail.postDelayed(this, 500L)
-                    else -> mReclaimFollowUps.remove(rail)
-                }
-            }
+        val settle = Runnable {
+            mReclaimFollowUps.remove(rail)
+            if (!rail.isAttachedToWindow) return@Runnable
+            collapseThinRailChainAndExpandContent(rail)
         }
-        mReclaimFollowUps[rail] = run
-        run.run()
+        mReclaimFollowUps[rail] = settle
+        rail.post(settle)
     }
 
-    /** Immediate + one layout-settle reclaim; cancels prior posts for the same root. */
+    /** One layout-settle left-gutter reclaim; cancels prior posts for the same root. */
     private fun scheduleReclaimLeftGutter(root: ViewGroup) {
         mReclaimFollowUps.remove(root)?.let { root.removeCallbacks(it) }
-        val followUp = Runnable {
+        val settle = Runnable {
             mReclaimFollowUps.remove(root)
             if (root.isAttachedToWindow) reclaimLeftGutter(root)
         }
-        mReclaimFollowUps[root] = followUp
-        root.post { reclaimLeftGutter(root) }
-        root.postDelayed(followUp, 400L)
+        mReclaimFollowUps[root] = settle
+        root.post(settle)
     }
 
     /** Max thin-rail width from live LayoutInfo / root size (no fixed phone/HU pixels). */
