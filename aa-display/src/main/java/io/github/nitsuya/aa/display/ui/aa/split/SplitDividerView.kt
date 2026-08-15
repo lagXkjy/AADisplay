@@ -46,7 +46,8 @@ class SplitDividerView @JvmOverloads constructor(
     var onRatioChanged: ((Float) -> Unit)? = null
     var onRatioSettled: ((Float) -> Unit)? = null
     var onFullscreenEnter: ((Int) -> Unit)? = null
-    var onFullscreenExit: (() -> Unit)? = null
+    /** Peel exit past threshold; [Float] is the release ratio (clamped by host). */
+    var onFullscreenExit: ((Float) -> Unit)? = null
     /** Peel drag released without crossing exit threshold — snap UI back to fullscreen. */
     var onPeelCancelled: (() -> Unit)? = null
     var onStackClick: (() -> Unit)? = null
@@ -362,9 +363,10 @@ class SplitDividerView @JvmOverloads constructor(
 
     private fun settleDrag() {
         if (peelMode) {
-            // Fixed left/top peel: drag inward raises ratio; exit past threshold.
+            // Fixed left/top peel: drag inward raises ratio; exit past threshold
+            // with the release ratio (matches clip preview; host clamps + setSplitRatio).
             if (lastRawRatio >= SplitPane.FULLSCREEN_EXIT_RATIO) {
-                onFullscreenExit?.invoke()
+                onFullscreenExit?.invoke(lastRawRatio)
             } else {
                 onPeelCancelled?.invoke()
             }

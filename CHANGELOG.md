@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- **全屏 peel 松手比例对不上：** 过退出阈值后原先一律恢复进全屏前比例，预览却按手指位置画，松手后要二次拖。改为把松手比例 clamp 后写回 UI + `setSplitRatio`（仍先 `setSplitFullscreen(NONE)`）。
 - **AutoOpen 调了但进不去 AaDisplay：** 收左侧 rail 时 `applyZeroWidthGone` 沿父链把 `DecorView` 也 GONE，Coolwalk `CarSystemUiControllerService.a()` 对 OEM 启动变成静默空操作。改为推迟 rail reclaim、禁止折叠 DecorView，并拉长 AutoOpen 重试窗口。
 - **system_server SIGSEGV（进车机直接重启）：** `SplitPresentationGuard` 对已无 Surface 的 `WindowState` 调 `removeImmediately` → OneUI `SurfaceControl.Transaction.reparent` 空指针。改为先走 `WMS.removeWindow`，并在无 live SurfaceControl / 已 `mRemoved` 时跳过 `removeImmediately`。
 - **全屏 peel 触控条进导航栏点不动：** `AaDisplayActivity` 的 presentation VD 是 `FLAG_PRIVATE`（应用 uid），system_server 的 `DisplayManager.getDisplays()` / `getDisplay(id)` 都枚举不到。上报的 id 若再经 `getDisplay` 校验会被误丢，`touchAaDisplay` 一直 “display not found”。改为信任 `reportAaUiDisplayId`，并用 ATMS 扫任务作兜底。

@@ -274,9 +274,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 ratioBeforeFullscreen = ratioAtDragStart
                 enterFullscreen(pane)
             }
-            onFullscreenExit = {
+            onFullscreenExit = { ratio ->
                 dividerDragging = false
-                exitFullscreen()
+                exitFullscreen(ratio)
             }
             onPeelCancelled = {
                 dividerDragging = false
@@ -319,12 +319,18 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         baseBinding.root.postDelayed(afterDividerSettle, 300L)
     }
 
-    private fun exitFullscreen() {
+    /**
+     * @param releaseRatio peel finger position when exiting; null falls back to
+     * [ratioBeforeFullscreen] (e.g. remote exit without a local peel gesture).
+     */
+    private fun exitFullscreen(releaseRatio: Float? = null) {
         fullscreenPane = SplitPane.FULLSCREEN_NONE
         clearDragPreview()
+        // Exit FS first — setSplitRatio is ignored while fullscreen owns layout.
         CoreApi.setSplitFullscreen(SplitPane.FULLSCREEN_NONE)
-        splitRatio = SplitPane.clampRatio(ratioBeforeFullscreen)
+        splitRatio = SplitPane.clampRatio(releaseRatio ?: ratioBeforeFullscreen)
         applySplitLayoutWeights(splitRatio, force = true)
+        CoreApi.setSplitRatio(splitRatio)
         baseBinding.splitDivider.setFullscreenPane(SplitPane.FULLSCREEN_NONE)
         baseBinding.splitDivider.setRatio(splitRatio)
         updateEmptyOverlays()
