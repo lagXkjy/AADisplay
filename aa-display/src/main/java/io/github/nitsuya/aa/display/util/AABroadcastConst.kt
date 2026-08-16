@@ -23,5 +23,10 @@ interface AABroadcastConst {
         const val EXTRA_FULLSCREEN_PANE = "aa.display.extra.FULLSCREEN_PANE"
         /** Primary pane ratio after controller change (swap / restore); UI applies when not dragging. */
         const val EXTRA_RATIO = "aa.display.extra.RATIO"
+        /**
+         * system_server → AA: peel inject failed to resolve AaDisplay presentation id;
+         * UI should re-call [io.github.nitsuya.aa.display.xposed.ICoreManager.reportAaUiDisplayId].
+         */
+        const val ACTION_REQUEST_AA_UI_DISPLAY_ID = "aa.display.action.REQUEST_AA_UI_DISPLAY_ID"
     }
 }

@@ -37,6 +37,9 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             val h = c.mHeight.coerceAtLeast(1)
             return PaneSizes(w, h, w, h)
         }
+        // Split: VD buffer == pane TextureView size (live HU profile × ratio).
+        // Do NOT keep both panes at full HU and crop — that makes every half-pane
+        // show a center slice of a full-screen layout (looks like wrong resolution).
         val gap = dividerPx()
         return if (c.isSideBySide) {
             val usable = (c.mWidth - gap).coerceAtLeast(2)

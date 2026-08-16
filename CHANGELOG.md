@@ -6,6 +6,14 @@
 - **虚拟屏多应用栈（每窗最多 3 个）：** Primary / Secondary 不再「选新即杀旧」。应用压入栈，栈顶显示；同栈切换（Recent 点选 / 长按拖到顶部）只 `moveTaskToFront`，无需 close 冷启动。满 3 再加则挤出栈底。Recent 左/中列底部「添加应用」打开选择器（`EXTRA_KEEP_OCCUPANCY`）。`LastSplitStore` 新增有序栈 CSV（底→顶），旧单包 key 仍为栈顶兼容。
 
 ### Fixed
+- **会话中偶发亮手机屏（优先保三星车机不黑）：** 去掉 VD `ACQUIRE_CAUSES_WAKEUP` pulse（OEM 上易泄漏到主屏）；`userActivity` 只走带 `displayId` 的重载，禁止全局回退。灭屏时仍立即再断言 + 约 3s burst，且手机灭屏期间 heartbeat 缩短为 5s 并用 TOUCH 事件，继续压住三星 `OWN_DISPLAY_GROUP` doze。
+
+- **分屏满幅 VD + crop 回退：** 曾尝试分屏也保持满幅 HU VirtualDisplay 再 TextureView center-crop，结果半窗出现窄条内容 + 大块黑边（HU 截图）。已改回 **VD 缓冲 = 分屏窗格尺寸**（随车机 profile × ratio，非写死分辨率）；去掉 `setDefaultBufferSize(HU)` / crop 矩阵 / 触控映射。QQ 音乐竖屏半窗卡顿需另案处理，不能用满幅裁切牺牲左右分屏布局。
+
+- **全屏 peel 退出后应用分辨率错误：** peel 松手退出时先 `setSplitFullscreen(NONE)`（按进入前 ratio 缩 VD）再 `setSplitRatio(松手 ratio)`，两次 resize 后 OneUI 常把 Window **Requested** 卡在中间宽度（ADB：短信 `Requested 343` 而 VD/frame 已是 `518×480`）。改为退出前先 `setSplitRatio` 暂存到 `mRatioBeforeFullscreen`，再一次性 exit resize；并对两 VD 做与 swap 相同的 1px nudge（`ensureTasksFillDisplay`）。
+
+- **全屏 peel 偶发点不动：** 长按分隔条/peel 在手指仍按下时就 `add` Recent，注入的 UP 打不到 `SplitDividerView`，presentation 指针序列残缺后后续 `touchAaDisplay` 易被丢弃；长按出后台再滑动又能恢复。改为长按只震动标记，**松手 UP 后再开 Recent**；开面板前 `resetGesture` + 清拖动预览。另：`touchAaDisplay` 解析不到 presentation id 时防抖清 ATMS 门闩并广播 `REQUEST_AA_UI_DISPLAY_ID` 让 UI 补报，避免会话内永久哑火。
+
 - **分隔条 swap 后窗体不铺满：** ADB 可见 Secondary 上任务窗口帧仍停在旧宽度（如 386×480，而 VD 已是 436×480）。`moveRootTaskToDisplay` + `VirtualDisplay.resize` 后 OneUI 常不重算 Window frame，且全屏根任务上 `resizeTask` 无效。swap 后对两 VD 做 1px nudge 强制配置下发并 re-front 栈顶；UI 侧乐观镜像 `1-ratio`，`SPLIT_STATE_CHANGED` 带上 `EXTRA_RATIO` 同步 TextureView。
 
 - **全屏背后窗 Recent 置顶不生效：** 第二分屏全屏时点第一分屏栈内应用，列表会置顶，但 peel 切回后仍显示旧应用。原因是背后 VD 的 ATMS 顶滞后，`restoreFocusAfterFullscreen` / `getPanePackage` / persist 刷新都按 ATMS 旧顶把 `PaneAppStack` 写回去。改为全屏 focus restore 走 `promoteStackFronts`（栈顶优先）；`getPanePackage` 在栈顶仍存活时不再被 ATMS 降级；persist 刷新保留 intentional 栈顶；背后窗 `startActivityOnPane` 置顶后把焦点还回可见全屏窗。
@@ -30,6 +38,8 @@
 8. 同应用不能同时出现在左、中两栈
 9. 左栈同时有高德+Google：画面是谁，`LastSplit` left / left_stack 末项就是谁（可用 `settings get global aadisplay_last_split_left` 对照 `am stack list` 的 visible）
 10. 第二分屏全屏 → 打开堆栈 → 点第一分屏非栈顶应用 → peel 切回第一分屏：应显示刚置顶的应用
+11. 全屏 peel：长按仅震动，松手后才出 Recent；再点 peel 仍灵敏（无「点不动」粘滞）
+12. 全屏 peel 拖出分屏：两侧应用铺满各自 VD；`dumpsys window windows` 中 Requested 宽应等于 frame/VD（无 Requested 卡在中间宽度）
 
 ## 0.24#17.4-r8
 

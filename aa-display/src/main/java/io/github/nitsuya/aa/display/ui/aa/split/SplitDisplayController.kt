@@ -2,6 +2,7 @@ package io.github.nitsuya.aa.display.ui.aa.split
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.hardware.display.VirtualDisplay
 import android.os.Binder
 import android.os.Handler
@@ -16,6 +17,7 @@ import android.view.WindowManager
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
+import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -48,6 +50,8 @@ class SplitDisplayController(
         internal const val ENSURE_PANES_DELAY_MS = 500L
         internal const val RESTORE_VERIFY_DELAY_MS = 2000L
         internal const val RESTORE_VERIFY_RETRY_MS = 2000L
+        /** Debounce peel-inject recovery broadcasts / latch clears. */
+        private const val AA_UI_DISPLAY_ID_RECOVERY_MS = 3000L
         internal const val MAX_RESTORE_VERIFY_ATTEMPTS = 3
         /** Token for post-fullscreen focus restore kicks (cancel on destroy / re-enter). */
         internal val FULLSCREEN_FOCUS_TOKEN = Any()
@@ -104,6 +108,9 @@ class SplitDisplayController(
      */
     @Volatile
     private var mAaUiDisplayIdLookupFailed = false
+    /** Uptime of last peel-inject recovery (latch clear + UI re-report ask). */
+    @Volatile
+    private var mLastAaUiDisplayIdRecoveryUptime = 0L
 
     internal var mPrimary: VirtualDisplay? = null
     internal var mSecondary: VirtualDisplay? = null
@@ -267,9 +274,14 @@ class SplitDisplayController(
     }
 
     fun setSplitRatio(ratio: Float) {
-        // Fullscreen owns layout until exit — ignore ratio echoes from AA during FS.
-        if (SplitPane.isFullscreenPane(mFullscreenPane)) return
         val clamped = SplitPane.clampRatio(ratio)
+        // Fullscreen owns layout until exit — stash peel/UI settle ratio so
+        // setSplitFullscreen(NONE) can restore it in one VD resize (avoid
+        // 800→ratioBefore→releaseRatio leaving Window Requested stuck).
+        if (SplitPane.isFullscreenPane(mFullscreenPane)) {
+            mRatioBeforeFullscreen = clamped
+            return
+        }
         if (abs(clamped - mRatio) < 0.001f) return
         mRatio = clamped
         // Resizing VDs makes tasks churn; suppress reclaim so bounce-back does not jitter.
@@ -291,10 +303,16 @@ class SplitDisplayController(
      * Samsung ExtraDisplayController often drops window / top-resumed focus on a pane during
      * that resize (seen: LivePlay → silence audio). Restore both pane tasks afterward so the
      * behind media app keeps playing and the visible pane remains focusable.
+     *
+     * Exit path: UI should [setSplitRatio] first while still fullscreen (updates
+     * [mRatioBeforeFullscreen]), then call this with [SplitPane.FULLSCREEN_NONE] so
+     * buffers jump full→split pane sizes once. After resize, nudge like swap — OneUI
+     * often leaves Window Requested at an intermediate width.
      */
     fun setSplitFullscreen(pane: Int) {
         if (pane != SplitPane.FULLSCREEN_NONE && !SplitPane.isFullscreenPane(pane)) return
         if (pane == mFullscreenPane) return
+        val exiting = pane == SplitPane.FULLSCREEN_NONE
         if (SplitPane.isFullscreenPane(pane)) {
             if (!SplitPane.isFullscreenPane(mFullscreenPane)) {
                 mRatioBeforeFullscreen = mRatio
@@ -307,7 +325,22 @@ class SplitDisplayController(
         }
         mSuppressReclaimUntil = SystemClock.uptimeMillis() + 800L
         mHandler.removeCallbacks(mPendingResize)
-        vd.resizePanesInternal(if (pane == SplitPane.FULLSCREEN_NONE) "fullscreen-exit" else "fullscreen-enter")
+        val reason = if (exiting) "fullscreen-exit" else "fullscreen-enter"
+        vd.resizePanesInternal(reason)
+        // Same as swap: VD resize alone often leaves Window Requested at the prior size.
+        val sizes = vd.computePaneSizes()
+        val primaryDisplay = primaryDisplayId
+        val secondaryDisplay = secondaryDisplayId
+        if (primaryDisplay != Display.INVALID_DISPLAY) {
+            ownership.ensureTasksFillDisplay(
+                primaryDisplay, sizes.primaryW, sizes.primaryH, reason
+            )
+        }
+        if (secondaryDisplay != Display.INVALID_DISPLAY) {
+            ownership.ensureTasksFillDisplay(
+                secondaryDisplay, sizes.secondaryW, sizes.secondaryH, reason
+            )
+        }
         scheduleRestoreFocusAfterFullscreen()
         launch.schedulePersistSnapshot()
         notifySplitStateChanged()
@@ -454,6 +487,7 @@ class SplitDisplayController(
         mIsDestroying = true
         mAaUiDisplayId = Display.INVALID_DISPLAY
         mAaUiDisplayIdLookupFailed = false
+        mLastAaUiDisplayIdRecoveryUptime = 0L
         mOrientationLockedDisplays.clear()
         mImePolicyAppliedDisplays.clear()
         mHandler.removeCallbacks(ownership.mDebouncedReclaim)
@@ -527,9 +561,29 @@ class SplitDisplayController(
         val displayId = resolveAaUiDisplayId()
         if (displayId == Display.INVALID_DISPLAY) {
             log(TAG, "onTouchAaDisplay: AaDisplayActivity display not found")
+            maybeRecoverAaUiDisplayId()
             return
         }
         input.injectInputEvent(displayId, event)
+    }
+
+    /**
+     * Peel inject missed the presentation id (report race or latched ATMS miss).
+     * Clear the one-shot latch so a later [setAaUiDisplayId] / one ATMS retry can
+     * succeed, and ask the AA UI to re-report — debounced so MOVE floods do not
+     * re-scan 1..64 every frame.
+     */
+    private fun maybeRecoverAaUiDisplayId() {
+        val now = SystemClock.uptimeMillis()
+        if (now - mLastAaUiDisplayIdRecoveryUptime < AA_UI_DISPLAY_ID_RECOVERY_MS) return
+        mLastAaUiDisplayIdRecoveryUptime = now
+        mAaUiDisplayIdLookupFailed = false
+        try {
+            context.sendBroadcast(Intent(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID))
+            log(TAG, "maybeRecoverAaUiDisplayId: asked UI to re-report")
+        } catch (e: Throwable) {
+            log(TAG, "maybeRecoverAaUiDisplayId broadcast failed", e)
+        }
     }
 
     /** Called from the AA UI process; [displayId] may be INVALID_DISPLAY to clear. */
@@ -539,6 +593,9 @@ class SplitDisplayController(
         mAaUiDisplayId = next
         // Fresh report (or clear) → allow one ATMS fallback again if still unknown.
         mAaUiDisplayIdLookupFailed = false
+        if (next != Display.INVALID_DISPLAY) {
+            mLastAaUiDisplayIdRecoveryUptime = 0L
+        }
         log(TAG, "setAaUiDisplayId id=$next")
     }
 

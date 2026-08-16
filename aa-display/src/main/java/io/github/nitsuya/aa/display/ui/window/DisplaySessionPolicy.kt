@@ -30,6 +30,12 @@ import kotlinx.coroutines.launch
 /**
  * AA display session policy: Delay Destroy (180s) and keep-awake for OWN_DISPLAY_GROUP VDs.
  * Phone overlay UI was removed; this class no longer hosts any WindowManager views.
+ *
+ * Keep-awake strategy (Samsung-first, avoid waking the phone panel):
+ * - Hold display-scoped [SCREEN_BRIGHT_WAKE_LOCK] on each AA VD (no ACQUIRE_CAUSES_WAKEUP).
+ * - Drive [IPowerManager.userActivity] only with the displayId overload.
+ * - On phone SCREEN_OFF, burst-reassert + faster heartbeat so DreamManager doze does not
+ *   black the car panes — without a wakeup wake-lock that can leak to DEFAULT_DISPLAY.
  */
 class DisplaySessionPolicy(
     private val mContext: Context,
@@ -39,17 +45,22 @@ class DisplaySessionPolicy(
         private const val TAG = "AADisplay_DisplaySessionPolicy"
         /** Keep OWN_DISPLAY_GROUP user-activity from timing out / dozing on Samsung. */
         private const val KEEP_AWAKE_INTERVAL_MS = 15_000L
+        /** Tighter while phone is off — Samsung may re-doze OWN_DISPLAY_GROUP with the panel. */
+        private const val KEEP_AWAKE_INTERVAL_SCREEN_OFF_MS = 5_000L
         private const val TOUCH_KEEP_AWAKE_MIN_INTERVAL_MS = 1_000L
+        /** After phone SCREEN_OFF, reassert before the next heartbeat. */
+        private const val SCREEN_OFF_REASSERT_COUNT = 6
+        private const val SCREEN_OFF_REASSERT_INTERVAL_MS = 500L
         /** PowerManager.USER_ACTIVITY_EVENT_TOUCH */
         private const val USER_ACTIVITY_EVENT_TOUCH = 2
         /** PowerManager.USER_ACTIVITY_EVENT_OTHER */
         private const val USER_ACTIVITY_EVENT_OTHER = 0
         /**
-         * Display-scoped VD bright locks still need these legacy levels;
-         * [PowerManager.SCREEN_BRIGHT_WAKE_LOCK] / [PowerManager.ACQUIRE_CAUSES_WAKEUP] are deprecated.
+         * Display-scoped VD bright locks still need this legacy level;
+         * [PowerManager.SCREEN_BRIGHT_WAKE_LOCK] is deprecated but required for hidden API.
+         * Do not OR [PowerManager.ACQUIRE_CAUSES_WAKEUP] — on several OEMs it wakes the phone.
          */
         private const val SCREEN_BRIGHT_WAKE_LOCK = 0x0000000a
-        private const val ACQUIRE_CAUSES_WAKEUP = 0x10000000
         /** Seconds to keep dual VD after AA disconnect before destroy. */
         private const val DELAY_DESTROY_SEC = 180
     }
@@ -58,10 +69,12 @@ class DisplaySessionPolicy(
 
     private val isSupportInteractive = RomUtil.isMiui()
     private var mKeepAwakeJob: Job? = null
+    private var mScreenOffReassertJob: Job? = null
     private var mLastTouchKeepAwakeAt = 0L
     private var mMiuiReceiverRegistered = false
     private var iPowerManagerService: Any? = null
     private var iPowerManagerUserActivity: Method? = null
+    private var mLoggedMissingDisplayUserActivity = false
 
     /**
      * Both split VDs use OWN_DISPLAY_GROUP, so each has an independent power group.
@@ -80,7 +93,6 @@ class DisplaySessionPolicy(
 
     private var interactiveMonitor = object : BroadcastReceiver() {
         private val monitorLocks = mutableMapOf<Int, PowerManager.WakeLock>()
-        private val wakePulseLocks = mutableMapOf<Int, PowerManager.WakeLock>()
 
         fun addAction(intentFilter: IntentFilter): IntentFilter {
             return intentFilter.apply {
@@ -105,8 +117,18 @@ class DisplaySessionPolicy(
                 } catch (_: Throwable) {
                 }
             }
-            // Phone screen policy must not blank the AA virtual display group.
-            keepVirtualDisplayAwake("phone-$action", forceWake = true)
+            when (action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    // Critical Samsung path: DreamManager may doze OWN_DISPLAY_GROUP with the phone.
+                    keepVirtualDisplayAwake("phone-SCREEN_OFF", forceWake = true)
+                    startScreenOffReassertBurst()
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    cancelScreenOffReassertBurst()
+                    keepVirtualDisplayAwake("phone-SCREEN_ON", forceWake = false)
+                }
+                else -> keepVirtualDisplayAwake("phone-$action", forceWake = true)
+            }
         }
 
         private fun newDisplayWakeLock(levelAndFlags: Int, tagSuffix: String, displayId: Int): PowerManager.WakeLock {
@@ -136,12 +158,6 @@ class DisplaySessionPolicy(
                 } catch (_: Throwable) {
                 }
             }
-            (wakePulseLocks.keys - activeIds).forEach { displayId ->
-                try {
-                    wakePulseLocks.remove(displayId)?.let { if (it.isHeld) it.release() }
-                } catch (_: Throwable) {
-                }
-            }
         }
 
         fun acquireMonitor() {
@@ -167,26 +183,8 @@ class DisplaySessionPolicy(
             }
         }
 
-        fun pulseWake(displayId: Int) {
-            try {
-                val lock = wakePulseLocks.getOrPut(displayId) {
-                    newDisplayWakeLock(
-                        SCREEN_BRIGHT_WAKE_LOCK or ACQUIRE_CAUSES_WAKEUP,
-                        "VdWake",
-                        displayId
-                    )
-                }
-                if (!lock.isHeld) {
-                    lock.acquire(2_000L)
-                }
-            } catch (e: Throwable) {
-                log(TAG, "VD wakePulse failed display=$displayId:", e)
-            }
-        }
-
         fun releaseMonitor() {
             releaseLockMap(monitorLocks, "Monitor")
-            releaseLockMap(wakePulseLocks, "VdWake")
         }
 
         fun init() {
@@ -221,6 +219,7 @@ class DisplaySessionPolicy(
 
         fun release() {
             stopKeepAwakeLoop()
+            cancelScreenOffReassertBurst()
             if (mMiuiReceiverRegistered) {
                 try {
                     mContext.unregisterReceiver(this)
@@ -239,12 +238,31 @@ class DisplaySessionPolicy(
         }
     }
 
+    private fun keepAwakeIntervalMs(): Long {
+        return try {
+            if (Instances.powerManager.isInteractive) {
+                KEEP_AWAKE_INTERVAL_MS
+            } else {
+                KEEP_AWAKE_INTERVAL_SCREEN_OFF_MS
+            }
+        } catch (_: Throwable) {
+            KEEP_AWAKE_INTERVAL_MS
+        }
+    }
+
     private fun startKeepAwakeLoop() {
         if (mKeepAwakeJob?.isActive == true) return
         mKeepAwakeJob = CoroutineScope(Dispatchers.Default).launch {
             while (isActive) {
-                delay(KEEP_AWAKE_INTERVAL_MS)
-                keepVirtualDisplayAwake("heartbeat", forceWake = false)
+                delay(keepAwakeIntervalMs())
+                val phoneOff = try {
+                    !Instances.powerManager.isInteractive
+                } catch (_: Throwable) {
+                    false
+                }
+                // While the phone is off, use TOUCH user-activity on the VD groups so Samsung
+                // does not let OWN_DISPLAY_GROUP idle into doze between heartbeats.
+                keepVirtualDisplayAwake("heartbeat", forceWake = phoneOff)
             }
         }
     }
@@ -254,9 +272,29 @@ class DisplaySessionPolicy(
         mKeepAwakeJob = null
     }
 
+    private fun startScreenOffReassertBurst() {
+        cancelScreenOffReassertBurst()
+        mScreenOffReassertJob = CoroutineScope(Dispatchers.Default).launch {
+            // First assert already ran from onReceive; reinforce while DreamManager settles.
+            repeat(SCREEN_OFF_REASSERT_COUNT) {
+                delay(SCREEN_OFF_REASSERT_INTERVAL_MS)
+                if (!isActive) return@launch
+                keepVirtualDisplayAwake("phone-SCREEN_OFF-burst", forceWake = true)
+            }
+        }
+    }
+
+    private fun cancelScreenOffReassertBurst() {
+        mScreenOffReassertJob?.cancel()
+        mScreenOffReassertJob = null
+    }
+
     /**
      * Keep / restore power for both AA virtual display groups so the car UI does not
      * stay black after phone sleep, doze, or OWN_DISPLAY_GROUP user-activity timeout.
+     *
+     * [forceWake] only strengthens display-scoped userActivity (TOUCH vs OTHER) and
+     * re-acquires the Monitor lock — it must not use ACQUIRE_CAUSES_WAKEUP.
      */
     fun keepVirtualDisplayAwake(reason: String, forceWake: Boolean = false) {
         val displayIds = aaVirtualDisplayIds()
@@ -266,9 +304,6 @@ class DisplaySessionPolicy(
             val event = if (forceWake) USER_ACTIVITY_EVENT_TOUCH else USER_ACTIVITY_EVENT_OTHER
             for (displayId in displayIds) {
                 userActivityOnDisplay(displayId, event)
-                if (forceWake) {
-                    interactiveMonitor.pulseWake(displayId)
-                }
             }
         } catch (e: Throwable) {
             log(TAG, "keepVirtualDisplayAwake[$reason] failed:", e)
@@ -286,7 +321,7 @@ class DisplaySessionPolicy(
     /**
      * IPowerManager.userActivity(displayId, …) — PowerManager only forwards the
      * context display id, which is useless for OWN_DISPLAY_GROUP virtual displays.
-     * Resolves overload by name/arity so A14–A16 signature churn does not hard-fail.
+     * Only the displayId overload is used; global overloads would wake the phone panel.
      */
     private fun userActivityOnDisplay(displayId: Int, event: Int) {
         try {
@@ -295,64 +330,34 @@ class DisplaySessionPolicy(
                     isAccessible = true
                 }.get(Instances.powerManager)?.also { iPowerManagerService = it }
                 ?: return
-            val method = iPowerManagerUserActivity ?: resolveUserActivityMethod(service.javaClass)
+            val method = iPowerManagerUserActivity ?: resolveDisplayUserActivityMethod(service.javaClass)
                 ?.also { iPowerManagerUserActivity = it }
-                ?: return
-            invokeUserActivity(method, service, displayId, event)
+            if (method == null) {
+                if (!mLoggedMissingDisplayUserActivity) {
+                    mLoggedMissingDisplayUserActivity = true
+                    log(TAG, "IPowerManager.userActivity(displayId,…) unavailable; skip to avoid waking phone")
+                }
+                return
+            }
+            method.invoke(service, displayId, SystemClock.uptimeMillis(), event, 0)
         } catch (e: Throwable) {
             log(TAG, "IPowerManager.userActivity(display=$displayId) failed:", e)
         }
     }
 
-    private fun resolveUserActivityMethod(serviceClass: Class<*>): Method? {
-        val candidates = serviceClass.methods.filter { it.name == "userActivity" }
-        // Prefer (int displayId, long time, int event, int flags)
-        candidates.firstOrNull { m ->
+    private fun resolveDisplayUserActivityMethod(serviceClass: Class<*>): Method? {
+        return serviceClass.methods.firstOrNull { m ->
+            if (m.name != "userActivity") return@firstOrNull false
             val p = m.parameterTypes
             p.size == 4 &&
                 p[0] == Int::class.javaPrimitiveType &&
                 p[1] == Long::class.javaPrimitiveType &&
                 p[2] == Int::class.javaPrimitiveType &&
                 p[3] == Int::class.javaPrimitiveType
-        }?.let { return it }
-        // (long time, int event, int flags) — no displayId
-        candidates.firstOrNull { m ->
-            val p = m.parameterTypes
-            p.size == 3 &&
-                p[0] == Long::class.javaPrimitiveType &&
-                p[1] == Int::class.javaPrimitiveType &&
-                p[2] == Int::class.javaPrimitiveType
-        }?.let { return it }
-        // (long time, boolean noChangeLights) legacy
-        candidates.firstOrNull { m ->
-            val p = m.parameterTypes
-            p.size == 2 &&
-                p[0] == Long::class.javaPrimitiveType &&
-                p[1] == Boolean::class.javaPrimitiveType
-        }?.let { return it }
-        return candidates.firstOrNull()
-    }
-
-    private fun invokeUserActivity(method: Method, service: Any, displayId: Int, event: Int) {
-        val now = SystemClock.uptimeMillis()
-        when (method.parameterTypes.size) {
-            4 -> method.invoke(service, displayId, now, event, 0)
-            3 -> method.invoke(service, now, event, 0)
-            2 -> method.invoke(service, now, false)
-            else -> method.invoke(service, *Array<Any?>(method.parameterCount) { i ->
-                val t = method.parameterTypes[i]
-                when {
-                    t == Int::class.javaPrimitiveType && i == 0 -> displayId
-                    t == Long::class.javaPrimitiveType -> now
-                    t == Int::class.javaPrimitiveType -> event
-                    t == Boolean::class.javaPrimitiveType -> false
-                    else -> null
-                }
-            })
         }
     }
 
-    /** Wake the phone panel without deprecated ACQUIRE_CAUSES_WAKEUP wake locks. */
+    /** Wake the phone panel via display-scoped userActivity on DEFAULT_DISPLAY. */
     private fun pulsePhoneWake() {
         try {
             userActivityOnDisplay(Display.DEFAULT_DISPLAY, USER_ACTIVITY_EVENT_TOUCH)

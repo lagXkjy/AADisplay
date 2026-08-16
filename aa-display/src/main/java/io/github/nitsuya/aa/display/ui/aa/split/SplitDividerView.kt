@@ -21,7 +21,7 @@ import kotlin.math.hypot
 /**
  * Thin split divider inspired by OneUI look (not StageCoordinator).
  *
- * Split mode: tap swaps panes; long-press opens recent-task stack; drag adjusts ratio.
+ * Split mode: tap swaps panes; long-press then release opens recent-task stack; drag adjusts ratio.
  * Drag past [SplitPane.FULLSCREEN_ENTER_RATIO] edges settles into fullscreen.
  *
  * Fullscreen peel mode: always docked on a fixed driver-side edge (left when
@@ -29,6 +29,7 @@ import kotlin.math.hypot
  * Flush to the outer frame ([SplitPane.FULLSCREEN_PEEL_INSET_DP]). Idle visual is a
  * short edge-adsorbed tab. Once the user drags, the host morphs this view to the
  * normal full-length split seam + dots ([setPeelDragSplitVisual]).
+ * Long-press haptic fires on timeout; Recents opens on finger UP (not mid-gesture).
  *
  * Hit target is wider than the visual seam and overlaps adjacent panes via negative
  * margins + elevation. Ends of the strip ([SplitPane.DIVIDER_TOUCH_END_INSET_DP] in
@@ -104,7 +105,8 @@ class SplitDividerView @JvmOverloads constructor(
         if (!tracking || dragging || longPressFired) return@Runnable
         longPressFired = true
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-        onStackClick?.invoke()
+        // Defer onStackClick until UP — opening Recents mid-gesture steals the
+        // injected UP from this view and can leave presentation pointer state stuck.
     }
 
     init {
@@ -119,6 +121,23 @@ class SplitDividerView @JvmOverloads constructor(
         }
         clipToOutline = false
         setBackgroundColor(0x00000000)
+    }
+
+    /**
+     * Abort an in-flight gesture (e.g. before covering this view with Recents).
+     * Clears tracking / disallow-intercept; if a peel drag preview was active,
+     * notifies [onPeelCancelled] so the host can drop dividerDragging.
+     */
+    fun resetGesture() {
+        val wasPeelDrag = peelMode && dragging
+        removeCallbacks(longPressRunnable)
+        tracking = false
+        dragging = false
+        longPressFired = false
+        parent?.requestDisallowInterceptTouchEvent(false)
+        if (wasPeelDrag) {
+            onPeelCancelled?.invoke()
+        }
     }
 
     /**
@@ -337,6 +356,7 @@ class SplitDividerView @JvmOverloads constructor(
                 if (tracking) {
                     val wasDragging = dragging
                     val wasLongPress = longPressFired
+                    val isUp = event.actionMasked == MotionEvent.ACTION_UP
                     // Final sample before clearing tracking (setRatio may run from layout).
                     if (wasDragging && !wasLongPress) {
                         lastRawRatio = rawRatioFromEvent(event, parentView)
@@ -347,12 +367,19 @@ class SplitDividerView @JvmOverloads constructor(
                     dragging = false
                     longPressFired = false
                     parent.requestDisallowInterceptTouchEvent(false)
-                    if (event.actionMasked == MotionEvent.ACTION_UP && !wasDragging && !wasLongPress) {
-                        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                        onSwapClick?.invoke()
-                        performClick()
-                    } else if (wasDragging && !wasLongPress) {
-                        settleDrag()
+                    when {
+                        isUp && wasLongPress -> {
+                            // longPressFired blocks onRatioChanged — peel may still have
+                            // morph/preview if host set it; cancel peel preview only.
+                            if (wasDragging && peelMode) onPeelCancelled?.invoke()
+                            onStackClick?.invoke()
+                        }
+                        isUp && !wasDragging -> {
+                            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                            onSwapClick?.invoke()
+                            performClick()
+                        }
+                        wasDragging -> settleDrag()
                     }
                 }
                 return true

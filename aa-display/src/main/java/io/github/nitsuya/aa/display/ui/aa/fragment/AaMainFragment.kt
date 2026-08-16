@@ -133,6 +133,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                         }
                     }
                 }
+                AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID -> {
+                    reportAaUiDisplayId()
+                }
             }
         }
     }
@@ -305,6 +308,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 }
             }
             onStackClick = {
+                // Recents is added on top without hiding Main — reset local gesture /
+                // drag-preview state so peel inject cannot stay stuck mid-gesture.
+                resetGesture()
+                dividerDragging = false
+                clearDragPreview()
                 runMain {
                     AaDisplayActivityKt.showRecentTask(this@AaMainFragment.parentFragmentManager)
                 }
@@ -347,17 +355,20 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     /**
      * @param releaseRatio peel finger position when exiting (authoritative for local peel).
      * Null falls back to [ratioBeforeFullscreen] for remote / non-gesture exits.
-     * Controller also keeps [mRatioBeforeFullscreen]; the following [setSplitRatio]
-     * overwrites that when [releaseRatio] is provided.
+     *
+     * Publish [splitRatio] via [CoreApi.setSplitRatio] *before* exit while the
+     * controller is still fullscreen — it stashes into `mRatioBeforeFullscreen`.
+     * Then [CoreApi.setSplitFullscreen] restores that ratio in **one** VD resize.
+     * Calling exit then ratio caused 800→ratioBefore→releaseRatio and left Window
+     * Requested stuck (ADB: messaging Requested 343 on a 518×480 VD).
      */
     private fun exitFullscreen(releaseRatio: Float? = null) {
         fullscreenPane = SplitPane.FULLSCREEN_NONE
         clearDragPreview()
-        // Exit FS first — setSplitRatio is ignored while fullscreen owns layout.
-        CoreApi.setSplitFullscreen(SplitPane.FULLSCREEN_NONE)
         splitRatio = SplitPane.clampRatio(releaseRatio ?: ratioBeforeFullscreen)
-        applySplitLayoutWeights(splitRatio, force = true)
         CoreApi.setSplitRatio(splitRatio)
+        CoreApi.setSplitFullscreen(SplitPane.FULLSCREEN_NONE)
+        applySplitLayoutWeights(splitRatio, force = true)
         baseBinding.splitDivider.setFullscreenPane(SplitPane.FULLSCREEN_NONE)
         baseBinding.splitDivider.setRatio(splitRatio)
         updateEmptyOverlays()
@@ -1080,6 +1091,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             addAction(AABroadcastConst.ACTION_STEERING_WHEEL_CONTROL)
             addAction(AABroadcastConst.ACTION_OPEN_SPLIT_PICKER)
             addAction(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED)
+            addAction(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID)
         }, ContextCompat.RECEIVER_EXPORTED)
         isControlReceiverRegistered = true
     }
