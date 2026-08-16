@@ -4,39 +4,39 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.PixelFormat
-import android.os.CountDownTimer
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
-import android.view.*
+import android.view.Display
 import androidx.core.content.ContextCompat
-import androidx.core.view.allViews
-import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
-import io.github.nitsuya.aa.display.R
-import io.github.nitsuya.aa.display.databinding.WindowControllerBinding
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
-import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.RomUtil
+import io.github.nitsuya.aa.display.xposed.util.log
 import java.lang.reflect.Method
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
-import kotlin.math.abs
-import kotlin.math.pow
-import kotlin.math.sqrt
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
-
+/**
+ * AA display session policy: Delay Destroy (180s) and keep-awake for OWN_DISPLAY_GROUP VDs.
+ * Phone overlay UI has been removed.
+ */
 class DisplayWindow(
-      private val mContext: Context
-    , private val displayAdapter: SplitDisplayController
-): View.OnTouchListener {
+    private val mContext: Context,
+    private val displayAdapter: SplitDisplayController,
+) {
     companion object {
         private const val TAG = "AADisplay_DisplayWindow"
-        /** Phone overlay UI; session policies still run when false. */
-        private const val SHOW_PHONE_OVERLAY = false
         /** Keep OWN_DISPLAY_GROUP user-activity from timing out / dozing on Samsung. */
         private const val KEEP_AWAKE_INTERVAL_MS = 15_000L
         private const val TOUCH_KEEP_AWAKE_MIN_INTERVAL_MS = 1_000L
@@ -50,34 +50,18 @@ class DisplayWindow(
          */
         private const val SCREEN_BRIGHT_WAKE_LOCK = 0x0000000a
         private const val ACQUIRE_CAUSES_WAKEUP = 0x10000000
+        /** Seconds to keep dual VD after AA disconnect before destroy. */
+        private const val DELAY_DESTROY_SEC = 180
     }
-
-    private var mControllerBinding: WindowControllerBinding? = null
-    private lateinit var mControllerLayoutParams: WindowManager.LayoutParams
-
-    private var mControllerStatus = false
-    private var mControllerDockRight = true
-    private val mControllerPeekPx by lazy { (mContext.resources.displayMetrics.density * 14f).toInt() }
 
     private var mDestroyJob: Job? = null
-    private var mChangeAlphaCountDownTimer = object : CountDownTimer(5000,5000){
-        override fun onFinish() {
-            mControllerBinding?.apply {
-                root.animate().setDuration(500).alpha(0.5F).start()
-            }
-        }
-        override fun onTick(millisUntilFinished: Long) {}
-    }
-
-    /** Seconds to keep dual VD after AA disconnect before destroy. */
-    private val mDelayDestroyTime = 180
 
     private val isSupportInteractive = RomUtil.isMiui()
     private var mKeepAwakeJob: Job? = null
     private var mLastTouchKeepAwakeAt = 0L
     private var mMiuiReceiverRegistered = false
     private var iPowerManagerService: Any? = null
-    private var iPowerManagerUserActivity: java.lang.reflect.Method? = null
+    private var iPowerManagerUserActivity: Method? = null
 
     /**
      * Both split VDs use OWN_DISPLAY_GROUP, so each has an independent power group.
@@ -94,7 +78,7 @@ class DisplayWindow(
         }
     }
 
-    private var interactiveMonitor = object: BroadcastReceiver(){
+    private var interactiveMonitor = object : BroadcastReceiver() {
         private val monitorLocks = mutableMapOf<Int, PowerManager.WakeLock>()
         private val wakePulseLocks = mutableMapOf<Int, PowerManager.WakeLock>()
 
@@ -104,19 +88,22 @@ class DisplayWindow(
                 addAction(Intent.ACTION_SCREEN_OFF)
             }
         }
+
         override fun onReceive(context: Context, intent: Intent) {
             intent.action?.let { action ->
                 onReceive(context, action)
             }
         }
-        fun onReceive(context: Context, action: String){
-            if(isSupportInteractive) {
+
+        fun onReceive(context: Context, action: String) {
+            if (isSupportInteractive) {
                 try {
-                    when(action){
+                    when (action) {
                         Intent.ACTION_SCREEN_ON -> Settings.Secure.putInt(context.contentResolver, "synergy_mode", 0)
                         Intent.ACTION_SCREEN_OFF -> Settings.Secure.putInt(context.contentResolver, "synergy_mode", 1)
                     }
-                } catch (_: Throwable) {}
+                } catch (_: Throwable) {
+                }
             }
             // Phone screen policy must not blank the AA virtual display group.
             keepVirtualDisplayAwake("phone-$action", forceWake = true)
@@ -146,12 +133,14 @@ class DisplayWindow(
             (monitorLocks.keys - activeIds).forEach { displayId ->
                 try {
                     monitorLocks.remove(displayId)?.let { if (it.isHeld) it.release() }
-                } catch (_: Throwable) {}
+                } catch (_: Throwable) {
+                }
             }
             (wakePulseLocks.keys - activeIds).forEach { displayId ->
                 try {
                     wakePulseLocks.remove(displayId)?.let { if (it.isHeld) it.release() }
-                } catch (_: Throwable) {}
+                } catch (_: Throwable) {
+                }
             }
         }
 
@@ -199,7 +188,8 @@ class DisplayWindow(
             releaseLockMap(monitorLocks, "Monitor")
             releaseLockMap(wakePulseLocks, "VdWake")
         }
-        fun init(){
+
+        fun init() {
             // Always watch phone screen transitions so OWN_DISPLAY_GROUP is re-asserted
             // when Samsung DreamManager tries to DOZE the AA virtual display with the phone.
             if (!mMiuiReceiverRegistered) {
@@ -216,7 +206,7 @@ class DisplayWindow(
                 }
             }
             if (isSupportInteractive) {
-                onReceive(mContext, if(Instances.powerManager.isInteractive) Intent.ACTION_SCREEN_ON else Intent.ACTION_SCREEN_OFF)
+                onReceive(mContext, if (Instances.powerManager.isInteractive) Intent.ACTION_SCREEN_ON else Intent.ACTION_SCREEN_OFF)
             }
             // Hold a display-scoped SCREEN_BRIGHT lock for each AA VD group so
             // Samsung OWN_DISPLAY_GROUP does not DOZE the car virtual displays.
@@ -228,18 +218,21 @@ class DisplayWindow(
                 AndroidHook.VdDensityPin.ensureHooked()
             }
         }
-        fun release(){
+
+        fun release() {
             stopKeepAwakeLoop()
             if (mMiuiReceiverRegistered) {
                 try {
                     mContext.unregisterReceiver(this)
-                } catch (_: Throwable) {}
+                } catch (_: Throwable) {
+                }
                 mMiuiReceiverRegistered = false
             }
             if (isSupportInteractive) {
                 try {
                     Settings.Secure.putInt(mContext.contentResolver, "synergy_mode", 0)
-                } catch (_: Throwable) {}
+                } catch (_: Throwable) {
+                }
             }
             releaseMonitor()
             AndroidHook.VdDensityPin.unHook()
@@ -369,63 +362,18 @@ class DisplayWindow(
     }
 
     init {
-        if (SHOW_PHONE_OVERLAY) {
-            runCatching {
-                with(ContextThemeWrapper(mContext, R.style.Theme_AADisplay)) {
-                    mControllerBinding = WindowControllerBinding.inflate(LayoutInflater.from(this))
-                }
-            }.onFailure {
-                log(TAG, "init: new window failed may you forget reboot", it)
-            }.onSuccess {
-                doInit()
-            }
-        }
         interactiveMonitor.init()
-    }
-
-    private fun doInit() {
-        initLayoutParams()
-        mControllerBinding?.root?.allViews?.forEach {
-            it.setOnTouchListener(this@DisplayWindow)
-        }
-        showController()
-    }
-
-    private fun initLayoutParams() {
-        mControllerLayoutParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.START or Gravity.TOP
-            x = 0
-            y = 0
-            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-        }
     }
 
     suspend fun onResume() {
         interactiveMonitor.init()
         mDestroyJob?.cancelAndJoin()
-        if (SHOW_PHONE_OVERLAY) {
-            mControllerBinding?.apply {
-                tvDestroyTime.visibility = View.GONE
-                root.post { applyControllerDockPosition() }
-            }
-            showController()
-        }
     }
 
     suspend fun onDestroyPromptly() {
         restorePhoneDisplayPower()
         interactiveMonitor.release()
         mDestroyJob?.cancelAndJoin()
-        close()
     }
 
     suspend fun onDestroy(onDestroySucceed: () -> Unit) {
@@ -435,148 +383,26 @@ class DisplayWindow(
         startDelayDestroy(onDestroySucceed)
     }
 
-    /**
-     * Delay Destroy is session policy, not overlay UI. When [SHOW_PHONE_OVERLAY] is false,
-     * still run the headless 180s timer so [onDestroySucceed] fires and VDs are released.
-     */
+    /** Headless Delay Destroy so [onDestroySucceed] fires and VDs are released. */
     private fun startDelayDestroy(onDestroySucceed: () -> Unit) {
-        val binding = mControllerBinding.takeIf { SHOW_PHONE_OVERLAY }
-        binding?.tvDestroyTime?.setOnClickListener {
-            mDestroyJob?.cancel()
-            close()
-            onDestroySucceed()
-        }
         mDestroyJob = flow {
-            for (i in mDelayDestroyTime downTo 0) {
+            for (i in DELAY_DESTROY_SEC downTo 0) {
                 emit(i)
                 delay(1000)
             }
-        }.onStart {
-            binding?.apply {
-                tvDestroyTime.visibility = View.VISIBLE
-                root.post { applyControllerDockPosition() }
-            }
-        }.onEach { remaining ->
-            if (binding != null && mControllerStatus) {
-                binding.tvDestroyTime.text = "${remaining}s"
-            }
         }.onCompletion {
             if (it == null) {
-                close()
                 onDestroySucceed()
             }
         }.launchIn(CoroutineScope(Dispatchers.Main))
     }
 
-    /** Best-effort wake of the phone panel before destroying overlays. */
+    /** Best-effort wake of the phone panel before tearing down session power. */
     private fun restorePhoneDisplayPower() {
         try {
             pulsePhoneWake()
         } catch (e: Throwable) {
             log(TAG, "restorePhoneDisplayPower failed:", e)
         }
-    }
-
-    private fun showController() {
-        if (!SHOW_PHONE_OVERLAY || mControllerStatus) return
-        mControllerBinding?.apply {
-            tryOrNull { Instances.windowManager.addView(root, mControllerLayoutParams) }
-            root.post { applyControllerDockPosition() }
-            mChangeAlphaCountDownTimer.start()
-            mControllerStatus = true
-        }
-    }
-
-    private fun hideController() {
-        if (!mControllerStatus) return
-        mControllerBinding?.apply {
-            tryOrNull { Instances.windowManager.removeView(root) }
-        }
-        mControllerStatus = false
-    }
-
-    private fun applyControllerDockPosition() {
-        val binding = mControllerBinding ?: return
-        val displayMetrics = mContext.resources.displayMetrics
-        val visibleWidth = binding.cvHandle.width.takeIf { it > 0 } ?: binding.cvHandle.measuredWidth
-        val visibleHeight = binding.cvHandle.height.takeIf { it > 0 } ?: binding.cvHandle.measuredHeight
-        if (visibleWidth <= 0 || visibleHeight <= 0) return
-
-        // Peek a strip at the screen edge; full card slides out when destroy countdown shows.
-        val showingCountdown = binding.tvDestroyTime.visibility == View.VISIBLE
-        mControllerLayoutParams.x = if (showingCountdown) {
-            if (mControllerDockRight) displayMetrics.widthPixels - visibleWidth else 0
-        } else {
-            if (mControllerDockRight) {
-                displayMetrics.widthPixels - mControllerPeekPx
-            } else {
-                -(visibleWidth - mControllerPeekPx)
-            }
-        }
-        mControllerLayoutParams.y = mControllerLayoutParams.y.coerceIn(
-            0,
-            (displayMetrics.heightPixels - visibleHeight).coerceAtLeast(0)
-        )
-        tryOrNull { Instances.windowManager.updateViewLayout(binding.root, mControllerLayoutParams) }
-    }
-
-    private fun close() {
-        mChangeAlphaCountDownTimer.cancel()
-        hideController()
-    }
-
-    override fun onTouch(v: View, event: MotionEvent): Boolean {
-        return mControllerBinding?.run {
-            var isDrag = false
-            when(event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    v.apply {
-                        setTag(R.id.is_drag, false)
-                        setTag(R.id.drag_last_x, event.rawX)
-                        setTag(R.id.drag_last_y, event.rawY)
-                        setTag(R.id.drag_distance, 0f)
-                    }
-                    mChangeAlphaCountDownTimer.cancel()
-                    root.animate().setDuration(200).alpha(0.9f).start()
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    isDrag = v.getTag(R.id.is_drag) as Boolean
-                    val dragMoveX = event.rawX
-                    val dragMoveY = event.rawY
-                    val dragLastX = (v.getTag(R.id.drag_last_x) as? Float ?: 0f)
-                    val dragLastY = (v.getTag(R.id.drag_last_y) as? Float ?: 0f)
-                    if(!isDrag){
-                        val dragSumDistance = abs(sqrt((dragMoveX - dragLastX).pow(2) + (dragMoveY - dragLastY).pow(2))) + (v.getTag(R.id.drag_distance) as? Float ?: 0f)
-                        if(dragSumDistance > 5f){
-                            isDrag = true
-                            v.apply {
-                                setTag(R.id.is_drag, true)
-                                onTouchEvent(MotionEvent.obtain(event).apply {
-                                    action = MotionEvent.ACTION_CANCEL
-                                })
-                            }
-                        } else {
-                            v.setTag(R.id.drag_distance, dragSumDistance)
-                        }
-                    }
-                    Instances.windowManager.updateViewLayout(root, mControllerLayoutParams.apply {
-                        x = (dragMoveX - dragLastX + x).toInt()
-                        y = (dragMoveY - dragLastY + y).toInt()
-                    })
-                    v.apply {
-                        setTag(R.id.drag_last_x, dragMoveX)
-                        setTag(R.id.drag_last_y, dragMoveY)
-                    }
-                }
-                MotionEvent.ACTION_UP -> {
-                    isDrag = v.getTag(R.id.is_drag) as Boolean
-                    val displayMetrics = mContext.resources.displayMetrics
-                    mControllerDockRight = event.rawX > (displayMetrics.widthPixels / 2f)
-                    applyControllerDockPosition()
-                    mChangeAlphaCountDownTimer.start()
-                }
-            }
-            return if(isDrag) true else v.onTouchEvent(event)
-        } ?: false
     }
 }

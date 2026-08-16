@@ -217,7 +217,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                         secondarySurface,
                     ) { displayId ->
                         listener.onAvailableDisplay(displayId, true)
-                        // Phone overlay is not needed for AA first frame; inflate after callback.
+                        // Session policy (delay-destroy / keep-awake) after first frame callback.
                         runMain {
                             if (mSplitController !== controller) return@runMain
                             mDisplayWindow?.onDestroyPromptly()
@@ -279,12 +279,20 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun onDestroyDisplay() {
         runMain {
-            mDisplayWindow?.onDestroy {
+            val finishTeardown = {
                 mSplitController?.onDestroy()
                 mDisplayWindow = null
                 mSplitController = null
                 mDisplayCreateInProgress = false
                 clearDisplayProfileLock()
+            }
+            // Window is created async after the create callback; destroy before that
+            // must still tear down the controller and clear the profile lock.
+            val window = mDisplayWindow
+            if (window != null) {
+                window.onDestroy(finishTeardown)
+            } else {
+                finishTeardown()
             }
         }
     }
@@ -321,14 +329,14 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun pressKey(action: Int) {
         runIO {
-            mDisplayWindow?.onVirtualDisplayUserInteraction()
+            noteUserInteraction()
             mSplitController?.onPressKey(action)
         }
     }
 
     override fun touchPane(pane: Int, event: MotionEvent) {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            runIO { mDisplayWindow?.onVirtualDisplayUserInteraction() }
+            noteUserInteractionAsync()
             mSplitController?.setFocusedPane(pane)
         }
         mSplitController?.onTouchPane(pane, event)
@@ -336,14 +344,14 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun touchPrimaryPane(event: MotionEvent) {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            runIO { mDisplayWindow?.onVirtualDisplayUserInteraction() }
+            noteUserInteractionAsync()
         }
         mSplitController?.onTouchPrimaryPane(event)
     }
 
     override fun touchAaDisplay(event: MotionEvent) {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            runIO { mDisplayWindow?.onVirtualDisplayUserInteraction() }
+            noteUserInteractionAsync()
         }
         mSplitController?.onTouchAaDisplay(event)
     }
@@ -358,23 +366,13 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         return mSplitController?.getRecentTask()
             ?: RecentTask(emptyList(), emptyList(), emptyList())
     }
+
+    private fun noteUserInteraction() {
+        mDisplayWindow?.onVirtualDisplayUserInteraction()
+    }
+
+    private fun noteUserInteractionAsync() {
+        runIO { noteUserInteraction() }
+    }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <item name="is_drag" type="id" />
     <item name="drag_last_x" type="id" />
     <item name="drag_last_y" type="id" />
-    <item name="drag_distance" type="id" />
     <!-- Recent-task: whether the tapped VD column was already focused before this DOWN. -->
     <item name="pane_was_focused" type="id" />
 </resources>

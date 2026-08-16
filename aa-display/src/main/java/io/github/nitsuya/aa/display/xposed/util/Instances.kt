@@ -12,7 +12,6 @@ import android.os.PowerManager
 import android.os.PowerManagerHidden
 import android.os.ServiceManager
 import android.view.IWindowManager
-import android.view.WindowManager
 import dev.rikka.tools.refine.Refine
 
 @SuppressLint("StaticFieldLeak")
@@ -21,7 +20,6 @@ object Instances {
     val packageManager:        PackageManager         by lazy { mContext.packageManager }
     val displayManager:        DisplayManager         by lazy { mContext.getSystemService(DisplayManager::class.java) }
 
-    val windowManager:         WindowManager          by lazy { mContext.getSystemService(WindowManager::class.java) }
     val iWindowManager:        IWindowManager         by lazy { IWindowManager.Stub.asInterface(ServiceManager.getService(Context.WINDOW_SERVICE)) }
 
     val powerManager:          PowerManager           by lazy { mContext.getSystemService(PowerManager::class.java) }

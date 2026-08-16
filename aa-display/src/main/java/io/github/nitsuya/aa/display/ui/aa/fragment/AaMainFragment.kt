@@ -166,9 +166,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             baseBinding.root.removeCallbacks(settleImmediate)
             baseBinding.root.removeCallbacks(settleMid)
             baseBinding.root.removeCallbacks(settleLate)
-            baseBinding.root.removeCallbacks(afterDividerSettle)
-            baseBinding.root.removeCallbacks(afterSwapSettle)
             baseBinding.root.removeCallbacks(afterOccupancySync)
+            baseBinding.root.removeCallbacks(afterSwapSettle)
         } catch (_: Throwable) {
         }
         try {
@@ -219,7 +218,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private val settleImmediate = Runnable { runConnectSettleStep(0) }
     private val settleMid = Runnable { runConnectSettleStep(1) }
     private val settleLate = Runnable { runConnectSettleStep(2) }
-    private val afterDividerSettle = Runnable { syncPaneOccupancyFromService() }
     private val afterOccupancySync = Runnable { syncPaneOccupancyFromService() }
     private val afterSwapSettle = Runnable {
         if (!isAdded || view == null || dividerDragging) return@Runnable
@@ -266,8 +264,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 applySplitLayoutWeights(ratio, force = true)
                 CoreApi.setSplitRatio(ratio)
                 dividerDragging = false
-                baseBinding.root.removeCallbacks(afterDividerSettle)
-                baseBinding.root.postDelayed(afterDividerSettle, 300L)
+                baseBinding.root.removeCallbacks(afterOccupancySync)
+                baseBinding.root.postDelayed(afterOccupancySync, 300L)
             }
             onFullscreenEnter = { pane ->
                 dividerDragging = false
@@ -315,8 +313,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         CoreApi.setSplitFullscreen(pane)
         applyFullscreenLayout(pane)
         updateEmptyOverlays()
-        baseBinding.root.removeCallbacks(afterDividerSettle)
-        baseBinding.root.postDelayed(afterDividerSettle, 300L)
+        baseBinding.root.removeCallbacks(afterOccupancySync)
+        baseBinding.root.postDelayed(afterOccupancySync, 300L)
     }
 
     /**
@@ -336,8 +334,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         baseBinding.splitDivider.setFullscreenPane(SplitPane.FULLSCREEN_NONE)
         baseBinding.splitDivider.setRatio(splitRatio)
         updateEmptyOverlays()
-        baseBinding.root.removeCallbacks(afterDividerSettle)
-        baseBinding.root.postDelayed(afterDividerSettle, 300L)
+        baseBinding.root.removeCallbacks(afterOccupancySync)
+        baseBinding.root.postDelayed(afterOccupancySync, 300L)
     }
 
     private fun applyFullscreenFromRemote(pane: Int) {
