@@ -2,10 +2,18 @@ package io.github.nitsuya.aa.display.ui.aa.split
 
 import android.app.ActivityTaskManager
 import android.content.ComponentName
+import android.content.Intent
+import android.graphics.Rect
+import android.os.Bundle
 import android.os.Looper
 import android.os.SystemClock
+import android.os.UserHandle
 import android.view.Display
+import com.github.kyuubiran.ezxhelper.utils.argTypes
+import com.github.kyuubiran.ezxhelper.utils.args
 import com.github.kyuubiran.ezxhelper.utils.getObjectAs
+import com.github.kyuubiran.ezxhelper.utils.invokeMethod
+import com.github.kyuubiran.ezxhelper.utils.newInstance
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -19,6 +27,12 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
 
     internal data class PaneTaskRef(val taskId: Int, val packageName: String?)
 
+    companion object {
+        /** ActivityTaskManager.RESIZE_MODE_SYSTEM */
+        private const val RESIZE_MODE_SYSTEM = 0
+        /** ActivityTaskManager.RESIZE_MODE_SYSTEM | RESIZE_MODE_FORCED */
+        private const val RESIZE_MODE_SYSTEM_FORCED = 2
+    }
     /**
      * Marshal ownership-sensitive work onto [SplitDisplayController.mHandler] so Binder/IO callers
      * cannot race [SplitTaskStackListener] reclaim. Avoids snapping a swipe-off task back onto the VD.
@@ -58,12 +72,10 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         trackPackage(pkg, 0)
     }
 
-    /** Forget VD ownership when [packageName] is no longer assigned to either pane. */
+    /** Forget VD ownership when [packageName] is no longer in either pane stack. */
     fun releaseOwnershipIfUnused(packageName: String?) {
         val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
-        if (c.mPanePackages[SplitPane.PRIMARY] == pkg || c.mPanePackages[SplitPane.SECONDARY] == pkg) {
-            return
-        }
+        if (c.stacks.containsAnywhere(pkg)) return
         c.mVdPackages.remove(pkg)
         AndroidHook.VdDensityPin.clearPackageVirtualDisplay(pkg)
     }
@@ -78,21 +90,28 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         if (SystemClock.uptimeMillis() < c.mSuppressReclaimUntil) return
         if (c.mVdPackages.isEmpty()) return
         for (pkg in c.mVdPackages.toList()) {
-            if (SplitChromePackages.BOUNCE_EXCLUDED.contains(pkg)) continue
+            if (SplitChromePackages.BOUNCE_EXCLUDED.contains(pkg)) {
+                continue
+            }
             val onPrimary = hasPackageOnDisplay(pkg, c.primaryDisplayId)
             val onSecondary = hasPackageOnDisplay(pkg, c.secondaryDisplayId)
-            if (onPrimary || onSecondary) continue
-            val phoneTask = findPackageTaskOnDisplay(pkg, Display.DEFAULT_DISPLAY) ?: continue
-            val targetPane = when {
-                c.mPanePackages[SplitPane.PRIMARY] == pkg -> SplitPane.PRIMARY
-                c.mPanePackages[SplitPane.SECONDARY] == pkg -> SplitPane.SECONDARY
-                else -> {
-                    // Package is owned but no longer assigned to a pane — drop it.
-                    releaseOwnershipIfUnused(pkg)
-                    continue
-                }
+            if (onPrimary || onSecondary) {
+                continue
             }
-            val targetDisplay = c.input.displayIdFor(targetPane) ?: continue
+            val phoneTask = findPackageTaskOnDisplay(pkg, Display.DEFAULT_DISPLAY)
+            if (phoneTask == null) {
+                continue
+            }
+            val targetPane = c.stacks.paneContaining(pkg)
+            if (targetPane == null) {
+                // Package is owned but no longer assigned to a pane — drop it.
+                releaseOwnershipIfUnused(pkg)
+                continue
+            }
+            val targetDisplay = c.input.displayIdFor(targetPane)
+            if (targetDisplay == null) {
+                continue
+            }
             log(SplitDisplayController.TAG, "reclaim[$reason]: $pkg#$phoneTask -> display=$targetDisplay")
             try {
                 Instances.iActivityTaskManager.moveRootTaskToDisplay(phoneTask, targetDisplay)
@@ -152,9 +171,13 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     fun vacateOtherPanesHolding(packageName: String, keepPane: Int) {
         for (p in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
             if (p == keepPane) continue
-            if (c.mPanePackages[p] != packageName) continue
-            c.mPanePackages[p] = null
-            c.input.displayIdFor(p)?.let { removeChromeTasksOnDisplay(it) }
+            if (!c.stacks.contains(p, packageName) && c.mPanePackages[p] != packageName) continue
+            c.stacks.remove(p, packageName)
+            c.mPanePackages[p] = c.stacks.front(p)
+            // Only strip chrome when the other pane's stack became empty.
+            if (c.stacks.front(p) == null) {
+                c.input.displayIdFor(p)?.let { removeChromeTasksOnDisplay(it) }
+            }
         }
     }
 
@@ -200,10 +223,177 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
 
     fun bringTaskToFront(taskId: Int): Boolean {
         return try {
+            // Samsung VDs often ignore bare moveTaskToFront unless the root task is focused.
+            runCatching {
+                val atm = Instances.iActivityTaskManager
+                val method = atm.javaClass.methods.firstOrNull { m ->
+                    m.name == "setFocusedTask" &&
+                        m.parameterTypes.size == 1 &&
+                        m.parameterTypes[0] == Int::class.javaPrimitiveType
+                }
+                method?.invoke(atm, taskId)
+            }
             Instances.activityManager.moveTaskToFront(taskId, 0)
-            true
+            if (isTaskTopmostOnItsDisplay(taskId)) return true
+            // Prefer the task's live topActivity: 高德 LAUNCHER is UsbFillActivity, but the
+            // VD root is often MainMapActivity — MAIN/LAUNCHER REORDER misses that task.
+            if (reorderExistingTask(taskId, preferTopActivity = true) &&
+                isTaskTopmostOnItsDisplay(taskId)
+            ) {
+                return true
+            }
+            if (reorderExistingTask(taskId, preferTopActivity = false) &&
+                isTaskTopmostOnItsDisplay(taskId)
+            ) {
+                return true
+            }
+            log(
+                SplitDisplayController.TAG,
+                "bringTaskToFront still not top task=$taskId"
+            )
+            false
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "moveTaskToFront error:", e)
+            false
+        }
+    }
+
+    /** True when [taskId] is the topmost root on whatever display currently hosts it. */
+    private fun isTaskTopmostOnItsDisplay(taskId: Int): Boolean {
+        for (displayId in listOf(c.primaryDisplayId, c.secondaryDisplayId, Display.DEFAULT_DISPLAY)) {
+            if (displayId == Display.INVALID_DISPLAY) continue
+            val tasks = tryOrNull {
+                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+            }.orEmpty()
+            if (tasks.none { it.taskId == taskId }) continue
+            // Prefer the visible root — list order alone is wrong on Samsung (top→bottom).
+            val visible = tasks.firstOrNull { isRootTaskVisible(it) }
+            if (visible != null) return visible.taskId == taskId
+            return normalizeRootTasksBottomToTop(tasks).lastOrNull()?.taskId == taskId
+        }
+        return false
+    }
+
+    /** [ActivityTaskManager.RootTaskInfo.visible] (public field; reflect as fallback). */
+    fun isRootTaskVisible(info: ActivityTaskManager.RootTaskInfo): Boolean {
+        return runCatching { info.visible }.getOrElse {
+            runCatching {
+                (info as Any).getObjectAs("visible", Boolean::class.javaPrimitiveType) as? Boolean
+            }.getOrNull() == true
+        }
+    }
+
+    /**
+     * Normalize ATMS root-task enumeration to **bottom → top** (last = front).
+     *
+     * AOSP usually walks bottom→top, but Samsung OneUI dumpsys / `getAllRootTaskInfosOnDisplay`
+     * often returns **top → bottom**. Using [List.lastOrNull] then marks the buried task
+     * (e.g. Google Maps) as front while 高德 is actually `visible=true`.
+     */
+    fun normalizeRootTasksBottomToTop(
+        tasks: List<ActivityTaskManager.RootTaskInfo>,
+    ): List<ActivityTaskManager.RootTaskInfo> {
+        if (tasks.size <= 1) return tasks
+        val firstVis = isRootTaskVisible(tasks.first())
+        val lastVis = isRootTaskVisible(tasks.last())
+        return when {
+            firstVis && !lastVis -> tasks.asReversed()
+            else -> tasks
+        }
+    }
+
+    /** Visible front root on [displayId], else last after bottom→top normalize. */
+    fun frontRootTaskOnDisplay(displayId: Int): ActivityTaskManager.RootTaskInfo? {
+        if (displayId == Display.INVALID_DISPLAY) return null
+        val tasks = tryOrNull {
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+        }.orEmpty()
+        if (tasks.isEmpty()) return null
+        tasks.firstOrNull { isRootTaskVisible(it) }?.let { return it }
+        return normalizeRootTasksBottomToTop(tasks).lastOrNull()
+    }
+
+    private fun findTopActivityForTask(taskId: Int): ComponentName? {
+        for (displayId in listOf(c.primaryDisplayId, c.secondaryDisplayId, Display.DEFAULT_DISPLAY)) {
+            if (displayId == Display.INVALID_DISPLAY) continue
+            val tasks = tryOrNull {
+                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+            }.orEmpty()
+            tasks.firstOrNull { it.taskId == taskId }?.topActivity?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * Fallback when [ActivityManager.moveTaskToFront] no-ops on a VirtualDisplay:
+     * re-deliver an intent without MULTIPLE_TASK so ATMS reorders the existing task
+     * (same effect as `am start` → "current task has been brought to the front").
+     *
+     * @param preferTopActivity when true, target the task's current topActivity first
+     * (needed when LAUNCHER ≠ the activity actually hosting the VD root).
+     */
+    private fun reorderExistingTask(taskId: Int, preferTopActivity: Boolean): Boolean {
+        val packageName = findPackageForTask(taskId) ?: return false
+        val displayId = findLivePackageTaskAnywhere(packageName)?.second ?: return false
+        if (displayId == Display.INVALID_DISPLAY) return false
+        val top = findTopActivityForTask(taskId)
+        val launcher = c.launch.resolveLaunchComponent(packageName)
+        val component = if (preferTopActivity) {
+            // 高德: LAUNCHER is UsbFillActivity, live root is MainMapActivity — prefer top.
+            top ?: launcher
+        } else {
+            launcher?.takeIf { it != top } ?: return false
+        } ?: return false
+        val targetingLauncher = launcher != null && component == launcher
+        return try {
+            AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(packageName, displayId)
+            c.context.invokeMethod(
+                "startActivityAsUser",
+                args(
+                    Intent().apply {
+                        this.component = component
+                        `package` = component.packageName
+                        action = Intent.ACTION_MAIN
+                        // MAIN/LAUNCHER on MainMapActivity misses the task; only tag LAUNCHER
+                        // when reordering via the real launcher component.
+                        if (targetingLauncher) {
+                            addCategory(Intent.CATEGORY_LAUNCHER)
+                        }
+                        // Reuse existing root on this display — do not MULTIPLE_TASK.
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    },
+                    android.app.ActivityOptions.makeBasic().apply {
+                        launchDisplayId = displayId
+                        try {
+                            invokeMethod(
+                                "setCallerDisplayId",
+                                args(displayId),
+                                argTypes(Integer.TYPE)
+                            )
+                        } catch (_: Throwable) {
+                        }
+                    }.toBundle(),
+                    UserHandle::class.java.newInstance(
+                        args(0),
+                        argTypes(Integer.TYPE)
+                    )
+                ),
+                argTypes(
+                    Intent::class.java,
+                    Bundle::class.java,
+                    UserHandle::class.java
+                )
+            )
+            log(
+                SplitDisplayController.TAG,
+                "bringTaskToFront reorder pkg=$packageName cmp=${component.className} " +
+                    "task=$taskId display=$displayId topPreferred=$preferTopActivity"
+            )
+            true
+        } catch (e: Throwable) {
+            log(SplitDisplayController.TAG, "bringTaskToFront reorder failed:", e)
             false
         }
     }
@@ -228,31 +418,63 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     }
 
     /**
-     * Clear [SplitDisplayController.mPanePackages] for a task that is intentionally leaving a VD pane.
-     * @return panes that were vacated
+     * Remove [packageName] from pane stacks when a task intentionally leaves a VD.
+     * Promotes the new stack front when the removed package was on top.
+     * @return panes that lost this package (stack may still be non-empty)
      */
     fun clearPanePackageForTask(taskId: Int, packageName: String?): List<Int> {
-        val vacated = mutableListOf<Int>()
         if (!packageName.isNullOrBlank()) {
-            for (i in 0..1) {
-                if (c.mPanePackages[i] == packageName) {
-                    c.mPanePackages[i] = null
-                    vacated += i
-                }
+            val vacated = c.stacks.removeFromAll(packageName)
+            if (vacated.isNotEmpty()) {
+                promoteStackFronts(vacated)
+                return vacated
             }
         }
-        if (vacated.isNotEmpty()) return vacated
         for (pane in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
             val displayId = c.input.displayIdFor(pane) ?: continue
             val onPane = tryOrNull {
                 Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
             }.orEmpty().any { it.taskId == taskId }
             if (onPane) {
-                c.mPanePackages[pane] = null
+                if (!packageName.isNullOrBlank()) {
+                    c.stacks.remove(pane, packageName)
+                } else {
+                    // Unknown package: clear front only if stack is empty after ATMS walk.
+                    c.mPanePackages[pane] = c.stacks.front(pane)
+                }
+                promoteStackFronts(listOf(pane))
                 return listOf(pane)
             }
         }
         return emptyList()
+    }
+
+    /** Bring the current stack-front task to the foreground for each pane. */
+    fun promoteStackFronts(panes: Collection<Int>) {
+        for (pane in panes) {
+            val frontPkg = c.stacks.front(pane)
+            c.mPanePackages[pane] = frontPkg
+            if (frontPkg.isNullOrBlank()) {
+                c.input.displayIdFor(pane)?.let { removeChromeTasksOnDisplay(it) }
+                continue
+            }
+            val displayId = c.input.displayIdFor(pane) ?: continue
+            val taskId = findPackageTaskOnDisplay(frontPkg, displayId, liveOnly = true) ?: continue
+            bringTaskToFront(taskId)
+        }
+    }
+
+    /**
+     * Evict [packageName] from [pane]: remove its tasks on that display and drop stack ownership.
+     */
+    fun evictPackageFromPane(pane: Int, packageName: String) {
+        val pkg = packageName.trim().takeIf { it.isNotEmpty() } ?: return
+        val displayId = c.input.displayIdFor(pane) ?: return
+        removePackageTasksOnDisplay(pkg, displayId)
+        c.stacks.remove(pane, pkg)
+        releaseOwnershipIfUnused(pkg)
+        AndroidHook.VdDensityPin.clearPackageVirtualDisplay(pkg)
+        untrackPackage(pkg)
     }
 
     /** Remove launcher / systemui chrome left on an emptied VD (Samsung Secondary HOME, etc.). */
@@ -270,12 +492,14 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         }
     }
 
-    /** Non-chrome user root tasks on [displayId], bottom → top. */
+    /** Non-chrome user root tasks on [displayId], bottom → top (last = visible front). */
     fun snapshotUserRootTasks(displayId: Int): List<PaneTaskRef> {
         if (displayId == Display.INVALID_DISPLAY) return emptyList()
-        val tasks = tryOrNull {
-            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
-        }.orEmpty()
+        val tasks = normalizeRootTasksBottomToTop(
+            tryOrNull {
+                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+            }.orEmpty()
+        )
         return tasks.mapNotNull { info ->
             if (c.input.isSystemHomeTask(info)) return@mapNotNull null
             val pkg = info.topActivity?.packageName
@@ -302,5 +526,95 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             }
         }
         tasks.lastOrNull()?.let { bringTaskToFront(it.taskId) }
+    }
+
+    /**
+     * After VD resize / cross-display move, OEM WM can leave Window frames at the old size
+     * while ActivityRecord config already matches the VD (ADB: 386×480 on a 436 VD).
+     * `resizeTask` is a no-op for fullscreen roots on OneUI; nudge the VirtualDisplay by 1px
+     * so WM re-dispatches configuration, then re-front the stack top to force a layout pass.
+     */
+    fun ensureTasksFillDisplay(
+        displayId: Int,
+        width: Int,
+        height: Int,
+        reason: String,
+    ) {
+        if (displayId == Display.INVALID_DISPLAY || width <= 0 || height <= 0) return
+        val pane = when (displayId) {
+            c.primaryDisplayId -> SplitPane.PRIMARY
+            c.secondaryDisplayId -> SplitPane.SECONDARY
+            else -> return
+        }
+        val vd = if (pane == SplitPane.PRIMARY) c.mPrimary else c.mSecondary
+        if (vd != null) {
+            try {
+                val nudgeW = (width - 1).coerceAtLeast(1)
+                vd.resize(nudgeW, height, c.mDensityDpi)
+                vd.resize(width, height, c.mDensityDpi)
+                if (pane == SplitPane.PRIMARY) {
+                    c.mLastPrimaryW = width
+                    c.mLastPrimaryH = height
+                } else {
+                    c.mLastSecondaryW = width
+                    c.mLastSecondaryH = height
+                }
+            } catch (e: Throwable) {
+                log(SplitDisplayController.TAG, "ensureTasksFillDisplay nudge failed display=$displayId:", e)
+            }
+        }
+        val front = snapshotUserRootTasks(displayId).lastOrNull()
+        front?.let { bringTaskToFront(it.taskId) }
+        // Still try FORCED resize as a secondary path on OEMs that honor it for VD tasks.
+        val bounds = Rect(0, 0, width, height)
+        var forced = 0
+        for (ref in snapshotUserRootTasks(displayId)) {
+            if (resizeTaskToBounds(ref.taskId, bounds, RESIZE_MODE_SYSTEM_FORCED)) forced++
+        }
+        log(
+            SplitDisplayController.TAG,
+            "ensureTasksFillDisplay[$reason] display=$displayId " +
+                "${width}x$height nudged=${vd != null} forced=$forced front=${front?.taskId}"
+        )
+    }
+
+    private fun resizeTaskToBounds(
+        taskId: Int,
+        bounds: Rect,
+        resizeMode: Int = RESIZE_MODE_SYSTEM,
+    ): Boolean {
+        if (bounds.isEmpty) return false
+        val atm = Instances.iActivityTaskManager as Any
+        try {
+            atm.invokeMethod(
+                "resizeTask",
+                args(taskId, bounds, resizeMode),
+                argTypes(Integer.TYPE, Rect::class.java, Integer.TYPE)
+            )
+            return true
+        } catch (_: Throwable) {
+        }
+        if (resizeMode != RESIZE_MODE_SYSTEM) {
+            try {
+                atm.invokeMethod(
+                    "resizeTask",
+                    args(taskId, bounds, RESIZE_MODE_SYSTEM),
+                    argTypes(Integer.TYPE, Rect::class.java, Integer.TYPE)
+                )
+                return true
+            } catch (_: Throwable) {
+            }
+        }
+        return try {
+            atm.invokeMethod(
+                "resizeTask",
+                args(taskId, bounds),
+                argTypes(Integer.TYPE, Rect::class.java)
+            )
+            true
+        } catch (e: Throwable) {
+            log(SplitDisplayController.TAG, "resizeTaskToBounds($taskId) failed:", e)
+            false
+        }
     }
 }

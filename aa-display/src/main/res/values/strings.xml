@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">AADisplay</string>
     <string name="xposeddescription">AADisplay</string>
+    <string name="stack_add_app">添加应用</string>
 </resources>

@@ -8,28 +8,56 @@
     android:background="#B3000000"
     android:orientation="horizontal">
 
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/rv_recent_task_left"
+    <LinearLayout
         android:layout_width="0dp"
         android:layout_height="match_parent"
         android:layout_weight="1"
-        app:layoutManager="LinearLayoutManager"
-        tools:context=".ui.aa.fragment.AaRecentTaskFragment"
-        tools:listitem="@layout/recent_task" />
+        android:orientation="vertical">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rv_recent_task_left"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            app:layoutManager="LinearLayoutManager"
+            tools:context=".ui.aa.fragment.AaRecentTaskFragment"
+            tools:listitem="@layout/recent_task" />
+
+        <Button
+            android:id="@+id/btn_add_app_left"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="40dp"
+            android:text="@string/stack_add_app" />
+    </LinearLayout>
 
     <View
         android:layout_width="1dp"
         android:layout_height="match_parent"
         android:background="@color/color_divider" />
 
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/rv_recent_task_center"
+    <LinearLayout
         android:layout_width="0dp"
         android:layout_height="match_parent"
         android:layout_weight="1"
-        app:layoutManager="LinearLayoutManager"
-        tools:context=".ui.aa.fragment.AaRecentTaskFragment"
-        tools:listitem="@layout/recent_task" />
+        android:orientation="vertical">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rv_recent_task_center"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            app:layoutManager="LinearLayoutManager"
+            tools:context=".ui.aa.fragment.AaRecentTaskFragment"
+            tools:listitem="@layout/recent_task" />
+
+        <Button
+            android:id="@+id/btn_add_app_center"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="40dp"
+            android:text="@string/stack_add_app" />
+    </LinearLayout>
 
     <View
         android:layout_width="1dp"

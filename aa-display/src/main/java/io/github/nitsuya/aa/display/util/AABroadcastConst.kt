@@ -11,10 +11,17 @@ interface AABroadcastConst {
         const val EXTRA_ACTION = "aa.display.extra.ACTION"
         const val EXTRA_TYPE = "aa.display.extra.TYPE"
         const val EXTRA_PANE = "aa.display.extra.PANE"
+        /**
+         * When true with [ACTION_OPEN_SPLIT_PICKER], do not clear the empty overlay
+         * (stack already has apps — user is adding another).
+         */
+        const val EXTRA_KEEP_OCCUPANCY = "aa.display.extra.KEEP_OCCUPANCY"
         /** Optional package names so AA can update empty overlays without Binder round-trips. */
         const val EXTRA_PRIMARY_PACKAGE = "aa.display.extra.PRIMARY_PACKAGE"
         const val EXTRA_SECONDARY_PACKAGE = "aa.display.extra.SECONDARY_PACKAGE"
         /** -1 split; 0 PRIMARY / 1 SECONDARY fullscreen. */
         const val EXTRA_FULLSCREEN_PANE = "aa.display.extra.FULLSCREEN_PANE"
+        /** Primary pane ratio after controller change (swap / restore); UI applies when not dragging. */
+        const val EXTRA_RATIO = "aa.display.extra.RATIO"
     }
 }

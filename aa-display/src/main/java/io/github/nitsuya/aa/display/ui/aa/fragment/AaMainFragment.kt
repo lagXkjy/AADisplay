@@ -60,16 +60,21 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                         AABroadcastConst.EXTRA_PANE,
                         SplitPane.PRIMARY
                     )
-                    // system_server already decided this pane needs a pick (restore miss / vacant).
-                    // Do not re-check getPanePackage — stale mPanePackages used to block the picker.
+                    val keepOccupancy = intent.getBooleanExtra(
+                        AABroadcastConst.EXTRA_KEEP_OCCUPANCY,
+                        false,
+                    )
+                    // system_server vacant/restore miss clears occupancy; Recents "添加应用" keeps it.
                     if (SplitPane.isValid(pane)) {
-                        paneHasApp[pane] = false
-                        updateEmptyOverlays()
+                        if (!keepOccupancy) {
+                            paneHasApp[pane] = false
+                            updateEmptyOverlays()
+                        }
                         appPicker.show(pane)
                     }
                 }
                 AABroadcastConst.ACTION_SPLIT_STATE_CHANGED -> {
-                    // Occupancy (+ optional fullscreen) — never re-apply ratio from broadcasts.
+                    // Occupancy (+ optional fullscreen / swap ratio).
                     val primary = intent.getStringExtra(AABroadcastConst.EXTRA_PRIMARY_PACKAGE)
                     val secondary = intent.getStringExtra(AABroadcastConst.EXTRA_SECONDARY_PACKAGE)
                     if (primary != null || secondary != null) {
@@ -83,6 +88,22 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                             SplitPane.FULLSCREEN_NONE
                         )
                         applyFullscreenFromRemote(fs)
+                    }
+                    // Swap inverts controller ratio; apply here so TextureViews match VD sizes
+                    // without waiting solely on afterSwapSettle (which can race Binder/IO).
+                    if (intent.hasExtra(AABroadcastConst.EXTRA_RATIO) &&
+                        !dividerDragging &&
+                        !SplitPane.isFullscreenPane(fullscreenPane)
+                    ) {
+                        val remote = intent.getFloatExtra(AABroadcastConst.EXTRA_RATIO, Float.NaN)
+                        if (!remote.isNaN() && remote > 0f) {
+                            val clamped = SplitPane.clampRatio(remote)
+                            if (appliedRatio.isNaN() || abs(appliedRatio - clamped) >= 0.01f) {
+                                splitRatio = clamped
+                                applySplitLayoutWeights(clamped, force = true)
+                                baseBinding.splitDivider.setRatio(clamped)
+                            }
+                        }
                     }
                 }
                 AABroadcastConst.ACTION_STEERING_WHEEL_CONTROL -> {
@@ -227,7 +248,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             val ratio = tryOrNull { CoreApi.splitRatio }?.takeIf { it > 0f } ?: return@Runnable
             val clamped = SplitPane.clampRatio(ratio)
             splitRatio = clamped
-            applySplitLayoutWeights(clamped)
+            applySplitLayoutWeights(clamped, force = true)
             baseBinding.splitDivider.setRatio(clamped)
         }
         syncPaneOccupancyFromService()
@@ -298,6 +319,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     }
                     enterFullscreen(other)
                 } else {
+                    // Mirror controller's 1-ratio invert immediately so TextureViews track VD
+                    // resize; broadcast / afterSwapSettle correct if the Binder path lags.
+                    val next = SplitPane.clampRatio(1f - splitRatio)
+                    splitRatio = next
+                    applySplitLayoutWeights(next, force = true)
+                    baseBinding.splitDivider.setRatio(next)
                     CoreApi.swapSplitPanes()
                     baseBinding.root.removeCallbacks(afterSwapSettle)
                     baseBinding.root.postDelayed(afterSwapSettle, 280L)

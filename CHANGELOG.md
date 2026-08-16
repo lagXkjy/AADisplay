@@ -2,8 +2,34 @@
 
 ## Unreleased
 
+### Added
+- **虚拟屏多应用栈（每窗最多 3 个）：** Primary / Secondary 不再「选新即杀旧」。应用压入栈，栈顶显示；同栈切换（Recent 点选 / 长按拖到顶部）只 `moveTaskToFront`，无需 close 冷启动。满 3 再加则挤出栈底。Recent 左/中列底部「添加应用」打开选择器（`EXTRA_KEEP_OCCUPANCY`）。`LastSplitStore` 新增有序栈 CSV（底→顶），旧单包 key 仍为栈顶兼容。
+
+### Fixed
+- **分隔条 swap 后窗体不铺满：** ADB 可见 Secondary 上任务窗口帧仍停在旧宽度（如 386×480，而 VD 已是 436×480）。`moveRootTaskToDisplay` + `VirtualDisplay.resize` 后 OneUI 常不重算 Window frame，且全屏根任务上 `resizeTask` 无效。swap 后对两 VD 做 1px nudge 强制配置下发并 re-front 栈顶；UI 侧乐观镜像 `1-ratio`，`SPLIT_STATE_CHANGED` 带上 `EXTRA_RATIO` 同步 TextureView。
+
+- **全屏背后窗 Recent 置顶不生效：** 第二分屏全屏时点第一分屏栈内应用，列表会置顶，但 peel 切回后仍显示旧应用。原因是背后 VD 的 ATMS 顶滞后，`restoreFocusAfterFullscreen` / `getPanePackage` / persist 刷新都按 ATMS 旧顶把 `PaneAppStack` 写回去。改为全屏 focus restore 走 `promoteStackFronts`（栈顶优先）；`getPanePackage` 在栈顶仍存活时不再被 ATMS 降级；persist 刷新保留 intentional 栈顶；背后窗 `startActivityOnPane` 置顶后把焦点还回可见全屏窗。
+
+- **栈顶记 Google、画面仍是高德：** 三星 OneUI 上 `getAllRootTaskInfosOnDisplay` / dumpsys 常为 **顶→底**（可见任务在前），代码却按 AOSP 习惯用 `lastOrNull` 当栈顶，把埋在底下的 Google Maps 写成 front，并用错误的 `isTaskTopmost` 让失败的 `bringTaskToFront` 误报成功。改为优先认 `RootTaskInfo.visible`，并把列表规范成底→顶后再同步栈 / Recent / persist；高德 `MainMapActivity` 重排不再强加 `CATEGORY_LAUNCHER`（LAUNCHER 仍是 `UsbFillActivity`）。
+
+- **栈顶记高德、画面仍是 Google 地图：** 高德 LAUNCHER 是 `UsbFillActivity`，VD 根任务却是 `MainMapActivity`；`bringTaskToFront` 用 MAIN/LAUNCHER REORDER 对不上现有 task，却仍 `moveToTop` 写栈。改为优先按 task `topActivity` 重排并校验真成顶，失败则清僵尸再冷启，不再把失败切换写成栈顶。
+- **同栈切换被写回栈底：** `getAllRootTaskInfosOnDisplay` 为底→顶，但 `getPanePackage` / `refreshPanePackagesFromAtms` 误用 `firstOrNull` 当栈顶，点选切换后 bookkeeping 与 `promote` 会把底层应用抢回前台。改为 `lastOrNull`；`bringTaskToFront` 补 `setFocusedTask` + MAIN/REORDER 回退；Recent 同栈点选/拖顶走 `startActivityOnPane`（front-existing）。
+
 ### Changed
 - **文档 / 命名对齐：** 手机悬浮 UI 已彻底移除；`DisplayWindow` 重命名为 `DisplaySessionPolicy`（仅 Delay Destroy + keep-awake）。同步 `AGENTS.md`，去掉过时的 `SHOW_PHONE_OVERLAY` 描述。
+- **Recent 栈列紧凑 + 点选置顶：** 左/中列每项均分高度，去掉 9:16 高卡片，三应用同屏无需上下滚；整项（含灰底）点击即 `startActivityOnPane` 拉到栈顶并关闭面板（Close 仍只关任务）。
+
+### Verify (真机)
+1. 左栈依次加 3 个应用，切顶无需重新加载，画面状态保持；三应用同屏可见、无需滚动
+2. 点非栈顶应用（图标/标题/灰底均可）→ 立即置顶显示并关掉 Recent
+3. 加第 4 个 → 栈底旧应用被关掉，新应用在顶
+4. 中↔左滑动移动单应用；满栈挤出正确
+5. 分隔条 swap 后两栈整体对调且画面正确；两侧应用窗口铺满各自 VD（无黑边/旧尺寸残留）
+6. 断线 &lt;180s 重连 / 冷启动 restore：栈序与栈顶恢复
+7. Close 栈顶后自动显示下一应用；关光后出现空窗选择器
+8. 同应用不能同时出现在左、中两栈
+9. 左栈同时有高德+Google：画面是谁，`LastSplit` left / left_stack 末项就是谁（可用 `settings get global aadisplay_last_split_left` 对照 `am stack list` 的 visible）
+10. 第二分屏全屏 → 打开堆栈 → 点第一分屏非栈顶应用 → peel 切回第一分屏：应显示刚置顶的应用
 
 ## 0.24#17.4-r8
 

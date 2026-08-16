@@ -73,10 +73,8 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
     /** True when the display's top activity looks like an in-app live/room player. */
     fun isLiveStyleTopActivity(displayId: Int): Boolean {
         if (displayId == Display.INVALID_DISPLAY) return false
-        val tasks = tryOrNull {
-            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
-        }.orEmpty()
-        val name = tasks.firstOrNull()?.topActivity?.className ?: return false
+        val front = c.ownership.frontRootTaskOnDisplay(displayId) ?: return false
+        val name = front.topActivity?.className ?: return false
         // "LivePlay" is covered by case-insensitive "live".
         return name.contains("live", ignoreCase = true) ||
             name.contains("webcast", ignoreCase = true)
@@ -188,12 +186,18 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
         }
     }
 
-    fun recentTaskInfo(displayId: Int): List<RecentTaskInfo> {
+    fun recentTaskInfo(
+        displayId: Int,
+        maxCount: Int = MAX_RECENT_PER_DISPLAY,
+        topFirst: Boolean = false,
+    ): List<RecentTaskInfo> {
         // IPC from the app process keeps the caller uid; ATMS requires MANAGE_ACTIVITY_TASKS.
         val identity = Binder.clearCallingIdentity()
         return try {
-            val all = Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
-            all.asSequence().mapNotNull { taskInfo ->
+            val all = c.ownership.normalizeRootTasksBottomToTop(
+                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+            )
+            val mapped = all.mapNotNull { taskInfo ->
                 if (isSystemHomeTask(taskInfo)) return@mapNotNull null
                 val topActivity = taskInfo.topActivity ?: return@mapNotNull null
                 if (SplitChromePackages.BOUNCE_EXCLUDED.contains(topActivity.packageName)) return@mapNotNull null
@@ -219,7 +223,13 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
                     label = activityInfo.loadLabel(Instances.packageManager).toString()
                 }
                 RecentTaskInfo(icon, taskInfo.taskId, label, topActivity.packageName)
-            }.take(MAX_RECENT_PER_DISPLAY).toList()
+            }
+            // Normalized bottom → top; VD Recents UI wants top → bottom (index 0 = front).
+            if (topFirst) {
+                mapped.takeLast(maxCount).asReversed()
+            } else {
+                mapped.take(maxCount)
+            }
         } finally {
             Binder.restoreCallingIdentity(identity)
         }
