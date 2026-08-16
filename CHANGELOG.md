@@ -2,11 +2,14 @@
 
 ## Unreleased
 
+### Changed
+- **文档 / 命名对齐：** 手机悬浮 UI 已彻底移除；`DisplayWindow` 重命名为 `DisplaySessionPolicy`（仅 Delay Destroy + keep-awake）。同步 `AGENTS.md`，去掉过时的 `SHOW_PHONE_OVERLAY` 描述。
+
 ## 0.24#17.4-r8
 
 ### Changed
 - **隐藏桌面图标：** `MainActivity` 改为 `MAIN` + `CATEGORY_INFO`（去掉 `LAUNCHER`）；激活状态页从 LSPosed → AADisplay 打开。
-- **隐藏手机侧悬浮框：** `DisplayWindow.SHOW_PHONE_OVERLAY = false`，不再 inflate / 挂载手机悬浮控制 UI；Delay Destroy（180s）与 keep-awake 等会话策略仍在无头路径运行，断开后仍会如期释放双 VD。
+- **移除手机侧悬浮框：** 删除悬浮控制布局与 inflate 路径；会话策略（Delay Destroy 180s、keep-awake）仍在无头路径运行，断开后仍会如期释放双 VD。
 - **Version bump to `0.24#17.4-r8`** (`versionCode` 3064)。
 
 ## 0.24#17.4-r7

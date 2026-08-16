@@ -4,7 +4,7 @@
 
 ## 1. 项目概述
 
-AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生产向 fork：通过 **LSPosed** 在系统侧创建 **VirtualDisplay**，把选定手机应用投到 **Android Auto** 车机界面，并提供手机端悬浮控制与 AA 侧 UI/DPI/按键等兼容钩子。
+AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生产向 fork：通过 **LSPosed** 在系统侧创建 **VirtualDisplay**，把选定手机应用投到 **Android Auto** 车机界面，并提供 AA 侧 UI/DPI/按键等兼容钩子。
 
 | 项 | 说明 |
 |----|------|
@@ -38,7 +38,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | `xposed/hook/aa/` | Android Auto 专用钩子（`Aa*Hook`） |
 | `ui/main/` | 手机端激活状态页（`MainActivity`，`CATEGORY_INFO`；无桌面图标，经 LSPosed 打开） |
 | `ui/aa/` | 车机投影 Activity / Fragment / VirtualDisplay 适配 |
-| `ui/window/` | 手机端悬浮窗与任务列表（`SHOW_PHONE_OVERLAY=false` 时 UI 关闭，会话策略仍跑） |
+| `ui/window/` | 显示会话策略（`DisplaySessionPolicy`：Delay Destroy / keep-awake；手机悬浮 UI 已移除） |
 | `service/` | `AaActivityService` |
 | `util/` | `LastSplitStore`、广播常量、触控改写等 |
 | `model/` | 最近任务等模型 |
@@ -59,7 +59,7 @@ flowchart LR
   CoreApi --> CoreManager
   CoreManager -->|"PMS bridge AADD"| CoreManagerService
   CoreManagerService --> SplitDisplayController
-  CoreManagerService --> DisplayWindow
+  CoreManagerService --> DisplaySessionPolicy
   AndroidAutoHook --> AaHooks
 ```
 
@@ -165,9 +165,9 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 
 注意 CHANGELOG 中的 **display profile lock**、固定 **Delay Destroy = 180s**、TaskView 稳定性相关行为，避免重引入重连闪烁或过早销毁。
 
-### 手机悬浮控制
+### 显示会话策略
 
-- `ui/window/DisplayWindow.kt`（`SHOW_PHONE_OVERLAY` 默认 `false`：不显示悬浮 UI，仍跑 Delay Destroy / keep-awake）
+- `ui/window/DisplaySessionPolicy.kt`（原 `DisplayWindow`）：Delay Destroy = 180s、双 VD keep-awake；无手机悬浮 UI
 - 通过 `CoreApi` 操作任务，不直接碰 system VirtualDisplay
 
 ### 车机 Recent 任务列
@@ -196,6 +196,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 | 系统 VirtualDisplay / Binder 桥 | `xposed/hook/AndroidHook.kt`、`CoreManagerService.kt` |
 | AA 钩子总控 | `xposed/hook/AndroidAutoHook.kt` |
 | 车机画面与触控 | `ui/aa/AaDisplayActivity*.java/kt`、`AaMainFragment.kt` |
+| 显示会话策略（Delay Destroy / keep-awake） | `ui/window/DisplaySessionPolicy.kt` |
 | 手机状态页（LSPosed 打开） | `ui/main/MainActivity.kt` |
 | 分屏快照 | `util/LastSplitStore.kt` |
 | IPC 契约 | `aidl/.../ICoreManager.aidl` |

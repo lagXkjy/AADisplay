@@ -10,7 +10,7 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
-import io.github.nitsuya.aa.display.ui.window.DisplayWindow
+import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -42,7 +42,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 systemContextHost = value.createContext(value.params ?: ContextParams.Builder().build())
             }
 
-        private var mDisplayWindow: DisplayWindow? = null
+        private var mSessionPolicy: DisplaySessionPolicy? = null
         private var mSplitController: SplitDisplayController? = null
         private var mDisplayCreateInProgress = false
 
@@ -185,7 +185,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             )
             mSplitController?.apply {
                 // Soft reconnect: always cancel Delay Destroy and rebind surfaces/policies.
-                mDisplayWindow?.onResume()
+                mSessionPolicy?.onResume()
                 setPaneSurface(SplitPane.PRIMARY, primarySurface)
                 setPaneSurface(SplitPane.SECONDARY, secondarySurface)
                 // Always kick resize/policies/ensure after surface rebind (null→live).
@@ -220,8 +220,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                         // Session policy (delay-destroy / keep-awake) after first frame callback.
                         runMain {
                             if (mSplitController !== controller) return@runMain
-                            mDisplayWindow?.onDestroyPromptly()
-                            mDisplayWindow = DisplayWindow(
+                            mSessionPolicy?.onDestroyPromptly()
+                            mSessionPolicy = DisplaySessionPolicy(
                                 CommonContextWrapper.createModuleContext(systemContext),
                                 controller,
                             )
@@ -281,16 +281,16 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runMain {
             val finishTeardown = {
                 mSplitController?.onDestroy()
-                mDisplayWindow = null
+                mSessionPolicy = null
                 mSplitController = null
                 mDisplayCreateInProgress = false
                 clearDisplayProfileLock()
             }
-            // Window is created async after the create callback; destroy before that
+            // Session policy is created async after the create callback; destroy before that
             // must still tear down the controller and clear the profile lock.
-            val window = mDisplayWindow
-            if (window != null) {
-                window.onDestroy(finishTeardown)
+            val policy = mSessionPolicy
+            if (policy != null) {
+                policy.onDestroy(finishTeardown)
             } else {
                 finishTeardown()
             }
@@ -368,7 +368,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     private fun noteUserInteraction() {
-        mDisplayWindow?.onVirtualDisplayUserInteraction()
+        mSessionPolicy?.onVirtualDisplayUserInteraction()
     }
 
     private fun noteUserInteractionAsync() {

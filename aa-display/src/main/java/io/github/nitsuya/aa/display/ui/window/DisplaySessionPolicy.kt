@@ -29,14 +29,14 @@ import kotlinx.coroutines.launch
 
 /**
  * AA display session policy: Delay Destroy (180s) and keep-awake for OWN_DISPLAY_GROUP VDs.
- * Phone overlay UI has been removed.
+ * Phone overlay UI was removed; this class no longer hosts any WindowManager views.
  */
-class DisplayWindow(
+class DisplaySessionPolicy(
     private val mContext: Context,
     private val displayAdapter: SplitDisplayController,
 ) {
     companion object {
-        private const val TAG = "AADisplay_DisplayWindow"
+        private const val TAG = "AADisplay_DisplaySessionPolicy"
         /** Keep OWN_DISPLAY_GROUP user-activity from timing out / dozing on Samsung. */
         private const val KEEP_AWAKE_INTERVAL_MS = 15_000L
         private const val TOUCH_KEEP_AWAKE_MIN_INTERVAL_MS = 1_000L

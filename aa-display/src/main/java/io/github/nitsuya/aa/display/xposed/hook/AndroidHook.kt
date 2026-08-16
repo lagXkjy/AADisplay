@@ -206,7 +206,7 @@ object AndroidHook : BaseHook() {
         }
 
         /**
-         * Install density hooks once per DisplayWindow session.
+         * Install density hooks once per DisplaySessionPolicy session.
          * AA reconnect / onResume must NOT clear [appInitUseDisplay] — that drops VD DPI pinning
          * mid-session and dual-VD density pinning would break.
          */
