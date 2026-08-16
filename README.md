@@ -11,7 +11,7 @@
 
 ## 版本
 
-- 当前模块版本：`0.24#17.4-r7`
+- 当前模块版本：`0.24#17.4-r8`
 - 变更记录见 [CHANGELOG.md](CHANGELOG.md)
 
 ## 版本特点
@@ -50,7 +50,7 @@
    - System Framework
    - Android Auto
 3. 重启设备。
-4. 打开 AADisplay，确认模块已激活。
+4. 在 LSPosed → AADisplay 中打开模块（无桌面图标），确认已激活 / 未激活 / 需要重启。
 5. 连接 Android Auto，验证分屏、触控与任务切换。
 
 ## 构建

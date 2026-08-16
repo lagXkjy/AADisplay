@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.24#17.4-r8
+
+### Changed
+- **隐藏桌面图标：** `MainActivity` 改为 `MAIN` + `CATEGORY_INFO`（去掉 `LAUNCHER`）；激活状态页从 LSPosed → AADisplay 打开。
+- **隐藏手机侧悬浮框：** `DisplayWindow.SHOW_PHONE_OVERLAY = false`，不再 inflate / 挂载手机悬浮控制 UI；Delay Destroy（180s）与 keep-awake 等会话策略仍在无头路径运行，断开后仍会如期释放双 VD。
+- **Version bump to `0.24#17.4-r8`** (`versionCode` 3064)。
+
 ## 0.24#17.4-r7
 
 ### Changed

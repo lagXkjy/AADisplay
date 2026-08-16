@@ -36,9 +36,9 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | `xposed/` | `XposedInit`、Binder 桥、`CoreManager` / `CoreManagerService` |
 | `xposed/hook/` | 系统 / 通用钩子 |
 | `xposed/hook/aa/` | Android Auto 专用钩子（`Aa*Hook`） |
-| `ui/main/` | 手机端激活状态页（`MainActivity`） |
+| `ui/main/` | 手机端激活状态页（`MainActivity`，`CATEGORY_INFO`；无桌面图标，经 LSPosed 打开） |
 | `ui/aa/` | 车机投影 Activity / Fragment / VirtualDisplay 适配 |
-| `ui/window/` | 手机端悬浮窗与任务列表 |
+| `ui/window/` | 手机端悬浮窗与任务列表（`SHOW_PHONE_OVERLAY=false` 时 UI 关闭，会话策略仍跑） |
 | `service/` | `AaActivityService` |
 | `util/` | `LastSplitStore`、广播常量、触控改写等 |
 | `model/` | 最近任务等模型 |
@@ -122,7 +122,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 1. 安装 APK
 2. LSPosed 启用模块：至少 **System Framework** + **Android Auto**
 3. 重启设备
-4. 打开 AADisplay 查看激活状态
+4. 在 LSPosed → AADisplay 打开状态页查看激活状态（无桌面图标）
 5. 连接 Android Auto，验证双屏分屏、触控、任务切换、断开后约 180s 延迟销毁
 
 改 AA 钩子后：对照目标 gearhead 版本；确认 DexKit 解析仍命中；查阅 `CHANGELOG.md` / `RELEASE_NOTES_*` 中的稳定性约束（如 display profile lock、TaskView）。
@@ -167,7 +167,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 
 ### 手机悬浮控制
 
-- `ui/window/DisplayWindow.kt`
+- `ui/window/DisplayWindow.kt`（`SHOW_PHONE_OVERLAY` 默认 `false`：不显示悬浮 UI，仍跑 Delay Destroy / keep-awake）
 - 通过 `CoreApi` 操作任务，不直接碰 system VirtualDisplay
 
 ### 车机 Recent 任务列
@@ -196,7 +196,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 | 系统 VirtualDisplay / Binder 桥 | `xposed/hook/AndroidHook.kt`、`CoreManagerService.kt` |
 | AA 钩子总控 | `xposed/hook/AndroidAutoHook.kt` |
 | 车机画面与触控 | `ui/aa/AaDisplayActivity*.java/kt`、`AaMainFragment.kt` |
-| 手机设置页 | `ui/main/MainActivity.kt` |
+| 手机状态页（LSPosed 打开） | `ui/main/MainActivity.kt` |
 | 分屏快照 | `util/LastSplitStore.kt` |
 | IPC 契约 | `aidl/.../ICoreManager.aidl` |
 | 隐藏 API stubs | `lib-stub/` |
