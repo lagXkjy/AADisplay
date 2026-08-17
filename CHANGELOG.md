@@ -121,7 +121,9 @@
 ### Changed
 - **Version bump to `0.24#17.4-r3`** (`versionCode` 3059).
 
-## Unreleased
+## Historical notes (pre-r3 / dual-VD era, already shipped)
+
+> 以下条目已随 r2–r3 及更早发版合入；保留作考古，**不是**当前 Unreleased。真未发内容见文件顶部 `## Unreleased`。
 
 ### Changed
 - **Dead-code sweep:** drop unreachable `RecentTaskColumnAdapter.clearItem`, empty steering-wheel `EXTRA_TYPE==2` arm (old screen-control), unused `rewriteMotionEvent(preserveMeta=true)` path; collapse status-only MainActivity template (no empty AppBar / `activity_base_root_2`, unused Base* init hooks).
@@ -243,7 +245,7 @@
 - Requires Root + LSPosed with at least **System Framework** and **Android Auto** in scope.
 - Custom dual VirtualDisplay split is vendor-independent; some OEMs still need compatibility handling for cross-display `moveRootTaskToDisplay`, empty-VD chrome (e.g. SecondaryDisplayLauncher), and OWN_DISPLAY_GROUP power/doze behavior.
 - Non-resizable apps may letterbox or fail to fill a narrow pane (Developer option “Force activities to be resizable” can help).
-- Restore Last Split prioritizes package pair over exact divider ratio; ratio apply is best-effort after pane settle.
+- Restore Last Split restores ordered per-pane stacks (`*_stack` CSV, max 3) plus tops; divider ratio apply is still best-effort after pane settle.
 
 ## 0.23.6 (2026-07-26)
 

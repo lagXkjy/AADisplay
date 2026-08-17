@@ -69,6 +69,13 @@ object LastSplitStore {
         return loadFromFile()
     }
 
+    /**
+     * Persist [snapshot] to Settings.Global and the system properties file.
+     *
+     * Both backends are always written when possible. [mirrorSettings] only controls
+     * whether a Settings failure is logged as a warning (true) or left quiet (false);
+     * it does not switch to a file-only path.
+     */
     fun save(
         snapshot: Snapshot,
         contentResolver: ContentResolver? = null,

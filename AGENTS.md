@@ -13,7 +13,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | 运行前提 | Root + LSPosed（或兼容 Xposed）；至少勾选 System Framework + Android Auto |
 | AA 包名 | `com.google.android.projection.gearhead` |
 | 许可证 | GPLv3（见 `LICENSE`） |
-| 版本号 | `0.24#<AA版本>-rN`（以 `aa-display/build.gradle.kts` 的 `versionName` / `versionCode` 为准；README 可能滞后） |
+| 版本号 | `0.24#<AA版本>-rN`（以 `aa-display/build.gradle.kts` 的 `versionName` / `versionCode` 为准） |
 
 本仓库 **无 CI、无有效自动化测试**；真机 + LSPosed + Android Auto 联调是主验证方式。
 
@@ -85,7 +85,7 @@ flowchart LR
 
 ### 跨进程 IPC
 
-- 门面：`CoreApi`（`Application.kt`）—— 非 system 用 `CoreManager`，uid 1000 用 `CoreManagerService.instance`
+- 门面：`CoreApi`（`CoreApi.kt`）—— 非 system 用 `CoreManager`，uid 1000 用 `CoreManagerService.instance`
 - 契约：`ICoreManager.aidl`（创建/销毁显示、Surface、启停任务、按键/触摸、最近任务）
 - 桥接：`AndroidHook` 注入 `IPackageManager.onTransact`，magic code **`AADD`**，把 `CoreManagerService` binder 交给应用进程
 
@@ -114,7 +114,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 | 项 | 说明 |
 |----|------|
 | 技术栈 | Kotlin 为主 + 少量 Java；AGP / Kotlin / Gradle 以根 `build.gradle.kts` 与 wrapper 为准；Java 11 |
-| UI | ViewBinding + Material；**无 Compose**，不要擅自引入 |
+| UI | ViewBinding + 平台 theme（无 Material / AppCompat）；**无 Compose**，不要擅自引入 |
 | Release 签名 | 环境变量 `KEY_ANDROID` + 根目录 `key.jks`；未设置则回退 debug 签名 |
 | 产物名 | `aa-display-${versionName}.apk`（`#` 替换为 `-`） |
 | 密钥 | **勿提交** `key.jks` 与密码 |

@@ -59,8 +59,8 @@ object SplitPane {
     /**
      * Extra hit area on each side of the divider seam (visual stays [DIVIDER_DP]).
      * Applied as view size + negative margins so the divider view itself receives
-     * touches over adjacent panes (sibling TextureViews would otherwise win and
-     * open the app picker on long-press). Keep narrow to limit accidental drag/swap.
+     * touches over adjacent panes (sibling TextureViews would otherwise win).
+     * Keep narrow to limit accidental drag/swap.
      */
     const val DIVIDER_TOUCH_EXPAND_DP = 12
 

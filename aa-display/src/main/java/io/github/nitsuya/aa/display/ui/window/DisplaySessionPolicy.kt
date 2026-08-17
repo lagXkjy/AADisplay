@@ -71,7 +71,7 @@ class DisplaySessionPolicy(
     private var mKeepAwakeJob: Job? = null
     private var mScreenOffReassertJob: Job? = null
     private var mLastTouchKeepAwakeAt = 0L
-    private var mMiuiReceiverRegistered = false
+    private var mScreenReceiverRegistered = false
     private var iPowerManagerService: Any? = null
     private var iPowerManagerUserActivity: Method? = null
     private var mLoggedMissingDisplayUserActivity = false
@@ -190,7 +190,7 @@ class DisplaySessionPolicy(
         fun init() {
             // Always watch phone screen transitions so OWN_DISPLAY_GROUP is re-asserted
             // when Samsung DreamManager tries to DOZE the AA virtual display with the phone.
-            if (!mMiuiReceiverRegistered) {
+            if (!mScreenReceiverRegistered) {
                 try {
                     ContextCompat.registerReceiver(
                         mContext,
@@ -198,7 +198,7 @@ class DisplaySessionPolicy(
                         addAction(IntentFilter()),
                         ContextCompat.RECEIVER_NOT_EXPORTED
                     )
-                    mMiuiReceiverRegistered = true
+                    mScreenReceiverRegistered = true
                 } catch (e: Throwable) {
                     log(TAG, "register SCREEN_ON/OFF failed:", e)
                 }
@@ -220,12 +220,12 @@ class DisplaySessionPolicy(
         fun release() {
             stopKeepAwakeLoop()
             cancelScreenOffReassertBurst()
-            if (mMiuiReceiverRegistered) {
+            if (mScreenReceiverRegistered) {
                 try {
                     mContext.unregisterReceiver(this)
                 } catch (_: Throwable) {
                 }
-                mMiuiReceiverRegistered = false
+                mScreenReceiverRegistered = false
             }
             if (isSupportInteractive) {
                 try {
