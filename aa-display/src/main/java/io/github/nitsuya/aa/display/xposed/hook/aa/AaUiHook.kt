@@ -90,11 +90,17 @@ object AaUiHook: AaHook() {
      */
     @Volatile private var mHuPeelGesture = false
     /**
+     * App picker (or other AaDisplay overlay) is open — left-rail steal must go to
+     * [ICoreManager.touchAaDisplay], not the primary pane under the dimmer.
+     */
+    @Volatile private var mAaUiRailConsume = false
+    /**
      * Cached split fullscreen pane for rail steal. MOVE must not Binder-query
      * [CoreManager.splitFullscreenPane]; refresh on DOWN and SPLIT_STATE_CHANGED.
      */
     @Volatile private var mCachedFullscreenPane: Int = SplitPane.FULLSCREEN_NONE
     private var mSplitStateReceiver: android.content.BroadcastReceiver? = null
+    private var mRailConsumeReceiver: android.content.BroadcastReceiver? = null
 
 
     private var resLayoutLeftResourceId: Int = 0
@@ -297,6 +303,7 @@ object AaUiHook: AaHook() {
             // Discover this HU's FacetBar / thin-rail display early (no LayoutInfo in :car).
             ensureRailObservationFromDisplays()
             registerSplitStateReceiver()
+            registerAaUiRailConsumeReceiver()
             return
         }
         log(tagName, "AaUiHook: AutoOpen always-on startMethod=${startMethod?.name}")
@@ -985,11 +992,12 @@ object AaUiHook: AaHook() {
             try {
                 val fs = mCachedFullscreenPane
                 val peel = mHuPeelGesture
+                val railToAaUi = mAaUiRailConsume
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
                     mHuPeelGesture = false
                 }
                 val injected = when {
-                    peel -> CoreManager.tryTouchAaDisplay(toInject)
+                    peel || railToAaUi -> CoreManager.tryTouchAaDisplay(toInject)
                     SplitPane.isFullscreenPane(fs) -> CoreManager.tryTouchPane(fs, toInject)
                     else -> CoreManager.tryTouchPrimaryPane(toInject)
                 }
@@ -1001,12 +1009,12 @@ object AaUiHook: AaHook() {
                         tagName,
                         "AaUiHook: HU rail → " +
                             (when {
-                                peel -> "touchAaDisplay"
+                                peel || railToAaUi -> "touchAaDisplay"
                                 SplitPane.isFullscreenPane(fs) -> "touchPane($fs)"
                                 else -> "touchPrimaryPane"
                             }) +
                             " x=${motion.x} y=${motion.y} rail=$rail " +
-                            "facetTarget=$railTarget"
+                            "facetTarget=$railTarget picker=$railToAaUi"
                     )
                 }
             } finally {
@@ -1443,6 +1451,40 @@ object AaUiHook: AaHook() {
             logDebug(tagName, "AaUiHook: registered SPLIT_STATE_CHANGED for rail fullscreen cache")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: register SPLIT_STATE_CHANGED failed", e)
+        }
+    }
+
+    private fun registerAaUiRailConsumeReceiver() {
+        if (mRailConsumeReceiver != null) return
+        val ctx = InitFields.appContext
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != AABroadcastConst.ACTION_AA_UI_RAIL_CONSUME) return
+                mAaUiRailConsume = intent.getBooleanExtra(
+                    AABroadcastConst.EXTRA_AA_UI_RAIL_CONSUME,
+                    false,
+                )
+                logDebug(tagName, "AaUiHook: aaUiRailConsume=$mAaUiRailConsume")
+            }
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                ctx.registerReceiver(
+                    receiver,
+                    IntentFilter(AABroadcastConst.ACTION_AA_UI_RAIL_CONSUME),
+                    Context.RECEIVER_EXPORTED
+                )
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                ctx.registerReceiver(
+                    receiver,
+                    IntentFilter(AABroadcastConst.ACTION_AA_UI_RAIL_CONSUME)
+                )
+            }
+            mRailConsumeReceiver = receiver
+            logDebug(tagName, "AaUiHook: registered AA_UI_RAIL_CONSUME for picker rail routing")
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: register AA_UI_RAIL_CONSUME failed", e)
         }
     }
 

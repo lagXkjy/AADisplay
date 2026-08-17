@@ -136,6 +136,16 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID -> {
                     reportAaUiDisplayId()
                 }
+                AABroadcastConst.ACTION_SHOW_RECENT_TASK -> {
+                    // Locked-phone peel: system_server cannot inject into occluded presentation.
+                    if (!::baseBinding.isInitialized) return
+                    baseBinding.splitDivider.resetGesture()
+                    dividerDragging = false
+                    clearDragPreview()
+                    runMain {
+                        AaDisplayActivityKt.showRecentTask(this@AaMainFragment.parentFragmentManager)
+                    }
+                }
             }
         }
     }
@@ -196,6 +206,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         }
         try {
             clearDragPreview()
+        } catch (_: Throwable) {
+        }
+        try {
+            if (::appPicker.isInitialized) appPicker.hide()
         } catch (_: Throwable) {
         }
         // Drop coalesced MOVE before tearing down VDs — never inject after destroy.
@@ -1092,6 +1106,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             addAction(AABroadcastConst.ACTION_OPEN_SPLIT_PICKER)
             addAction(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED)
             addAction(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID)
+            addAction(AABroadcastConst.ACTION_SHOW_RECENT_TASK)
         }, ContextCompat.RECEIVER_EXPORTED)
         isControlReceiverRegistered = true
     }

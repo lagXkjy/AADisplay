@@ -62,6 +62,7 @@ class SplitDisplayController(
     internal val ownership = SplitOwnership(this)
     internal val input = SplitInputRecents(this)
     internal val stacks = PaneAppStack(this)
+    internal val lockedPeel = SplitLockedPeelController(this)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     internal val mHandler = Handler(Looper.getMainLooper())
@@ -488,6 +489,7 @@ class SplitDisplayController(
         mAaUiDisplayId = Display.INVALID_DISPLAY
         mAaUiDisplayIdLookupFailed = false
         mLastAaUiDisplayIdRecoveryUptime = 0L
+        lockedPeel.reset()
         mOrientationLockedDisplays.clear()
         mImePolicyAppliedDisplays.clear()
         mHandler.removeCallbacks(ownership.mDebouncedReclaim)
@@ -556,8 +558,13 @@ class SplitDisplayController(
     /**
      * Relay flush-left peel / AA UI touches into the AaDisplayActivity presentation
      * display (not a pane VirtualDisplay).
+     *
+     * While the phone keyguard is locked, Gearhead's presentation is often occluded
+     * (unlike ALWAYS_UNLOCKED pane VDs) — peel inject is dropped. Handle fullscreen
+     * peel gestures in [lockedPeel] instead so exit / swap / Recent still work.
      */
     fun onTouchAaDisplay(event: MotionEvent) {
+        if (lockedPeel.tryHandle(event)) return
         val displayId = resolveAaUiDisplayId()
         if (displayId == Display.INVALID_DISPLAY) {
             log(TAG, "onTouchAaDisplay: AaDisplayActivity display not found")
@@ -589,12 +596,20 @@ class SplitDisplayController(
     /** Called from the AA UI process; [displayId] may be INVALID_DISPLAY to clear. */
     fun setAaUiDisplayId(displayId: Int) {
         val next = if (displayId == Display.DEFAULT_DISPLAY) Display.INVALID_DISPLAY else displayId
-        if (mAaUiDisplayId == next) return
+        if (mAaUiDisplayId == next) {
+            if (next != Display.INVALID_DISPLAY) {
+                lockedPeel.applyAaUiDisplayKeyguardPolicy(next, "re-report")
+            }
+            return
+        }
         mAaUiDisplayId = next
         // Fresh report (or clear) → allow one ATMS fallback again if still unknown.
         mAaUiDisplayIdLookupFailed = false
         if (next != Display.INVALID_DISPLAY) {
             mLastAaUiDisplayIdRecoveryUptime = 0L
+            lockedPeel.applyAaUiDisplayKeyguardPolicy(next, "report")
+        } else {
+            lockedPeel.reset()
         }
         log(TAG, "setAaUiDisplayId id=$next")
     }
@@ -621,6 +636,7 @@ class SplitDisplayController(
             }.orEmpty()
             if (tasks.any { it.topActivity?.packageName == BuildConfig.APPLICATION_ID }) {
                 mAaUiDisplayId = id
+                lockedPeel.applyAaUiDisplayKeyguardPolicy(id, "atms")
                 log(TAG, "resolveAaUiDisplayId via ATMS id=$id")
                 return id
             }
@@ -794,10 +810,17 @@ class SplitDisplayController(
         val ok = if (existing != null) {
             val (taskId, fromDisplay) = existing
             if (fromDisplay == displayId) {
-                ownership.bringTaskToFront(taskId)
+                // Same pane but buried / bring no-op: must relaunch (mirrors stacks.contains).
+                if (ownership.bringTaskToFront(taskId)) {
+                    true
+                } else {
+                    log(TAG, "startActivityOnPane same-display bring failed, relaunch pkg=$packageName")
+                    ownership.removePackageTasksEverywhere(packageName)
+                    launch.launchOnDisplay(component, userId, displayId)
+                }
             } else {
                 ownership.vacateOtherPanesHolding(packageName, keepPane = pane)
-                val moved = try {
+                val relocated = try {
                     Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, displayId)
                     AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(
                         packageName,
@@ -805,11 +828,14 @@ class SplitDisplayController(
                     )
                     log(TAG, "startActivityOnPane relocate $packageName#$taskId $fromDisplay->$displayId")
                     ownership.bringTaskToFront(taskId)
+                    // bringTaskToFront can succeed on the *phone* while move was ignored —
+                    // require the live root to actually sit on the target VD.
+                    ownership.findPackageTaskOnDisplay(packageName, displayId, liveOnly = true) != null
                 } catch (e: Throwable) {
                     log(TAG, "startActivityOnPane relocate failed:", e)
                     false
                 }
-                if (!moved) {
+                if (!relocated) {
                     ownership.removePackageTasksEverywhere(packageName)
                     launch.launchOnDisplay(component, userId, displayId)
                 } else {

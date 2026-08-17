@@ -28,5 +28,16 @@ interface AABroadcastConst {
          * UI should re-call [io.github.nitsuya.aa.display.xposed.ICoreManager.reportAaUiDisplayId].
          */
         const val ACTION_REQUEST_AA_UI_DISPLAY_ID = "aa.display.action.REQUEST_AA_UI_DISPLAY_ID"
+        /**
+         * system_server → AA: open Recent (locked-phone peel long-press cannot hit
+         * [SplitDividerView] while keyguard occludes the presentation).
+         */
+        const val ACTION_SHOW_RECENT_TASK = "aa.display.action.SHOW_RECENT_TASK"
+        /**
+         * AA UI → gearhead :car: when true, Coolwalk left-rail steal injects into
+         * AaDisplay presentation (app picker) instead of the primary pane VD.
+         */
+        const val ACTION_AA_UI_RAIL_CONSUME = "aa.display.action.AA_UI_RAIL_CONSUME"
+        const val EXTRA_AA_UI_RAIL_CONSUME = "aa.display.extra.AA_UI_RAIL_CONSUME"
     }
 }

@@ -17,6 +17,7 @@ import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.FragmentAaMainBinding
 import io.github.nitsuya.aa.display.databinding.ItemSplitAppBinding
+import io.github.nitsuya.aa.display.util.AABroadcastConst
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -65,13 +66,23 @@ class SplitAppPickerController(
         binding.rvAppPicker.layoutManager = glm
         binding.rvAppPicker.adapter = adapter
         binding.btnPickerClose.setOnClickListener { hide() }
+        // Scrim dismiss only. Do NOT mark the sheet LinearLayout clickable — on Samsung
+        // OneUI a clickable parent of RecyclerView often swallows item taps (seen as
+        // "first app in the list does nothing" / Alook in 最近).
         binding.appPickerHost.setOnClickListener { hide() }
-        (binding.appPickerHost.getChildAt(0) as? ViewGroup)?.setOnClickListener { /* consume */ }
+        val sheet = binding.appPickerHost.getChildAt(0) as? ViewGroup
+        sheet?.isClickable = false
+        sheet?.isFocusable = false
     }
 
     fun show(pane: Int) {
         targetPane = pane
+        // Above split divider peel (elevation 8) so left-column icons stay tappable.
+        binding.appPickerHost.elevation = 32f
+        binding.appPickerHost.bringToFront()
         binding.appPickerHost.isVisible = true
+        binding.splitDivider.isEnabled = false
+        setAaUiRailConsume(true)
         onVisibilityChanged?.invoke(true)
         val gen = loadGeneration.incrementAndGet()
         loadExecutor.execute {
@@ -90,7 +101,23 @@ class SplitAppPickerController(
     fun hide() {
         loadGeneration.incrementAndGet()
         binding.appPickerHost.isVisible = false
+        binding.appPickerHost.elevation = 0f
+        binding.splitDivider.isEnabled = true
+        setAaUiRailConsume(false)
         onVisibilityChanged?.invoke(false)
+    }
+
+    /** Tell Coolwalk rail-steal to inject into AaDisplay UI while the picker is open. */
+    private fun setAaUiRailConsume(consume: Boolean) {
+        try {
+            binding.root.context.sendBroadcast(
+                Intent(AABroadcastConst.ACTION_AA_UI_RAIL_CONSUME).putExtra(
+                    AABroadcastConst.EXTRA_AA_UI_RAIL_CONSUME,
+                    consume,
+                )
+            )
+        } catch (_: Throwable) {
+        }
     }
 
     private sealed class Row {
