@@ -8,6 +8,9 @@ import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaBtnEventHook
+import io.github.nitsuya.aa.display.xposed.hook.aa.AaFrxRequiredAppsHook
+import io.github.nitsuya.aa.display.xposed.hook.aa.AaMediaPlaceholderHook
+import io.github.nitsuya.aa.display.xposed.hook.aa.AaNavFallbackHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaSignatureHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaUiHook
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -30,7 +33,14 @@ object AndroidAutoHook : BaseHook() {
     override val tagName: String = "AAD_AndroidAutoHook"
     override fun init(lpparam: XC_LoadPackage.LoadPackageParam) {
         val processName = lpparam.processName
-        val hooks = listOf(AaSignatureHook, AaBtnEventHook, AaUiHook).filter { i -> i.isSupportProcess(processName) }
+        val hooks = listOf(
+            AaSignatureHook,
+            AaBtnEventHook,
+            AaUiHook,
+            AaFrxRequiredAppsHook,
+            AaNavFallbackHook,
+            AaMediaPlaceholderHook,
+        ).filter { i -> i.isSupportProcess(processName) }
         if(hooks.isEmpty()) return
 
         var onCreateApplication: XC_MethodHook.Unhook? = null
