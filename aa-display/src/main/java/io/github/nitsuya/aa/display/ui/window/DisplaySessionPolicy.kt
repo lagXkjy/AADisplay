@@ -31,11 +31,16 @@ import kotlinx.coroutines.launch
  * AA display session policy: Delay Destroy (180s) and keep-awake for OWN_DISPLAY_GROUP VDs.
  * Phone overlay UI was removed; this class no longer hosts any WindowManager views.
  *
- * Keep-awake strategy (Samsung-first, avoid waking the phone panel):
- * - Hold display-scoped [SCREEN_BRIGHT_WAKE_LOCK] on each AA VD (no ACQUIRE_CAUSES_WAKEUP).
+ * **Hard rule: AA virtual panes must not stay black (ColorFade / OFF).** Prefer a rare
+ * phone-panel wake over blank car screens.
+ *
+ * Keep-awake strategy (Samsung-first):
+ * - Hold display-scoped [SCREEN_BRIGHT_WAKE_LOCK] on each AA VD for the whole session,
+ *   including Delay Destroy (release only when VDs are actually torn down).
  * - Drive [IPowerManager.userActivity] only with the displayId overload.
- * - On phone SCREEN_OFF, burst-reassert + faster heartbeat so DreamManager doze does not
- *   black the car panes — without a wakeup wake-lock that can leak to DEFAULT_DISPLAY.
+ * - While the phone is off, or a pane is OFF/DOZE, or on resume / soft-reconnect /
+ *   SCREEN_OFF: short display-scoped [ACQUIRE_CAUSES_WAKEUP] pulse (Monitor alone
+ *   cannot exit ColorFade).
  */
 class DisplaySessionPolicy(
     private val mContext: Context,
@@ -45,12 +50,12 @@ class DisplaySessionPolicy(
         private const val TAG = "AADisplay_DisplaySessionPolicy"
         /** Keep OWN_DISPLAY_GROUP user-activity from timing out / dozing on Samsung. */
         private const val KEEP_AWAKE_INTERVAL_MS = 15_000L
-        /** Tighter while phone is off — Samsung may re-doze OWN_DISPLAY_GROUP with the panel. */
-        private const val KEEP_AWAKE_INTERVAL_SCREEN_OFF_MS = 5_000L
+        /** While phone is off — beat ColorFade before DreamManager settles. */
+        private const val KEEP_AWAKE_INTERVAL_SCREEN_OFF_MS = 3_000L
         private const val TOUCH_KEEP_AWAKE_MIN_INTERVAL_MS = 1_000L
         /** After phone SCREEN_OFF, reassert before the next heartbeat. */
-        private const val SCREEN_OFF_REASSERT_COUNT = 6
-        private const val SCREEN_OFF_REASSERT_INTERVAL_MS = 500L
+        private const val SCREEN_OFF_REASSERT_COUNT = 10
+        private const val SCREEN_OFF_REASSERT_INTERVAL_MS = 400L
         /** PowerManager.USER_ACTIVITY_EVENT_TOUCH */
         private const val USER_ACTIVITY_EVENT_TOUCH = 2
         /** PowerManager.USER_ACTIVITY_EVENT_OTHER */
@@ -58,9 +63,14 @@ class DisplaySessionPolicy(
         /**
          * Display-scoped VD bright locks still need this legacy level;
          * [PowerManager.SCREEN_BRIGHT_WAKE_LOCK] is deprecated but required for hidden API.
-         * Do not OR [PowerManager.ACQUIRE_CAUSES_WAKEUP] — on several OEMs it wakes the phone.
          */
         private const val SCREEN_BRIGHT_WAKE_LOCK = 0x0000000a
+        /**
+         * Short pulse: exits Samsung ColorFade on OWN_DISPLAY_GROUP after OFF.
+         * Display-scoped newWakeLock(displayId); do not hold long-term.
+         */
+        private const val ACQUIRE_CAUSES_WAKEUP = 0x10000000
+        private const val WAKE_PULSE_MS = 3_000L
         /** Seconds to keep dual VD after AA disconnect before destroy. */
         private const val DELAY_DESTROY_SEC = 180
     }
@@ -91,8 +101,18 @@ class DisplaySessionPolicy(
         }
     }
 
+    private fun isVirtualDisplayPoweredOff(displayId: Int): Boolean {
+        return try {
+            val state = Instances.displayManager.getDisplay(displayId)?.state ?: return false
+            state == Display.STATE_OFF || state == Display.STATE_DOZE || state == Display.STATE_DOZE_SUSPEND
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private var interactiveMonitor = object : BroadcastReceiver() {
         private val monitorLocks = mutableMapOf<Int, PowerManager.WakeLock>()
+        private val wakePulseLocks = mutableMapOf<Int, PowerManager.WakeLock>()
 
         fun addAction(intentFilter: IntentFilter): IntentFilter {
             return intentFilter.apply {
@@ -158,6 +178,12 @@ class DisplaySessionPolicy(
                 } catch (_: Throwable) {
                 }
             }
+            (wakePulseLocks.keys - activeIds).forEach { displayId ->
+                try {
+                    wakePulseLocks.remove(displayId)?.let { if (it.isHeld) it.release() }
+                } catch (_: Throwable) {
+                }
+            }
         }
 
         fun acquireMonitor() {
@@ -183,8 +209,30 @@ class DisplaySessionPolicy(
             }
         }
 
+        /**
+         * Exit ColorFade / OFF on a single OWN_DISPLAY_GROUP VD.
+         * Timed acquire only — long-held WAKEUP can leak to the phone panel on some OEMs.
+         */
+        fun pulseWake(displayId: Int) {
+            try {
+                val lock = wakePulseLocks.getOrPut(displayId) {
+                    newDisplayWakeLock(
+                        SCREEN_BRIGHT_WAKE_LOCK or ACQUIRE_CAUSES_WAKEUP,
+                        "VdWake",
+                        displayId
+                    )
+                }
+                if (!lock.isHeld) {
+                    lock.acquire(WAKE_PULSE_MS)
+                }
+            } catch (e: Throwable) {
+                log(TAG, "VD wakePulse failed display=$displayId:", e)
+            }
+        }
+
         fun releaseMonitor() {
             releaseLockMap(monitorLocks, "Monitor")
+            releaseLockMap(wakePulseLocks, "VdWake")
         }
 
         fun init() {
@@ -239,14 +287,10 @@ class DisplaySessionPolicy(
     }
 
     private fun keepAwakeIntervalMs(): Long {
-        return try {
-            if (Instances.powerManager.isInteractive) {
-                KEEP_AWAKE_INTERVAL_MS
-            } else {
-                KEEP_AWAKE_INTERVAL_SCREEN_OFF_MS
-            }
-        } catch (_: Throwable) {
+        return if (isPhoneInteractive()) {
             KEEP_AWAKE_INTERVAL_MS
+        } else {
+            KEEP_AWAKE_INTERVAL_SCREEN_OFF_MS
         }
     }
 
@@ -255,14 +299,10 @@ class DisplaySessionPolicy(
         mKeepAwakeJob = CoroutineScope(Dispatchers.Default).launch {
             while (isActive) {
                 delay(keepAwakeIntervalMs())
-                val phoneOff = try {
-                    !Instances.powerManager.isInteractive
-                } catch (_: Throwable) {
-                    false
-                }
-                // While the phone is off, use TOUCH user-activity on the VD groups so Samsung
-                // does not let OWN_DISPLAY_GROUP idle into doze between heartbeats.
-                keepVirtualDisplayAwake("heartbeat", forceWake = phoneOff)
+                val phoneOff = !isPhoneInteractive()
+                val anyVdOff = aaVirtualDisplayIds().any { isVirtualDisplayPoweredOff(it) }
+                // phoneOff → pulse inside keepVirtualDisplayAwake (never-black hard rule).
+                keepVirtualDisplayAwake("heartbeat", forceWake = phoneOff || anyVdOff)
             }
         }
     }
@@ -289,20 +329,40 @@ class DisplaySessionPolicy(
         mScreenOffReassertJob = null
     }
 
+    private fun isPhoneInteractive(): Boolean {
+        return try {
+            Instances.powerManager.isInteractive
+        } catch (_: Throwable) {
+            true
+        }
+    }
+
     /**
-     * Keep / restore power for both AA virtual display groups so the car UI does not
-     * stay black after phone sleep, doze, or OWN_DISPLAY_GROUP user-activity timeout.
-     *
-     * [forceWake] only strengthens display-scoped userActivity (TOUCH vs OTHER) and
-     * re-acquires the Monitor lock — it must not use ACQUIRE_CAUSES_WAKEUP.
+     * Keep / restore power for both AA virtual display groups.
+     * Hard rule: panes must not stay ColorFade/OFF — pulse whenever the phone is off,
+     * a pane is OFF/DOZE, or on resume / soft-reconnect / SCREEN_OFF / init.
      */
     fun keepVirtualDisplayAwake(reason: String, forceWake: Boolean = false) {
         val displayIds = aaVirtualDisplayIds()
         if (displayIds.isEmpty()) return
         try {
             interactiveMonitor.acquireMonitor()
-            val event = if (forceWake) USER_ACTIVITY_EVENT_TOUCH else USER_ACTIVITY_EVENT_OTHER
+            val phoneOff = !isPhoneInteractive()
+            val event = if (forceWake || phoneOff) {
+                USER_ACTIVITY_EVENT_TOUCH
+            } else {
+                USER_ACTIVITY_EVENT_OTHER
+            }
+            val sessionPulse = reason == "resume" ||
+                reason == "soft-reconnect" ||
+                reason == "init" ||
+                reason.startsWith("phone-SCREEN_OFF")
             for (displayId in displayIds) {
+                // VD never-black: pulse while phone is off even if getState() still says ON
+                // (Samsung can ColorFade before state flips).
+                if (sessionPulse || phoneOff || isVirtualDisplayPoweredOff(displayId)) {
+                    interactiveMonitor.pulseWake(displayId)
+                }
                 userActivityOnDisplay(displayId, event)
             }
         } catch (e: Throwable) {
@@ -315,6 +375,7 @@ class DisplaySessionPolicy(
         val now = SystemClock.uptimeMillis()
         if (now - mLastTouchKeepAwakeAt < TOUCH_KEEP_AWAKE_MIN_INTERVAL_MS) return
         mLastTouchKeepAwakeAt = now
+        // If phone is already off, pulse so a dozing pane recovers on first touch.
         keepVirtualDisplayAwake("interaction", forceWake = true)
     }
 
@@ -371,8 +432,11 @@ class DisplaySessionPolicy(
     }
 
     suspend fun onResume() {
-        interactiveMonitor.init()
+        // Cancel Delay Destroy first so completion cannot race-release keep-awake.
         mDestroyJob?.cancelAndJoin()
+        interactiveMonitor.init()
+        // Soft reconnect often inherits panes already ColorFade'd while AA was gone.
+        keepVirtualDisplayAwake("resume", forceWake = true)
     }
 
     suspend fun onDestroyPromptly() {
@@ -382,8 +446,8 @@ class DisplaySessionPolicy(
     }
 
     suspend fun onDestroy(onDestroySucceed: () -> Unit) {
-        restorePhoneDisplayPower()
-        interactiveMonitor.release()
+        // Keep Monitor + heartbeat through Delay Destroy so soft reconnect does not
+        // inherit Samsung ColorFade-black panes. Release only when VDs are torn down.
         mDestroyJob?.cancelAndJoin()
         startDelayDestroy(onDestroySucceed)
     }
@@ -395,8 +459,10 @@ class DisplaySessionPolicy(
                 emit(i)
                 delay(1000)
             }
-        }.onCompletion {
-            if (it == null) {
+        }.onCompletion { cause ->
+            if (cause == null) {
+                restorePhoneDisplayPower()
+                interactiveMonitor.release()
                 onDestroySucceed()
             }
         }.launchIn(CoroutineScope(Dispatchers.Main))
