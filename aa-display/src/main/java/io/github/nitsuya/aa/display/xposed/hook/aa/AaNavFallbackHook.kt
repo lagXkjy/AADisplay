@@ -1,14 +1,16 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa
 
+import android.content.ComponentName
+import android.content.Context
+import android.content.pm.PackageManager
+import com.github.kyuubiran.ezxhelper.init.InitFields
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
-import org.luckypray.dexkit.DexKitBridge
-import java.lang.reflect.Method
+import io.github.nitsuya.aa.display.xposed.util.log
 
 /**
  * Without Maps, AA would show [NAV_FALLBACK_CLASS] and Coolwalk can crash.
- * Root fix: disable the component. Intent / bind / ProjectionContext guards
- * if disable fails or is re-enabled.
+ * Disable the component once; no Intent/bind insurance.
  */
 object AaNavFallbackHook : AaHook() {
     override val tagName: String = "AAD_AaNavFallbackHook"
@@ -16,21 +18,30 @@ object AaNavFallbackHook : AaHook() {
     private const val NAV_FALLBACK_CLASS =
         "com.google.android.apps.auto.components.system.navigation.fallback.NavigationFallbackCarActivityService"
 
-    private lateinit var projectionStartMethods: List<Method>
-
     override fun isSupportProcess(processName: String): Boolean {
         return processProjection == processName || processCar == processName
     }
 
-    override fun loadDexClass(bridge: DexKitBridge, lpparam: XC_LoadPackage.LoadPackageParam) {
-        projectionStartMethods = AaCarAppLaunchGuard.findProjectionStartMethods(
-            bridge,
-            lpparam.classLoader,
-        )
-    }
-
     override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
-        AaCarAppLaunchGuard.disableComponent(tagName, NAV_FALLBACK_CLASS)
-        AaCarAppLaunchGuard.installLaunchBlocks(NAV_FALLBACK_CLASS, projectionStartMethods)
+        runCatching {
+            val ctx: Context = InitFields.appContext
+            val cn = ComponentName(ctx.packageName, NAV_FALLBACK_CLASS)
+            val pm = ctx.packageManager
+            val state = pm.getComponentEnabledSetting(cn)
+            if (state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED ||
+                state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER ||
+                state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_UNTIL_USED
+            ) {
+                return
+            }
+            pm.setComponentEnabledSetting(
+                cn,
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP,
+            )
+            log(tagName, "disabled $NAV_FALLBACK_CLASS")
+        }.onFailure { e ->
+            log(tagName, "disable $NAV_FALLBACK_CLASS failed", e)
+        }
     }
 }

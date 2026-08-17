@@ -1,22 +1,25 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import com.github.kyuubiran.ezxhelper.init.InitFields
 import com.github.kyuubiran.ezxhelper.utils.findMethod
-import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.util.log
-import org.luckypray.dexkit.DexKitBridge
-import java.lang.reflect.Method
 
 /**
- * Coolwalk empty media card is a Dashboard presentation window
+ * Coolwalk empty media card is the **Dashboard** presentation
  * (≈304×460 on 800×480 HUs) showing "无法获享媒体内容".
- * Hide it on addView; disable / block [MEDIA_CAR_APP] as insurance.
+ *
+ * VD starve for name=Dashboard lives in [AaUiHook.rewriteVirtualDisplayArgs]
+ * (create / Builder / resize). Here: disable [MEDIA_CAR_APP] and hide any
+ * leftover Presentation window before first layout.
  */
 object AaMediaPlaceholderHook : AaHook() {
     override val tagName: String = "AAD_AaMediaPlaceholderHook"
@@ -24,72 +27,62 @@ object AaMediaPlaceholderHook : AaHook() {
     private const val MEDIA_CAR_APP =
         "com.google.android.apps.auto.components.media.app.MediaCarAppService"
 
-    private lateinit var projectionStartMethods: List<Method>
-
     override fun isSupportProcess(processName: String): Boolean {
         return processProjection == processName || processCar == processName
     }
 
-    override fun loadDexClass(bridge: DexKitBridge, lpparam: XC_LoadPackage.LoadPackageParam) {
-        projectionStartMethods = AaCarAppLaunchGuard.findProjectionStartMethods(
-            bridge,
-            lpparam.classLoader,
-        )
-    }
-
     override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
-        AaCarAppLaunchGuard.disableComponent(tagName, MEDIA_CAR_APP)
-        AaCarAppLaunchGuard.installLaunchBlocks(MEDIA_CAR_APP, projectionStartMethods)
-        hookDashboardWindowHide()
+        disableMediaCarApp()
+        hideDashboardOnAddView()
     }
 
-    private fun hookDashboardWindowHide() {
+    private fun disableMediaCarApp() {
+        runCatching {
+            val ctx: Context = InitFields.appContext
+            val cn = ComponentName(ctx.packageName, MEDIA_CAR_APP)
+            val pm = ctx.packageManager
+            val state = pm.getComponentEnabledSetting(cn)
+            if (state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED ||
+                state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER ||
+                state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_UNTIL_USED
+            ) {
+                return
+            }
+            pm.setComponentEnabledSetting(
+                cn,
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP,
+            )
+            log(tagName, "disabled $MEDIA_CAR_APP")
+        }.onFailure { e ->
+            log(tagName, "disable $MEDIA_CAR_APP failed", e)
+        }
+    }
+
+    private fun hideDashboardOnAddView() {
         try {
             findMethod(Class.forName("android.view.WindowManagerGlobal")) {
                 name == "addView" && parameterCount >= 2
-            }.hookAfter { param ->
-                val root = param.args[0] as? View ?: return@hookAfter
+            }.hookBefore { param ->
+                val root = param.args[0] as? View ?: return@hookBefore
                 val lp = param.args.getOrNull(1) as? WindowManager.LayoutParams
-                if (!isDashboardWindow(lp, root)) return@hookAfter
+                if (!isDashboardWindow(lp, root)) return@hookBefore
                 hideDashboard(root, lp)
             }
         } catch (e: Throwable) {
             log(tagName, "hook WindowManagerGlobal.addView failed", e)
-        }
-
-        // Title may be assigned after addView; keep suppressing visibility flips.
-        try {
-            findMethod(View::class.java) {
-                name == "setVisibility" &&
-                    parameterCount == 1 &&
-                    parameterTypes[0] == Int::class.javaPrimitiveType
-            }.hookBefore { param ->
-                val view = param.thisObject as? View ?: return@hookBefore
-                if (!isDashboardRoot(view)) return@hookBefore
-                if (param.args[0] as Int != View.GONE) {
-                    param.args[0] = View.GONE
-                }
-            }
-        } catch (e: Throwable) {
-            log(tagName, "hook setVisibility for Dashboard failed", e)
         }
     }
 
     private fun isDashboardWindow(lp: WindowManager.LayoutParams?, root: View): Boolean {
         val title = lp?.title?.toString().orEmpty()
         if (title.contains("Dashboard", ignoreCase = true)) return true
-        // Fallback when title is late: tall PRIVATE_PRESENTATION media card on HU.
         if (lp != null && lp.type == 2030 /* TYPE_PRIVATE_PRESENTATION */) {
             val w = lp.width
             val h = lp.height
             if (w in 200..400 && h in 360..520 && h > w) return true
         }
         return root.javaClass.name.contains("Dashboard", ignoreCase = true)
-    }
-
-    private fun isDashboardRoot(view: View): Boolean {
-        val lp = view.layoutParams as? WindowManager.LayoutParams ?: return false
-        return isDashboardWindow(lp, view)
     }
 
     private fun hideDashboard(root: View, lp: WindowManager.LayoutParams?) {
@@ -104,10 +97,6 @@ object AaMediaPlaceholderHook : AaHook() {
             lp.width = 0
             lp.height = 0
             lp.alpha = 0f
-            runCatching {
-                val wm = root.context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-                wm.updateViewLayout(root, lp)
-            }
         }
         log(tagName, "hide Dashboard title=${lp?.title}")
     }

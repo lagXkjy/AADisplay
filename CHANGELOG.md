@@ -4,8 +4,8 @@
 
 ### Added
 - **FRX 必装 Google 应用绕过：** `AaFrxRequiredAppsHook`（`:projection` + `:car`）将 Google App / Maps / TTS 的 FRX 安装与版本检查强制判为就绪。
-- **导航占位页禁用：** `AaNavFallbackHook` 禁用 `NavigationFallbackCarActivityService`，并以 Intent / bind / ProjectionContext 拦截作保险，避免缺 Maps 时占位布局崩进程。
-- **Coolwalk 空媒体卡抑制：** `AaMediaPlaceholderHook` 在 `addView` 时隐藏 Coolwalk Dashboard 演示窗口（「无法获享媒体内容」），并禁用 / 拦截 `MediaCarAppService`。
+- **导航占位页禁用：** `AaNavFallbackHook` 仅禁用 `NavigationFallbackCarActivityService`，避免缺 Maps 时占位布局崩进程。
+- **Coolwalk 空媒体卡抑制：** `AaUiHook` 将名为 `Dashboard` 的 VirtualDisplay（create/Builder/resize）饿成 1×1；`AaMediaPlaceholderHook` 禁用 `MediaCarAppService`，并在 `addView` 前隐藏残留 Presentation 窗口。
 
 ### Fixed
 - **手机锁屏后全屏 peel 拉不出 / 长按无响应：** AaDisplay presentation 无 `ALWAYS_UNLOCKED`，Keyguard 会挡住 `touchAaDisplay` 注入，而双 VD App 仍可点。上报 presentation id 时 `setShouldShowWithInsecureKeyguard(true)` + 尽力打上 `FLAG_ALWAYS_UNLOCKED`；锁屏且全屏时改由 system_server 直接解析 peel（退出 / 点按切换 / 长按广播开 Recent），不依赖 presentation 命中。

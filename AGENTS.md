@@ -81,7 +81,7 @@ flowchart LR
 - `…:projection`
 - `…:car`
 
-已注册 AA 钩子：`AaSignatureHook`、`AaBtnEventHook`、`AaUiHook`、`AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`（按 `isSupportProcess` 过滤；大量依赖 DexKit）。
+已注册 AA 钩子：`AaSignatureHook`、`AaBtnEventHook`、`AaUiHook`、`AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`（按 `isSupportProcess` 过滤；Frx/Ui 依赖 DexKit；Nav 禁组件；Media 禁 MediaCarApp + Ui 饿 Dashboard VD）。
 
 ### 跨进程 IPC
 

@@ -159,6 +159,7 @@ object AaUiHook: AaHook() {
      * Never DEFAULT_DISPLAY — phone panels must not be treated as FacetBar.
      */
     @Volatile private var mObservedRailDisplayId: Int = Display.INVALID_DISPLAY
+    @Volatile private var mLoggedDashboardStarve = false
 
     override fun isSupportProcess(processName: String): Boolean {
         // Facet/VD UI lives in :projection; Coolwalk writes content_bounds in :car
@@ -1320,6 +1321,15 @@ object AaUiHook: AaHook() {
      */
     private fun rewriteVirtualDisplayArgs(name: String?, width: Int, height: Int): Pair<Int, Int>? {
         if (width <= 0 || height <= 0) return null
+        // Coolwalk empty media card Presentation — starve before compositor maps it to HU.
+        if (name?.equals("Dashboard", ignoreCase = true) == true) {
+            if (width == 1 && height == 1) return null
+            if (!mLoggedDashboardStarve) {
+                mLoggedDashboardStarve = true
+                log(tagName, "AaUiHook: starve Dashboard VD ${width}x$height → 1x1")
+            }
+            return 1 to 1
+        }
         val railName = name?.contains("FacetBar", ignoreCase = true) == true ||
             name?.contains("GhFacet", ignoreCase = true) == true ||
             name?.contains("VerticalRail", ignoreCase = true) == true ||
