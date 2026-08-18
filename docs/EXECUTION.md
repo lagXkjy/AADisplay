@@ -111,7 +111,8 @@ AMS.systemReady → Instances.init + PanePresentationGuard.ensureHooked
 总控：`xposed/hook/AndroidAutoHook.kt`
 
 `Instrumentation.callApplicationOnCreate` 里：`System.loadLibrary("dexkit")` → 各 hook `loadDexClass` → `hook()`。  
-DexKit 失败则后续 Dex 解析钩子全部不会装上（日志 `AAD_AndroidAutoHook` / `AAD_*`）。
+每个 hook 的 `loadDexClass` / `hook` **单独** `runCatching`：某一个失败只跳过该 hook，其余仍会装上（日志 `AAD_AndroidAutoHook` / `AAD_*`）。  
+DexKit 查询 **不要** 写 `searchPackages = listOf("")`（2.0.7 会只搜无名包，`AaSignatureHook` / LayoutInfo 等命中 0）。
 
 进程常量（`AaHook`）：
 
@@ -261,9 +262,11 @@ Keep-awake 硬规则：
 | `setPaneSurface` | TextureView available/destroyed | `VirtualDisplay.surface =` |
 | `setSplitRatio` / `getSplitRatio` | 分隔条松手 | resize VD；全屏中只改 `mRatioBeforeFullscreen` |
 | `setSplitFullscreen` / `getSplitFullscreenPane` | 拖过边缘 / peel | 两 VD 满幅或按比例 |
+| `getPanePackage` / `setFocusedPane` / `getFocusedPane` | 空窗遮罩 / Recent 焦点 | 栈顶包名；焦点窗记录 |
 | `swapSplitPanes` | 点分隔条 / 方控长按上下曲 | 整栈 `moveRootTask` 对调，**VD 身份不变** |
 | `startActivity` / `startActivityOnPane` | 选择器 / Recent 点选 | `PaneAppStack.pushToTop` + 启动或置顶 |
 | `moveTaskId` / `moveTaskIdToPane` / `moveTaskToFront` | Recent 拖拽 | 跨 display 搬任务 |
+| `moveSecondTaskToFront` | 方控长按快进键 | 当前焦点窗栈内第二任务置顶 |
 | `removeTask` | Recent Close | 关任务；栈顶空则下一档 |
 | `pressKey` | 方控短按 / Activity 方向键 | 注入到焦点窗 |
 | `touchPane` **oneway** | TextureView | 注入对应 VD |
@@ -320,7 +323,7 @@ Persist key **禁止改名**（已有设备快照）：`aadisplay_last_split_lef
 
 ### 8.3 reclaim
 
-任务栈一变就想把「属于本窗的包」拉回来。下列窗口必须 `mSuppressReclaimUntil`：
+任务栈一变就想把「属于本窗的包」拉回来。下列窗口必须抬高 `mSuppressReclaimUntil`（常量：`SUPPRESS_RECLAIM_AFTER_RESTORE_MS=8s`，一般操作 `SUPPRESS_RECLAIM_MS=2s`，ratio/swap 等处也有约 0.8s）：
 
 - restore 后 8s
 - ratio / fullscreen / swap 后约 0.8–2s
@@ -340,7 +343,7 @@ Persist key **禁止改名**（已有设备快照）：`aadisplay_last_split_lef
 | 点按 | `swapSplitPanes`（UI 先乐观 `1-ratio`） | 只切可见窗，**不搬栈** |
 | 长按 | 松手后再开 Recent（按下期间 add Fragment 会打烂指针序列，之后 peel 点不动） | 同左；锁屏则 `ACTION_SHOW_RECENT_TASK` |
 
-拖过边缘：`rawRatio < 0.12` → SECONDARY 全屏；`> 0.88` → PRIMARY 全屏。  
+拖过边缘：常量见 `SplitPane`——`rawRatio < FULLSCREEN_ENTER_RATIO(0.12)` → SECONDARY 全屏；`> 1 - 0.12` → PRIMARY 全屏。peel 退出阈值 `FULLSCREEN_EXIT_RATIO = 0.15`。  
 退出全屏顺序：**先** `setSplitRatio`（写入 `mRatioBeforeFullscreen`）**再** `setSplitFullscreen(NONE)`，一次 resize。反过来会两次 resize，OneUI 把 Window Requested 卡在中间宽。
 
 空窗：`tvEmpty*` 点 → `SplitAppPickerController.show(pane)` → `startActivityOnPane`。  
@@ -380,11 +383,12 @@ flowchart TB
     pressKey --> IM
 ```
 
-方控映射（`AaMainFragment` 收广播）：
+方控映射（`AaMainFragment` 收 `ACTION_STEERING_WHEEL_CONTROL`）：
 
 - 短按（`EXTRA_TYPE=0`）：媒体键 → `CoreApi.pressKey`（直播顶窗里 next/prev 可能被改写成滑动，见 `SplitInputRecents`）。
-- 长按上下曲：与点分隔条相同（分屏对调整栈；全屏只切可见侧）。
+- 长按上下曲（`EXTRA_TYPE=1`）：与点分隔条相同（分屏对调整栈；全屏只切可见侧）。
 - 长按播放/暂停：开/关 Recent。
+- 长按快进（`KEYCODE_MEDIA_FAST_FORWARD`）：`CoreApi.moveSecondTaskToFront()`（同窗栈内第二任务置顶）。
 
 `pressKey` / 触控 DOWN 会 `DisplaySessionPolicy.onVirtualDisplayUserInteraction`。
 
@@ -441,10 +445,11 @@ flowchart TB
 9. ATMS 列表先规范成底→顶；front = visible / last after normalize。
 10. 分隔条拖动不要 live `setSplitRatio`；退出全屏先 stash ratio 再一次 resize。
 11. 长按开 Recent 必须 **UP 之后**；开之前 `resetGesture`。
-12. `AaUiHook` / Frx 优先 DexKit，不要写死混淆名。
-13. 不要重新引入 `aadisplay_config` SharedPreferences。
-14. 不要在 App 进程申请 Magisk `su`。
-15. 新钩子：`object` + `BaseHook`/`AaHook`，`tagName` = `AAD_*`。
+12. `AaUiHook` / Frx 优先 DexKit，不要写死混淆名；**禁止** `searchPackages("")`（DexKit 2.0.7）。
+13. AA 钩子 `loadDexClass` / `hook` 失败要隔离，不要让单个 hook 拖垮同进程其余钩子。
+14. 不要重新引入 `aadisplay_config` SharedPreferences。
+15. 不要在 App 进程申请 Magisk `su`。
+16. 新钩子：`object` + `BaseHook`/`AaHook`，`tagName` = `AAD_*`。
 
 ---
 

@@ -41,7 +41,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | `ui/main/` | 手机端激活状态页（`MainActivity`，`CATEGORY_INFO`；无桌面图标，经 LSPosed 打开） |
 | `ui/aa/` | 车机投影 Activity / Fragment / VirtualDisplay 适配 |
 | `ui/window/` | 显示会话策略（`DisplaySessionPolicy`：Delay Destroy / keep-awake；手机悬浮 UI 已移除） |
-| `ui/aa/split/` | 双 VD、分屏、`PaneAppStack`（每窗最多 3 应用保活） |
+| `ui/aa/split/` | 双 VD / 分屏门面 `SplitDisplayController` + 协作类（`SplitVdLifecycle` / `SplitLaunchRestore` / `SplitOwnership` / `SplitInputRecents` / `PaneAppStack` / `SplitLockedPeelController` 等；每窗最多 3 应用保活） |
 | `service/` | `AaActivityService` |
 | `util/` | `LastSplitStore`、广播常量、触控改写等 |
 | `model/` | 最近任务等模型 |
@@ -59,7 +59,8 @@ flowchart LR
   XposedInit --> AndroidAutoHook
   MainActivity --> CoreApi
   AaDisplayActivity --> CoreApi
-  CoreApi --> CoreManager
+  CoreApi -->|"system_server"| CoreManagerService
+  CoreApi -->|"其它进程"| CoreManager
   CoreManager -->|"PMS bridge AADD"| CoreManagerService
   CoreManagerService --> SplitDisplayController
   CoreManagerService --> DisplaySessionPolicy
@@ -77,9 +78,8 @@ flowchart LR
 | `com.google.android.projection.gearhead` | `AndroidAutoHook`（再按进程分发 `Aa*Hook`） |
 | 其余包 | 不注入钩子 |
 
-`AndroidAutoHook` 进程常量：
+`AndroidAutoHook` 进程常量（`AaHook` companion；主进程 `gearhead` 无匹配 hook 则直接 return）：
 
-- `com.google.android.projection.gearhead`
 - `…:projection`
 - `…:car`
 
@@ -87,9 +87,9 @@ flowchart LR
 
 ### 跨进程 IPC
 
-- 门面：`CoreApi`（`CoreApi.kt`）—— 非 system 用 `CoreManager`，uid 1000 用 `CoreManagerService.instance`
+- 门面：`CoreApi`（`CoreApi.kt`）—— **只有真正的 system_server**（`AndroidHook.isReadyForSystemHooks()`）才用 `CoreManagerService.instance`；其余一律 `CoreManager` 经 PMS 桥拿 Binder。不要用 `uid == 1000`（三星等 OEM 系统应用也是 1000）
 - 契约：`ICoreManager.aidl`（创建/销毁显示、Surface、启停任务、按键/触摸、最近任务）
-- 桥接：`AndroidHook` 注入 `IPackageManager.onTransact`，magic code **`AADD`**，把 `CoreManagerService` binder 交给应用进程
+- 桥接：`AndroidHook` 注入 `IPackageManager.onTransact`，magic code **`AADD`**，把 `CoreManagerService` binder 交给应用进程（仅本模块 uid + gearhead uid）
 
 跨进程显示能力 **必须** 经 `CoreApi` / `ICoreManager`，不要在 AA 或普通 App 进程直接操作 VirtualDisplay。
 
@@ -130,7 +130,8 @@ export GRADLE_USER_HOME="$HOME/.gradle"
 |----|-----------|
 | `GRADLE_USER_HOME` | `$HOME/.gradle`（必须显式 export；沙箱默认家目录会让 wrapper 重新拉 `gradle-9.5.1-bin.zip`） |
 | Wrapper | `gradle/wrapper/gradle-wrapper.properties` → **Gradle 9.5.1**，已缓存在 `~/.gradle/wrapper/dists/gradle-9.5.1-bin/` |
-| 依赖缓存 | `~/.gradle/caches`（DexKit、AGP、Kotlin 等；不要换缓存目录） |
+| 依赖缓存 | `~/.gradle/caches`（DexKit **2.0.7**、AGP、Kotlin 等；不要换缓存目录） |
+| JNI | `jniLibs.useLegacyPackaging = false`（`libdexkit.so` 未压缩，适配 16KB 页） |
 | JDK | 已装 **Amazon Corretto 22**（`/Users/jiangqiang/Library/Java/JavaVirtualMachines/corretto-22.0.2/Contents/Home`）；另有 Microsoft JDK 17。不要再装/下载 JDK |
 | Android SDK | `local.properties` → `sdk.dir=/Users/jiangqiang/Library/Android/sdk` |
 
@@ -178,8 +179,9 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 
 1. 实现放在 `xposed/hook/aa/`
 2. 在 `AndroidAutoHook` 的 hooks 列表中注册，并正确实现 `isSupportProcess`
-3. 优先 DexKit / 动态解析，避免写死易碎偏移或字段名
-4. 在目标 AA 版本真机验证；失败时看 `AAD_*` 日志与 DexKit 初始化是否成功
+3. 优先 DexKit / 动态解析，避免写死易碎偏移或字段名；**不要**写 `searchPackages = listOf("")`（DexKit 2.0.7 只搜无名包，命中为 0）
+4. `AndroidAutoHook` 已按 hook 隔离 `loadDexClass` / `hook` 失败；单个 hook 抛错不应拖垮同进程其余钩子
+5. 在目标 AA 版本真机验证；失败时看 `AAD_*` 日志与 DexKit 初始化是否成功
 
 ### 显示尺寸 / 生命周期
 
@@ -231,7 +233,8 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 | AA 钩子总控 | `xposed/hook/AndroidAutoHook.kt` |
 | 车机画面与触控 | `ui/aa/AaDisplayActivity*.java/kt`、`AaMainFragment.kt` |
 | 显示会话策略（Delay Destroy / keep-awake） | `ui/window/DisplaySessionPolicy.kt` |
-| 虚拟屏多应用栈（Max 3） | `ui/aa/split/PaneAppStack.kt`、`SplitDisplayController.kt` |
+| 虚拟屏多应用栈（Max 3） | `ui/aa/split/PaneAppStack.kt`、`SplitDisplayController.kt` 及同目录协作类 |
+| 分屏 VD / restore / reclaim | `SplitVdLifecycle.kt`、`SplitLaunchRestore.kt`、`SplitOwnership.kt` |
 | 手机状态页（LSPosed 打开） | `ui/main/MainActivity.kt` |
 | 分屏快照 | `util/LastSplitStore.kt` |
 | IPC 契约 | `aidl/.../ICoreManager.aidl` |

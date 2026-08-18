@@ -11,9 +11,9 @@
 
 ## 版本
 
-- 当前模块版本：`0.24#17.4-r11`
+- 当前模块版本：`0.24#17.4-r11`（`versionCode` 3067）
 - 变更记录见 [CHANGELOG.md](CHANGELOG.md)
-- 本版用户说明见 [RELEASE_NOTES_0.24-17.4-r10.md](RELEASE_NOTES_0.24-17.4-r10.md)（r11 修复见 CHANGELOG Unreleased）
+- 本版用户说明见 [RELEASE_NOTES_0.24-17.4-r10.md](RELEASE_NOTES_0.24-17.4-r10.md)（r11 修复见 CHANGELOG Unreleased：DexKit 2.0.7、R8 `baseBinding`、16KB 页对齐等）
 - 开发 / AI：项目约束 [AGENTS.md](AGENTS.md)，运行时链路 [docs/EXECUTION.md](docs/EXECUTION.md)
 
 ## 版本特点
