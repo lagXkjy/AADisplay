@@ -2,6 +2,8 @@
 
 面向后续 AI / 开发者的项目地图与改动约束。改代码前先建立心智模型，避免误动隐藏 API、Binder 桥、Android Auto DexKit 钩子等高风险区域。
 
+**运行时执行顺序（进程、开机→出画、IPC、触控、会话）**：[docs/EXECUTION.md](docs/EXECUTION.md)。改显示 / IPC / 钩子 / 触控 / 生命周期前必读。
+
 ## 1. 项目概述
 
 AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生产向 fork：通过 **LSPosed** 在系统侧创建 **VirtualDisplay**，把选定手机应用投到 **Android Auto** 车机界面，并提供 AA 侧 UI/DPI/按键等兼容钩子。
@@ -200,6 +202,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 
 | 需求 | 从这里开始 |
 |------|------------|
+| 全链路执行顺序（AI） | [docs/EXECUTION.md](docs/EXECUTION.md) |
 | Xposed 入口 / 包路由 | `xposed/XposedInit.kt` |
 | 系统 VirtualDisplay / Binder 桥 | `xposed/hook/AndroidHook.kt`、`CoreManagerService.kt` |
 | AA 钩子总控 | `xposed/hook/AndroidAutoHook.kt` |
