@@ -220,7 +220,6 @@ object AaUiHook: AaHook() {
         }
 
         val classes = bridge.findClass {
-            searchPackages = listOf("")
             matcher {
                 usingStrings {
                     add(

@@ -28,7 +28,6 @@ object AaSignatureHook: AaHook() {
             paramTypes("java.lang.String")
         }
         val classes = bridge.findClass {
-            searchPackages = listOf("")
             matcher {
                 usingStrings {
                     add(

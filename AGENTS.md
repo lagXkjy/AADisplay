@@ -107,7 +107,10 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 
 ## 4. 构建与验证
 
+本机已有 Gradle / JDK / SDK，**禁止再下发行包或另起隔离缓存**。Agent 编译必须走用户家目录的现成工具链。
+
 ```bash
+export GRADLE_USER_HOME="$HOME/.gradle"
 ./gradlew :aa-display:assembleDebug
 ./gradlew :aa-display:assembleRelease
 ./gradlew :aa-display:lintDebug
@@ -115,11 +118,30 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 
 | 项 | 说明 |
 |----|------|
-| 技术栈 | Kotlin 为主 + 少量 Java；AGP / Kotlin / Gradle 以根 `build.gradle.kts` 与 wrapper 为准；Java 11 |
+| 技术栈 | Kotlin 为主 + 少量 Java；AGP / Kotlin / Gradle 以根 `build.gradle.kts` 与 wrapper 为准；源码目标 **Java 11**（`jvmTarget=11`），本机用已装 JDK 即可 |
 | UI | ViewBinding + 平台 theme（无 Material / AppCompat）；**无 Compose**，不要擅自引入 |
 | Release 签名 | 环境变量 `KEY_ANDROID` + 根目录 `key.jks`；未设置则回退 debug 签名 |
 | 产物名 | `aa-display-${versionName}.apk`（`#` 替换为 `-`） |
 | 密钥 | **勿提交** `key.jks` 与密码 |
+
+### 本机工具链（勿下载、勿改 `GRADLE_USER_HOME`）
+
+| 项 | 路径 / 值 |
+|----|-----------|
+| `GRADLE_USER_HOME` | `$HOME/.gradle`（必须显式 export；沙箱默认家目录会让 wrapper 重新拉 `gradle-9.5.1-bin.zip`） |
+| Wrapper | `gradle/wrapper/gradle-wrapper.properties` → **Gradle 9.5.1**，已缓存在 `~/.gradle/wrapper/dists/gradle-9.5.1-bin/` |
+| 依赖缓存 | `~/.gradle/caches`（DexKit、AGP、Kotlin 等；不要换缓存目录） |
+| JDK | 已装 **Amazon Corretto 22**（`/Users/jiangqiang/Library/Java/JavaVirtualMachines/corretto-22.0.2/Contents/Home`）；另有 Microsoft JDK 17。不要再装/下载 JDK |
+| Android SDK | `local.properties` → `sdk.dir=/Users/jiangqiang/Library/Android/sdk` |
+
+Cursor / Agent 调用 `./gradlew` 时：
+
+1. 先 `export GRADLE_USER_HOME="$HOME/.gradle"`
+2. 向 Shell 申请 **`all` 权限**（关掉沙箱）。否则读不到用户 Gradle 缓存与 SDK，wrapper 会去下发行包
+3. 不要设置独立的 `GRADLE_USER_HOME`、不要 `--gradle-user-home`、不要删 `~/.gradle/wrapper/dists`
+4. `JAVA_HOME` 可空，系统默认即 Corretto 22；不要为了 Java 11 再下一套 JDK（bytecode 目标已是 11）
+
+Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.apk` 后 `am force-stop com.google.android.projection.gearhead`，AA 钩子在 gearhead 进程重拉即生效；`system_server` 侧仍须重启才换模块。
 
 安装验证流程：
 

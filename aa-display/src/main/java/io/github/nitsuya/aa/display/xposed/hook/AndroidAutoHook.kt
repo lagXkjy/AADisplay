@@ -52,16 +52,20 @@ object AndroidAutoHook : BaseHook() {
             onCreateApplication?.unhook()
             EzXHelperInit.initAppContext()
             System.loadLibrary("dexkit")
+            val ready = mutableListOf<AaHook>()
             DexKitBridge.create(lpparam.appInfo.sourceDir).use { bridge ->
                 val measureTimeMillis = measureTimeMillis {
                     hooks.forEach { h ->
-                        h.loadDexClass(bridge, lpparam)
+                        runCatching { h.loadDexClass(bridge, lpparam) }
+                            .onSuccess { ready += h }
+                            .onFailure { e -> log(tagName, "${h.tagName} loadDexClass failed", e) }
                     }
                 }
                 log(tagName,"${lpparam.processName} load class measure ${measureTimeMillis}ms")
             }
-            hooks.forEach { h ->
-                h.hook(lpparam)
+            ready.forEach { h ->
+                runCatching { h.hook(lpparam) }
+                    .onFailure { e -> log(tagName, "${h.tagName} hook failed", e) }
             }
         }
     }

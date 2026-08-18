@@ -6,6 +6,7 @@
 - **最低系统 Android 13（`minSdk` 33）：** 去掉 API 33 以下的 PackageManager / `registerReceiver` / `getParcelable` / `getPackageUid` 兼容分支。
 
 ### Fixed
+- **DexKit 2.0.7 升完 AA 直接不能用：** `searchPackages("")` 在 2.0.7 只搜无名包，`AaSignatureHook` / `AaUiHook` LayoutInfo 命中 0；`:car` 里一抛后续钩子全跳过。去掉空包过滤，并隔离单个 hook 的 DexKit 失败。
 - **Android Studio Run「Default Activity not found」：** 隐藏桌面图标后无 `LAUNCHER`；运行配置改为安装后打开 `MainActivity`。
 - **16KB 页对齐：** DexKit `2.0.0-rc3` → `2.0.7`，`libdexkit.so` 按 16KB 对齐。
 - **长按分隔条 / 方控开 Recent 直接闪退退出 AADisplay：** 非 hook 失效。Release 下子类 `::baseBinding.isInitialized` 经 R8 访问父类 `private set` 字段触发 `IllegalAccessError`，进程崩溃后 AA `Crash loop, fallback`。改为 `BaseFragment.isBaseBindingInitialized()`，并 keep `template.bases`。
