@@ -44,7 +44,7 @@ sequenceDiagram
     XP->>SS: handleLoadPackage(android, appInfo=null)
     SS->>SS: AndroidHook: 截 PMS / AMS
     SS->>SS: BridgeService 注入 IPackageManager.onTransact AADD
-    SS->>SS: AMS.systemReady → Instances + PanePresentationGuard
+    SS->>SS: AMS.systemReady → Instances + PanePresentationGuard + VdImeDisplayPin
 
     Note over GH,HU: 连接 Android Auto
     XP->>GH: handleLoadPackage(gearhead)
@@ -92,7 +92,7 @@ ServiceManager.addService("package")
   → reply.writeStrongBinder(CoreManagerService.instance)
 
 AMS 构造 → 捕获 system UI Context → CoreManagerService.systemContext
-AMS.systemReady → Instances.init + PanePresentationGuard.ensureHooked
+AMS.systemReady → Instances.init + PanePresentationGuard + VdImeDisplayPin.ensureHooked
 ```
 
 客户端拿 Binder：`xposed/CoreManager.kt` `getService()`  
@@ -419,6 +419,8 @@ flowchart TB
 
 `PanePresentationGuard`：`systemReady` 时装一次。拦外包往本窗 VD 贴 `TYPE_PRESENTATION`（典型：抖音 LivePlay + MediaRouter）。
 
+`VdImeDisplayPin`：`systemReady` 时装一次。AA VD 上的 client 要键盘时，IME 窗/token 必须落在同一 VD（纠正 OEM 把目标改写到默认屏，如三星合盖 `isFolded`→0）。
+
 ---
 
 ## 13. 广播总线（`util/AABroadcastConst.kt`）
@@ -473,6 +475,7 @@ flowchart TB
 | 方控 | `AaBtnEventHook`、`AaMainFragment` `ACTION_STEERING_WHEEL_CONTROL` |
 | FRX / 无 Maps 崩溃 / 空媒体卡 | `AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`、`rewriteVirtualDisplayArgs` |
 | 抖音盖导航 / 外窗 Presentation | `PanePresentationGuard`、`SplitPresentationGuard` |
+| AA VD 键盘落错屏 / 合盖无键盘 | `VdImeDisplayPin` |
 | 应用 DPI 不对 | `VdDensityPin` |
 | 隐藏 API | `lib-stub/` + `Instances.kt`（Rikka Refine） |
 
