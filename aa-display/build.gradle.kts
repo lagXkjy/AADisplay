@@ -29,6 +29,10 @@ android {
                 "kotlin-tooling-metadata.json",
             )
         )
+        jniLibs {
+            // minSdk 33: keep libdexkit.so uncompressed so 16 KB devices can map it.
+            useLegacyPackaging = false
+        }
     }
     signingConfigs {
         create("release") {
@@ -118,6 +122,6 @@ dependencies {
     compileOnly("dev.rikka.hidden:stub:4.4.0")
     compileOnly(files("./libs/de.robv.android.xposed_api_82.jar"))
     implementation("com.github.kyuubiran:EzXHelper:1.0.3")
-    implementation("org.luckypray:dexkit:2.0.0-rc3")
+    implementation("org.luckypray:dexkit:2.0.7")
     implementation(files("./libs/aauto.aar"))
 }

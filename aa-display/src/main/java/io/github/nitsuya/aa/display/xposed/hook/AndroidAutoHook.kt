@@ -53,10 +53,6 @@ object AndroidAutoHook : BaseHook() {
             EzXHelperInit.initAppContext()
             System.loadLibrary("dexkit")
             DexKitBridge.create(lpparam.appInfo.sourceDir).use { bridge ->
-                if(bridge == null){
-                    log(tagName,"DexKitBridge.create() failed")
-                    return@hookBefore
-                }
                 val measureTimeMillis = measureTimeMillis {
                     hooks.forEach { h ->
                         h.loadDexClass(bridge, lpparam)

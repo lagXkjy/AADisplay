@@ -64,7 +64,7 @@ object AaFrxRequiredAppsHook : AaHook() {
                 }
             }
         }.flatMap { classData ->
-            classData.getMethods().findMethod(FindMethod().matcher(contextStatusMatcher))
+            classData.findMethod(FindMethod().matcher(contextStatusMatcher))
         }.mapNotNull { md ->
             runCatching { md.getMethodInstance(lpparam.classLoader) }.getOrNull()
         }

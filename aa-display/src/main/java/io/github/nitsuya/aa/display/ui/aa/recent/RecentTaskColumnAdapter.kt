@@ -226,7 +226,7 @@ class RecentTaskColumnAdapter(
         }
     }
 
-    inner class ViewHolder(val binding: RecentTaskBinding): RecyclerView.ViewHolder(binding.root)
+    class ViewHolder(val binding: RecentTaskBinding): RecyclerView.ViewHolder(binding.root)
 
     inner class ItemTouchHelperCallback: ItemTouchHelper.Callback(){
         private var dragChangedOrder = false

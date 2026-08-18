@@ -102,10 +102,8 @@ object PanePresentationGuard {
                         "display=$displayId (owner=$ownerPkg)"
                 )
                 // IllegalArgumentException is what clients expect for a bad display/type.
-                param.setThrowable(
-                    IllegalArgumentException(
-                        "AADisplay: presentation display $displayId owned by $ownerPkg"
-                    )
+                param.throwable = IllegalArgumentException(
+                    "AADisplay: presentation display $displayId owned by $ownerPkg"
                 )
             } catch (e: Throwable) {
                 log(TAG, "attachContext hook failed", e)

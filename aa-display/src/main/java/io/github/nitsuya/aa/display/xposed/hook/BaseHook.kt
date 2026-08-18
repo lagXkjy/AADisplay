@@ -8,6 +8,6 @@ abstract class BaseHook {
     abstract val tagName: String
     abstract fun init(lpparam: XC_LoadPackage.LoadPackageParam)
 }
-inline fun XC_MethodHook.MethodHookParam.abortMethod() {
+fun XC_MethodHook.MethodHookParam.abortMethod() {
     this.result = null
 }

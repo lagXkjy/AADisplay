@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.PowerManager
 import android.os.SystemClock
+import android.os.SystemProperties
 import android.provider.Settings
 import android.view.Display
 import io.github.nitsuya.aa.display.BuildConfig
@@ -13,7 +14,6 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.Instances
-import io.github.nitsuya.aa.display.xposed.util.RomUtil
 import io.github.nitsuya.aa.display.xposed.util.log
 import java.lang.reflect.Method
 import kotlinx.coroutines.CoroutineScope
@@ -70,11 +70,12 @@ class DisplaySessionPolicy(
         private const val WAKE_PULSE_MS = 3_000L
         /** Seconds to keep dual VD after AA disconnect before destroy. */
         private const val DELAY_DESTROY_SEC = 180
+        /** MIUI/HyperOS: toggle Secure synergy_mode on phone screen on/off. */
+        private val isMiui = SystemProperties.get("ro.miui.ui.version.name").isNotBlank()
     }
 
     private var mDestroyJob: Job? = null
 
-    private val isSupportInteractive = RomUtil.isMiui()
     private var mKeepAwakeJob: Job? = null
     private var mScreenOffReassertJob: Job? = null
     private var mLastTouchKeepAwakeAt = 0L
@@ -125,7 +126,7 @@ class DisplaySessionPolicy(
         }
 
         fun onReceive(context: Context, action: String) {
-            if (isSupportInteractive) {
+            if (isMiui) {
                 try {
                     when (action) {
                         Intent.ACTION_SCREEN_ON -> Settings.Secure.putInt(context.contentResolver, "synergy_mode", 0)
@@ -247,7 +248,7 @@ class DisplaySessionPolicy(
                     log(TAG, "register SCREEN_ON/OFF failed:", e)
                 }
             }
-            if (isSupportInteractive) {
+            if (isMiui) {
                 onReceive(mContext, if (Instances.powerManager.isInteractive) Intent.ACTION_SCREEN_ON else Intent.ACTION_SCREEN_OFF)
             }
             // Hold a display-scoped SCREEN_BRIGHT lock for each AA VD group so
@@ -271,7 +272,7 @@ class DisplaySessionPolicy(
                 }
                 mScreenReceiverRegistered = false
             }
-            if (isSupportInteractive) {
+            if (isMiui) {
                 try {
                     Settings.Secure.putInt(mContext.contentResolver, "synergy_mode", 0)
                 } catch (_: Throwable) {

@@ -106,7 +106,7 @@ public class AaDisplayActivity extends CarActivity {
             @Override
             public boolean onGenericMotionEvent(MotionEvent event) {
                 return AaDisplayActivity.this.onGenericMotionEvent(event);
-            };
+            }
         };
         view.setLayoutParams(new ViewGroup.LayoutParams(1, 1));
         view.setAlpha(0);

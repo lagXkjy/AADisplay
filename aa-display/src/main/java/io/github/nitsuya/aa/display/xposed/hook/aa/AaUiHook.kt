@@ -1515,7 +1515,7 @@ object AaUiHook: AaHook() {
             log(tagName, "AaUiHook: AutoOpen skip ($reason): startMethod null")
             return
         }
-        val now = android.os.SystemClock.uptimeMillis()
+        val now = SystemClock.uptimeMillis()
         if (mAutoOpenSessionAtMs != 0L && now - mAutoOpenSessionAtMs < AUTO_OPEN_REARM_GAP_MS) {
             return
         }
@@ -1681,7 +1681,7 @@ object AaUiHook: AaHook() {
 
     private fun scheduleEnsureFacetBar(reason: String) {
         mFacetEnsureHandler.removeCallbacksAndMessages(FACET_ENSURE_TOKEN)
-        val now = android.os.SystemClock.uptimeMillis()
+        val now = SystemClock.uptimeMillis()
         mFacetEnsureDeadlineMs = now + FACET_ENSURE_WINDOW_MS
         // One immediate kick; continue via a single poll chain until success or deadline.
         mFacetEnsureHandler.postAtTime(
@@ -1719,7 +1719,7 @@ object AaUiHook: AaHook() {
                     reclaimLeftGutter(root)
                 }
             }
-            val now = android.os.SystemClock.uptimeMillis()
+            val now = SystemClock.uptimeMillis()
             if (now < mFacetEnsureDeadlineMs) {
                 mFacetEnsureHandler.postAtTime(
                     { ensureFacetBarInjected("$reason-poll") },

@@ -46,7 +46,7 @@ object AaSignatureHook: AaHook() {
             throw NoSuchMethodException("AaSignatureHook: not found SignatureVerifierUtil class：${classes.size}")
         }
 
-        val methodDatas = classes[0].getMethods().findMethod(FindMethod().matcher(methodMatcher))
+        val methodDatas = classes[0].findMethod(FindMethod().matcher(methodMatcher))
         if (methodDatas.isEmpty() || methodDatas.size > 1) {
             throw NoSuchMethodException("AaSignatureHook: not found Check method：${classes.size}")
         }
