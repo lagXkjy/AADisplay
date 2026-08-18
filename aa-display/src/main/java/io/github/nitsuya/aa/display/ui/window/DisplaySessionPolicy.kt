@@ -8,7 +8,6 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.Display
-import androidx.core.content.ContextCompat
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
@@ -237,11 +236,10 @@ class DisplaySessionPolicy(
             // when Samsung DreamManager tries to DOZE the AA virtual display with the phone.
             if (!mScreenReceiverRegistered) {
                 try {
-                    ContextCompat.registerReceiver(
-                        mContext,
+                    mContext.registerReceiver(
                         this,
                         addAction(IntentFilter()),
-                        ContextCompat.RECEIVER_NOT_EXPORTED
+                        Context.RECEIVER_NOT_EXPORTED
                     )
                     mScreenReceiverRegistered = true
                 } catch (e: Throwable) {

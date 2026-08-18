@@ -8,7 +8,6 @@ import android.content.res.Resources
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -1444,19 +1443,11 @@ object AaUiHook: AaHook() {
             }
         }
         try {
-            if (Build.VERSION.SDK_INT >= 33) {
-                ctx.registerReceiver(
-                    receiver,
-                    IntentFilter(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED),
-                    Context.RECEIVER_EXPORTED
-                )
-            } else {
-                @Suppress("UnspecifiedRegisterReceiverFlag")
-                ctx.registerReceiver(
-                    receiver,
-                    IntentFilter(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED)
-                )
-            }
+            ctx.registerReceiver(
+                receiver,
+                IntentFilter(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED),
+                Context.RECEIVER_EXPORTED
+            )
             mSplitStateReceiver = receiver
             logDebug(tagName, "AaUiHook: registered SPLIT_STATE_CHANGED for rail fullscreen cache")
         } catch (e: Throwable) {
@@ -1478,19 +1469,11 @@ object AaUiHook: AaHook() {
             }
         }
         try {
-            if (Build.VERSION.SDK_INT >= 33) {
-                ctx.registerReceiver(
-                    receiver,
-                    IntentFilter(AABroadcastConst.ACTION_AA_UI_RAIL_CONSUME),
-                    Context.RECEIVER_EXPORTED
-                )
-            } else {
-                @Suppress("UnspecifiedRegisterReceiverFlag")
-                ctx.registerReceiver(
-                    receiver,
-                    IntentFilter(AABroadcastConst.ACTION_AA_UI_RAIL_CONSUME)
-                )
-            }
+            ctx.registerReceiver(
+                receiver,
+                IntentFilter(AABroadcastConst.ACTION_AA_UI_RAIL_CONSUME),
+                Context.RECEIVER_EXPORTED
+            )
             mRailConsumeReceiver = receiver
             logDebug(tagName, "AaUiHook: registered AA_UI_RAIL_CONSUME for picker rail routing")
         } catch (e: Throwable) {
@@ -1508,16 +1491,11 @@ object AaUiHook: AaHook() {
             }
         }
         try {
-            if (Build.VERSION.SDK_INT >= 33) {
-                ctx.registerReceiver(
-                    receiver,
-                    IntentFilter(AABroadcastConst.ACTION_AA_DISPLAY_SHOWN),
-                    Context.RECEIVER_EXPORTED
-                )
-            } else {
-                @Suppress("UnspecifiedRegisterReceiverFlag")
-                ctx.registerReceiver(receiver, IntentFilter(AABroadcastConst.ACTION_AA_DISPLAY_SHOWN))
-            }
+            ctx.registerReceiver(
+                receiver,
+                IntentFilter(AABroadcastConst.ACTION_AA_DISPLAY_SHOWN),
+                Context.RECEIVER_EXPORTED
+            )
             mAutoOpenShownReceiver = receiver
             log(tagName, "AaUiHook: registered AA_DISPLAY_SHOWN receiver for AutoOpen cancel")
         } catch (e: Throwable) {
@@ -1572,12 +1550,7 @@ object AaUiHook: AaHook() {
     }
 
     private fun bundleParcelableRect(bundle: Bundle, key: String): Rect? {
-        return if (Build.VERSION.SDK_INT >= 33) {
-            bundle.getParcelable(key, Rect::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            bundle.getParcelable(key) as? Rect
-        }
+        return bundle.getParcelable(key, Rect::class.java)
     }
 
     private fun resolveLayoutInfoConstructors(className: String): List<Constructor<*>> {

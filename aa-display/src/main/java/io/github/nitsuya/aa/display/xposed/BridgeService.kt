@@ -2,7 +2,6 @@ package io.github.nitsuya.aa.display.xposed
 
 import android.content.pm.IPackageManager
 import android.os.Binder
-import android.os.Build
 import android.os.Parcel
 import android.os.Process
 import com.github.kyuubiran.ezxhelper.utils.findMethod
@@ -75,11 +74,7 @@ object BridgeService {
 
     private fun packageUid(pms: IPackageManager, packageName: String): Int {
         return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                pms.getPackageUid(packageName, 0L, 0)
-            } else {
-                pms.getPackageUid(packageName, 0, 0)
-            }
+            pms.getPackageUid(packageName, 0L, 0)
         } catch (e: Throwable) {
             log(TAG, "getPackageUid($packageName) failed", e)
             0

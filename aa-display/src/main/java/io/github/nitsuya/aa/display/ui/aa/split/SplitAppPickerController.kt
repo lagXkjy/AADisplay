@@ -3,7 +3,6 @@ package io.github.nitsuya.aa.display.ui.aa.split
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.LayoutInflater
@@ -160,15 +159,10 @@ class SplitAppPickerController(
     private fun loadLaunchableApps(): List<SplitAppEntry> {
         val pm = binding.root.context.packageManager
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val resolved = if (Build.VERSION.SDK_INT >= 33) {
-            pm.queryIntentActivities(
-                intent,
-                PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong())
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            pm.queryIntentActivities(intent, PackageManager.MATCH_ALL)
-        }
+        val resolved = pm.queryIntentActivities(
+            intent,
+            PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong())
+        )
         return resolved.mapNotNull { ri ->
             val ai = ri.activityInfo ?: return@mapNotNull null
             val pkg = ai.packageName

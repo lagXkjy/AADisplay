@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.SystemClock
 import android.view.KeyEvent
-import androidx.core.content.IntentCompat
 import com.github.kyuubiran.ezxhelper.utils.findAllMethods
 import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
@@ -108,8 +107,7 @@ object AaBtnEventHook: AaHook() {
                         if (!isTargetAction(eventAction)) return@hookBefore
                         if (!activeReceiverByAction.containsKey(eventAction)) return@hookBefore
 
-                        val keyEvent = IntentCompat.getParcelableExtra(
-                            intent,
+                        val keyEvent = intent.getParcelableExtra(
                             "android.intent.extra.KEY_EVENT",
                             KeyEvent::class.java
                         ) ?: return@hookBefore

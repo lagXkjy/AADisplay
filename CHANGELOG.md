@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- **最低系统 Android 13（`minSdk` 33）：** 去掉 API 33 以下的 PackageManager / `registerReceiver` / `getParcelable` / `getPackageUid` 兼容分支。
+
 ### Fixed
 - **长按分隔条 / 方控开 Recent 直接闪退退出 AADisplay：** 非 hook 失效。Release 下子类 `::baseBinding.isInitialized` 经 R8 访问父类 `private set` 字段触发 `IllegalAccessError`，进程崩溃后 AA `Crash loop, fallback`。改为 `BaseFragment.isBaseBindingInitialized()`，并 keep `template.bases`。
 

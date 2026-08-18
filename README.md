@@ -3,7 +3,7 @@
 [![基于](https://img.shields.io/badge/基于-Nitsuya%2FAADisplay-blue?logo=github)](https://github.com/Nitsuya/AADisplay)
 [![分支参考](https://img.shields.io/badge/参考-Stashboy%2FAADisplay-blue?logo=github)](https://github.com/Stashboy/AADisplay)
 ![Xposed Module](https://img.shields.io/badge/Xposed-Module-blue)
-![Android SDK min 31](https://img.shields.io/badge/Android%20SDK-%3E%3D%2031-brightgreen?logo=android)
+![Android SDK min 33](https://img.shields.io/badge/Android%20SDK-%3E%3D%2033-brightgreen?logo=android)
 ![Android SDK target 36](https://img.shields.io/badge/Android%20SDK-target%2036-brightgreen?logo=android)
 
 在 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay)（原作者）与 [Stashboy/AADisplay](https://github.com/Stashboy/AADisplay)（分支作者）基础上 Fork 修改而来的精简分屏版。
@@ -42,7 +42,7 @@
 
 ## 运行要求
 
-- Android 12+（SDK 31+）
+- Android 13+（SDK 33+）
 - 已 Root，并安装 LSPosed
 - Android Auto（`com.google.android.projection.gearhead`）
 

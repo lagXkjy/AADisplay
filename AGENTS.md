@@ -11,7 +11,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | 项 | 说明 |
 |----|------|
 | 平台 | 仅 Android 手机 + Android Auto（无 iOS / Web / Desktop） |
-| 最低系统 | Android 12+（`minSdk 31`），`compileSdk` / `targetSdk` 36 |
+| 最低系统 | Android 13+（`minSdk 33`），`compileSdk` / `targetSdk` 36 |
 | 运行前提 | Root + LSPosed（或兼容 Xposed）；至少勾选 System Framework + Android Auto |
 | AA 包名 | `com.google.android.projection.gearhead` |
 | 许可证 | GPLv3（见 `LICENSE`） |

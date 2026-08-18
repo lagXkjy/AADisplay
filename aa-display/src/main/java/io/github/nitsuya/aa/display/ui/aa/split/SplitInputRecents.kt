@@ -5,7 +5,6 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Point
 import android.os.Binder
-import android.os.Build
 import android.os.SystemClock
 import android.view.Display
 import android.view.InputDevice
@@ -211,15 +210,10 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
                 icon = downsampleForIpc(icon, MAX_RECENT_ICON_EDGE_PX)
                 var label = taskDescription.label
                 if (label == null) {
-                    val activityInfo = if (Build.VERSION.SDK_INT >= 33) {
-                        Instances.packageManager.getActivityInfo(
-                            topActivity,
-                            PackageManager.ComponentInfoFlags.of(0)
-                        )
-                    } else {
-                        @Suppress("DEPRECATION")
-                        Instances.packageManager.getActivityInfo(topActivity, 0)
-                    }
+                    val activityInfo = Instances.packageManager.getActivityInfo(
+                        topActivity,
+                        PackageManager.ComponentInfoFlags.of(0)
+                    )
                     label = activityInfo.loadLabel(Instances.packageManager).toString()
                 }
                 RecentTaskInfo(icon, taskInfo.taskId, label, topActivity.packageName)

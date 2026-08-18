@@ -17,7 +17,6 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.widget.FrameLayout
-import androidx.core.content.ContextCompat
 import androidx.core.view.InputDeviceCompat
 import androidx.core.view.doOnLayout
 import androidx.core.view.isVisible
@@ -1109,13 +1108,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         if (isControlReceiverRegistered) return
         val ctx = context
         if (!isAdded || ctx == null) return
-        ContextCompat.registerReceiver(ctx, broadcastReceiver, IntentFilter().apply {
+        ctx.registerReceiver(broadcastReceiver, IntentFilter().apply {
             addAction(AABroadcastConst.ACTION_STEERING_WHEEL_CONTROL)
             addAction(AABroadcastConst.ACTION_OPEN_SPLIT_PICKER)
             addAction(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED)
             addAction(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID)
             addAction(AABroadcastConst.ACTION_SHOW_RECENT_TASK)
-        }, ContextCompat.RECEIVER_EXPORTED)
+        }, Context.RECEIVER_EXPORTED)
         isControlReceiverRegistered = true
     }
 }
