@@ -4,6 +4,7 @@
 
 ### Changed
 - **最低系统 Android 13（`minSdk` 33）：** 去掉 API 33 以下的 PackageManager / `registerReceiver` / `getParcelable` / `getPackageUid` 兼容分支。
+- **DPI / 左轨触控热路径：** `VdDensityPin` 对非 AA display 早退（缓存 `getDisplayId`，VD id 不再每次问 VirtualDisplay）；`:car` 左轨 MOVE 按帧合并，DOWN 不再同步 Binder 查全屏（只信 `SPLIT_STATE_CHANGED`）。
 
 ### Fixed
 - **DexKit 2.0.7 升完 AA 直接不能用：** `searchPackages("")` 在 2.0.7 只搜无名包，`AaSignatureHook` / `AaUiHook` LayoutInfo 命中 0；`:car` 里一抛后续钩子全跳过。去掉空包过滤，并隔离单个 hook 的 DexKit 失败。

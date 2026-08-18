@@ -90,10 +90,19 @@ class SplitDisplayController(
     val isSideBySide: Boolean
         get() = mWidth >= mHeight
 
+    /**
+     * Cached so [isAaVirtualDisplay] / DPI pin can early-out without
+     * `VirtualDisplay.getDisplay()` on every WM configuration pass.
+     */
+    @Volatile
+    private var mCachedPrimaryDisplayId: Int = Display.INVALID_DISPLAY
+    @Volatile
+    private var mCachedSecondaryDisplayId: Int = Display.INVALID_DISPLAY
+
     val primaryDisplayId: Int
-        get() = mPrimary?.display?.displayId ?: Display.INVALID_DISPLAY
+        get() = mCachedPrimaryDisplayId
     val secondaryDisplayId: Int
-        get() = mSecondary?.display?.displayId ?: Display.INVALID_DISPLAY
+        get() = mCachedSecondaryDisplayId
 
     /**
      * AaDisplayActivity presentation displayId reported from the app process.
@@ -204,11 +213,15 @@ class SplitDisplayController(
                 sizes.primaryW, sizes.primaryH, mDensityDpi,
                 primarySurface, flags
             )
+            mCachedPrimaryDisplayId =
+                mPrimary?.display?.displayId ?: Display.INVALID_DISPLAY
             mSecondary = Instances.displayManager.createVirtualDisplay(
                 "AADisplay-S-${System.currentTimeMillis()}",
                 sizes.secondaryW, sizes.secondaryH, mDensityDpi,
                 secondarySurface, flags
             )
+            mCachedSecondaryDisplayId =
+                mSecondary?.display?.displayId ?: Display.INVALID_DISPLAY
         } finally {
             Binder.restoreCallingIdentity(identity)
         }
@@ -531,6 +544,8 @@ class SplitDisplayController(
         tryOrNull { mSecondary?.release() }
         mPrimary = null
         mSecondary = null
+        mCachedPrimaryDisplayId = Display.INVALID_DISPLAY
+        mCachedSecondaryDisplayId = Display.INVALID_DISPLAY
         mPrimarySurface = null
         mSecondarySurface = null
         mPanePackages[0] = null

@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Parcelable
 import android.os.SystemClock
+import android.view.Choreographer
 import android.view.Display
 import android.view.InputDevice
 import android.view.LayoutInflater
@@ -94,10 +95,23 @@ object AaUiHook: AaHook() {
      */
     @Volatile private var mAaUiRailConsume = false
     /**
-     * Cached split fullscreen pane for rail steal. MOVE must not Binder-query
-     * [CoreManager.splitFullscreenPane]; refresh on DOWN and SPLIT_STATE_CHANGED.
+     * Cached split fullscreen pane for rail steal. DOWN/MOVE must not Binder-query
+     * [CoreManager.splitFullscreenPane]; [AABroadcastConst.ACTION_SPLIT_STATE_CHANGED] is the
+     * source of truth, plus one async warmup after the receiver is registered.
      */
     @Volatile private var mCachedFullscreenPane: Int = SplitPane.FULLSCREEN_NONE
+    /** True after at least one SPLIT_STATE_CHANGED extra (skip binder warmup). */
+    @Volatile private var mSplitStateSeen = false
+    private val mRailMoveLock = Any()
+    private var mPendingRailMove: MotionEvent? = null
+    /** Bumped on UP/CANCEL so an in-flight frame flush cannot inject MOVE after UP. */
+    @Volatile private var mRailMoveGeneration = 0
+    private val mRailMoveFrameCallback = Choreographer.FrameCallback { flushPendingRailMove() }
+    private val mRailMovePostToFrame = Runnable {
+        val choreographer = Choreographer.getInstance()
+        choreographer.removeFrameCallback(mRailMoveFrameCallback)
+        choreographer.postFrameCallback(mRailMoveFrameCallback)
+    }
     private var mSplitStateReceiver: android.content.BroadcastReceiver? = null
     private var mRailConsumeReceiver: android.content.BroadcastReceiver? = null
 
@@ -951,11 +965,6 @@ object AaUiHook: AaHook() {
             val downInRail = if (railTarget) true else downInRailBand
             if (action == MotionEvent.ACTION_DOWN) {
                 mHuRailGesture = downInRail
-                mCachedFullscreenPane = try {
-                    CoreManager.splitFullscreenPane
-                } catch (_: Throwable) {
-                    mCachedFullscreenPane
-                }
                 mHuPeelGesture = downInRail &&
                     SplitPane.isFullscreenPane(mCachedFullscreenPane) &&
                     isPeelHandleHitBand(motion)
@@ -974,7 +983,17 @@ object AaUiHook: AaHook() {
                 }
                 else -> mHuRailGesture
             }
-            if (!steal) return
+            if (!steal) {
+                if (action == MotionEvent.ACTION_DOWN ||
+                    action == MotionEvent.ACTION_UP ||
+                    action == MotionEvent.ACTION_CANCEL
+                ) {
+                    cancelRailMoveFlush()
+                    mRailMoveGeneration++
+                    takePendingRailMove()?.recycle()
+                }
+                return
+            }
             // Coolwalk MotionEvent clocks are often not InputDispatcher uptime — rewrite
             // before Binder inject or the event is dropped (same as PTE decode path).
             val now = SystemClock.uptimeMillis()
@@ -988,20 +1007,35 @@ object AaUiHook: AaHook() {
                 eventTime = now,
                 sourceOverride = InputDevice.SOURCE_TOUCHSCREEN,
             )
+            var retainInject = false
             try {
                 val fs = mCachedFullscreenPane
                 val peel = mHuPeelGesture
                 val railToAaUi = mAaUiRailConsume
+                if (action == MotionEvent.ACTION_MOVE) {
+                    // Same as TextureView: keep last MOVE, flush once per frame.
+                    queuePendingRailMove(toInject)
+                    retainInject = true
+                    param.result = null
+                    return
+                }
+                cancelRailMoveFlush()
+                mRailMoveGeneration++
+                takePendingRailMove()?.let { pending ->
+                    try {
+                        injectStolenRailEvent(pending, fs, peel, railToAaUi)
+                    } finally {
+                        pending.recycle()
+                    }
+                }
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
                     mHuPeelGesture = false
                 }
-                val injected = when {
-                    peel || railToAaUi -> CoreManager.tryTouchAaDisplay(toInject)
-                    SplitPane.isFullscreenPane(fs) -> CoreManager.tryTouchPane(fs, toInject)
-                    else -> CoreManager.tryTouchPrimaryPane(toInject)
-                }
-                // Only swallow Coolwalk dispatch when inject actually reached system_server.
-                if (!injected) return
+                val injected = injectStolenRailEvent(toInject, fs, peel, railToAaUi)
+                // DOWN: only swallow when inject reached system_server (else Coolwalk keeps it).
+                // UP/CANCEL: already stole DOWN — swallow even if this parcel fails so Coolwalk
+                // does not see a lone UP.
+                if (!injected && action == MotionEvent.ACTION_DOWN) return
                 param.result = null
                 if (action == MotionEvent.ACTION_DOWN) {
                     logDebug(
@@ -1017,12 +1051,79 @@ object AaUiHook: AaHook() {
                     )
                 }
             } finally {
-                toInject.recycle()
+                if (!retainInject) toInject.recycle()
             }
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: HU rail steal failed", e)
         } finally {
             if (owned) motion.recycle()
+        }
+    }
+
+    private fun injectStolenRailEvent(
+        event: MotionEvent,
+        fs: Int,
+        peel: Boolean,
+        railToAaUi: Boolean,
+    ): Boolean {
+        return when {
+            peel || railToAaUi -> CoreManager.tryTouchAaDisplay(event)
+            SplitPane.isFullscreenPane(fs) -> CoreManager.tryTouchPane(fs, event)
+            else -> CoreManager.tryTouchPrimaryPane(event)
+        }
+    }
+
+    private fun queuePendingRailMove(event: MotionEvent) {
+        synchronized(mRailMoveLock) {
+            mPendingRailMove?.recycle()
+            mPendingRailMove = event
+        }
+        scheduleRailMoveFlush()
+    }
+
+    private fun takePendingRailMove(): MotionEvent? {
+        synchronized(mRailMoveLock) {
+            val pending = mPendingRailMove
+            mPendingRailMove = null
+            return pending
+        }
+    }
+
+    private fun scheduleRailMoveFlush() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            val choreographer = Choreographer.getInstance()
+            choreographer.removeFrameCallback(mRailMoveFrameCallback)
+            choreographer.postFrameCallback(mRailMoveFrameCallback)
+        } else {
+            mFacetEnsureHandler.removeCallbacks(mRailMovePostToFrame)
+            mFacetEnsureHandler.post(mRailMovePostToFrame)
+        }
+    }
+
+    private fun cancelRailMoveFlush() {
+        mFacetEnsureHandler.removeCallbacks(mRailMovePostToFrame)
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Choreographer.getInstance().removeFrameCallback(mRailMoveFrameCallback)
+        }
+    }
+
+    private fun flushPendingRailMove() {
+        val generation = mRailMoveGeneration
+        val pending = takePendingRailMove() ?: return
+        if (generation != mRailMoveGeneration) {
+            pending.recycle()
+            return
+        }
+        try {
+            val fs = mCachedFullscreenPane
+            injectStolenRailEvent(
+                pending,
+                fs,
+                mHuPeelGesture,
+                mAaUiRailConsume,
+            )
+        } finally {
+            pending.recycle()
         }
     }
 
@@ -1435,6 +1536,7 @@ object AaUiHook: AaHook() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action != AABroadcastConst.ACTION_SPLIT_STATE_CHANGED) return
                 if (!intent.hasExtra(AABroadcastConst.EXTRA_FULLSCREEN_PANE)) return
+                mSplitStateSeen = true
                 mCachedFullscreenPane = intent.getIntExtra(
                     AABroadcastConst.EXTRA_FULLSCREEN_PANE,
                     SplitPane.FULLSCREEN_NONE
@@ -1449,6 +1551,14 @@ object AaUiHook: AaHook() {
             )
             mSplitStateReceiver = receiver
             logDebug(tagName, "AaUiHook: registered SPLIT_STATE_CHANGED for rail fullscreen cache")
+            mFacetEnsureHandler.post {
+                if (mSplitStateSeen) return@post
+                mCachedFullscreenPane = try {
+                    CoreManager.splitFullscreenPane
+                } catch (_: Throwable) {
+                    mCachedFullscreenPane
+                }
+            }
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: register SPLIT_STATE_CHANGED failed", e)
         }

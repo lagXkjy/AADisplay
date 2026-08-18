@@ -144,7 +144,7 @@ DexKit 查询 **不要** 写 `searchPackages = listOf("")`（2.0.7 会只搜无�
 
 1. 改写 projection `content_bounds`，不要再给左侧留 rail 矩形。
 2. Hook HU touch dispatch：落在原 rail 带的触摸 **偷走**，经 `CoreManager` 注入。
-3. 路由（MOVE 不得每次 Binder 查全屏状态，用广播缓存）：
+3. 路由（DOWN/MOVE 都不得 Binder 查全屏；只信 `ACTION_SPLIT_STATE_CHANGED`，注册后一次异步预热）：
 
 | 条件 | IPC | 落点 |
 |------|-----|------|

@@ -4,10 +4,11 @@ import android.content.res.Configuration
 import android.view.Display
 import com.github.kyuubiran.ezxhelper.utils.getObject
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
-import com.github.kyuubiran.ezxhelper.utils.invokeMethod
 import de.robv.android.xposed.XC_MethodHook
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.util.log
+import java.lang.reflect.Field
+import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -44,6 +45,14 @@ object VdDensityPin {
     private var applicationThread_bindApplication_hook: XC_MethodHook.Unhook? = null
     private var activityRecord_ensureConfiguration_hook: XC_MethodHook.Unhook? = null
     private var hooked = false
+
+    /** Cached once; WM configuration is a hot path — never look up methods by name there. */
+    @Volatile private var activityRecordDisplayIdMethod: Method? = null
+    @Volatile private var activityRecordPackageNameField: Field? = null
+    @Volatile private var activityRecordMergedConfigField: Field? = null
+    @Volatile private var activityRecordGetConfigurationMethod: Method? = null
+    @Volatile private var packageNameLookupDone = false
+    @Volatile private var mergedConfigLookupDone = false
 
     fun markPackageOnVirtualDisplay(packageName: String?, displayId: Int) {
         val pkg = normalizePackage(packageName) ?: return
@@ -90,9 +99,8 @@ object VdDensityPin {
             activityTaskManagerService_startProcessAsync?.hookBefore { param ->
                 try {
                     val activityRecord = param.args[0]
-                    val displayId = activityRecord.invokeMethod("getDisplayId") as Int
-                    val packageName = activityRecord.getObject("packageName") as String
-                    val pkg = normalizePackage(packageName) ?: return@hookBefore
+                    val displayId = displayIdOf(activityRecord)
+                    val pkg = packageNameOf(activityRecord) ?: return@hookBefore
                     if (displayId == Display.DEFAULT_DISPLAY) {
                         // Task is on the phone stack — never keep forcing VD DPI.
                         clearPackageVirtualDisplay(pkg)
@@ -148,27 +156,24 @@ object VdDensityPin {
             method.hookBefore { param ->
                 try {
                     val record = param.thisObject
-                    val displayId = record.invokeMethod("getDisplayId") as? Int ?: return@hookBefore
-                    val vdDpi = CoreManagerService.getDensityDpi()
-                    if (!CoreManagerService.isAaVirtualDisplay(displayId) || vdDpi == 0) {
-                        if (displayId == Display.DEFAULT_DISPLAY) {
-                            val packageName =
-                                normalizePackage(record.getObject("packageName") as? String)
-                            clearPackageVirtualDisplay(packageName)
+                    val displayId = displayIdOf(record)
+                    if (displayId == Display.INVALID_DISPLAY) return@hookBefore
+                    if (displayId == Display.DEFAULT_DISPLAY) {
+                        // Phone stack: only touch the pin set when something is actually pinned.
+                        if (pinnedPackages.isNotEmpty()) {
+                            clearPackageVirtualDisplay(packageNameOf(record))
                         }
                         return@hookBefore
                     }
-                    val packageName = normalizePackage(record.getObject("packageName") as? String)
-                        ?: return@hookBefore
+                    if (!CoreManagerService.isAaVirtualDisplay(displayId)) return@hookBefore
+                    val vdDpi = CoreManagerService.getDensityDpi()
+                    if (vdDpi == 0) return@hookBefore
+                    val packageName = packageNameOf(record) ?: return@hookBefore
                     if (!pinnedPackages.contains(packageName)) {
                         markPackageOnVirtualDisplay(packageName, displayId)
                     }
                     // Only rewrite when density is wrong — avoid fighting live layout.
-                    val config = runCatching {
-                        record.getObject("mMergedOverrideConfiguration") as? Configuration
-                    }.getOrNull() ?: runCatching {
-                        record.invokeMethod("getConfiguration") as? Configuration
-                    }.getOrNull()
+                    val config = mergedOverrideConfig(record)
                     if (config != null && config.densityDpi != vdDpi) {
                         config.densityDpi = vdDpi
                     }
@@ -188,6 +193,68 @@ object VdDensityPin {
         if (densityDpi != 0 && configuration.densityDpi != densityDpi) {
             configuration.densityDpi = densityDpi
         }
+    }
+
+    private fun displayIdOf(record: Any): Int {
+        val method = activityRecordDisplayIdMethod ?: findNoArgMethod(
+            record,
+            "getDisplayId",
+            Int::class.javaPrimitiveType!!,
+        )?.also { activityRecordDisplayIdMethod = it }
+        return (method?.invoke(record) as? Int) ?: Display.INVALID_DISPLAY
+    }
+
+    private fun packageNameOf(record: Any): String? {
+        if (!packageNameLookupDone) {
+            activityRecordPackageNameField = findField(record, "packageName", String::class.java)
+            packageNameLookupDone = true
+        }
+        val raw = activityRecordPackageNameField?.get(record) as? String
+            ?: runCatching { record.getObject("packageName") as? String }.getOrNull()
+        return normalizePackage(raw)
+    }
+
+    private fun mergedOverrideConfig(record: Any): Configuration? {
+        if (!mergedConfigLookupDone) {
+            activityRecordMergedConfigField =
+                findField(record, "mMergedOverrideConfiguration", Configuration::class.java)
+            activityRecordGetConfigurationMethod = findNoArgMethod(
+                record,
+                "getConfiguration",
+                Configuration::class.java,
+            )
+            mergedConfigLookupDone = true
+        }
+        (activityRecordMergedConfigField?.get(record) as? Configuration)?.let { return it }
+        return activityRecordGetConfigurationMethod?.invoke(record) as? Configuration
+    }
+
+    private fun findNoArgMethod(record: Any, name: String, returnType: Class<*>): Method? {
+        var cls: Class<*>? = record.javaClass
+        while (cls != null && cls != Any::class.java) {
+            val method = cls.declaredMethods.firstOrNull { m ->
+                m.name == name && m.parameterTypes.isEmpty() && m.returnType == returnType
+            }
+            if (method != null) {
+                method.isAccessible = true
+                return method
+            }
+            cls = cls.superclass
+        }
+        return null
+    }
+
+    private fun findField(record: Any, name: String, type: Class<*>): Field? {
+        var cls: Class<*>? = record.javaClass
+        while (cls != null && cls != Any::class.java) {
+            val field = cls.declaredFields.firstOrNull { it.name == name && type.isAssignableFrom(it.type) }
+            if (field != null) {
+                field.isAccessible = true
+                return field
+            }
+            cls = cls.superclass
+        }
+        return null
     }
 
     private fun normalizePackage(packageName: String?): String? {
