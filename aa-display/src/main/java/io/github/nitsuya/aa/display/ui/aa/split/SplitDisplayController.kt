@@ -63,6 +63,7 @@ class SplitDisplayController(
     internal val input = SplitInputRecents(this)
     internal val stacks = PaneAppStack(this)
     internal val lockedPeel = SplitLockedPeelController(this)
+    internal val ime = SplitImeController(this)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     internal val mHandler = Handler(Looper.getMainLooper())
@@ -249,6 +250,7 @@ class SplitDisplayController(
             vd.applyPolicies(SplitPane.SECONDARY, "connect")
             vd.addKeepAwakeOverlay(SplitPane.PRIMARY)
             vd.addKeepAwakeOverlay(SplitPane.SECONDARY)
+            ime.start()
         }
 
         if (launch.shouldRestoreLastSplitOnConnect()) {
@@ -267,6 +269,7 @@ class SplitDisplayController(
         vd.resizePanesInternal("reconnect")
         vd.applyPolicies(SplitPane.PRIMARY, "reconnect")
         vd.applyPolicies(SplitPane.SECONDARY, "reconnect")
+        ime.start()
         launch.scheduleEnsurePanePackages("reconnect")
         SplitPresentationGuard.scheduleEvictForeignPresentations(this, "reconnect")
     }
@@ -499,6 +502,7 @@ class SplitDisplayController(
             log(TAG, "onDestroy snapshot failed:", e)
         }
         mIsDestroying = true
+        ime.stop()
         mAaUiDisplayId = Display.INVALID_DISPLAY
         mAaUiDisplayIdLookupFailed = false
         mLastAaUiDisplayIdRecoveryUptime = 0L
@@ -660,6 +664,12 @@ class SplitDisplayController(
         log(TAG, "resolveAaUiDisplayId: no report and ATMS miss (latched)")
         return Display.INVALID_DISPLAY
     }
+
+    fun hideIme() {
+        ime.hide()
+    }
+
+    fun getImePane(): Int = ime.currentPane()
 
     fun onPressKey(action: Int) {
         // Douyin LivePlay attaches a foreign Presentation on the other pane that leaves

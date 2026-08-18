@@ -39,5 +39,10 @@ interface AABroadcastConst {
          */
         const val ACTION_AA_UI_RAIL_CONSUME = "aa.display.action.AA_UI_RAIL_CONSUME"
         const val EXTRA_AA_UI_RAIL_CONSUME = "aa.display.extra.AA_UI_RAIL_CONSUME"
+        /**
+         * system_server → AA: IME visibility on a pane VD.
+         * [EXTRA_PANE] is -1 when hidden; PRIMARY/SECONDARY when showing.
+         */
+        const val ACTION_IME_VISIBILITY = "aa.display.action.IME_VISIBILITY"
     }
 }

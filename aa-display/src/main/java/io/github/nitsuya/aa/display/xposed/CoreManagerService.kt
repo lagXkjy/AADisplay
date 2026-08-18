@@ -362,6 +362,17 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         mSplitController?.setAaUiDisplayId(displayId)
     }
 
+    override fun hideIme() {
+        runIO {
+            noteUserInteraction()
+            mSplitController?.hideIme()
+        }
+    }
+
+    override fun getImePane(): Int {
+        return mSplitController?.getImePane() ?: SplitPane.FULLSCREEN_NONE
+    }
+
     override fun getRecentTask(): RecentTask {
         // Client already loads on IO ([AaRecentTaskFragment]); avoid runBlocking on the
         // Binder thread which only adds a dispatcher hop while still blocking the caller.

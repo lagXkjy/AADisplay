@@ -151,6 +151,18 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
+    override fun hideIme() {
+        try {
+            getService()?.hideIme()
+        } catch (e: Throwable) {
+            Log.e(TAG, "hideIme failed", e)
+        }
+    }
+
+    override fun getImePane(): Int {
+        return getService()?.imePane ?: SplitPane.FULLSCREEN_NONE
+    }
+
     /** @return false when binder missing or the remote call throws (caller must not swallow HU events).
      *  touchPane is oneway — success means the parcel was queued, not that inject finished. */
     fun tryTouchPane(pane: Int, motionEvent: MotionEvent): Boolean {

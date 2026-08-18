@@ -5,6 +5,7 @@
 ### Changed
 - **最低系统 Android 13（`minSdk` 33）：** 去掉 API 33 以下的 PackageManager / `registerReceiver` / `getParcelable` / `getPackageUid` 兼容分支。
 - **DPI / 左轨触控热路径：** `VdDensityPin` 对非 AA display 早退（缓存 `getDisplayId`，VD id 不再每次问 VirtualDisplay）；`:car` 左轨 MOVE 按帧合并，DOWN 不再同步 Binder 查全屏（只信 `SPLIT_STATE_CHANGED`）。
+- **Version bump to `0.24#17.4-r12`** (`versionCode` 3068)。
 
 ### Fixed
 - **DexKit 2.0.7 升完 AA 直接不能用：** `searchPackages("")` 在 2.0.7 只搜无名包，`AaSignatureHook` / `AaUiHook` LayoutInfo 命中 0；`:car` 里一抛后续钩子全跳过。去掉空包过滤，并隔离单个 hook 的 DexKit 失败。
@@ -14,6 +15,7 @@
 
 ### Added
 - **方控长按映射：** 长按上一曲/下一曲与分隔条点按相同（分屏左右整栈对调，全屏只切可见窗不搬栈）；长按播放/暂停开/关 Recent（与分隔条长按相同）。短按三键仍走媒体 / 直播间滑动。
+- **车机壳「收起键盘」：** 窗 VD 上 IME 弹出后，AA 壳在该窗底边出芯片（不被键盘画面盖住）。点按经 `hideIme` 走 WMS/IMM hide，失败才对该 display 打 BACK，**不** `bringTaskToFront`。AIDL 末尾追加 `hideIme` / `getImePane`（需重装并重启 system_server）。
 
 ## 0.24#17.4-r10
 

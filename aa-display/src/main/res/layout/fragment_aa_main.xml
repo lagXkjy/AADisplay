@@ -71,6 +71,25 @@
             android:background="@android:color/transparent" />
     </FrameLayout>
 
+    <TextView
+        android:id="@+id/btn_hide_ime"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="16dp"
+        android:background="@drawable/bg_hide_ime_chip"
+        android:clickable="true"
+        android:elevation="16dp"
+        android:focusable="true"
+        android:paddingStart="20dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="10dp"
+        android:text="@string/hide_ime"
+        android:textColor="#FFFFFF"
+        android:textSize="15sp"
+        android:visibility="gone" />
+
     <FrameLayout
         android:id="@+id/app_picker_host"
         android:layout_width="match_parent"

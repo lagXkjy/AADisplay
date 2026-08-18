@@ -269,6 +269,8 @@ Keep-awake 硬规则：
 | `moveSecondTaskToFront` | 方控长按快进键 | 当前焦点窗栈内第二任务置顶 |
 | `removeTask` | Recent Close | 关任务；栈顶空则下一档 |
 | `pressKey` | 方控短按 / Activity 方向键 | 注入到焦点窗 |
+| `hideIme` **oneway** | 壳层「收起键盘」 | WMS/IMM hide；失败才对该 display 打 BACK（不 bringTaskToFront） |
+| `getImePane` | 壳层芯片初次同步 | -1 隐藏；0/1 为正在显示 IME 的窗 |
 | `touchPane` **oneway** | TextureView | 注入对应 VD |
 | `touchPrimaryPane` **oneway** | Coolwalk 左轨 | PRIMARY VD |
 | `touchAaDisplay` **oneway** | peel / 选择器 | presentation；锁屏全屏走 `SplitLockedPeelController` |
@@ -289,6 +291,7 @@ Keep-awake 硬规则：
 | `SplitLaunchRestore` | restore / persist / ensure 空窗 / 校验 |
 | `SplitOwnership` | ATMS 任务搬家、reclaim、bringToFront、1px nudge 铺满 |
 | `SplitInputRecents` | `IInputManager.injectInputEvent`、Recent 列表 |
+| `SplitImeController` | 轮询窗 VD 上 IME 可见性，广播给 AA 壳；`hideIme` 不抢任务焦点 |
 | `PaneAppStack` | 每窗最多 3 个，底→顶，栈顶=画面 |
 | `SplitTaskStackListener` | 栈变 → debounce reclaim + persist + 驱逐外窗 Presentation |
 | `SplitLockedPeelController` | 手机锁屏时 presentation 被 Keyguard 挡住，全屏 peel 在 system_server 直接解析 |

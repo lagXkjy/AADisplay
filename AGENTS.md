@@ -41,7 +41,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | `ui/main/` | 手机端激活状态页（`MainActivity`，`CATEGORY_INFO`；无桌面图标，经 LSPosed 打开） |
 | `ui/aa/` | 车机投影 Activity / Fragment / VirtualDisplay 适配 |
 | `ui/window/` | 显示会话策略（`DisplaySessionPolicy`：Delay Destroy / keep-awake；手机悬浮 UI 已移除） |
-| `ui/aa/split/` | 双 VD / 分屏门面 `SplitDisplayController` + 协作类（`SplitVdLifecycle` / `SplitLaunchRestore` / `SplitOwnership` / `SplitInputRecents` / `PaneAppStack` / `SplitLockedPeelController` 等；每窗最多 3 应用保活） |
+| `ui/aa/split/` | 双 VD / 分屏门面 `SplitDisplayController` + 协作类（`SplitVdLifecycle` / `SplitLaunchRestore` / `SplitOwnership` / `SplitInputRecents` / `SplitImeController` / `PaneAppStack` / `SplitLockedPeelController` 等；每窗最多 3 应用保活） |
 | `service/` | `AaActivityService` |
 | `util/` | `LastSplitStore`、广播常量、触控改写等 |
 | `model/` | 最近任务等模型 |

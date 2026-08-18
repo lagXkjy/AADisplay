@@ -50,6 +50,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private var splitRatio: Float = SplitPane.DEFAULT_RATIO
     private lateinit var appPicker: SplitAppPickerController
     private val paneHasApp = booleanArrayOf(false, false)
+    private var imeChipVisible = false
+    private var imeChipPane = SplitPane.PRIMARY
 
     private val broadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent) {
@@ -142,6 +144,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     // Locked-phone peel: system_server cannot inject into occluded presentation.
                     openRecentsFromSteering()
                 }
+                AABroadcastConst.ACTION_IME_VISIBILITY -> {
+                    val pane = intent.getIntExtra(
+                        AABroadcastConst.EXTRA_PANE,
+                        SplitPane.FULLSCREEN_NONE,
+                    )
+                    applyImeChip(SplitPane.isValid(pane), pane)
+                }
             }
         }
     }
@@ -154,6 +163,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 updateEmptyOverlays()
                 // Confirm with system_server after launch settles.
                 scheduleOccupancySync(400L)
+            }
+            it.onVisibilityChanged = { showing ->
+                if (showing) {
+                    baseBinding.btnHideIme.isVisible = false
+                } else {
+                    refreshImeChip()
+                }
             }
         }
 
@@ -173,6 +189,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         setupDivider()
         setupPaneSurfaces()
         setupEmptyPaneClicks()
+        baseBinding.btnHideIme.setOnClickListener {
+            applyImeChip(false, imeChipPane)
+            CoreApi.hideIme()
+        }
 
         baseBinding.splitContainer.doOnLayout {
             reportAaUiDisplayId()
@@ -291,6 +311,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 dividerDragging = true
                 splitRatio = ratio
                 applyDragPreview(ratio)
+                baseBinding.btnHideIme.isVisible = false
             }
             onRatioSettled = { ratio ->
                 splitRatio = ratio
@@ -300,15 +321,18 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 dividerDragging = false
                 baseBinding.root.removeCallbacks(afterOccupancySync)
                 baseBinding.root.postDelayed(afterOccupancySync, 300L)
+                refreshImeChip()
             }
             onFullscreenEnter = { pane ->
                 dividerDragging = false
                 ratioBeforeFullscreen = ratioAtDragStart
                 enterFullscreen(pane)
+                refreshImeChip()
             }
             onFullscreenExit = { ratio ->
                 dividerDragging = false
                 exitFullscreen(ratio)
+                refreshImeChip()
             }
             onPeelCancelled = {
                 dividerDragging = false
@@ -316,6 +340,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 if (SplitPane.isFullscreenPane(fullscreenPane)) {
                     applyFullscreenLayout(fullscreenPane)
                 }
+                refreshImeChip()
             }
             onStackClick = { openRecentsFromSteering() }
             onSwapClick = { performSwapClick() }
@@ -461,6 +486,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         baseBinding.splitContainer.bringChildToFront(baseBinding.splitDivider)
         baseBinding.splitDivider.invalidate()
         syncPaneTouchEnabled(pane)
+        positionImeChip()
     }
 
     private data class SplitVisual(
@@ -581,6 +607,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         }
         baseBinding.splitDivider.invalidate()
         syncPaneTouchEnabled(SplitPane.FULLSCREEN_NONE)
+        positionImeChip()
     }
 
     /**
@@ -1114,7 +1141,70 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             addAction(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED)
             addAction(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID)
             addAction(AABroadcastConst.ACTION_SHOW_RECENT_TASK)
+            addAction(AABroadcastConst.ACTION_IME_VISIBILITY)
         }, Context.RECEIVER_EXPORTED)
         isControlReceiverRegistered = true
+        syncImeChipFromService()
+    }
+
+    private fun syncImeChipFromService() {
+        val pane = tryOrNull { CoreApi.imePane } ?: SplitPane.FULLSCREEN_NONE
+        applyImeChip(SplitPane.isValid(pane), pane)
+    }
+
+    private fun refreshImeChip() {
+        applyImeChip(imeChipVisible, imeChipPane)
+    }
+
+    private fun applyImeChip(visible: Boolean, pane: Int) {
+        if (!isBaseBindingInitialized() || !isAdded) return
+        imeChipVisible = visible
+        if (SplitPane.isValid(pane)) imeChipPane = pane
+        val pickerUp = try {
+            baseBinding.appPickerHost.isVisible
+        } catch (_: Throwable) {
+            false
+        }
+        val show = visible && !dividerDragging && !pickerUp
+        baseBinding.btnHideIme.isVisible = show
+        if (show) {
+            baseBinding.btnHideIme.bringToFront()
+            positionImeChip()
+        }
+    }
+
+    /** Sit on the AA shell (above TextureView IME pixels) at the bottom of the IME pane. */
+    private fun positionImeChip() {
+        if (!isBaseBindingInitialized() || !imeChipVisible) return
+        val chip = baseBinding.btnHideIme
+        if (!chip.isVisible) return
+        val host = baseBinding.root
+        val target = when {
+            SplitPane.isFullscreenPane(fullscreenPane) -> baseBinding.splitContainer
+            imeChipPane == SplitPane.PRIMARY -> baseBinding.panePrimary
+            else -> baseBinding.paneSecondary
+        }
+        if (host.width <= 0 || target.width <= 0) {
+            if (!host.isLaidOut) host.post { positionImeChip() }
+            return
+        }
+        val locHost = IntArray(2)
+        val locTarget = IntArray(2)
+        host.getLocationOnScreen(locHost)
+        target.getLocationOnScreen(locTarget)
+        val spec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        chip.measure(spec, spec)
+        val cw = chip.measuredWidth.coerceAtLeast(1)
+        val ch = chip.measuredHeight.coerceAtLeast(1)
+        val density = resources.displayMetrics.density
+        val margin = (16f * density).toInt()
+        val left = locTarget[0] - locHost[0]
+        val top = locTarget[1] - locHost[1]
+        val lp = chip.layoutParams as FrameLayout.LayoutParams
+        lp.gravity = Gravity.TOP or Gravity.START
+        lp.marginStart = left + ((target.width - cw) / 2).coerceAtLeast(0)
+        lp.topMargin = (top + target.height - ch - margin).coerceAtLeast(margin)
+        lp.bottomMargin = 0
+        chip.layoutParams = lp
     }
 }

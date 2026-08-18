@@ -40,6 +40,16 @@ object AndroidHook : BaseHook() {
         return findMethod(className, cl, findSuper, condition)
     }
 
+    internal fun loadSystemClass(className: String): Class<*>? {
+        if (!isReadyForSystemHooks()) return null
+        val cl = systemServerClassLoader ?: return null
+        return try {
+            Class.forName(className, false, cl)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private fun readIsSystemServerProcess(): Boolean {
         return try {
             val name = File("/proc/self/cmdline").readBytes()

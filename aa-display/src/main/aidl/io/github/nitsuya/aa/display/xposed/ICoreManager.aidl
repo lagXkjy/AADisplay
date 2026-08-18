@@ -75,4 +75,14 @@ interface ICoreManager {
      * Appended at end for Stub ordinals.
      */
     oneway void reportAaUiDisplayId(int displayId);
+
+    /**
+     * Hide the IME on pane VirtualDisplays without bringTaskToFront (which
+     * steals IME focus and leaves a stuck keyboard). Appended at end for Stub ordinals.
+     */
+    oneway void hideIme();
+    /**
+     * -1 when hidden; PRIMARY(0) / SECONDARY(1) when an IME window is showing on that pane.
+     */
+    int getImePane();
 }
