@@ -25,7 +25,6 @@ data class SplitAppEntry(
     val packageName: String,
     val label: String,
     val icon: Drawable?,
-    val resizeable: Boolean,
 )
 
 /**
@@ -175,17 +174,10 @@ class SplitAppPickerController(
             val pkg = ai.packageName
             if (pkg == BuildConfig.APPLICATION_ID) return@mapNotNull null
             if (pkg == "android" || pkg == "com.android.systemui") return@mapNotNull null
-            val resizeable = try {
-                val mode = ai.javaClass.getField("resizeMode").getInt(ai)
-                mode != 0 // RESIZE_MODE_UNRESIZEABLE
-            } catch (_: Throwable) {
-                true
-            }
             SplitAppEntry(
                 packageName = pkg,
                 label = ai.loadLabel(pm)?.toString() ?: pkg,
                 icon = ai.loadIcon(pm),
-                resizeable = resizeable,
             )
         }.distinctBy { it.packageName }
             .sortedBy { it.label.lowercase() }

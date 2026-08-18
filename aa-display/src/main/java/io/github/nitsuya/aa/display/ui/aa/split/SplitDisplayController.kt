@@ -481,7 +481,7 @@ class SplitDisplayController(
 
     fun onDestroy() {
         try {
-            launch.persistSnapshot(force = true, mirrorSettings = true)
+            launch.persistSnapshot(force = true, logSettingsFailures = true)
         } catch (e: Throwable) {
             log(TAG, "onDestroy snapshot failed:", e)
         }

@@ -31,7 +31,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
 
     internal val mDebouncedPersist = Runnable {
         mPersistFirstScheduledAt = 0L
-        persistSnapshot(force = false, mirrorSettings = false)
+        persistSnapshot(force = false, logSettingsFailures = false)
     }
 
     internal val mDebouncedNotifyState = Runnable {
@@ -162,7 +162,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             c.stacks.setStackBottomToTop(SplitPane.SECONDARY, snap.secondaryPackagesBottomToTop())
             ownershipBringFront(SplitPane.PRIMARY, snap.primaryPackage)
             ownershipBringFront(SplitPane.SECONDARY, snap.secondaryPackage)
-            persistSnapshot(force = true, mirrorSettings = true)
+            persistSnapshot(force = true, logSettingsFailures = true)
         }
         c.notifySplitStateChanged()
     }
@@ -378,7 +378,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         c.mHandler.postDelayed(mDebouncedPersist, wait)
     }
 
-    fun persistSnapshot(force: Boolean, mirrorSettings: Boolean) {
+    fun persistSnapshot(force: Boolean, logSettingsFailures: Boolean) {
         refreshPanePackagesFromAtms()
         val primaryPkg = c.mPanePackages[SplitPane.PRIMARY]?.trim().orEmpty()
         val secondaryPkg = c.mPanePackages[SplitPane.SECONDARY]?.trim().orEmpty()
@@ -403,7 +403,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             primaryStack = primaryStack,
             secondaryStack = secondaryStack,
         )
-        LastSplitStore.save(snap, c.context.contentResolver, mirrorSettings = mirrorSettings || force)
+        LastSplitStore.save(snap, c.context.contentResolver, logSettingsFailures = logSettingsFailures || force)
     }
 
     /** Re-walk ATMS tops so snapshots / empty-pane state match reality after external closes. */

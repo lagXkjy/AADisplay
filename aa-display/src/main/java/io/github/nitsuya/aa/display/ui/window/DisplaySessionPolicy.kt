@@ -21,9 +21,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -454,18 +451,12 @@ class DisplaySessionPolicy(
 
     /** Headless Delay Destroy so [onDestroySucceed] fires and VDs are released. */
     private fun startDelayDestroy(onDestroySucceed: () -> Unit) {
-        mDestroyJob = flow {
-            for (i in DELAY_DESTROY_SEC downTo 0) {
-                emit(i)
-                delay(1000)
-            }
-        }.onCompletion { cause ->
-            if (cause == null) {
-                restorePhoneDisplayPower()
-                interactiveMonitor.release()
-                onDestroySucceed()
-            }
-        }.launchIn(CoroutineScope(Dispatchers.Main))
+        mDestroyJob = CoroutineScope(Dispatchers.Main).launch {
+            delay(DELAY_DESTROY_SEC * 1000L)
+            restorePhoneDisplayPower()
+            interactiveMonitor.release()
+            onDestroySucceed()
+        }
     }
 
     /** Best-effort wake of the phone panel before tearing down session power. */

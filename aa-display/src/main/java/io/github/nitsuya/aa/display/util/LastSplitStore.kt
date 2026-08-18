@@ -72,19 +72,19 @@ object LastSplitStore {
     /**
      * Persist [snapshot] to Settings.Global and the system properties file.
      *
-     * Both backends are always written when possible. [mirrorSettings] only controls
+     * Both backends are always written when possible. [logSettingsFailures] only controls
      * whether a Settings failure is logged as a warning (true) or left quiet (false);
      * it does not switch to a file-only path.
      */
     fun save(
         snapshot: Snapshot,
         contentResolver: ContentResolver? = null,
-        mirrorSettings: Boolean = false,
+        logSettingsFailures: Boolean = false,
     ): Boolean {
         val settingsOk = saveToSettings(snapshot, contentResolver)
         val fileOk = saveToFile(snapshot)
-        if (!settingsOk && mirrorSettings) {
-            Log.w(TAG, "settings save failed (mirror requested)")
+        if (!settingsOk && logSettingsFailures) {
+            Log.w(TAG, "settings save failed")
         }
         return settingsOk || fileOk
     }

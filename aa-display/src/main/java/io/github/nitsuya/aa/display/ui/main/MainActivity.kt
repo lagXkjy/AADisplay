@@ -1,6 +1,5 @@
 package io.github.nitsuya.aa.display.ui.main
 
-import android.app.AlertDialog
 import android.annotation.SuppressLint
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -38,12 +37,6 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
                 baseBinding.tvVersion.text =
                     "system: ${CoreApi.versionName}\nmodule: ${BuildConfig.VERSION_NAME}"
                 setStatusCardColor(getColor(R.color.color_warning))
-                baseBinding.mcvStatus.setOnClickListener {
-                    AlertDialog.Builder(this)
-                        .setTitle("需要重启")
-                        .setPositiveButton(android.R.string.ok, null)
-                        .show()
-                }
             }
         }
 
