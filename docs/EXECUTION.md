@@ -124,7 +124,7 @@ DexKit 查询 **不要** 写 `searchPackages = listOf("")`（2.0.7 会只搜无�
 | `AaSignatureHook` | `:car` | 本模块包名签名校验返回 true，AA 才肯跑 CarActivity |
 | `AaFrxRequiredAppsHook` | 两者 | Google App / Maps / TTS 的 FRX 状态强制 READY |
 | `AaNavFallbackHook` | 两者 | 禁用 `NavigationFallbackCarActivityService`（缺 Maps 否则占位页崩 `:car`） |
-| `AaMediaPlaceholderHook` | 两者 | 禁 `MediaCarAppService`；隐藏残留 Dashboard Presentation |
+| `AaMediaPlaceholderHook` | 两者 | 禁 `MediaCarAppService`；隐藏残留 Dashboard Presentation；吞 Dashboard cover 断言 |
 | `AaBtnEventHook` | `:projection` | 偷 MEDIA_BUTTON / projected.KEY_EVENT → 广播给车机 UI |
 | `AaUiHook` | 两者（职责不同） | 见下节 |
 

@@ -18,10 +18,6 @@ import java.util.function.Consumer
  */
 internal object SplitPresentationGuard {
 
-    private const val TYPE_PRESENTATION = 2037
-    /** OEM / hidden alias seen on Samsung alongside [TYPE_PRESENTATION]. */
-    private const val TYPE_PRIVATE_PRESENTATION = 2038
-
     /** Debounce stack-change storms before arming the 0/600/1800ms eviction wave. */
     private const val STACK_EVICT_DEBOUNCE_MS = 180L
 
@@ -224,8 +220,15 @@ internal object SplitPresentationGuard {
         }
     }
 
+    /**
+     * [WindowManager.LayoutParams.TYPE_PRESENTATION] is still @hide (2037).
+     * Samsung leaks also show up as [WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY].
+     */
+    private const val TYPE_PRESENTATION = 2037
+
     fun isPresentationType(type: Int): Boolean {
-        return type == TYPE_PRESENTATION || type == TYPE_PRIVATE_PRESENTATION
+        return type == TYPE_PRESENTATION ||
+            type == WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
     }
 
     /** True when [callerPkg] is neither the pane owner nor this module. */

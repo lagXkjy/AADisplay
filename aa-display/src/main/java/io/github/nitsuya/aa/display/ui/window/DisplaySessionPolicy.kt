@@ -61,12 +61,14 @@ class DisplaySessionPolicy(
          * Display-scoped VD bright locks still need this legacy level;
          * [PowerManager.SCREEN_BRIGHT_WAKE_LOCK] is deprecated but required for hidden API.
          */
-        private const val SCREEN_BRIGHT_WAKE_LOCK = 0x0000000a
+        @Suppress("DEPRECATION")
+        private const val SCREEN_BRIGHT_WAKE_LOCK = PowerManager.SCREEN_BRIGHT_WAKE_LOCK
         /**
          * Short pulse: exits Samsung ColorFade on OWN_DISPLAY_GROUP after OFF.
          * Display-scoped newWakeLock(displayId); do not hold long-term.
          */
-        private const val ACQUIRE_CAUSES_WAKEUP = 0x10000000
+        @Suppress("DEPRECATION")
+        private const val ACQUIRE_CAUSES_WAKEUP = PowerManager.ACQUIRE_CAUSES_WAKEUP
         private const val WAKE_PULSE_MS = 3_000L
         /** Seconds to keep dual VD after AA disconnect before destroy. */
         private const val DELAY_DESTROY_SEC = 180
