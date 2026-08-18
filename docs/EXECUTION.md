@@ -407,10 +407,10 @@ flowchart TB
 
 ## 12. 系统侧辅助钩（仅 system_server，随会话装）
 
-`AndroidHook.VdDensityPin`：`DisplaySessionPolicy` init 时 `ensureHooked`，真正拆 VD 才 `unHook`。  
+`VdDensityPin`：`DisplaySessionPolicy` init 时 `ensureHooked`，真正拆 VD 才 `unHook`。  
 把跑在 AA VD 上的进程 `Configuration.densityDpi` 钉成窗 DPI。AA 重连 **不得** `clear` 映射表，否则双窗密度中途掉线。
 
-`AndroidHook.PanePresentationGuard`：`systemReady` 时装一次。拦外包往本窗 VD 贴 `TYPE_PRESENTATION`（典型：抖音 LivePlay + MediaRouter）。
+`PanePresentationGuard`：`systemReady` 时装一次。拦外包往本窗 VD 贴 `TYPE_PRESENTATION`（典型：抖音 LivePlay + MediaRouter）。
 
 ---
 
@@ -465,7 +465,7 @@ flowchart TB
 | 方控 | `AaBtnEventHook`、`AaMainFragment` `ACTION_STEERING_WHEEL_CONTROL` |
 | FRX / 无 Maps 崩溃 / 空媒体卡 | `AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`、`rewriteVirtualDisplayArgs` |
 | 抖音盖导航 / 外窗 Presentation | `PanePresentationGuard`、`SplitPresentationGuard` |
-| 应用 DPI 不对 | `AndroidHook.VdDensityPin` |
+| 应用 DPI 不对 | `VdDensityPin` |
 | 隐藏 API | `lib-stub/` + `Instances.kt`（Rikka Refine） |
 
 行为变更与真机回归清单：`CHANGELOG.md`、`RELEASE_NOTES_*`。

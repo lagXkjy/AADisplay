@@ -6,7 +6,7 @@ import android.content.ComponentName
 import android.os.SystemClock
 import android.view.Display
 import android.window.TaskSnapshot
-import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
+import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 
 /**
  * Samsung AIDL deltas — empty overrides required; not StageCoordinator logic.
@@ -93,7 +93,7 @@ internal class SplitTaskStackListener(
     override fun onBackPressedOnTaskRoot(taskInfo: ActivityManager.RunningTaskInfo?) {}
     override fun onTaskDisplayChanged(taskId: Int, newDisplayId: Int) {
         val pkg = c.ownership.findPackageForTask(taskId)
-        AndroidHook.VdDensityPin.onTaskDisplayChanged(pkg, newDisplayId)
+        VdDensityPin.onTaskDisplayChanged(pkg, newDisplayId)
         if (c.isAaVirtualDisplay(newDisplayId)) {
             c.mVdTaskIds.add(taskId)
             pkg?.let { c.mVdPackages.add(it) }

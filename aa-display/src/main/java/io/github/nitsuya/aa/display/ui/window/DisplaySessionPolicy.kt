@@ -11,6 +11,7 @@ import android.view.Display
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
+import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.RomUtil
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -256,7 +257,7 @@ class DisplaySessionPolicy(
             keepVirtualDisplayAwake("init", forceWake = true)
             // ensureHooked: do not reinstall/clear map on AA reconnect (onResume → init).
             if (AndroidHook.isReadyForSystemHooks()) {
-                AndroidHook.VdDensityPin.ensureHooked()
+                VdDensityPin.ensureHooked()
             }
         }
 
@@ -277,7 +278,7 @@ class DisplaySessionPolicy(
                 }
             }
             releaseMonitor()
-            AndroidHook.VdDensityPin.unHook()
+            VdDensityPin.unHook()
         }
     }
 

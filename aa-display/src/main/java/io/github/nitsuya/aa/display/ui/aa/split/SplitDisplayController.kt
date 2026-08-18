@@ -19,7 +19,7 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
-import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
+import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
@@ -822,7 +822,7 @@ class SplitDisplayController(
                 ownership.vacateOtherPanesHolding(packageName, keepPane = pane)
                 val relocated = try {
                     Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, displayId)
-                    AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(
+                    VdDensityPin.markPackageOnVirtualDisplay(
                         packageName,
                         displayId
                     )
@@ -926,11 +926,11 @@ class SplitDisplayController(
             if (!packageName.isNullOrBlank()) {
                 stacks.pushToTop(pane, packageName)
                 ownership.markOwnership(packageName, targetDisplayId)
-                AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(packageName, targetDisplayId)
+                VdDensityPin.markPackageOnVirtualDisplay(packageName, targetDisplayId)
             }
             mFocusedPane = pane
         } else {
-            AndroidHook.VdDensityPin.clearPackageVirtualDisplay(packageName)
+            VdDensityPin.clearPackageVirtualDisplay(packageName)
             // Promote remaining stack fronts; strip chrome only on emptied panes.
             vacatedPanes.distinct().forEach { pane ->
                 if (stacks.front(pane) == null) {
@@ -985,7 +985,7 @@ class SplitDisplayController(
             if (removed && onVd && !packageName.isNullOrBlank()) {
                 val vacated = stacks.removeFromAll(packageName)
                 ownership.releaseOwnershipIfUnused(packageName)
-                AndroidHook.VdDensityPin.clearPackageVirtualDisplay(packageName)
+                VdDensityPin.clearPackageVirtualDisplay(packageName)
                 ownership.untrackPackage(packageName)
                 ownership.promoteStackFronts(vacated)
                 vacated.forEach { pane ->

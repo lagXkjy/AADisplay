@@ -11,7 +11,7 @@ import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
-import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
+import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
@@ -133,7 +133,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 return
             }
             Instances.init(systemContext)
-            AndroidHook.PanePresentationGuard.ensureHooked()
+            PanePresentationGuard.ensureHooked()
         }
 
         fun isAaVirtualDisplay(displayId: Int): Boolean {

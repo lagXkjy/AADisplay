@@ -15,7 +15,7 @@ import com.github.kyuubiran.ezxhelper.utils.getObjectAs
 import com.github.kyuubiran.ezxhelper.utils.invokeMethod
 import com.github.kyuubiran.ezxhelper.utils.newInstance
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
-import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
+import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import java.util.concurrent.CountDownLatch
@@ -68,7 +68,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     fun markOwnership(packageName: String?, displayId: Int) {
         val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
         c.mVdPackages.add(pkg)
-        AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(pkg, displayId)
+        VdDensityPin.markPackageOnVirtualDisplay(pkg, displayId)
         trackPackage(pkg, 0)
     }
 
@@ -77,7 +77,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
         if (c.stacks.containsAnywhere(pkg)) return
         c.mVdPackages.remove(pkg)
-        AndroidHook.VdDensityPin.clearPackageVirtualDisplay(pkg)
+        VdDensityPin.clearPackageVirtualDisplay(pkg)
     }
 
     fun forgetOwnership(taskId: Int, packageName: String?) {
@@ -115,7 +115,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             log(SplitDisplayController.TAG, "reclaim[$reason]: $pkg#$phoneTask -> display=$targetDisplay")
             try {
                 Instances.iActivityTaskManager.moveRootTaskToDisplay(phoneTask, targetDisplay)
-                AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(pkg, targetDisplay)
+                VdDensityPin.markPackageOnVirtualDisplay(pkg, targetDisplay)
             } catch (e: Throwable) {
                 log(SplitDisplayController.TAG, "reclaim move failed:", e)
             }
@@ -346,7 +346,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         } ?: return false
         val targetingLauncher = launcher != null && component == launcher
         return try {
-            AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(packageName, displayId)
+            VdDensityPin.markPackageOnVirtualDisplay(packageName, displayId)
             c.context.invokeMethod(
                 "startActivityAsUser",
                 args(
@@ -473,7 +473,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         removePackageTasksOnDisplay(pkg, displayId)
         c.stacks.remove(pane, pkg)
         releaseOwnershipIfUnused(pkg)
-        AndroidHook.VdDensityPin.clearPackageVirtualDisplay(pkg)
+        VdDensityPin.clearPackageVirtualDisplay(pkg)
         untrackPackage(pkg)
     }
 
@@ -519,7 +519,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             try {
                 Instances.iActivityTaskManager.moveRootTaskToDisplay(ref.taskId, toDisplayId)
                 ref.packageName?.let { pkg ->
-                    AndroidHook.VdDensityPin.markPackageOnVirtualDisplay(pkg, toDisplayId)
+                    VdDensityPin.markPackageOnVirtualDisplay(pkg, toDisplayId)
                 }
             } catch (e: Throwable) {
                 log(SplitDisplayController.TAG, "moveTaskStack failed task=${ref.taskId} -> $toDisplayId:", e)

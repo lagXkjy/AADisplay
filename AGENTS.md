@@ -205,6 +205,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 | 全链路执行顺序（AI） | [docs/EXECUTION.md](docs/EXECUTION.md) |
 | Xposed 入口 / 包路由 | `xposed/XposedInit.kt` |
 | 系统 VirtualDisplay / Binder 桥 | `xposed/hook/AndroidHook.kt`、`CoreManagerService.kt` |
+| VD DPI pin / Presentation 拦截 | `xposed/hook/VdDensityPin.kt`、`PanePresentationGuard.kt` |
 | AA 钩子总控 | `xposed/hook/AndroidAutoHook.kt` |
 | 车机画面与触控 | `ui/aa/AaDisplayActivity*.java/kt`、`AaMainFragment.kt` |
 | 显示会话策略（Delay Destroy / keep-awake） | `ui/window/DisplaySessionPolicy.kt` |
