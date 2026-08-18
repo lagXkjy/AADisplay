@@ -127,8 +127,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                             }
                         }
                         1 -> {
-                            if (action == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) {
-                                CoreApi.moveSecondTaskToFront()
+                            when (action) {
+                                KeyEvent.KEYCODE_MEDIA_NEXT,
+                                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> performSwapClick()
+                                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> openRecentsFromSteering()
+                                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> CoreApi.moveSecondTaskToFront()
                             }
                         }
                     }
@@ -138,13 +141,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 }
                 AABroadcastConst.ACTION_SHOW_RECENT_TASK -> {
                     // Locked-phone peel: system_server cannot inject into occluded presentation.
-                    if (!::baseBinding.isInitialized) return
-                    baseBinding.splitDivider.resetGesture()
-                    dividerDragging = false
-                    clearDragPreview()
-                    runMain {
-                        AaDisplayActivityKt.showRecentTask(this@AaMainFragment.parentFragmentManager)
-                    }
+                    openRecentsFromSteering()
                 }
             }
         }
@@ -321,37 +318,48 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     applyFullscreenLayout(fullscreenPane)
                 }
             }
-            onStackClick = {
-                // Recents is added on top without hiding Main — reset local gesture /
-                // drag-preview state so peel inject cannot stay stuck mid-gesture.
-                resetGesture()
-                dividerDragging = false
-                clearDragPreview()
-                runMain {
-                    AaDisplayActivityKt.showRecentTask(this@AaMainFragment.parentFragmentManager)
-                }
+            onStackClick = { openRecentsFromSteering() }
+            onSwapClick = { performSwapClick() }
+        }
+    }
+
+    /**
+     * Same as divider / peel tap: split swaps both task stacks; fullscreen only flips
+     * the visible pane (no moveRootTask — stacks stay on PRIMARY / SECONDARY).
+     */
+    private fun performSwapClick() {
+        if (!isBaseBindingInitialized() || !isAdded) return
+        if (SplitPane.isFullscreenPane(fullscreenPane)) {
+            val other = if (fullscreenPane == SplitPane.PRIMARY) {
+                SplitPane.SECONDARY
+            } else {
+                SplitPane.PRIMARY
             }
-            onSwapClick = {
-                if (SplitPane.isFullscreenPane(fullscreenPane)) {
-                    // Tap peel: flip which pane is visible (no task move).
-                    val other = if (fullscreenPane == SplitPane.PRIMARY) {
-                        SplitPane.SECONDARY
-                    } else {
-                        SplitPane.PRIMARY
-                    }
-                    enterFullscreen(other)
-                } else {
-                    // Mirror controller's 1-ratio invert immediately so TextureViews track VD
-                    // resize; broadcast / afterSwapSettle correct if the Binder path lags.
-                    val next = SplitPane.clampRatio(1f - splitRatio)
-                    splitRatio = next
-                    applySplitLayoutWeights(next, force = true)
-                    baseBinding.splitDivider.setRatio(next)
-                    CoreApi.swapSplitPanes()
-                    baseBinding.root.removeCallbacks(afterSwapSettle)
-                    baseBinding.root.postDelayed(afterSwapSettle, 280L)
-                }
-            }
+            enterFullscreen(other)
+        } else {
+            // Mirror controller's 1-ratio invert immediately so TextureViews track VD
+            // resize; broadcast / afterSwapSettle correct if the Binder path lags.
+            val next = SplitPane.clampRatio(1f - splitRatio)
+            splitRatio = next
+            applySplitLayoutWeights(next, force = true)
+            baseBinding.splitDivider.setRatio(next)
+            CoreApi.swapSplitPanes()
+            baseBinding.root.removeCallbacks(afterSwapSettle)
+            baseBinding.root.postDelayed(afterSwapSettle, 280L)
+        }
+    }
+
+    /**
+     * Recents is added on top without hiding Main — reset local gesture /
+     * drag-preview state so peel inject cannot stay stuck mid-gesture.
+     */
+    private fun openRecentsFromSteering() {
+        if (!isBaseBindingInitialized() || !isAdded) return
+        baseBinding.splitDivider.resetGesture()
+        dividerDragging = false
+        clearDragPreview()
+        runMain {
+            AaDisplayActivityKt.showRecentTask(parentFragmentManager)
         }
     }
 

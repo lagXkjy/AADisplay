@@ -12,6 +12,13 @@ abstract class BaseFragment<BaseBinding : ViewBinding>(private val baseBindingCl
     lateinit var baseBinding: BaseBinding
         private set
 
+    /**
+     * Subclasses must use this instead of `::baseBinding.isInitialized`.
+     * The property-reference form generates a cross-class synthetic accessor that
+     * R8 can turn into IllegalAccessError after renaming this base (private set).
+     */
+    protected fun isBaseBindingInitialized(): Boolean = ::baseBinding.isInitialized
+
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
     ): View {

@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.nitsuya.aa.display"
         minSdk = 31
         targetSdk = 36
-        versionCode = 3065
-        versionName = "0.24#17.4-r9"
+        versionCode = 3067
+        versionName = "0.24#17.4-r11"
         buildConfigField("long", "BUILD_TIME", buildTime.toString())
         ndk {
             abiFilters += listOf("arm64-v8a")

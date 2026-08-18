@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+- **长按分隔条 / 方控开 Recent 直接闪退退出 AADisplay：** 非 hook 失效。Release 下子类 `::baseBinding.isInitialized` 经 R8 访问父类 `private set` 字段触发 `IllegalAccessError`，进程崩溃后 AA `Crash loop, fallback`。改为 `BaseFragment.isBaseBindingInitialized()`，并 keep `template.bases`。
+
+### Added
+- **方控长按映射：** 长按上一曲/下一曲与分隔条点按相同（分屏左右整栈对调，全屏只切可见窗不搬栈）；长按播放/暂停开/关 Recent（与分隔条长按相同）。短按三键仍走媒体 / 直播间滑动。
+
+## 0.24#17.4-r10
+
 ### Added
 - **FRX 必装 Google 应用绕过：** `AaFrxRequiredAppsHook`（`:projection` + `:car`）将 Google App / Maps / TTS 的 FRX 安装与版本检查强制判为就绪。
 - **导航占位页禁用：** `AaNavFallbackHook` 仅禁用 `NavigationFallbackCarActivityService`，避免缺 Maps 时占位布局崩进程。
@@ -9,6 +17,15 @@
 
 ### Fixed
 - **手机锁屏后全屏 peel 拉不出 / 长按无响应：** AaDisplay presentation 无 `ALWAYS_UNLOCKED`，Keyguard 会挡住 `touchAaDisplay` 注入，而双 VD App 仍可点。上报 presentation id 时 `setShouldShowWithInsecureKeyguard(true)` + 尽力打上 `FLAG_ALWAYS_UNLOCKED`；锁屏且全屏时改由 system_server 直接解析 peel（退出 / 点按切换 / 长按广播开 Recent），不依赖 presentation 命中。
+
+### Changed
+- **Version bump to `0.24#17.4-r10`** (`versionCode` 3066)。用户说明见 `RELEASE_NOTES_0.24-17.4-r10.md`。
+
+### Verify (真机)
+1. 未装 / 未更新 Google App、Maps、TTS 时，AA FRX 仍能过安装检查并进入车机界面
+2. 缺 Maps 时不再落入导航占位页导致 `:car` 崩
+3. 冷连接 / 重连后不再长时间闪空媒体卡（Dashboard VD）；媒体卡区域保持干净
+4. 手机锁屏 + 全屏 peel：可拖出退出 / 点按切换 / 长按开 Recent；解锁后 peel 仍正常
 
 ## 0.24#17.4-r9
 

@@ -17,6 +17,9 @@ abstract class BaseActivity<BaseBinding : ViewBinding>(
     lateinit var baseBinding: BaseBinding
         private set
 
+    /** See [BaseFragment.isBaseBindingInitialized]. */
+    protected fun isBaseBindingInitialized(): Boolean = ::baseBinding.isInitialized
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
