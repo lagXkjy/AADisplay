@@ -7,6 +7,7 @@
 - **仪表横条歌词收窄为车机版播放器：** 移除手机网易云/QQ 及 OPlus spoof 全部配套。
 
 ### Fixed
+- **分屏/全屏黑条（800×480 VD vs 720×480 壳）：** soft-reconnect 时 `displayProfile` 从含 Coolwalk 左轨的全宽（800）缩到内容区（720），pane VD 与 TextureView 对齐。
 - **仪表横条歌名兜底过期：** 播放中定期 touch `aadisplay_cluster_np_updated_ms`，避免 15s 后 gearhead 出站变陈旧。
 
 ### Added

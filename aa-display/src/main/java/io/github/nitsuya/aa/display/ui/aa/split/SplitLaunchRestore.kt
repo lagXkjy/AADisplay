@@ -82,8 +82,9 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         c.stacks.setStackBottomToTop(SplitPane.SECONDARY, secondaryStack)
         ownershipBringFront(SplitPane.PRIMARY, snap.primaryPackage)
         ownershipBringFront(SplitPane.SECONDARY, snap.secondaryPackage)
-        // Peel fullscreen is session-only — do not restore across AA reconnects (VD would stay 800×480
-        // while AA UI is split, breaking apps like NetEase that layout for the buffer width).
+        if (SplitPane.isFullscreenPane(snap.fullscreenPane)) {
+            c.setSplitFullscreen(snap.fullscreenPane)
+        }
         log(
             SplitDisplayController.TAG,
             "restoreLastSplit primary=${snap.primaryPackage}:$primaryOk " +
@@ -391,8 +392,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             } else {
                 c.mRatio
             },
-            // Peel fullscreen is not persisted — reconnect always starts in split mode.
-            fullscreenPane = SplitPane.FULLSCREEN_NONE,
+            fullscreenPane = c.mFullscreenPane,
             primaryStack = primaryStack,
             secondaryStack = secondaryStack,
         )

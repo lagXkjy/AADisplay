@@ -101,7 +101,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             }
             if (current != candidate) {
                 // Soft reconnect may briefly report pre-rail-reclaim size; allow monotonic grow
-                // so panes fill the reclaimed gutter, keep lock on shrink/jitter.
+                // so panes fill the reclaimed gutter.
                 val grew =
                     current.isLandscape == candidate.isLandscape &&
                         candidate.width >= current.width &&
@@ -112,6 +112,21 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                     logDebug(
                         TAG,
                         "displayProfile relocked(grow): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
+                    )
+                    return candidate
+                }
+                // AaUiHook zeros Coolwalk rail dimens → shell reports content width (720) while
+                // an older lock may still include the gutter (800). Shrink on one axis so pane
+                // VD buffers match TextureView layout (avoids split/fullscreen letterbox bars).
+                val contentShrink =
+                    current.isLandscape == candidate.isLandscape &&
+                        ((current.height == candidate.height && candidate.width < current.width) ||
+                            (current.width == candidate.width && candidate.height < current.height))
+                if (contentShrink) {
+                    mLockedDisplayProfile = candidate
+                    log(
+                        TAG,
+                        "displayProfile relocked(content-shrink): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
                     )
                     return candidate
                 }
