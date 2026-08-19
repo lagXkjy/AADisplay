@@ -1,0 +1,287 @@
+package io.github.nitsuya.aa.display.xposed.cluster
+
+import android.media.MediaMetadata
+import android.media.session.MediaController
+import android.media.session.PlaybackState
+import android.os.Bundle
+import android.os.SystemClock
+import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
+import org.json.JSONObject
+
+/**
+ * Resolves the instrument-cluster ticker string from a real [MediaController].
+ * Timed LRC is synced to [PlaybackState] position; otherwise falls back to song title.
+ *
+ * Car players only — reads [METADATA_KEY_LYRIC] from MediaSession; no player-process hooks.
+ */
+object LyricLineExtractor {
+    private const val TAG = "AAD_LyricLineExtractor"
+    const val MAX_CHARS = 80
+
+    /** Same as [MediaMetadata.METADATA_KEY_LYRIC] (API 34+); string literal for compileSdk stubs. */
+    private const val METADATA_KEY_LYRIC = "android.media.metadata.LYRIC"
+
+    /** Car players known to publish timed lyrics into MediaSession. */
+    private val CAR_PLAYER_PACKAGES = setOf(
+        "com.tencent.qqmusiccar",
+    )
+
+    /** Other streaming apps that may write [METADATA_KEY_LYRIC] without hooks. */
+    private val STREAMING_PACKAGES = setOf(
+        "com.spotify.music",
+        "com.google.android.apps.youtube.music",
+    )
+
+    private val PREFERRED_PACKAGES = CAR_PLAYER_PACKAGES + STREAMING_PACKAGES
+
+    private val LYRIC_KEYS = listOf(METADATA_KEY_LYRIC)
+
+    private val LRC_LINE = Regex(
+        """\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]\s*(.*)""",
+    )
+
+    data class Extracted(
+        val tickerTitle: String,
+        val artist: String,
+        val mediaId: String,
+        val songTitle: String,
+        val durationMs: Long,
+        val fromLyric: Boolean,
+        val needsPositionTick: Boolean,
+    )
+
+    fun isPreferredPackage(packageName: String?): Boolean {
+        val pkg = packageName ?: return false
+        return pkg in PREFERRED_PACKAGES
+    }
+
+    fun extract(controller: MediaController): Extracted? {
+        val metadata = controller.metadata ?: return null
+        val songTitle = metadata.getString(MediaMetadata.METADATA_KEY_TITLE)?.trim().orEmpty()
+        val displaySub = metadata.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE)?.trim().orEmpty()
+        val artist = (
+            metadata.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
+                ?: displaySub.takeIf { it.isNotEmpty() && !looksLikeLrc(it) }
+            )?.trim().orEmpty()
+        val album = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM)?.trim().orEmpty()
+        val durationMs = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION).coerceAtLeast(0L)
+        val baseId = metadata.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)?.trim().orEmpty()
+        val mediaId = when {
+            baseId.isNotEmpty() -> baseId
+            songTitle.isNotEmpty() || artist.isNotEmpty() ->
+                "$artist|$songTitle|$album|$durationMs"
+            else -> return null
+        }
+        if (songTitle.isEmpty() && artist.isEmpty()) return null
+
+        val positionMs = estimatePositionMs(controller.playbackState)
+        val rawLyricBlob = findRawLyricBlob(controller.playbackState?.extras, metadata)
+        val timedLrcBlob = rawLyricBlob
+            ?.let { unwrapLyricPayload(it) }
+            ?.takeIf { looksLikeLrc(it) }
+        val resolved = resolveLyricText(
+            rawLyricBlob = rawLyricBlob,
+            positionMs = positionMs,
+            songTitle = songTitle,
+            artist = artist,
+        )
+        val ticker = truncate(resolved?.text?.takeIf { it.isNotBlank() } ?: songTitle)
+        if (ticker.isEmpty()) return null
+
+        return Extracted(
+            tickerTitle = ticker,
+            artist = artist,
+            mediaId = mediaId,
+            songTitle = songTitle.ifEmpty { ticker },
+            durationMs = durationMs,
+            fromLyric = resolved != null,
+            needsPositionTick = resolved?.fromLrc == true || timedLrcBlob != null,
+        )
+    }
+
+    fun estimatePositionMs(state: PlaybackState?): Long {
+        if (state == null) return 0L
+        val base = state.position.coerceAtLeast(0L)
+        val updated = state.lastPositionUpdateTime
+        if (updated <= 0L) return base
+        val st = state.state
+        if (st != PlaybackState.STATE_PLAYING &&
+            st != PlaybackState.STATE_FAST_FORWARDING &&
+            st != PlaybackState.STATE_REWINDING
+        ) {
+            return base
+        }
+        val speed = state.playbackSpeed.let { if (it == 0f) 1f else it }
+        val elapsed = (SystemClock.elapsedRealtime() - updated).coerceAtLeast(0L)
+        return (base + (elapsed * speed).toLong()).coerceAtLeast(0L)
+    }
+
+    fun dumpExtrasOnce(packageName: String, state: PlaybackState?, metadata: MediaMetadata?) {
+        val keys = linkedSetOf<String>()
+        collectKeys(state?.extras, keys)
+        collectKeys(metadata?.bundleCompat(), keys)
+        log(TAG, "extras dump pkg=$packageName keys=${keys.sorted().joinToString()}")
+        for (key in LYRIC_KEYS) {
+            val v = state?.extras?.nonBlankString(key)
+                ?: metadata?.bundleCompat()?.nonBlankString(key)
+                ?: continue
+            log(TAG, "extras lyric-key=$key len=${v.length} head=${v.take(96)}")
+        }
+    }
+
+    private data class ResolvedLyric(val text: String, val fromLrc: Boolean)
+
+    private fun resolveLyricText(
+        rawLyricBlob: String?,
+        positionMs: Long,
+        songTitle: String,
+        artist: String,
+    ): ResolvedLyric? {
+        val raw = rawLyricBlob?.let { unwrapLyricPayload(it) } ?: return null
+
+        if (looksLikeLrc(raw)) {
+            val line = lineAtPosition(parseLrc(raw), positionMs)
+            if (!line.isNullOrBlank()) {
+                return ResolvedLyric(line, fromLrc = true)
+            }
+            return null
+        }
+
+        if (raw.length <= MAX_CHARS * 2 && !raw.contains('\n')) {
+            val plain = raw.trim()
+            if (plain == songTitle || plain == artist) return null
+            return ResolvedLyric(plain, fromLrc = false)
+        }
+        logDebug(TAG, "ignore oversized non-LRC lyric len=${raw.length}")
+        return null
+    }
+
+    /** Some players wrap timed LRC inside JSON metadata extras. */
+    fun unwrapLyricPayload(raw: String): String {
+        val trimmed = raw.trim()
+        if (!trimmed.startsWith("{") || !trimmed.contains("lyric")) return raw
+        return runCatching {
+            val obj = JSONObject(trimmed)
+            sequenceOf("lyric", "txtlyric", "rawLyric", "lrc", "yrc")
+                .mapNotNull { key ->
+                    obj.optString(key)?.trim()?.takeIf { it.isNotEmpty() }
+                }
+                .firstOrNull()
+                ?: raw
+        }.getOrDefault(raw)
+    }
+
+    private fun findRawLyricBlob(playbackExtras: Bundle?, metadata: MediaMetadata?): String? {
+        metadata?.getString(METADATA_KEY_LYRIC)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { return it }
+        for (key in LYRIC_KEYS) {
+            playbackExtras?.nonBlankString(key)?.let { return it }
+        }
+        val metaBundle = metadata?.bundleCompat()
+        for (key in LYRIC_KEYS) {
+            metaBundle?.nonBlankString(key)?.let { return it }
+            runCatching { metadata?.getString(key) }
+                ?.getOrNull()
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { return it }
+        }
+        return null
+    }
+
+    fun looksLikeLrc(text: String): Boolean {
+        if (!text.contains('[')) return false
+        var hits = 0
+        for (line in text.lineSequence()) {
+            if (LRC_LINE.containsMatchIn(line)) {
+                hits++
+                if (hits >= 2) return true
+            }
+        }
+        return LRC_LINE.containsMatchIn(text)
+    }
+
+    data class LrcEntry(val timeMs: Long, val text: String)
+
+    fun parseLrc(raw: String): List<LrcEntry> {
+        val out = ArrayList<LrcEntry>(64)
+        for (line in raw.lineSequence()) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) continue
+            var rest = trimmed
+            val times = ArrayList<Long>(2)
+            while (true) {
+                val m = LRC_LINE.matchEntire(rest) ?: break
+                val min = m.groupValues[1].toLongOrNull() ?: break
+                val sec = m.groupValues[2].toLongOrNull() ?: break
+                val frac = m.groupValues[3]
+                val fracMs = when {
+                    frac.isEmpty() -> 0L
+                    frac.length == 1 -> frac.toLong() * 100L
+                    frac.length == 2 -> frac.toLong() * 10L
+                    else -> frac.take(3).padEnd(3, '0').toLong()
+                }
+                times.add(min * 60_000L + sec * 1_000L + fracMs)
+                rest = m.groupValues[4].trim()
+                if (!rest.startsWith('[')) break
+            }
+            val text = rest.trim()
+            if (text.isEmpty() || times.isEmpty()) continue
+            for (t in times) {
+                out.add(LrcEntry(t, text))
+            }
+        }
+        if (out.isEmpty()) return emptyList()
+        out.sortBy { it.timeMs }
+        return out
+    }
+
+    fun lineAtPosition(entries: List<LrcEntry>, positionMs: Long): String? {
+        if (entries.isEmpty()) return null
+        var lo = 0
+        var hi = entries.size - 1
+        var best = -1
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            if (entries[mid].timeMs <= positionMs) {
+                best = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        if (best < 0) return null
+        return entries[best].text.trim().takeIf { it.isNotEmpty() }
+    }
+
+    private fun Bundle.nonBlankString(key: String): String? {
+        if (!containsKey(key)) return null
+        getString(key)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        return getCharSequence(key)?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun collectKeys(bundle: Bundle?, out: MutableSet<String>) {
+        if (bundle == null) return
+        for (key in bundle.keySet()) {
+            out.add(key)
+        }
+    }
+
+    private fun MediaMetadata.bundleCompat(): Bundle? {
+        return runCatching {
+            val field = MediaMetadata::class.java.getDeclaredField("mBundle").apply {
+                isAccessible = true
+            }
+            field.get(this) as? Bundle
+        }.getOrNull()
+    }
+
+    fun truncate(text: String): String {
+        if (text.length <= MAX_CHARS) return text
+        return text.take(MAX_CHARS)
+    }
+}

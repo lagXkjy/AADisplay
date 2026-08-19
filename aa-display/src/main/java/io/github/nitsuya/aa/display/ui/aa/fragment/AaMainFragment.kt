@@ -176,16 +176,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         LastSplitStore.load(requireContext().contentResolver)?.let { snap ->
             splitRatio = SplitPane.clampRatio(snap.primaryRatio)
             ratioBeforeFullscreen = splitRatio
-            fullscreenPane = snap.fullscreenPane
             // Optimistic: hide "tap to choose" while system_server restores the pair.
             paneHasApp[SplitPane.PRIMARY] = true
             paneHasApp[SplitPane.SECONDARY] = true
         }
-        if (SplitPane.isFullscreenPane(fullscreenPane)) {
-            applyFullscreenLayout(fullscreenPane)
-        } else {
-            applySplitLayoutWeights(splitRatio)
-        }
+        // Always boot in split mode; peel fullscreen is session-only (see SplitLaunchRestore).
+        applySplitLayoutWeights(splitRatio)
         setupDivider()
         setupPaneSurfaces()
         setupEmptyPaneClicks()
@@ -522,6 +518,18 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         }
     }
 
+    /**
+     * Split TextureViews must match pane VD sizes. Local fullscreen flags can be cleared
+     * without a matching [CoreApi.setSplitFullscreen], leaving 800×480 buffers under ~515px panes.
+     */
+    private fun ensureControllerSplitMode(ratio: Float) {
+        val clamped = SplitPane.clampRatio(ratio)
+        val remoteFs = tryOrNull { CoreApi.splitFullscreenPane } ?: SplitPane.FULLSCREEN_NONE
+        if (!SplitPane.isFullscreenPane(remoteFs)) return
+        CoreApi.setSplitRatio(clamped)
+        CoreApi.setSplitFullscreen(SplitPane.FULLSCREEN_NONE)
+    }
+
     private fun applySplitLayoutWeights(
         ratio: Float,
         force: Boolean = false,
@@ -536,6 +544,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         ) {
             return
         }
+        ensureControllerSplitMode(ratio)
         clearDragPreview()
         appliedRatio = ratio
         appliedSideBySide = sideBySide
@@ -1024,11 +1033,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             return
         }
         if (displayId == Display.INVALID_DISPLAY) {
-            if (SplitPane.isFullscreenPane(fullscreenPane)) {
-                applyFullscreenLayout(fullscreenPane)
-            } else {
-                applySplitLayoutWeights(splitRatio, force = true)
-            }
+            applySplitLayoutWeights(splitRatio, force = true)
         }
         lastCreateWidth = displayWidth
         lastCreateHeight = displayHeight

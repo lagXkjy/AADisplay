@@ -11,6 +11,7 @@ import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
+import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
 import io.github.nitsuya.aa.display.xposed.hook.VdImeDisplayPin
 import io.github.nitsuya.aa.display.xposed.hook.VdOrientationFill
@@ -142,6 +143,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 .onFailure { log(TAG, "VdImeDisplayPin.ensureHooked failed", it) }
             runCatching { VdOrientationFill.ensureHooked() }
                 .onFailure { log(TAG, "VdOrientationFill.ensureHooked failed", it) }
+            runCatching { ClusterLyricMirror.start(systemContext) }
+                .onFailure { log(TAG, "ClusterLyricMirror.start failed", it) }
         }
 
         fun isAaVirtualDisplay(displayId: Int): Boolean {

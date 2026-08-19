@@ -24,9 +24,10 @@ import java.lang.reflect.Method
  * (≈304×460 on 800×480 HUs) showing "无法获享媒体内容".
  *
  * VD starve for name=Dashboard lives in [AaUiHook.rewriteVirtualDisplayArgs]
- * (create / Builder / resize). Here: disable [MEDIA_CAR_APP], hide leftover
- * Presentation windows, and swallow Coolwalk's Dashboard cover assert if it
- * throws after `content_bounds` expand.
+ * (create / Builder / resize). Here: keep [MEDIA_CAR_APP] **enabled** so AA
+ * Now Playing metadata can still egress to the HU/instrument cluster, while
+ * hiding leftover Dashboard Presentation windows and swallowing Coolwalk's
+ * Dashboard cover assert after `content_bounds` expand.
  */
 object AaMediaPlaceholderHook : AaHook() {
     override val tagName: String = "AAD_AaMediaPlaceholderHook"
@@ -59,31 +60,35 @@ object AaMediaPlaceholderHook : AaHook() {
     }
 
     override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
-        disableMediaCarApp()
+        ensureMediaCarAppEnabled()
         hideDashboardOnAddView()
         suppressDashboardCoverAssert()
     }
 
-    private fun disableMediaCarApp() {
+    /**
+     * Cluster lyric path needs media-host egress. Older builds disabled this
+     * component and starved Now Playing entirely — re-enable if we left it off.
+     */
+    private fun ensureMediaCarAppEnabled() {
         runCatching {
             val ctx: Context = InitFields.appContext
             val cn = ComponentName(ctx.packageName, MEDIA_CAR_APP)
             val pm = ctx.packageManager
             val state = pm.getComponentEnabledSetting(cn)
-            if (state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED ||
-                state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER ||
-                state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_UNTIL_USED
+            if (state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED ||
+                state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
             ) {
+                log(tagName, "MediaCarApp already enabled/default state=$state")
                 return
             }
             pm.setComponentEnabledSetting(
                 cn,
-                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
                 PackageManager.DONT_KILL_APP,
             )
-            log(tagName, "disabled $MEDIA_CAR_APP")
+            log(tagName, "re-enabled $MEDIA_CAR_APP (was state=$state)")
         }.onFailure { e ->
-            log(tagName, "disable $MEDIA_CAR_APP failed", e)
+            log(tagName, "ensure $MEDIA_CAR_APP enabled failed", e)
         }
     }
 

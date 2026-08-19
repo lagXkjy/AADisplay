@@ -83,7 +83,7 @@ flowchart LR
 - `…:projection`
 - `…:car`
 
-已注册 AA 钩子：`AaSignatureHook`、`AaBtnEventHook`、`AaUiHook`、`AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`（按 `isSupportProcess` 过滤；Frx/Ui 依赖 DexKit；Nav 禁组件；Media 禁 MediaCarApp + Ui 饿 Dashboard VD）。
+已注册 AA 钩子：`AaSignatureHook`、`AaBtnEventHook`、`AaUiHook`、`AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`、`AaClusterLyricEgressHook`（按 `isSupportProcess` 过滤；Frx/Ui 依赖 DexKit；Nav 禁组件；Media 保持 MediaCarApp 出站 + Ui 饿 Dashboard VD；Cluster 歌词改写 Title）。
 
 ### 跨进程 IPC
 
@@ -104,6 +104,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 ### LSPosed scope
 
 见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`。改 scope 会影响模块生效范围，勿随意删改。
+仪表横条歌词：仅 QQ 音乐车载（`com.tencent.qqmusiccar`）自写 MediaSession `LYRIC`；LSPosed scope 仅 `android` + `gearhead`。
 
 ## 4. 构建与验证
 
@@ -164,6 +165,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
   - `ICoreManager` / 其它 AIDL 方法签名与 parcelable
   - `xposed_scope` 数组项（除非明确要扩展作用域）
   - `LastSplitStore` 持久化 key 名（已有设备上的 snapshot）
+  - `ClusterLyricStore` Settings.Global key（`aadisplay_cluster_np_*`）
 - **隐藏 API**：变更走 `lib-stub` + Rikka Refine；勿在主模块硬编码未 stub 的 framework 类。
 - **混淆**：ProGuard 已 keep `io.github.nitsuya.aa.display.**`；新增反射 / Xposed 目标仍需评估 AA 版本与混淆差异。
 - **资源 package id**：工程保留 `0x64`（Xposed 友好），勿随意改。
@@ -230,6 +232,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 | Xposed 入口 / 包路由 | `xposed/XposedInit.kt` |
 | 系统 VirtualDisplay / Binder 桥 | `xposed/hook/AndroidHook.kt`、`CoreManagerService.kt` |
 | VD DPI pin / 竖屏 letterbox 铺满 / Presentation 拦截 / IME 落屏 | `xposed/hook/VdDensityPin.kt`、`VdOrientationFill.kt`、`PanePresentationGuard.kt`、`VdImeDisplayPin.kt` |
+| 仪表横条歌词（AA Title） | `xposed/cluster/ClusterLyricMirror.kt`、`ShadowNowPlayingSession.kt`、`LyricLineExtractor.kt`；gearhead `AaClusterLyricEgressHook` |
 | AA 钩子总控 | `xposed/hook/AndroidAutoHook.kt` |
 | 车机画面与触控 | `ui/aa/AaDisplayActivity*.java/kt`、`AaMainFragment.kt` |
 | 显示会话策略（Delay Destroy / keep-awake） | `ui/window/DisplaySessionPolicy.kt` |

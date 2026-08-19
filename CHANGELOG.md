@@ -3,6 +3,20 @@
 ## Unreleased
 
 ### Changed
+- **仪表横条歌词收窄为 QQ 音乐车载：** 移除网易云 IoT（`cloudmusic.iot`）配套——通用渠道 APK 不向 MediaSession 写歌词，`wt_music_lyric` / extras 路径实机无效。`LyricLineExtractor` 只读 `qqmusiccar` 的 `METADATA_KEY_LYRIC`。保留 LRC position-tick 与 Settings 保活。
+- **仪表横条歌词收窄为车机版播放器：** 移除手机网易云/QQ 及 OPlus spoof 全部配套。
+
+### Fixed
+- **仪表横条歌名兜底过期：** 播放中定期 touch `aadisplay_cluster_np_updated_ms`，避免 15s 后 gearhead 出站变陈旧。
+
+### Added
+- **仪表横条歌词（AA Now Playing Title）：** `ClusterLyricMirror` 镜像活跃 MediaSession 到影子 session，写入 `Settings.Global`（`aadisplay_cluster_np_*`）。读车机版 `LYRIC` / extras 当前句，否则歌名。`AaClusterLyricEgressHook` 在 gearhead 改写出站。
+- **M0 真车基线（需用户确认）：** 原生 AA + Spotify 时速度表/转速表之间横条是否有字；有则该车吃 AA Title，本功能才适用。
+- **方控长按映射：** 长按上一曲/下一曲与分隔条点按相同（分屏左右整栈对调，全屏只切可见窗不搬栈）；长按播放/暂停开/关 Recent（与分隔条长按相同）。短按三键仍走媒体 / 直播间滑动。
+- **车机壳「收起键盘」：** 窗 VD 上 IME 弹出后，AA 壳在该窗底边出芯片（不被键盘画面盖住）。点按经 `hideIme` 走 WMS/IMM hide，失败才对该 display 打 BACK，**不** `bringTaskToFront`。AIDL 末尾追加 `hideIme` / `getImePane`（需重装并重启 system_server）。
+
+### Changed
+- **MediaCarApp 与 Dashboard UI 拆分：** `AaMediaPlaceholderHook` 不再禁用 `MediaCarAppService`（并在曾被禁用时重新 ENABLE），以恢复 AA 元数据出站；Dashboard VD starve（`AaUiHook`）与 Presentation 隐藏/cover assert 抑制仍保留，避免中控空媒体卡。
 - **近期 system_server 钩子防拖垮：** `findSystemMethod` 缺方法返回 null；`VdOrientationFill` / `VdImeDisplayPin` / `PanePresentationGuard` / `VdDensityPin` 统一：安装失败隔离、回调 `try/catch` 不抛进 WM、无 AA 会话早退；方向钩只保留 config-time resolve（禁用 `getOrientation` 热路径）。
 - **最低系统 Android 13（`minSdk` 33）：** 去掉 API 33 以下的 PackageManager / `registerReceiver` / `getParcelable` / `getPackageUid` 兼容分支。
 - **DPI / 左轨触控热路径：** `VdDensityPin` 对非 AA display 早退（缓存 `getDisplayId`，VD id 不再每次问 VirtualDisplay）；`:car` 左轨 MOVE 按帧合并，DOWN 不再同步 Binder 查全屏（只信 `SPLIT_STATE_CHANGED`）。
@@ -15,9 +29,11 @@
 - **16KB 页对齐：** DexKit `2.0.0-rc3` → `2.0.7`，`libdexkit.so` 按 16KB 对齐。
 - **长按分隔条 / 方控开 Recent 直接闪退退出 AADisplay：** 非 hook 失效。Release 下子类 `::baseBinding.isInitialized` 经 R8 访问父类 `private set` 字段触发 `IllegalAccessError`，进程崩溃后 AA `Crash loop, fallback`。改为 `BaseFragment.isBaseBindingInitialized()`，并 keep `template.bases`。
 
-### Added
-- **方控长按映射：** 长按上一曲/下一曲与分隔条点按相同（分屏左右整栈对调，全屏只切可见窗不搬栈）；长按播放/暂停开/关 Recent（与分隔条长按相同）。短按三键仍走媒体 / 直播间滑动。
-- **车机壳「收起键盘」：** 窗 VD 上 IME 弹出后，AA 壳在该窗底边出芯片（不被键盘画面盖住）。点按经 `hideIme` 走 WMS/IMM hide，失败才对该 display 打 BACK，**不** `bringTaskToFront`。AIDL 末尾追加 `hideIme` / `getImePane`（需重装并重启 system_server）。
+### Verify（仪表歌词）
+1. **M0：** 关掉 AADisplay / 原生 AA + Spotify → 速度表与转速表之间横条有 Now Playing 字
+2. **M1：** 启用本模块 + QQ 音乐车载播放 → 横条至少出现歌名；中控仍无空 Dashboard 卡
+3. **M2：** 车机版写出 `METADATA_KEY_LYRIC` → 横条 `lyric-tick` 随句更新；切歌不串句；方控短按仍控真实播放器
+4. 冷连接 / 重连后横条仍更新；logcat `AAD_ClusterLyricMirror` / `AAD_ShadowNowPlaying` / `AAD_AaClusterLyricEgressHook` / `AAD_LyricLineExtractor`
 
 ## 0.24#17.4-r10
 

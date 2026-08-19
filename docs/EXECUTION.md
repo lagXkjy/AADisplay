@@ -21,10 +21,10 @@
 
 | 进程 | 谁注入 | 常驻对象 | 禁止做的事 |
 |------|--------|----------|------------|
-| `system_server` | `AndroidHook` | `CoreManagerService`、`SplitDisplayController`、`DisplaySessionPolicy` | 不要从这里 inflate 车机 UI |
+| `system_server` | `AndroidHook` | `CoreManagerService`、`SplitDisplayController`、`DisplaySessionPolicy`、`ClusterLyricMirror` | 不要从这里 inflate 车机 UI |
 | `io.github.nitsuya.aa.display` | 无 Xposed 钩子 | `AaDisplayActivity` / `AaMainFragment` | 不要直接操作 VD / ATMS |
-| `gearhead`（`:projection` / `:car`） | `AndroidAutoHook` → `Aa*Hook` | Coolwalk 壳、HU 触控、Auto Open | 不要在这里创建分屏 VD |
-| 被投 App | 无（仅 DPI pin） | 任务窗口画在 VD 上 | — |
+| `gearhead`（`:projection` / `:car`） | `AndroidAutoHook` → `Aa*Hook` | Coolwalk 壳、HU 触控、Auto Open、仪表 Title 改写 | 不要在这里创建分屏 VD |
+| 被投 App | 无（仅 DPI pin 等 system 侧） | 任务窗口画在 VD 上 | — |
 
 `CoreApi` 选路（`CoreApi.kt`）：**只有真正的 system_server**（`AndroidHook.isReadyForSystemHooks()`）才用 `CoreManagerService.instance`；其余一律 `CoreManager` 经 PMS 桥拿 Binder。不要用 `uid == 1000` 判断——三星等 OEM 系统应用也是 1000。
 
@@ -44,7 +44,7 @@ sequenceDiagram
     XP->>SS: handleLoadPackage(android, appInfo=null)
     SS->>SS: AndroidHook: 截 PMS / AMS
     SS->>SS: BridgeService 注入 IPackageManager.onTransact AADD
-    SS->>SS: AMS.systemReady → Instances + PanePresentationGuard + VdImeDisplayPin
+    SS->>SS: AMS.systemReady → Instances + PanePresentationGuard + VdImeDisplayPin + ClusterLyricMirror
 
     Note over GH,HU: 连接 Android Auto
     XP->>GH: handleLoadPackage(gearhead)
@@ -92,7 +92,7 @@ ServiceManager.addService("package")
   → reply.writeStrongBinder(CoreManagerService.instance)
 
 AMS 构造 → 捕获 system UI Context → CoreManagerService.systemContext
-AMS.systemReady → Instances.init + PanePresentationGuard + VdImeDisplayPin.ensureHooked
+AMS.systemReady → Instances.init + PanePresentationGuard + VdImeDisplayPin + VdOrientationFill + ClusterLyricMirror
 ```
 
 客户端拿 Binder：`xposed/CoreManager.kt` `getService()`  
@@ -124,7 +124,8 @@ DexKit 查询 **不要** 写 `searchPackages = listOf("")`（2.0.7 会只搜无�
 | `AaSignatureHook` | `:car` | 本模块包名签名校验返回 true，AA 才肯跑 CarActivity |
 | `AaFrxRequiredAppsHook` | 两者 | Google App / Maps / TTS 的 FRX 状态强制 READY |
 | `AaNavFallbackHook` | 两者 | 禁用 `NavigationFallbackCarActivityService`（缺 Maps 否则占位页崩 `:car`） |
-| `AaMediaPlaceholderHook` | 两者 | 禁 `MediaCarAppService`；隐藏残留 Dashboard Presentation；吞 Dashboard cover 断言 |
+| `AaMediaPlaceholderHook` | 两者 | **保持** `MediaCarAppService` 启用（元数据出站）；隐藏残留 Dashboard Presentation；吞 Dashboard cover 断言 |
+| `AaClusterLyricEgressHook` | 两者 | 读 `MediaMetadata` Title/Subtitle 时注入 `ClusterLyricStore` 仪表横条文案 |
 | `AaBtnEventHook` | `:projection` | 偷 MEDIA_BUTTON / projected.KEY_EVENT → 广播给车机 UI |
 | `AaUiHook` | 两者（职责不同） | 见下节 |
 
