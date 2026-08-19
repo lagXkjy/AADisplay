@@ -177,6 +177,17 @@ object ClusterLyricMirror {
             refreshFromBound("sessions-same")
             return
         }
+        // Track-change gaps can leave every preferred player idle briefly; do not
+        // steal binding from qqmusicpad back to a paused qqmusiccar (or vice versa).
+        if (boundController != null &&
+            boundPackage != null &&
+            isIdlePlayback(pick.playbackState?.state ?: PlaybackState.STATE_NONE) &&
+            LyricLineExtractor.isPreferredPackage(boundPackage) &&
+            LyricLineExtractor.isPreferredPackage(pkg)
+        ) {
+            refreshFromBound("sessions-keep-bound")
+            return
+        }
         unbindController()
         boundController = pick
         boundPackage = pkg
@@ -211,13 +222,11 @@ object ClusterLyricMirror {
         }
         if (filtered.isEmpty()) return null
 
-        fun isPlaying(c: MediaController): Boolean {
-            val st = c.playbackState?.state ?: return false
-            return st == PlaybackState.STATE_PLAYING ||
-                st == PlaybackState.STATE_BUFFERING ||
-                st == PlaybackState.STATE_FAST_FORWARDING ||
-                st == PlaybackState.STATE_REWINDING
-        }
+        fun isPlaying(c: MediaController): Boolean =
+            isPlayingState(c.playbackState?.state ?: PlaybackState.STATE_NONE)
+
+        fun isActive(c: MediaController): Boolean =
+            !isIdlePlayback(c.playbackState?.state ?: PlaybackState.STATE_NONE)
 
         fun pickPreferred(predicate: (MediaController) -> Boolean): MediaController? {
             for (pkg in LyricLineExtractor.PREFERRED_PACKAGE_ORDER) {
@@ -231,13 +240,14 @@ object ClusterLyricMirror {
         val anyPlaying = filtered.firstOrNull { isPlaying(it) }
         if (anyPlaying != null) return anyPlaying
 
-        pickPreferred { true }?.let { return it }
+        pickPreferred { isActive(it) }?.let { return it }
 
-        return filtered.firstOrNull()
+        return filtered.firstOrNull { isActive(it) } ?: filtered.firstOrNull()
     }
 
     private fun refreshFromBound(reason: String) {
         val controller = boundController ?: return
+        if (maybeSwitchToPlayingSession(reason)) return
         val extracted = LyricLineExtractor.extract(controller) ?: run {
             logDebug(TAG, "extract null reason=$reason pkg=$boundPackage")
             return
@@ -441,5 +451,35 @@ object ClusterLyricMirror {
         }
         boundController = null
         boundPackage = null
+    }
+
+    /** Bound session paused while another preferred player is actively playing. */
+    private fun maybeSwitchToPlayingSession(reason: String): Boolean {
+        val controller = boundController ?: return false
+        if (isPlayingState(controller.playbackState?.state ?: PlaybackState.STATE_NONE)) {
+            return false
+        }
+        val sessions = sessionManager?.getActiveSessionsSafe() ?: return false
+        val pick = pickController(sessions) ?: return false
+        if (pick.sessionToken == controller.sessionToken) return false
+        if (!isPlayingState(pick.playbackState?.state ?: PlaybackState.STATE_NONE)) {
+            return false
+        }
+        log(TAG, "switch pkg=$boundPackage -> ${pick.packageName} reason=$reason")
+        onSessionsChanged(sessions)
+        return true
+    }
+
+    private fun isPlayingState(state: Int): Boolean {
+        return state == PlaybackState.STATE_PLAYING ||
+            state == PlaybackState.STATE_BUFFERING ||
+            state == PlaybackState.STATE_FAST_FORWARDING ||
+            state == PlaybackState.STATE_REWINDING
+    }
+
+    private fun isIdlePlayback(state: Int): Boolean {
+        return state == PlaybackState.STATE_PAUSED ||
+            state == PlaybackState.STATE_STOPPED ||
+            state == PlaybackState.STATE_NONE
     }
 }
