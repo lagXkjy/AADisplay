@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.xposed
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.ContextParams
+import android.os.SystemClock
 import android.view.Display
 import android.view.MotionEvent
 import android.view.Surface
@@ -58,7 +59,19 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 get() = width >= height
         }
 
+        private data class PendingReconnectShrink(
+            val profile: DisplayProfile,
+            val firstSeenAtMs: Long
+        )
+
         private var mLockedDisplayProfile: DisplayProfile? = null
+        private var mPendingReconnectShrink: PendingReconnectShrink? = null
+        private const val RECONNECT_SHRINK_CONFIRM_MS = 700L
+        /**
+         * Extra reconnect sizing trace（用于定位“720/800 宽度分裂”）。
+         * 默认关闭，避免断线重连时日志过多。
+         */
+        private const val TRACE_RECONNECT_SIZING_LOGS = false
 
         private fun sanitizeDisplayProfile(width: Int, height: Int, densityDpi: Int): DisplayProfile {
             return DisplayProfile(
@@ -77,11 +90,13 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             val candidate = sanitizeDisplayProfile(width, height, densityDpi)
             val current = mLockedDisplayProfile
             if (current == null) {
+                mPendingReconnectShrink = null
                 mLockedDisplayProfile = candidate
                 log(TAG, "displayProfile locked: ${candidate.width}*${candidate.height},${candidate.densityDpi}")
                 return candidate
             }
             if (newSession) {
+                mPendingReconnectShrink = null
                 if (current != candidate) {
                     mLockedDisplayProfile = candidate
                     log(
@@ -92,6 +107,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 return mLockedDisplayProfile!!
             }
             if (current.isLandscape != candidate.isLandscape) {
+                mPendingReconnectShrink = null
                 mLockedDisplayProfile = candidate
                 log(
                     TAG,
@@ -108,17 +124,58 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                         candidate.height >= current.height &&
                         (candidate.width > current.width || candidate.height > current.height)
                 if (grew) {
+                    mPendingReconnectShrink = null
                     mLockedDisplayProfile = candidate
-                    logDebug(
-                        TAG,
-                        "displayProfile relocked(grow): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
-                    )
+                    if (TRACE_RECONNECT_SIZING_LOGS) {
+                        logDebug(
+                            TAG,
+                            "displayProfile relocked(grow): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
+                        )
+                    }
                     return candidate
                 }
-                logDebug(
-                    TAG,
-                    "displayProfile keep-locked(reconnect): locked=${current.width}*${current.height},${current.densityDpi}, incoming=${candidate.width}*${candidate.height},${candidate.densityDpi}"
-                )
+                val shrank =
+                    current.isLandscape == candidate.isLandscape &&
+                        candidate.width <= current.width &&
+                        candidate.height <= current.height &&
+                        (candidate.width < current.width || candidate.height < current.height)
+                if (shrank) {
+                    val now = SystemClock.uptimeMillis()
+                    val pending = mPendingReconnectShrink
+                    if (pending?.profile == candidate &&
+                        now - pending.firstSeenAtMs >= RECONNECT_SHRINK_CONFIRM_MS
+                    ) {
+                        mPendingReconnectShrink = null
+                        mLockedDisplayProfile = candidate
+                        if (TRACE_RECONNECT_SIZING_LOGS) {
+                            log(
+                                TAG,
+                                "displayProfile relocked(shrink-confirmed): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
+                            )
+                        }
+                        return candidate
+                    }
+                    if (pending?.profile != candidate) {
+                        mPendingReconnectShrink = PendingReconnectShrink(
+                            profile = candidate,
+                            firstSeenAtMs = now
+                        )
+                    }
+                    if (TRACE_RECONNECT_SIZING_LOGS) {
+                        logDebug(
+                            TAG,
+                            "displayProfile defer-shrink(reconnect): locked=${current.width}*${current.height},${current.densityDpi}, incoming=${candidate.width}*${candidate.height},${candidate.densityDpi}, pendingForMs=${now - (mPendingReconnectShrink?.firstSeenAtMs ?: now)}"
+                        )
+                    }
+                    return current
+                }
+                mPendingReconnectShrink = null
+                if (TRACE_RECONNECT_SIZING_LOGS) {
+                    logDebug(
+                        TAG,
+                        "displayProfile keep-locked(reconnect): locked=${current.width}*${current.height},${current.densityDpi}, incoming=${candidate.width}*${candidate.height},${candidate.densityDpi}"
+                    )
+                }
             }
             return current
         }
@@ -128,6 +185,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 log(TAG, "displayProfile cleared: ${it.width}*${it.height},${it.densityDpi}")
             }
             mLockedDisplayProfile = null
+            mPendingReconnectShrink = null
         }
 
         fun systemReady() {
@@ -197,12 +255,14 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 densityDpi = densityDpi,
                 newSession = mSplitController == null
             )
-            logDebug(
-                TAG,
-                "onCreateSplitDisplay resolved profile: incoming=${width}x${height},${densityDpi} " +
-                    "resolved=${profile.width}x${profile.height},${profile.densityDpi} " +
-                    "existing=${mSplitController != null}"
-            )
+            if (TRACE_RECONNECT_SIZING_LOGS) {
+                logDebug(
+                    TAG,
+                    "onCreateSplitDisplay resolved profile: incoming=${width}x${height},${densityDpi} " +
+                        "resolved=${profile.width}x${profile.height},${profile.densityDpi} " +
+                        "existing=${mSplitController != null}"
+                )
+            }
             mSplitController?.apply {
                 // Soft reconnect: always cancel Delay Destroy and rebind surfaces/policies.
                 mSessionPolicy?.onResume()

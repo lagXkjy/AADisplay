@@ -55,6 +55,12 @@ class SplitDisplayController(
         internal const val MAX_RESTORE_VERIFY_ATTEMPTS = 3
         /** Token for post-fullscreen focus restore kicks (cancel on destroy / re-enter). */
         internal val FULLSCREEN_FOCUS_TOKEN = Any()
+
+        /**
+         * Extra reconnect sizing trace（用于定位“720/800 宽度分裂”）。
+         * 默认关闭，避免断线重连时日志过多。
+         */
+        private const val TRACE_RECONNECT_SIZING_LOGS = false
     }
 
     internal val vd = SplitVdLifecycle(this)
@@ -266,11 +272,13 @@ class SplitDisplayController(
         mWidth = width.coerceAtLeast(1)
         mHeight = height.coerceAtLeast(1)
         mDensityDpi = densityDpi.coerceAtLeast(1)
-        logDebug(
-            TAG,
-            "onReconnected profile=${mWidth}x${mHeight},${mDensityDpi} " +
-                "surfaces=${mPrimarySurface != null}/${mSecondarySurface != null}"
-        )
+        if (TRACE_RECONNECT_SIZING_LOGS) {
+            logDebug(
+                TAG,
+                "onReconnected profile=${mWidth}x${mHeight},${mDensityDpi} " +
+                    "surfaces=${mPrimarySurface != null}/${mSecondarySurface != null}"
+            )
+        }
         vd.resizePanesInternal("reconnect")
         vd.applyPolicies(SplitPane.PRIMARY, "reconnect")
         vd.applyPolicies(SplitPane.SECONDARY, "reconnect")

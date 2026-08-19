@@ -53,6 +53,12 @@ object AaUiHook: AaHook() {
     override val tagName: String = "AAD_AaUiHook"
 
     /**
+     * Extra sizing trace for reconnect（用于定位“720/800 宽度分裂”）。
+     * 默认关闭，避免系统日志在断线重连时过于嘈杂。
+     */
+    private const val TRACE_RECONNECT_SIZING_LOGS = false
+
+    /**
      * Gearhead dimens that reserve the vertical rail / edge column.
      * Zeroing these (via Resources hooks) makes AA allocate content at full HU width
      * for any car resolution — do not hardcode 80/720/800.
@@ -229,6 +235,11 @@ object AaUiHook: AaHook() {
             null
         }
 
+        // AutoOpen retries are armed by [scheduleAutoOpenIfNeeded], but [hookContentBounds]
+        // runs in both :car and :projection. Make startMethod available in :car too so
+        // system_server soft reconnect can still auto-open.
+        startMethod = resolveCarStartActivityMethod()
+
         // :car only needs the projection-config Bundle rewrite; skip LayoutInfo/facet setup.
         if (lpparam.processName == processCar) {
             return
@@ -404,6 +415,7 @@ object AaUiHook: AaHook() {
     }
 
     private fun logProjectionConfigRewriteOnce(message: String) {
+        if (!TRACE_RECONNECT_SIZING_LOGS) return
         if (mLastProjectionConfigRewrite == message) return
         mLastProjectionConfigRewrite = message
         log(tagName, message)
@@ -523,21 +535,25 @@ object AaUiHook: AaHook() {
                 ) {
                     method.isAccessible = true
                     method.hookBefore { param ->
-                        rewriteProjectionConfigParcelable(param.args[0] as? String, param.args[1])?.let {
+                        rewriteProjectionConfigParcelable(param.args[0] as? String, param.args[1])?.let { it ->
                             param.args[1] = it
+                            // content_bounds updates are a reliable "layout refresh" signal; arm
+                            // AutoOpen even if :projection hooks didn't re-run yet.
+                            scheduleAutoOpenIfNeeded("content_bounds")
                         }
                     }
                     log(tagName, "AaUiHook: hooked BaseBundle.putParcelable(content_bounds)")
                 }
                 if (method.name == "putInt" && method.parameterCount == 2 &&
                     method.parameterTypes[0] == String::class.java &&
-                    method.parameterTypes[1] == Int::class.javaPrimitiveType
+                    (method.parameterTypes[1] == Int::class.javaPrimitiveType ||
+                        method.parameterTypes[1] == Integer::class.java)
                 ) {
                     method.isAccessible = true
                     method.hookBefore { param ->
                         val key = param.args[0] as? String ?: return@hookBefore
                         if (key != "pillar_width") return@hookBefore
-                        val value = param.args[1] as? Int ?: return@hookBefore
+                        val value = (param.args[1] as? Number)?.toInt() ?: return@hookBefore
                         if (value == 0) return@hookBefore
                         val range = railPxRange(layoutWidthPx().takeIf { it > 0 } ?: (value * 10))
                         if (value in range) {
@@ -556,8 +572,9 @@ object AaUiHook: AaHook() {
                 name == "putParcelable" && parameterCount == 2 &&
                     parameterTypes[0] == String::class.java
             }.hookBefore { param ->
-                rewriteProjectionConfigParcelable(param.args[0] as? String, param.args[1])?.let {
+                rewriteProjectionConfigParcelable(param.args[0] as? String, param.args[1])?.let { it ->
                     param.args[1] = it
+                    scheduleAutoOpenIfNeeded("content_bounds")
                 }
             }
             log(tagName, "AaUiHook: hooked Bundle.putParcelable(content_bounds)")
@@ -568,11 +585,12 @@ object AaUiHook: AaHook() {
             findMethod(Bundle::class.java) {
                 name == "putInt" && parameterCount == 2 &&
                     parameterTypes[0] == String::class.java &&
-                    parameterTypes[1] == Int::class.javaPrimitiveType
+                    (parameterTypes[1] == Int::class.javaPrimitiveType ||
+                        parameterTypes[1] == Integer::class.java)
             }.hookBefore { param ->
                 val key = param.args[0] as? String ?: return@hookBefore
                 if (key != "pillar_width") return@hookBefore
-                val value = param.args[1] as? Int ?: return@hookBefore
+                val value = (param.args[1] as? Number)?.toInt() ?: return@hookBefore
                 if (value == 0) return@hookBefore
                 val range = railPxRange(layoutWidthPx().takeIf { it > 0 } ?: (value * 10))
                 if (value in range) {

@@ -39,6 +39,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         private const val SETTLE_MID_MS = 400L
         private const val SETTLE_LATE_MS = 900L
         private const val RECONNECT_PROFILE_RETRY_MS = 900L
+        /**
+         * Extra host sizing trace for reconnect（定位“720/800 宽度分裂”）。
+         * 默认关闭，避免 logcat 噪音。
+         */
+        private const val TRACE_RECONNECT_SIZING_LOGS = false
     }
 
     private var displayId: Int = Display.INVALID_DISPLAY
@@ -50,6 +55,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private var secondarySurface: Surface? = null
     private var splitRatio: Float = SplitPane.DEFAULT_RATIO
     private lateinit var appPicker: SplitAppPickerController
+    /** Track picker visibility so we can auto-hide it after system_server restart. */
+    private var isPickerVisible: Boolean = false
     private val paneHasApp = booleanArrayOf(false, false)
     private var imeChipVisible = false
     private var imeChipPane = SplitPane.PRIMARY
@@ -171,6 +178,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 scheduleOccupancySync(400L)
             }
             it.onVisibilityChanged = { showing ->
+                isPickerVisible = showing
                 if (showing) {
                     baseBinding.btnHideIme.isVisible = false
                 } else {
@@ -888,6 +896,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             paneHasApp[pane] = pkg.isNotEmpty()
         }
         updateEmptyOverlays()
+        maybeAutoHidePickerWhenOccupied()
     }
 
     private fun applyOccupancyFromPackages(primaryPkg: String, secondaryPkg: String) {
@@ -895,6 +904,20 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         paneHasApp[SplitPane.PRIMARY] = primaryPkg.trim().isNotEmpty()
         paneHasApp[SplitPane.SECONDARY] = secondaryPkg.trim().isNotEmpty()
         updateEmptyOverlays()
+        maybeAutoHidePickerWhenOccupied()
+    }
+
+    /**
+     * After a soft reconnect / system_server restart, fragment is often not recreated.
+     * If the picker was left open, it can remain visible even after both panes are
+     * already occupied (so the user doesn't need "tap to choose" anymore).
+     */
+    private fun maybeAutoHidePickerWhenOccupied() {
+        if (!::appPicker.isInitialized) return
+        if (!isPickerVisible) return
+        if (paneHasApp[SplitPane.PRIMARY] && paneHasApp[SplitPane.SECONDARY]) {
+            appPicker.hide()
+        }
     }
 
     /** Apply remote ratio / fullscreen only once after create/restore (not on every broadcast). */
@@ -1019,14 +1042,21 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         val displayWidth = baseBinding.splitContainer.width
         val displayHeight = baseBinding.splitContainer.height
         val displayDpi = resolveHostDensityDpi()
-        val hostDisplay = baseBinding.splitContainer.display ?: view?.display ?: context?.display
+        val trace = TRACE_RECONNECT_SIZING_LOGS
+        val hostDisplay = if (trace) {
+            baseBinding.splitContainer.display ?: view?.display ?: context?.display
+        } else null
         val hostMode = hostDisplay?.mode
         Log.d(
             TAG,
             "requestDisplay[$reason]: ${displayWidth}x$displayHeight,$displayDpi " +
                 "requested=$isDisplayCreateRequested display=$displayId " +
-                "hostDisplay=${hostDisplay?.displayId ?: Display.INVALID_DISPLAY} " +
-                "hostMode=${hostMode?.physicalWidth ?: 0}x${hostMode?.physicalHeight ?: 0}"
+                if (trace) {
+                    "hostDisplay=${hostDisplay?.displayId ?: Display.INVALID_DISPLAY} " +
+                        "hostMode=${hostMode?.physicalWidth ?: 0}x${hostMode?.physicalHeight ?: 0}"
+                } else {
+                    ""
+                }
         )
         if (displayWidth <= 0 || displayHeight <= 0) return
         if (primarySurface == null || secondarySurface == null) {
