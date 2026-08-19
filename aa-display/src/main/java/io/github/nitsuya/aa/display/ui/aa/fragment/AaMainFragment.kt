@@ -38,6 +38,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         private const val TAG = "AADisplay_AaMainFragment"
         private const val SETTLE_MID_MS = 400L
         private const val SETTLE_LATE_MS = 900L
+        private const val RECONNECT_PROFILE_RETRY_MS = 900L
     }
 
     private var displayId: Int = Display.INVALID_DISPLAY
@@ -52,6 +53,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private val paneHasApp = booleanArrayOf(false, false)
     private var imeChipVisible = false
     private var imeChipPane = SplitPane.PRIMARY
+    private val resumeProfileRetry = Runnable {
+        if (!isAdded) return@Runnable
+        reportAaUiDisplayId()
+        requestDisplay("resume-retry")
+    }
 
     private val broadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent) {
@@ -198,6 +204,16 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             reportAaUiDisplayId()
             requestDisplay("layout")
         }
+        baseBinding.splitContainer.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            val width = right - left
+            val height = bottom - top
+            val oldWidth = oldRight - oldLeft
+            val oldHeight = oldBottom - oldTop
+            if (width <= 0 || height <= 0) return@addOnLayoutChangeListener
+            if (width == oldWidth && height == oldHeight) return@addOnLayoutChangeListener
+            reportAaUiDisplayId()
+            requestDisplay("layout-change")
+        }
     }
 
     override fun onResume() {
@@ -208,6 +224,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 isDisplayCreateRequested = false
             }
             requestDisplay("resume")
+            baseBinding.root.removeCallbacks(resumeProfileRetry)
+            baseBinding.root.postDelayed(resumeProfileRetry, RECONNECT_PROFILE_RETRY_MS)
         }
     }
 
@@ -218,6 +236,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             baseBinding.root.removeCallbacks(settleLate)
             baseBinding.root.removeCallbacks(afterOccupancySync)
             baseBinding.root.removeCallbacks(afterSwapSettle)
+            baseBinding.root.removeCallbacks(resumeProfileRetry)
         } catch (_: Throwable) {
         }
         try {
@@ -1000,10 +1019,14 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         val displayWidth = baseBinding.splitContainer.width
         val displayHeight = baseBinding.splitContainer.height
         val displayDpi = resolveHostDensityDpi()
+        val hostDisplay = baseBinding.splitContainer.display ?: view?.display ?: context?.display
+        val hostMode = hostDisplay?.mode
         Log.d(
             TAG,
             "requestDisplay[$reason]: ${displayWidth}x$displayHeight,$displayDpi " +
-                "requested=$isDisplayCreateRequested display=$displayId"
+                "requested=$isDisplayCreateRequested display=$displayId " +
+                "hostDisplay=${hostDisplay?.displayId ?: Display.INVALID_DISPLAY} " +
+                "hostMode=${hostMode?.physicalWidth ?: 0}x${hostMode?.physicalHeight ?: 0}"
         )
         if (displayWidth <= 0 || displayHeight <= 0) return
         if (primarySurface == null || secondarySurface == null) {

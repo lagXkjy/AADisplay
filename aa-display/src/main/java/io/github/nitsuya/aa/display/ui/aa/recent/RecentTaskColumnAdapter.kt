@@ -81,7 +81,7 @@ class RecentTaskColumnAdapter(
         }
         holder.binding.ibClose.setOnClickListener {
             // Stay on the stack panel so multiple tasks can be closed in sequence.
-            // removeTask forgets VD ownership so reclaim will not resurrect the closed app.
+            // removeTask drops the task, clears VD ownership, then force-stops the package.
             removeItem(item)
             CoreApi.removeTask(item.taskId)
         }

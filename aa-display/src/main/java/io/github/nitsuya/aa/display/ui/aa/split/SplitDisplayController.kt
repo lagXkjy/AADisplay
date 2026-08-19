@@ -266,6 +266,11 @@ class SplitDisplayController(
         mWidth = width.coerceAtLeast(1)
         mHeight = height.coerceAtLeast(1)
         mDensityDpi = densityDpi.coerceAtLeast(1)
+        logDebug(
+            TAG,
+            "onReconnected profile=${mWidth}x${mHeight},${mDensityDpi} " +
+                "surfaces=${mPrimarySurface != null}/${mSecondarySurface != null}"
+        )
         vd.resizePanesInternal("reconnect")
         vd.applyPolicies(SplitPane.PRIMARY, "reconnect")
         vd.applyPolicies(SplitPane.SECONDARY, "reconnect")
@@ -997,9 +1002,24 @@ class SplitDisplayController(
         return ownership.runOnHandlerBlocking(false) { removeTaskOnHandler(taskId) }
     }
 
+    /** Kill the app process after an explicit close/remove (stack Close, swipe-off, etc.). */
+    private fun forceStopPackageOnClose(packageName: String, trackedUserIds: Set<Int>?) {
+        if (SplitChromePackages.BOUNCE_EXCLUDED.contains(packageName)) return
+        val userIds = trackedUserIds?.takeIf { it.isNotEmpty() } ?: setOf(0)
+        for (userId in userIds) {
+            try {
+                Instances.activityManagerHidden.forceStopPackageAsUser(packageName, userId)
+                log(TAG, "forceStop on close: $packageName user=$userId")
+            } catch (e: Throwable) {
+                log(TAG, "forceStop on close failed: $packageName user=$userId", e)
+            }
+        }
+    }
+
     private fun removeTaskOnHandler(taskId: Int): Boolean {
         val packageName = ownership.findPackageForTask(taskId)
         val onVd = ownership.isTaskOnAaDisplay(taskId)
+        val trackedUserIds = packageName?.let { mTrackedPackageUsers[it]?.toSet() }
         return try {
             if (onVd) {
                 mHandler.removeCallbacks(ownership.mDebouncedReclaim)
@@ -1007,19 +1027,22 @@ class SplitDisplayController(
                 ownership.forgetOwnership(taskId, packageName)
             }
             val removed = Instances.iActivityTaskManager.removeTask(taskId)
-            if (removed && onVd && !packageName.isNullOrBlank()) {
-                val vacated = stacks.removeFromAll(packageName)
-                ownership.releaseOwnershipIfUnused(packageName)
-                VdDensityPin.clearPackageVirtualDisplay(packageName)
-                ownership.untrackPackage(packageName)
-                ownership.promoteStackFronts(vacated)
-                vacated.forEach { pane ->
-                    if (stacks.front(pane) == null) {
-                        input.displayIdFor(pane)?.let { ownership.removeChromeTasksOnDisplay(it) }
+            if (removed && !packageName.isNullOrBlank()) {
+                if (onVd) {
+                    val vacated = stacks.removeFromAll(packageName)
+                    ownership.releaseOwnershipIfUnused(packageName)
+                    VdDensityPin.clearPackageVirtualDisplay(packageName)
+                    ownership.untrackPackage(packageName)
+                    ownership.promoteStackFronts(vacated)
+                    vacated.forEach { pane ->
+                        if (stacks.front(pane) == null) {
+                            input.displayIdFor(pane)?.let { ownership.removeChromeTasksOnDisplay(it) }
+                        }
                     }
+                    launch.schedulePersistSnapshot()
+                    notifySplitStateChanged()
                 }
-                launch.schedulePersistSnapshot()
-                notifySplitStateChanged()
+                forceStopPackageOnClose(packageName, trackedUserIds)
             }
             removed
         } catch (e: Throwable) {

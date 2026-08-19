@@ -173,6 +173,7 @@ object AaUiHook: AaHook() {
      */
     @Volatile private var mObservedRailDisplayId: Int = Display.INVALID_DISPLAY
     @Volatile private var mLoggedDashboardStarve = false
+    @Volatile private var mLastProjectionConfigRewrite: String? = null
 
     override fun isSupportProcess(processName: String): Boolean {
         // Facet/VD UI lives in :projection; Coolwalk writes content_bounds in :car
@@ -400,6 +401,12 @@ object AaUiHook: AaHook() {
                     "hasVerticalRail=$beforeRail→${args[5]} size=${mLayoutWidthDp}x${mLayoutHeightDp}"
             )
         }
+    }
+
+    private fun logProjectionConfigRewriteOnce(message: String) {
+        if (mLastProjectionConfigRewrite == message) return
+        mLastProjectionConfigRewrite = message
+        log(tagName, message)
     }
 
     private fun forceVerticalRailOnLayoutInfoInstance(instance: Any) {
@@ -679,9 +686,12 @@ object AaUiHook: AaHook() {
     private fun fixProjectionConfigBundle(bundle: Bundle) {
         try {
             val bounds = bundleParcelableRect(bundle, "content_bounds")
-            rewriteProjectionConfigParcelable("content_bounds", bounds)
+            val boundsBefore = bounds?.let { Rect(it) }
+            val boundsAfter = rewriteProjectionConfigParcelable("content_bounds", bounds)
             val insets = bundleParcelableRect(bundle, "content_insets")
-            rewriteProjectionConfigParcelable("content_insets", insets)
+            val insetsBefore = insets?.let { Rect(it) }
+            val insetsAfter = rewriteProjectionConfigParcelable("content_insets", insets)
+            var pillarRewrite: String? = null
             if (bundle.containsKey("pillar_width")) {
                 val value = bundle.getInt("pillar_width", 0)
                 if (value != 0) {
@@ -689,8 +699,18 @@ object AaUiHook: AaHook() {
                     if (value in range) {
                         mObservedRailWidthPx = value
                         bundle.putInt("pillar_width", 0)
+                        pillarRewrite = "$value→0"
                     }
                 }
+            }
+            if (boundsAfter != null || insetsAfter != null || pillarRewrite != null) {
+                logProjectionConfigRewriteOnce(
+                    "AaUiHook: projection config rewrite " +
+                        "layout=${layoutWidthPx()}x${layoutHeightPx()} " +
+                        "bounds=${boundsBefore ?: "null"}→${bounds ?: "null"} " +
+                        "insets=${insetsBefore ?: "null"}→${insets ?: "null"} " +
+                        "pillar=${pillarRewrite ?: "unchanged"}"
+                )
             }
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: fixProjectionConfigBundle failed", e)
@@ -735,15 +755,23 @@ object AaUiHook: AaHook() {
         val range = railPxRange(fullW)
         // LHD: left gutter reserved for vertical rail.
         if (rect.left in range && rect.right >= fullW - 2 && rect.top <= 0) {
+            val before = Rect(rect)
             mObservedRailWidthPx = rect.left
             rect.set(0, 0, fullW.coerceAtLeast(rect.right), fullH.coerceAtLeast(rect.bottom))
+            logProjectionConfigRewriteOnce(
+                "AaUiHook: content_bounds expanded $before→$rect layout=${fullW}x${fullH}"
+            )
             return rect
         }
         // RHD: right edge pulled in by rail width.
         val rightGap = fullW - rect.right
         if (rect.left <= 0 && rightGap in range && rect.top <= 0) {
+            val before = Rect(rect)
             mObservedRailWidthPx = rightGap
             rect.set(0, 0, fullW, fullH.coerceAtLeast(rect.bottom))
+            logProjectionConfigRewriteOnce(
+                "AaUiHook: content_bounds expanded $before→$rect layout=${fullW}x${fullH}"
+            )
             return rect
         }
         return null
@@ -752,6 +780,7 @@ object AaUiHook: AaHook() {
     /** Zero left/right rail insets published alongside content_bounds. */
     private fun applyZeroedContentInsets(rect: Rect): Rect? {
         val range = railPxRange(layoutWidthPx().takeIf { it > 0 } ?: rect.left.coerceAtLeast(rect.right) * 10)
+        val before = Rect(rect)
         var changed = false
         if (rect.left in range) {
             mObservedRailWidthPx = rect.left
@@ -764,6 +793,9 @@ object AaUiHook: AaHook() {
             changed = true
         }
         if (!changed) return null
+        logProjectionConfigRewriteOnce(
+            "AaUiHook: content_insets zeroed $before→$rect layout=${layoutWidthPx()}x${layoutHeightPx()}"
+        )
         return rect
     }
 

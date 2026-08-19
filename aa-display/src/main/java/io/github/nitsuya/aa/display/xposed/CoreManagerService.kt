@@ -115,21 +115,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                     )
                     return candidate
                 }
-                // AaUiHook zeros Coolwalk rail dimens → shell reports content width (720) while
-                // an older lock may still include the gutter (800). Shrink on one axis so pane
-                // VD buffers match TextureView layout (avoids split/fullscreen letterbox bars).
-                val contentShrink =
-                    current.isLandscape == candidate.isLandscape &&
-                        ((current.height == candidate.height && candidate.width < current.width) ||
-                            (current.width == candidate.width && candidate.height < current.height))
-                if (contentShrink) {
-                    mLockedDisplayProfile = candidate
-                    log(
-                        TAG,
-                        "displayProfile relocked(content-shrink): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
-                    )
-                    return candidate
-                }
                 logDebug(
                     TAG,
                     "displayProfile keep-locked(reconnect): locked=${current.width}*${current.height},${current.densityDpi}, incoming=${candidate.width}*${candidate.height},${candidate.densityDpi}"
@@ -211,6 +196,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 height = height,
                 densityDpi = densityDpi,
                 newSession = mSplitController == null
+            )
+            logDebug(
+                TAG,
+                "onCreateSplitDisplay resolved profile: incoming=${width}x${height},${densityDpi} " +
+                    "resolved=${profile.width}x${profile.height},${profile.densityDpi} " +
+                    "existing=${mSplitController != null}"
             )
             mSplitController?.apply {
                 // Soft reconnect: always cancel Delay Destroy and rebind surfaces/policies.
