@@ -13,6 +13,7 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
 import io.github.nitsuya.aa.display.xposed.hook.VdImeDisplayPin
+import io.github.nitsuya.aa.display.xposed.hook.VdOrientationFill
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
@@ -134,13 +135,21 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 return
             }
             Instances.init(systemContext)
-            PanePresentationGuard.ensureHooked()
-            VdImeDisplayPin.ensureHooked()
+            // Isolate each install: one OEM-missing method must not skip the rest.
+            runCatching { PanePresentationGuard.ensureHooked() }
+                .onFailure { log(TAG, "PanePresentationGuard.ensureHooked failed", it) }
+            runCatching { VdImeDisplayPin.ensureHooked() }
+                .onFailure { log(TAG, "VdImeDisplayPin.ensureHooked failed", it) }
+            runCatching { VdOrientationFill.ensureHooked() }
+                .onFailure { log(TAG, "VdOrientationFill.ensureHooked failed", it) }
         }
 
         fun isAaVirtualDisplay(displayId: Int): Boolean {
             return mSplitController?.isAaVirtualDisplay(displayId) == true
         }
+
+        /** Cheap gate for WM hooks: false when no AA pane VDs exist. */
+        fun hasAaVirtualDisplays(): Boolean = mSplitController != null
 
         fun panePackageForDisplay(displayId: Int): String? {
             val controller = mSplitController ?: return null

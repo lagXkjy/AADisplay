@@ -22,6 +22,7 @@ object VdImeDisplayPin {
     private var windowToBeAddedHook: XC_MethodHook.Unhook? = null
     private var displayIdToShowHook: XC_MethodHook.Unhook? = null
     private var hooked = false
+    private var installAttempted = false
 
     @Volatile private var clientDisplayIdField: Field? = null
     @Volatile private var curClientField: Field? = null
@@ -30,13 +31,16 @@ object VdImeDisplayPin {
 
     fun ensureHooked() {
         if (!AndroidHook.isReadyForSystemHooks()) return
-        if (hooked) return
+        if (installAttempted) return
+        installAttempted = true
         installHooks()
     }
 
     private fun installHooks() {
-        hookGetDisplayIdOfInputMethodWindowToBeAdded()
-        hookGetDisplayIdToShowImeLocked()
+        runCatching { hookGetDisplayIdOfInputMethodWindowToBeAdded() }
+            .onFailure { log(TAG, "windowToBeAdded install failed", it) }
+        runCatching { hookGetDisplayIdToShowImeLocked() }
+            .onFailure { log(TAG, "displayIdToShow install failed", it) }
         hooked = windowToBeAddedHook != null || displayIdToShowHook != null
         if (hooked) {
             log(
@@ -65,6 +69,7 @@ object VdImeDisplayPin {
         }
         windowToBeAddedHook = method.hookAfter { param ->
             try {
+                if (!CoreManagerService.hasAaVirtualDisplays()) return@hookAfter
                 val intended = param.args[0] as? Int ?: return@hookAfter
                 if (!CoreManagerService.isAaVirtualDisplay(intended)) return@hookAfter
                 val actual = param.result as? Int ?: return@hookAfter
@@ -72,8 +77,7 @@ object VdImeDisplayPin {
                 log(TAG, "IME window display $actual → $intended (AA VD)")
                 pinShowDisplay(param.thisObject, intended)
                 param.result = intended
-            } catch (e: Throwable) {
-                log(TAG, "windowToBeAdded hook failed", e)
+            } catch (_: Throwable) {
             }
         }
     }
@@ -93,6 +97,7 @@ object VdImeDisplayPin {
         }
         displayIdToShowHook = method.hookAfter { param ->
             try {
+                if (!CoreManagerService.hasAaVirtualDisplays()) return@hookAfter
                 val clientDisplay = clientDisplayId(param.thisObject) ?: return@hookAfter
                 if (!CoreManagerService.isAaVirtualDisplay(clientDisplay)) return@hookAfter
                 val actual = param.result as? Int ?: return@hookAfter
@@ -100,8 +105,7 @@ object VdImeDisplayPin {
                 logDebug(TAG, "IME show display $actual → $clientDisplay (client AA VD)")
                 pinShowDisplay(param.thisObject, clientDisplay)
                 param.result = clientDisplay
-            } catch (e: Throwable) {
-                log(TAG, "displayIdToShow hook failed", e)
+            } catch (_: Throwable) {
             }
         }
     }

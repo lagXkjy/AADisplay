@@ -98,6 +98,9 @@ object VdDensityPin {
         activityTaskManagerService_startProcessAsync_hook =
             activityTaskManagerService_startProcessAsync?.hookBefore { param ->
                 try {
+                    if (!CoreManagerService.hasAaVirtualDisplays() && pinnedPackages.isEmpty()) {
+                        return@hookBefore
+                    }
                     val activityRecord = param.args[0]
                     val displayId = displayIdOf(activityRecord)
                     val pkg = packageNameOf(activityRecord) ?: return@hookBefore
@@ -108,19 +111,18 @@ object VdDensityPin {
                     }
                     // Non-default (AA VD or other): same as before — pin package for VD DPI.
                     markPackageOnVirtualDisplay(pkg, displayId)
-                } catch (e: Exception) {
-                    log(TAG, "activityTaskManagerService_startProcessAsync Hook Exception", e)
+                } catch (_: Throwable) {
                 }
             }
         applicationThread_bindApplication_hook =
             applicationThread_bindApplication?.hookBefore { param ->
                 try {
+                    if (pinnedPackages.isEmpty()) return@hookBefore
                     val configuration = param.args.firstOrNull { it is Configuration } as? Configuration
                         ?: return@hookBefore
                     val packageName = normalizePackage(param.args[0] as? String) ?: return@hookBefore
                     pinDensityIfMapped(packageName, configuration)
-                } catch (e: Exception) {
-                    log(TAG, "applicationThread_bindApplication Hook Exception", e)
+                } catch (_: Throwable) {
                 }
             }
         // Re-pin VD density when WM recomputes activity configuration after cross-display moves.
@@ -155,6 +157,10 @@ object VdDensityPin {
             } ?: return null
             method.hookBefore { param ->
                 try {
+                    // Hot path: bail before any reflection when AA session is idle and nothing pinned.
+                    if (!CoreManagerService.hasAaVirtualDisplays() && pinnedPackages.isEmpty()) {
+                        return@hookBefore
+                    }
                     val record = param.thisObject
                     val displayId = displayIdOf(record)
                     if (displayId == Display.INVALID_DISPLAY) return@hookBefore
@@ -177,8 +183,8 @@ object VdDensityPin {
                     if (config != null && config.densityDpi != vdDpi) {
                         config.densityDpi = vdDpi
                     }
-                } catch (e: Exception) {
-                    log(TAG, "ActivityRecord configuration pin Exception", e)
+                } catch (_: Throwable) {
+                    // Never propagate into WM ensureActivityConfiguration.
                 }
             }
         } catch (e: Throwable) {
@@ -200,8 +206,12 @@ object VdDensityPin {
             record,
             "getDisplayId",
             Int::class.javaPrimitiveType!!,
-        )?.also { activityRecordDisplayIdMethod = it }
-        return (method?.invoke(record) as? Int) ?: Display.INVALID_DISPLAY
+        )?.also { activityRecordDisplayIdMethod = it } ?: return Display.INVALID_DISPLAY
+        return try {
+            (method.invoke(record) as? Int) ?: Display.INVALID_DISPLAY
+        } catch (_: Throwable) {
+            Display.INVALID_DISPLAY
+        }
     }
 
     private fun packageNameOf(record: Any): String? {

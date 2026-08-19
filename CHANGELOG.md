@@ -3,10 +3,12 @@
 ## Unreleased
 
 ### Changed
+- **近期 system_server 钩子防拖垮：** `findSystemMethod` 缺方法返回 null；`VdOrientationFill` / `VdImeDisplayPin` / `PanePresentationGuard` / `VdDensityPin` 统一：安装失败隔离、回调 `try/catch` 不抛进 WM、无 AA 会话早退；方向钩只保留 config-time resolve（禁用 `getOrientation` 热路径）。
 - **最低系统 Android 13（`minSdk` 33）：** 去掉 API 33 以下的 PackageManager / `registerReceiver` / `getParcelable` / `getPackageUid` 兼容分支。
 - **DPI / 左轨触控热路径：** `VdDensityPin` 对非 AA display 早退（缓存 `getDisplayId`，VD id 不再每次问 VirtualDisplay）；`:car` 左轨 MOVE 按帧合并，DOWN 不再同步 Binder 查全屏（只信 `SPLIT_STATE_CHANGED`）。
 
 ### Fixed
+- **全屏比分屏更窄：** 分屏半窗多为竖屏比例（如 396×480）时竖屏应用能铺满；全屏 VD 变成 800×480 横屏后，竖屏应用仍 `SCREEN_ORIENTATION_PORTRAIT`，WM `FIXED_ORIENTATION` letterbox 成居中 288×480。`VdOrientationFill` 只跳过 AA VD 上的 `resolveFixedOrientationConfiguration` / `resolveAspectRatioRestriction`（不钩 `getOrientation` 等热路径，避免 `:car` ANR）。另修三星无 `getOverrideOrientation` 时 `findMethod` 抛错导致 hooks 装失败。需重装并重启。
 - **合盖折叠屏 AA VD 拉不起输入法：** 三星 `getDisplayIdOfInputMethodWindowToBeAdded` 在 `isFolded` 时强制 `displayId=0`（灭掉的内屏），IMM 已 `mInputShown` 但 HoneyBoard 窗不可见。`VdImeDisplayPin`：目标是 AA VD 时保留该 display（不按机型分支）；`getDisplayIdToShowImeLocked` 作通用兜底。需重装并重启 system_server。
 - **DexKit 2.0.7 升完 AA 直接不能用：** `searchPackages("")` 在 2.0.7 只搜无名包，`AaSignatureHook` / `AaUiHook` LayoutInfo 命中 0；`:car` 里一抛后续钩子全跳过。去掉空包过滤，并隔离单个 hook 的 DexKit 失败。
 - **Android Studio Run「Default Activity not found」：** 隐藏桌面图标后无 `LAUNCHER`；运行配置改为安装后打开 `MainActivity`。

@@ -121,6 +121,8 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             // Narrow side-by-side panes are taller than wide (e.g. 278×480). Landscape apps
             // then rotate the VD to ROTATION_90 (logical 480×278) while the TextureView stays
             // physical W×H → letterbox bars top/bottom. Lock physical orientation.
+            // Inverse: fullscreen 800×480 + portrait app → FIXED_ORIENTATION pillarbox
+            // (VdOrientationFill so the activity fills the pane instead).
             lockPaneDisplayOrientation(displayId, reason)
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "applyPolicies failed pane=$pane:", e)

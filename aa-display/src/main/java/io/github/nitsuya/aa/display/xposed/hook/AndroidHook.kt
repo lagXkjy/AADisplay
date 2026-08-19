@@ -30,6 +30,7 @@ object AndroidHook : BaseHook() {
     fun isReadyForSystemHooks(): Boolean =
         isSystemServerHooked && isSystemServerProcessCached
 
+    /** Returns null when the method is absent — ezxhelper [findMethod] throws [NoSuchMethodException]. */
     internal fun findSystemMethod(
         className: String,
         findSuper: Boolean = false,
@@ -37,7 +38,13 @@ object AndroidHook : BaseHook() {
     ): Method? {
         if (!isReadyForSystemHooks()) return null
         val cl = systemServerClassLoader ?: return null
-        return findMethod(className, cl, findSuper, condition)
+        return try {
+            findMethod(className, cl, findSuper, condition)
+        } catch (_: NoSuchMethodException) {
+            null
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     internal fun loadSystemClass(className: String): Class<*>? {
