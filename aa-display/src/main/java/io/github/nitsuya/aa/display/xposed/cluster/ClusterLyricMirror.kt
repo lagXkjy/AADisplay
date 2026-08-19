@@ -219,18 +219,19 @@ object ClusterLyricMirror {
                 st == PlaybackState.STATE_REWINDING
         }
 
-        val preferredPlaying = filtered.firstOrNull {
-            LyricLineExtractor.isPreferredPackage(it.packageName) && isPlaying(it)
+        fun pickPreferred(predicate: (MediaController) -> Boolean): MediaController? {
+            for (pkg in LyricLineExtractor.PREFERRED_PACKAGE_ORDER) {
+                filtered.firstOrNull { it.packageName == pkg && predicate(it) }?.let { return it }
+            }
+            return null
         }
-        if (preferredPlaying != null) return preferredPlaying
+
+        pickPreferred { isPlaying(it) }?.let { return it }
 
         val anyPlaying = filtered.firstOrNull { isPlaying(it) }
         if (anyPlaying != null) return anyPlaying
 
-        val preferred = filtered.firstOrNull {
-            LyricLineExtractor.isPreferredPackage(it.packageName)
-        }
-        if (preferred != null) return preferred
+        pickPreferred { true }?.let { return it }
 
         return filtered.firstOrNull()
     }

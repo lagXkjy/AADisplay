@@ -13,7 +13,7 @@ import org.json.JSONObject
  * Resolves the instrument-cluster ticker string from a real [MediaController].
  * Timed LRC is synced to [PlaybackState] position; otherwise falls back to song title.
  *
- * Car players only — reads [METADATA_KEY_LYRIC] from MediaSession; no player-process hooks.
+ * QQ Music car / HD pad — reads [METADATA_KEY_LYRIC] from MediaSession; no player-process hooks.
  */
 object LyricLineExtractor {
     private const val TAG = "AAD_LyricLineExtractor"
@@ -22,18 +22,18 @@ object LyricLineExtractor {
     /** Same as [MediaMetadata.METADATA_KEY_LYRIC] (API 34+); string literal for compileSdk stubs. */
     private const val METADATA_KEY_LYRIC = "android.media.metadata.LYRIC"
 
-    /** Car players known to publish timed lyrics into MediaSession. */
-    private val CAR_PLAYER_PACKAGES = setOf(
-        "com.tencent.qqmusiccar",
-    )
+    private const val QQ_CAR_PKG = "com.tencent.qqmusiccar"
+    const val QQ_PAD_PKG = "com.tencent.qqmusicpad"
 
-    /** Other streaming apps that may write [METADATA_KEY_LYRIC] without hooks. */
-    private val STREAMING_PACKAGES = setOf(
+    /** Preferred sources for cluster lyric mirror; earlier wins when multiple match. */
+    val PREFERRED_PACKAGE_ORDER = listOf(
+        QQ_CAR_PKG,
+        QQ_PAD_PKG,
         "com.spotify.music",
         "com.google.android.apps.youtube.music",
     )
 
-    private val PREFERRED_PACKAGES = CAR_PLAYER_PACKAGES + STREAMING_PACKAGES
+    private val PREFERRED_PACKAGES = PREFERRED_PACKAGE_ORDER.toSet()
 
     private val LYRIC_KEYS = listOf(METADATA_KEY_LYRIC)
 

@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Changed
-- **仪表横条歌词收窄为 QQ 音乐车载：** 移除网易云 IoT（`cloudmusic.iot`）配套——通用渠道 APK 不向 MediaSession 写歌词，`wt_music_lyric` / extras 路径实机无效。`LyricLineExtractor` 只读 `qqmusiccar` 的 `METADATA_KEY_LYRIC`。保留 LRC position-tick 与 Settings 保活。
+- **仪表横条歌词扩展 QQ 音乐 HD：** `LyricLineExtractor` 同时读 `qqmusiccar` 与 `qqmusicpad` 的 `METADATA_KEY_LYRIC`；双 QQ 并存时 `qqmusiccar` 优先。保留 LRC position-tick 与 Settings 保活。
 - **仪表横条歌词收窄为车机版播放器：** 移除手机网易云/QQ 及 OPlus spoof 全部配套。
 
 ### Fixed
@@ -11,6 +11,7 @@
 - **仪表横条歌名兜底过期：** 播放中定期 touch `aadisplay_cluster_np_updated_ms`，避免 15s 后 gearhead 出站变陈旧。
 
 ### Added
+- **QQ 音乐 HD 仪表歌词：** `LyricLineExtractor` 读 `com.tencent.qqmusicpad` 的 `METADATA_KEY_LYRIC`（与车机版同路径）；LRC position-tick、Title=当前句、Subtitle=歌手名；未写字段时 fallback 歌名。
 - **仪表横条歌词（AA Now Playing Title）：** `ClusterLyricMirror` 镜像活跃 MediaSession 到影子 session，写入 `Settings.Global`（`aadisplay_cluster_np_*`）。读车机版 `LYRIC` / extras 当前句，否则歌名。`AaClusterLyricEgressHook` 在 gearhead 改写出站。
 - **M0 真车基线（需用户确认）：** 原生 AA + Spotify 时速度表/转速表之间横条是否有字；有则该车吃 AA Title，本功能才适用。
 - **方控长按映射：** 长按上一曲/下一曲与分隔条点按相同（分屏左右整栈对调，全屏只切可见窗不搬栈）；长按播放/暂停开/关 Recent（与分隔条长按相同）。短按三键仍走媒体 / 直播间滑动。
@@ -34,7 +35,8 @@
 1. **M0：** 关掉 AADisplay / 原生 AA + Spotify → 速度表与转速表之间横条有 Now Playing 字
 2. **M1：** 启用本模块 + QQ 音乐车载播放 → 横条至少出现歌名；中控仍无空 Dashboard 卡
 3. **M2：** 车机版写出 `METADATA_KEY_LYRIC` → 横条 `lyric-tick` 随句更新；切歌不串句；方控短按仍控真实播放器
-4. 冷连接 / 重连后横条仍更新；logcat `AAD_ClusterLyricMirror` / `AAD_ShadowNowPlaying` / `AAD_AaClusterLyricEgressHook` / `AAD_LyricLineExtractor`
+4. **M3（QQ HD）：** `com.tencent.qqmusicpad` 播放 → logcat `extras lyric-key=android.media.metadata.LYRIC`；横条随句更新
+5. 冷连接 / 重连后横条仍更新；logcat `AAD_ClusterLyricMirror` / `AAD_ShadowNowPlaying` / `AAD_AaClusterLyricEgressHook` / `AAD_LyricLineExtractor`
 
 ## 0.24#17.4-r10
 
