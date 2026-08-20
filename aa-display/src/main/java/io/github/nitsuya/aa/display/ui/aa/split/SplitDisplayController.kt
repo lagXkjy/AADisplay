@@ -233,7 +233,7 @@ class SplitDisplayController(
             Binder.restoreCallingIdentity(identity)
         }
 
-        log(
+        logDebug(
             TAG,
             "split VD created: primary=${primaryDisplayId} ${sizes.primaryW}x${sizes.primaryH}, " +
                 "secondary=${secondaryDisplayId} ${sizes.secondaryW}x${sizes.secondaryH}, " +
@@ -374,7 +374,7 @@ class SplitDisplayController(
         scheduleRestoreFocusAfterFullscreen()
         launch.schedulePersistSnapshot()
         notifySplitStateChanged()
-        log(
+        logDebug(
             TAG,
             "setSplitFullscreen pane=$mFullscreenPane ratio=$mRatio " +
                 "ratioBefore=$mRatioBeforeFullscreen"
@@ -619,7 +619,7 @@ class SplitDisplayController(
         mAaUiDisplayIdLookupFailed = false
         try {
             context.sendBroadcast(Intent(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID))
-            log(TAG, "maybeRecoverAaUiDisplayId: asked UI to re-report")
+            logDebug(TAG, "maybeRecoverAaUiDisplayId: asked UI to re-report")
         } catch (e: Throwable) {
             log(TAG, "maybeRecoverAaUiDisplayId broadcast failed", e)
         }
@@ -643,7 +643,7 @@ class SplitDisplayController(
         } else {
             lockedPeel.reset()
         }
-        log(TAG, "setAaUiDisplayId id=$next")
+        logDebug(TAG, "setAaUiDisplayId id=$next")
     }
 
     /**
@@ -669,7 +669,7 @@ class SplitDisplayController(
             if (tasks.any { it.topActivity?.packageName == BuildConfig.APPLICATION_ID }) {
                 mAaUiDisplayId = id
                 lockedPeel.applyAaUiDisplayKeyguardPolicy(id, "atms")
-                log(TAG, "resolveAaUiDisplayId via ATMS id=$id")
+                logDebug(TAG, "resolveAaUiDisplayId via ATMS id=$id")
                 return id
             }
         }
@@ -819,7 +819,7 @@ class SplitDisplayController(
                 ownership.markOwnership(packageName, displayId)
                 launch.schedulePersistSnapshot()
                 notifySplitStateChanged()
-                log(TAG, "startActivityOnPane front-existing pkg=$packageName pane=$pane")
+                logDebug(TAG, "startActivityOnPane front-existing pkg=$packageName pane=$pane")
                 return true
             }
             // Bring failed (zombie / LAUNCHER≠topActivity) or task missing — drop and relaunch.
@@ -835,7 +835,7 @@ class SplitDisplayController(
         ) {
             val bottom = stacks.packagesBottomToTop(pane).firstOrNull()
             if (!bottom.isNullOrBlank() && bottom != packageName) {
-                log(TAG, "startActivityOnPane evict bottom=$bottom pane=$pane")
+                logDebug(TAG, "startActivityOnPane evict bottom=$bottom pane=$pane")
                 ownership.evictPackageFromPane(pane, bottom)
             }
         }
@@ -864,7 +864,7 @@ class SplitDisplayController(
                         packageName,
                         displayId
                     )
-                    log(TAG, "startActivityOnPane relocate $packageName#$taskId $fromDisplay->$displayId")
+                    logDebug(TAG, "startActivityOnPane relocate $packageName#$taskId $fromDisplay->$displayId")
                     ownership.bringTaskToFront(taskId)
                     // bringTaskToFront can succeed on the *phone* while move was ignored —
                     // require the live root to actually sit on the target VD.
@@ -891,7 +891,7 @@ class SplitDisplayController(
             ownership.markOwnership(packageName, displayId)
             launch.schedulePersistSnapshot()
             notifySplitStateChanged()
-            log(TAG, "startActivityOnPane ok pkg=$packageName pane=$pane display=$displayId stack=${stacks.packagesBottomToTop(pane)}")
+            logDebug(TAG, "startActivityOnPane ok pkg=$packageName pane=$pane display=$displayId stack=${stacks.packagesBottomToTop(pane)}")
         } else {
             log(TAG, "startActivityOnPane failed pkg=$packageName pane=$pane display=$displayId")
         }
@@ -1017,7 +1017,7 @@ class SplitDisplayController(
         for (userId in userIds) {
             try {
                 Instances.activityManagerHidden.forceStopPackageAsUser(packageName, userId)
-                log(TAG, "forceStop on close: $packageName user=$userId")
+                logDebug(TAG, "forceStop on close: $packageName user=$userId")
             } catch (e: Throwable) {
                 log(TAG, "forceStop on close failed: $packageName user=$userId", e)
             }
@@ -1188,7 +1188,7 @@ class SplitDisplayController(
 
         launch.schedulePersistSnapshot()
         notifySplitStateChanged()
-        log(
+        logDebug(
             TAG,
             "swapPanes ok primary=${mPanePackages[SplitPane.PRIMARY]} " +
                 "secondary=${mPanePackages[SplitPane.SECONDARY]} ratio=$mRatio " +

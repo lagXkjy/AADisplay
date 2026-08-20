@@ -179,13 +179,13 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
         if (!SplitPane.isFullscreenPane(cur)) return
         val other = if (cur == SplitPane.PRIMARY) SplitPane.SECONDARY else SplitPane.PRIMARY
         c.setSplitFullscreen(other)
-        log(SplitDisplayController.TAG, "lockedPeel tap → fullscreen pane=$other")
+        logDebug(SplitDisplayController.TAG, "lockedPeel tap → fullscreen pane=$other")
     }
 
     private fun openRecent() {
         try {
             c.context.sendBroadcast(Intent(AABroadcastConst.ACTION_SHOW_RECENT_TASK))
-            log(SplitDisplayController.TAG, "lockedPeel long-press → SHOW_RECENT_TASK")
+            logDebug(SplitDisplayController.TAG, "lockedPeel long-press → SHOW_RECENT_TASK")
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "lockedPeel openRecent failed:", e)
         }

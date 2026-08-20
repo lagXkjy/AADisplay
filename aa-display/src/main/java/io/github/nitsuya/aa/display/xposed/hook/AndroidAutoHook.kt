@@ -16,6 +16,7 @@ import io.github.nitsuya.aa.display.xposed.hook.aa.AaNavFallbackHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaSignatureHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaUiHook
 import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.luckypray.dexkit.DexKitBridge
 import kotlin.system.measureTimeMillis
 
@@ -83,7 +84,7 @@ object AndroidAutoHook : BaseHook() {
                     log(tagName, "${h.tagName} applyCache failed", e)
                 }.getOrDefault(false)
                 if (fromCache) {
-                    log(tagName, "${h.tagName} dexkit cache hit")
+                    logDebug(tagName, "${h.tagName} dexkit cache hit")
                     ready += h
                 } else {
                     needScan += h
@@ -110,13 +111,13 @@ object AndroidAutoHook : BaseHook() {
                     }
                 }
                 cache.commit()
-                log(
+                logDebug(
                     tagName,
                     "${lpparam.processName} load class measure ${measureTimeMillis}ms " +
                         "(scanned=${needScan.size} cached=${hooks.count { it.usesDexKit } - needScan.size})",
                 )
             } else {
-                log(
+                logDebug(
                     tagName,
                     "${lpparam.processName} dexkit cache hit all " +
                         "(${hooks.count { it.usesDexKit }} hooks, skipped scan)",

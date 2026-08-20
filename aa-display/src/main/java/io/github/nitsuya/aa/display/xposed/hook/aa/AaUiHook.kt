@@ -374,9 +374,9 @@ object AaUiHook: AaHook() {
                 "AaUiHook: skip facet-bar override, missing resources: facetIds=$facetBarLayoutIds, status=$resIdStatusBarId, launcherContainer=$resIdLauncherAndDashboardIconContainerId, launcherIcon=$resIdLauncherAndDashboardIconId"
             )
         } else {
-            log(tagName, "AaUiHook: facet layout ids=$facetBarLayoutIds railHosts=$railHostLayoutIds")
+            logDebug(tagName, "AaUiHook: facet layout ids=$facetBarLayoutIds railHosts=$railHostLayoutIds")
         }
-        log(tagName, "AaUiHook: rail width dimens=$railWidthDimenIds")
+        logDebug(tagName, "AaUiHook: rail width dimens=$railWidthDimenIds")
     }
 
     override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -392,7 +392,7 @@ object AaUiHook: AaHook() {
             registerAaUiRailConsumeReceiver()
             return
         }
-        log(tagName, "AaUiHook: AutoOpen always-on startMethod=${startMethod?.name}")
+        logDebug(tagName, "AaUiHook: AutoOpen always-on startMethod=${startMethod?.name}")
         // Zero rail-column dimens first so LayoutInfo / VD allocation sees full HU width.
         hookRailWidthDimens()
         hookVirtualDisplaySizing()
@@ -479,7 +479,7 @@ object AaUiHook: AaHook() {
         if (!TRACE_RECONNECT_SIZING_LOGS) return
         if (mLastProjectionConfigRewrite == message) return
         mLastProjectionConfigRewrite = message
-        log(tagName, message)
+        logDebug(tagName, message)
     }
 
     private fun forceVerticalRailOnLayoutInfoInstance(instance: Any) {
@@ -575,7 +575,7 @@ object AaUiHook: AaHook() {
             hookDimenMethod(impl, "getDimension", 0f)
         } catch (_: Throwable) {
         }
-        log(tagName, "AaUiHook: hooked rail width dimens → 0 (${railWidthDimenIds.size} ids)")
+        logDebug(tagName, "AaUiHook: hooked rail width dimens → 0 (${railWidthDimenIds.size} ids)")
     }
 
     /**
@@ -603,7 +603,7 @@ object AaUiHook: AaHook() {
                             scheduleAutoOpenIfNeeded("content_bounds")
                         }
                     }
-                    log(tagName, "AaUiHook: hooked BaseBundle.putParcelable(content_bounds)")
+                    logDebug(tagName, "AaUiHook: hooked BaseBundle.putParcelable(content_bounds)")
                 }
                 if (method.name == "putInt" && method.parameterCount == 2 &&
                     method.parameterTypes[0] == String::class.java &&
@@ -622,7 +622,7 @@ object AaUiHook: AaHook() {
                             param.args[1] = 0
                         }
                     }
-                    log(tagName, "AaUiHook: hooked BaseBundle.putInt(pillar_width)")
+                    logDebug(tagName, "AaUiHook: hooked BaseBundle.putInt(pillar_width)")
                 }
             }
         } catch (e: Throwable) {
@@ -638,7 +638,7 @@ object AaUiHook: AaHook() {
                     scheduleAutoOpenIfNeeded("content_bounds")
                 }
             }
-            log(tagName, "AaUiHook: hooked Bundle.putParcelable(content_bounds)")
+            logDebug(tagName, "AaUiHook: hooked Bundle.putParcelable(content_bounds)")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: hook Bundle.putParcelable failed", e)
         }
@@ -659,7 +659,7 @@ object AaUiHook: AaHook() {
                     param.args[1] = 0
                 }
             }
-            log(tagName, "AaUiHook: hooked Bundle.putInt(pillar_width)")
+            logDebug(tagName, "AaUiHook: hooked Bundle.putInt(pillar_width)")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: hook Bundle.putInt failed", e)
         }
@@ -706,7 +706,7 @@ object AaUiHook: AaHook() {
                     param.args[1] = it
                 }
             }
-            log(tagName, "AaUiHook: hooked ArrayMap.put for content_bounds")
+            logDebug(tagName, "AaUiHook: hooked ArrayMap.put for content_bounds")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: hook ArrayMap.put failed", e)
         }
@@ -722,7 +722,7 @@ object AaUiHook: AaHook() {
                 if (!looksLikeHuContentBounds(rect)) return@hookAfter
                 applyExpandedContentBounds(rect)
             }
-            log(tagName, "AaUiHook: hooked Rect(int,int,int,int) for content_bounds")
+            logDebug(tagName, "AaUiHook: hooked Rect(int,int,int,int) for content_bounds")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: hook Rect ctor failed", e)
         }
@@ -738,7 +738,7 @@ object AaUiHook: AaHook() {
                 if (!looksLikeHuContentBounds(rect)) return@hookAfter
                 applyExpandedContentBounds(rect)
             }
-            log(tagName, "AaUiHook: hooked Rect.set for content_bounds mutate")
+            logDebug(tagName, "AaUiHook: hooked Rect.set for content_bounds mutate")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: hook Rect.set failed", e)
         }
@@ -755,7 +755,7 @@ object AaUiHook: AaHook() {
                         if (arg is Bundle) fixProjectionConfigBundle(arg)
                     }
                 }
-                log(tagName, "AaUiHook: hooked ${method.declaringClass.name}#${method.name} for config Bundle")
+                logDebug(tagName, "AaUiHook: hooked ${method.declaringClass.name}#${method.name} for config Bundle")
             } catch (e: Throwable) {
                 log(tagName, "AaUiHook: hook ${method.declaringClass.name}#${method.name} failed", e)
             }
@@ -912,7 +912,7 @@ object AaUiHook: AaHook() {
                 }
                 hooked++
             }
-            log(tagName, "AaUiHook: hooked DisplayManager.createVirtualDisplay overloads=$hooked")
+            logDebug(tagName, "AaUiHook: hooked DisplayManager.createVirtualDisplay overloads=$hooked")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: hook DisplayManager.createVirtualDisplay failed", e)
         }
@@ -958,7 +958,7 @@ object AaUiHook: AaHook() {
                 hookedBuilder++
             } catch (_: Throwable) {
             }
-            log(tagName, "AaUiHook: hooked VirtualDisplayConfig.Builder paths=$hookedBuilder")
+            logDebug(tagName, "AaUiHook: hooked VirtualDisplayConfig.Builder paths=$hookedBuilder")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: hook VirtualDisplayConfig.Builder failed", e)
         }
@@ -1536,7 +1536,7 @@ object AaUiHook: AaHook() {
             if (width == 1 && height == 1) return null
             if (!mLoggedDashboardStarve) {
                 mLoggedDashboardStarve = true
-                log(tagName, "AaUiHook: starve Dashboard VD ${width}x$height → 1x1")
+                logDebug(tagName, "AaUiHook: starve Dashboard VD ${width}x$height → 1x1")
             }
             return 1 to 1
         }
@@ -1614,7 +1614,7 @@ object AaUiHook: AaHook() {
         }
         try {
             return clazz.staticMethod("a", null, argTypes(Intent::class.java)).also {
-                log(tagName, "AaUiHook: startMethod=a(Intent)")
+                logDebug(tagName, "AaUiHook: startMethod=a(Intent)")
             }
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: CarSystemUiControllerService.a missing, scanning static Intent methods", e)
@@ -1628,7 +1628,7 @@ object AaUiHook: AaHook() {
         val picked = candidates.firstOrNull()
         if (picked != null) {
             picked.isAccessible = true
-            log(tagName, "AaUiHook: startMethod fallback=${picked.name}(Intent) candidates=${candidates.map { it.name }}")
+            logDebug(tagName, "AaUiHook: startMethod fallback=${picked.name}(Intent) candidates=${candidates.map { it.name }}")
         } else {
             log(tagName, "AaUiHook: no static Intent start method on CarSystemUiControllerService")
         }
@@ -1717,7 +1717,7 @@ object AaUiHook: AaHook() {
                 Context.RECEIVER_EXPORTED
             )
             mAutoOpenShownReceiver = receiver
-            log(tagName, "AaUiHook: registered AA_DISPLAY_SHOWN receiver for AutoOpen cancel")
+            logDebug(tagName, "AaUiHook: registered AA_DISPLAY_SHOWN receiver for AutoOpen cancel")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: register AA_DISPLAY_SHOWN receiver failed", e)
         }
@@ -1727,7 +1727,7 @@ object AaUiHook: AaHook() {
         if (mAaDisplayShownThisSession) return
         mAaDisplayShownThisSession = true
         mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
-        log(tagName, "AaUiHook: AutoOpen stop retries ($reason)")
+        logDebug(tagName, "AaUiHook: AutoOpen stop retries ($reason)")
     }
 
     private fun scheduleAutoOpenIfNeeded(reason: String = "unknown") {
@@ -1742,7 +1742,7 @@ object AaUiHook: AaHook() {
         mAutoOpenSessionAtMs = now
         mAaDisplayShownThisSession = false
         mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
-        log(tagName, "AaUiHook: arm AutoOpen retries ($reason) delays=${AUTO_OPEN_DELAYS_MS.contentToString()}")
+        logDebug(tagName, "AaUiHook: arm AutoOpen retries ($reason) delays=${AUTO_OPEN_DELAYS_MS.contentToString()}")
         for (delayMs in AUTO_OPEN_DELAYS_MS) {
             mFacetEnsureHandler.postAtTime(
                 { tryAutoOpenAaDisplay(delayMs) },
@@ -1763,7 +1763,7 @@ object AaUiHook: AaHook() {
         val method = startMethod ?: return
         try {
             method.invoke(null, aaDisplayLaunchIntent())
-            log(tagName, "AaUiHook: AutoOpen invoke at ${delayMs}ms")
+            logDebug(tagName, "AaUiHook: AutoOpen invoke at ${delayMs}ms")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: AutoOpen invoke failed at ${delayMs}ms", e)
         }
@@ -1893,7 +1893,7 @@ object AaUiHook: AaHook() {
                     scheduleEnsureFacetBar("windowAttach")
                 }
             }
-            log(tagName, "AaUiHook: hooked WindowManagerGlobal.addView for facet ensure")
+            logDebug(tagName, "AaUiHook: hooked WindowManagerGlobal.addView for facet ensure")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: hook WindowManagerGlobal.addView failed", e)
         }

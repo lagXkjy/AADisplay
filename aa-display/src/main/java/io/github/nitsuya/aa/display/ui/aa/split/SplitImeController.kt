@@ -113,7 +113,7 @@ internal class SplitImeController(private val c: SplitDisplayController) {
         if (shown == visible && (!shown || pane == imePane)) return
         visible = shown
         if (shown) imePane = pane
-        log(SplitDisplayController.TAG, "ime visible=$shown pane=$pane")
+        logDebug(SplitDisplayController.TAG, "ime visible=$shown pane=$pane")
         broadcast(if (shown) pane else SplitPane.FULLSCREEN_NONE)
     }
 

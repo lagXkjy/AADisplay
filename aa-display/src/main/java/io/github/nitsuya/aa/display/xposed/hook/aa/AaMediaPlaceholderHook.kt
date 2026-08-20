@@ -16,6 +16,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.hook.DexKitMethodCache
 import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.luckypray.dexkit.DexKitBridge
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
@@ -51,7 +52,7 @@ object AaMediaPlaceholderHook : AaHook() {
     ): Boolean {
         val refs = cache.getRefs(CACHE_INSET) ?: return false
         insetAssertMethods = cache.resolveAll(lpparam.classLoader, refs) ?: return false
-        log(tagName, "inset assert methods=${insetAssertMethods.size} (cache)")
+        logDebug(tagName, "inset assert methods=${insetAssertMethods.size} (cache)")
         return true
     }
 
@@ -77,7 +78,7 @@ object AaMediaPlaceholderHook : AaHook() {
         }.distinctBy {
             "${it.declaringClass.name}#${it.name}#${it.parameterTypes.joinToString { p -> p.name }}"
         }
-        log(tagName, "inset assert methods=${insetAssertMethods.size}")
+        logDebug(tagName, "inset assert methods=${insetAssertMethods.size}")
     }
 
     override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -99,7 +100,7 @@ object AaMediaPlaceholderHook : AaHook() {
             if (state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED ||
                 state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
             ) {
-                log(tagName, "MediaCarApp already enabled/default state=$state")
+                logDebug(tagName, "MediaCarApp already enabled/default state=$state")
                 return
             }
             pm.setComponentEnabledSetting(
@@ -107,7 +108,7 @@ object AaMediaPlaceholderHook : AaHook() {
                 PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
                 PackageManager.DONT_KILL_APP,
             )
-            log(tagName, "re-enabled $MEDIA_CAR_APP (was state=$state)")
+            logDebug(tagName, "re-enabled $MEDIA_CAR_APP (was state=$state)")
         }.onFailure { e ->
             log(tagName, "ensure $MEDIA_CAR_APP enabled failed", e)
         }
@@ -133,7 +134,7 @@ object AaMediaPlaceholderHook : AaHook() {
                         } catch (e: InvocationTargetException) {
                             val cause = e.cause ?: e
                             if (!isDashboardCoverAssert(cause)) throw cause
-                            log(
+                            logDebug(
                                 tagName,
                                 "suppress ${method.declaringClass.simpleName}#${method.name} " +
                                     "Dashboard cover assert"
@@ -147,7 +148,7 @@ object AaMediaPlaceholderHook : AaHook() {
                 log(tagName, "hook inset ${method.declaringClass.name}#${method.name} failed", e)
             }
         }
-        log(tagName, "hooked inset assert methods=$hooked/${insetAssertMethods.size}")
+        logDebug(tagName, "hooked inset assert methods=$hooked/${insetAssertMethods.size}")
     }
 
     private fun isDashboardCoverAssert(t: Throwable): Boolean {
@@ -203,6 +204,6 @@ object AaMediaPlaceholderHook : AaHook() {
             lp.height = 0
             lp.alpha = 0f
         }
-        log(tagName, "hide Dashboard title=${lp?.title}")
+        logDebug(tagName, "hide Dashboard title=${lp?.title}")
     }
 }

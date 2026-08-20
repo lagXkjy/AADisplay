@@ -5,7 +5,6 @@ import android.media.session.MediaController
 import android.media.session.PlaybackState
 import android.os.Bundle
 import android.os.SystemClock
-import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.json.JSONObject
 
@@ -122,12 +121,12 @@ object LyricLineExtractor {
         val keys = linkedSetOf<String>()
         collectKeys(state?.extras, keys)
         collectKeys(metadata?.bundleCompat(), keys)
-        log(TAG, "extras dump pkg=$packageName keys=${keys.sorted().joinToString()}")
+        logDebug(TAG, "extras dump pkg=$packageName keys=${keys.sorted().joinToString()}")
         for (key in LYRIC_KEYS) {
             val v = state?.extras?.nonBlankString(key)
                 ?: metadata?.bundleCompat()?.nonBlankString(key)
                 ?: continue
-            log(TAG, "extras lyric-key=$key len=${v.length} head=${v.take(96)}")
+            logDebug(TAG, "extras lyric-key=$key len=${v.length} head=${v.take(96)}")
         }
     }
 

@@ -17,6 +17,7 @@ import com.github.kyuubiran.ezxhelper.utils.newInstance
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -112,7 +113,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             if (targetDisplay == null) {
                 continue
             }
-            log(SplitDisplayController.TAG, "reclaim[$reason]: $pkg#$phoneTask -> display=$targetDisplay")
+            logDebug(SplitDisplayController.TAG, "reclaim[$reason]: $pkg#$phoneTask -> display=$targetDisplay")
             try {
                 Instances.iActivityTaskManager.moveRootTaskToDisplay(phoneTask, targetDisplay)
                 VdDensityPin.markPackageOnVirtualDisplay(pkg, targetDisplay)
@@ -247,7 +248,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             ) {
                 return true
             }
-            log(
+            logDebug(
                 SplitDisplayController.TAG,
                 "bringTaskToFront still not top task=$taskId"
             )
@@ -386,7 +387,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
                     UserHandle::class.java
                 )
             )
-            log(
+            logDebug(
                 SplitDisplayController.TAG,
                 "bringTaskToFront reorder pkg=$packageName cmp=${component.className} " +
                     "task=$taskId display=$displayId topPreferred=$preferTopActivity"
@@ -571,7 +572,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         for (ref in snapshotUserRootTasks(displayId)) {
             if (resizeTaskToBounds(ref.taskId, bounds, RESIZE_MODE_SYSTEM_FORCED)) forced++
         }
-        log(
+        logDebug(
             SplitDisplayController.TAG,
             "ensureTasksFillDisplay[$reason] display=$displayId " +
                 "${width}x$height nudged=${vd != null} forced=$forced front=${front?.taskId}"

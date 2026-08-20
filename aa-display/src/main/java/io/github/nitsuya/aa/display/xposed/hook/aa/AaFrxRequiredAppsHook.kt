@@ -4,7 +4,7 @@ import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.hook.DexKitMethodCache
-import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.enums.StringMatchType
@@ -45,7 +45,7 @@ object AaFrxRequiredAppsHook : AaHook() {
         val refs = cache.getRefs(CACHE_STATUS) ?: return false
         if (refs.isEmpty()) return false
         statusMethods = cache.resolveAll(lpparam.classLoader, refs) ?: return false
-        log(tagName, "status methods=${statusMethods.size} (cache)")
+        logDebug(tagName, "status methods=${statusMethods.size} (cache)")
         return true
     }
 
@@ -98,7 +98,7 @@ object AaFrxRequiredAppsHook : AaHook() {
                 if (list.isEmpty()) {
                     throw NoSuchMethodException("AaFrxRequiredAppsHook: no FRX package-status methods")
                 }
-                log(tagName, "status methods=${list.size}")
+                logDebug(tagName, "status methods=${list.size}")
             }
     }
 
@@ -110,7 +110,7 @@ object AaFrxRequiredAppsHook : AaHook() {
                 if (param.result as? Int == STATUS_READY) return@hookAfter
                 param.result = STATUS_READY
                 if (loggedBypass.add(pkg)) {
-                    log(tagName, "bypass FRX required-app check for $pkg")
+                    logDebug(tagName, "bypass FRX required-app check for $pkg")
                 }
             }
         }

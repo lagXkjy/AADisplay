@@ -106,12 +106,12 @@ internal object SplitPresentationGuard {
                 val pkg = packageForWindowState(c, windowState) ?: "?"
                 if (removeWindowState(wms, windowState)) {
                     count++
-                    log(
+                    logDebug(
                         SplitDisplayController.TAG,
                         "evictPresentation[$reason]: removed $pkg from display=$displayId (owner=$ownerPkg)"
                     )
                 } else {
-                    log(
+                    logDebug(
                         SplitDisplayController.TAG,
                         "evictPresentation[$reason]: failed to remove $pkg from display=$displayId"
                     )

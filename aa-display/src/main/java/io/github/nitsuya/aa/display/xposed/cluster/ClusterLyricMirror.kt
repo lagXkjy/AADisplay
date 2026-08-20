@@ -199,7 +199,7 @@ object ClusterLyricMirror {
             boundPackage = null
             return
         }
-        log(TAG, "bound pkg=$pkg")
+        logDebug(TAG, "bound pkg=$pkg")
         phase = Phase.TrackSwitching
         trackingMediaId = ""
         handler.removeCallbacks(trackSwitchSettle)
@@ -465,7 +465,7 @@ object ClusterLyricMirror {
         if (!isPlayingState(pick.playbackState?.state ?: PlaybackState.STATE_NONE)) {
             return false
         }
-        log(TAG, "switch pkg=$boundPackage -> ${pick.packageName} reason=$reason")
+        logDebug(TAG, "switch pkg=$boundPackage -> ${pick.packageName} reason=$reason")
         onSessionsChanged(sessions)
         return true
     }

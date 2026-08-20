@@ -92,14 +92,14 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             if (current == null) {
                 mPendingReconnectShrink = null
                 mLockedDisplayProfile = candidate
-                log(TAG, "displayProfile locked: ${candidate.width}*${candidate.height},${candidate.densityDpi}")
+                logDebug(TAG, "displayProfile locked: ${candidate.width}*${candidate.height},${candidate.densityDpi}")
                 return candidate
             }
             if (newSession) {
                 mPendingReconnectShrink = null
                 if (current != candidate) {
                     mLockedDisplayProfile = candidate
-                    log(
+                    logDebug(
                         TAG,
                         "displayProfile relocked(new-session): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
                     )
@@ -109,7 +109,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             if (current.isLandscape != candidate.isLandscape) {
                 mPendingReconnectShrink = null
                 mLockedDisplayProfile = candidate
-                log(
+                logDebug(
                     TAG,
                     "displayProfile relocked(orientation): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
                 )
@@ -148,7 +148,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                         mPendingReconnectShrink = null
                         mLockedDisplayProfile = candidate
                         if (TRACE_RECONNECT_SIZING_LOGS) {
-                            log(
+                            logDebug(
                                 TAG,
                                 "displayProfile relocked(shrink-confirmed): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
                             )
@@ -182,7 +182,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
         private fun clearDisplayProfileLock() {
             mLockedDisplayProfile?.also {
-                log(TAG, "displayProfile cleared: ${it.width}*${it.height},${it.densityDpi}")
+                logDebug(TAG, "displayProfile cleared: ${it.width}*${it.height},${it.densityDpi}")
             }
             mLockedDisplayProfile = null
             mPendingReconnectShrink = null
@@ -240,7 +240,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         listener: IVirtualDisplayCreatedListener
     ) {
         runMain {
-            log(
+            logDebug(
                 TAG,
                 "onCreateSplitDisplay: ${width}x$height,$densityDpi ratio=$ratio " +
                     "existing=${mSplitController != null}"
@@ -468,6 +468,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runIO { noteUserInteraction() }
     }
 }
+
 
 
 
