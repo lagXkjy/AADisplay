@@ -5,6 +5,7 @@ import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
+import io.github.nitsuya.aa.display.xposed.hook.DexKitMethodCache
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.enums.StringMatchType
@@ -14,11 +15,32 @@ import java.lang.reflect.Modifier
 
 object AaSignatureHook: AaHook() {
     override val tagName: String = "AAD_AaSignatureHook"
+    override val usesDexKit: Boolean = true
+
+    private const val CACHE_METHOD = "hook.AaSignatureHook.method"
 
     private lateinit var method: Method
 
     override fun isSupportProcess(processName: String): Boolean {
         return processCar == processName
+    }
+
+    override fun applyCache(
+        cache: DexKitMethodCache.Session,
+        lpparam: XC_LoadPackage.LoadPackageParam,
+    ): Boolean {
+        val ref = cache.getRef(CACHE_METHOD) ?: return false
+        method = cache.resolve(lpparam.classLoader, ref) ?: return false
+        return true
+    }
+
+    override fun saveCache(
+        cache: DexKitMethodCache.Session,
+        lpparam: XC_LoadPackage.LoadPackageParam,
+    ) {
+        if (::method.isInitialized) {
+            cache.putRef(CACHE_METHOD, method)
+        }
     }
 
     override fun loadDexClass(bridge: DexKitBridge, lpparam: XC_LoadPackage.LoadPackageParam) {

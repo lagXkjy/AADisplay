@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.xposed.hook.aa
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
+import io.github.nitsuya.aa.display.xposed.hook.DexKitMethodCache
 import io.github.nitsuya.aa.display.xposed.util.log
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.FindMethod
@@ -18,7 +19,9 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object AaFrxRequiredAppsHook : AaHook() {
     override val tagName: String = "AAD_AaFrxRequiredAppsHook"
+    override val usesDexKit: Boolean = true
 
+    private const val CACHE_STATUS = "hook.AaFrxRequiredAppsHook.status"
     private const val STATUS_READY = 1
 
     private val bypassPackages = setOf(
@@ -33,6 +36,26 @@ object AaFrxRequiredAppsHook : AaHook() {
 
     override fun isSupportProcess(processName: String): Boolean {
         return processProjection == processName || processCar == processName
+    }
+
+    override fun applyCache(
+        cache: DexKitMethodCache.Session,
+        lpparam: XC_LoadPackage.LoadPackageParam,
+    ): Boolean {
+        val refs = cache.getRefs(CACHE_STATUS) ?: return false
+        if (refs.isEmpty()) return false
+        statusMethods = cache.resolveAll(lpparam.classLoader, refs) ?: return false
+        log(tagName, "status methods=${statusMethods.size} (cache)")
+        return true
+    }
+
+    override fun saveCache(
+        cache: DexKitMethodCache.Session,
+        lpparam: XC_LoadPackage.LoadPackageParam,
+    ) {
+        if (::statusMethods.isInitialized) {
+            cache.putRefs(CACHE_STATUS, statusMethods)
+        }
     }
 
     override fun loadDexClass(bridge: DexKitBridge, lpparam: XC_LoadPackage.LoadPackageParam) {

@@ -110,8 +110,8 @@ AMS.systemReady → Instances.init + PanePresentationGuard + VdImeDisplayPin + V
 
 总控：`xposed/hook/AndroidAutoHook.kt`
 
-`Instrumentation.callApplicationOnCreate` 里：`System.loadLibrary("dexkit")` → 各 hook `loadDexClass` → `hook()`。  
-每个 hook 的 `loadDexClass` / `hook` **单独** `runCatching`：某一个失败只跳过该 hook，其余仍会装上（日志 `AAD_AndroidAutoHook` / `AAD_*`）。  
+`Instrumentation.callApplicationOnCreate` 里：先读 `DexKitMethodCache`（gearhead `cache/aadisplay_dexkit_{car|projection}.properties`）；全命中则跳过扫包，否则 `System.loadLibrary("dexkit")` → 未命中 hook 的 `loadDexClass` → `saveCache` → `hook()`。
+每个 hook 的 `loadDexClass` / `hook` **单独** `runCatching`：某一个失败只跳过该 hook，其余仍会装上（日志 `AAD_AndroidAutoHook` / `AAD_*` / `AAD_DexKitCache`）。
 DexKit 查询 **不要** 写 `searchPackages = listOf("")`（2.0.7 会只搜无名包，`AaSignatureHook` / LayoutInfo 等命中 0）。
 
 进程常量（`AaHook`）：

@@ -40,6 +40,7 @@ import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.xposed.CoreManager
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
+import io.github.nitsuya.aa.display.xposed.hook.DexKitMethodCache
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.luckypray.dexkit.DexKitBridge
@@ -51,6 +52,11 @@ import kotlin.math.roundToInt
 
 object AaUiHook: AaHook() {
     override val tagName: String = "AAD_AaUiHook"
+    override val usesDexKit: Boolean = true
+
+    private const val CACHE_CONTENT_BOUNDS = "hook.AaUiHook.content_bounds"
+    private const val CACHE_HU_TOUCH = "hook.AaUiHook.hu_touch"
+    private const val CACHE_LAYOUT_INFO = "hook.AaUiHook.layout_info_class"
 
     /**
      * Extra sizing trace for reconnect（用于定位“720/800 宽度分裂”）。
@@ -187,6 +193,58 @@ object AaUiHook: AaHook() {
         return processProjection == processName || processCar == processName
     }
 
+    override fun applyCache(
+        cache: DexKitMethodCache.Session,
+        lpparam: XC_LoadPackage.LoadPackageParam,
+    ): Boolean {
+        val contentRefs = cache.getRefs(CACHE_CONTENT_BOUNDS) ?: return false
+        contentBoundsMethods = cache.resolveAll(lpparam.classLoader, contentRefs) ?: return false
+        if (!cache.hasKey(CACHE_HU_TOUCH)) return false
+        huTouchDispatchMethod = cache.getRef(CACHE_HU_TOUCH)?.let { ref ->
+            cache.resolve(lpparam.classLoader, ref) ?: return false
+        }
+        log(
+            tagName,
+            "AaUiHook: content_bounds methods=${contentBoundsMethods.size} (cache) " +
+                contentBoundsMethods.map { "${it.declaringClass.name}#${it.name}" },
+        )
+        log(
+            tagName,
+            "AaUiHook: HU touch dispatch method=" +
+                (huTouchDispatchMethod?.let { "${it.declaringClass.name}#${it.name}" } ?: "null") +
+                " (cache)",
+        )
+        startMethod = resolveCarStartActivityMethod()
+        if (lpparam.processName == processCar) {
+            return true
+        }
+        val layoutInfoClassName = cache.getString(CACHE_LAYOUT_INFO) ?: return false
+        layoutInfoConstructors = runCatching {
+            resolveLayoutInfoConstructors(layoutInfoClassName)
+        }.onFailure { e ->
+            log(tagName, "AaUiHook: LayoutInfo cache resolve failed", e)
+        }.getOrNull() ?: return false
+        log(
+            tagName,
+            "AaUiHook: LayoutInfo ctors=${layoutInfoConstructors.size} (cache) " +
+                layoutInfoConstructors.joinToString { "p${it.parameterCount}" },
+        )
+        startMethod = resolveCarStartActivityMethod()
+        loadProjectionResources()
+        return true
+    }
+
+    override fun saveCache(
+        cache: DexKitMethodCache.Session,
+        lpparam: XC_LoadPackage.LoadPackageParam,
+    ) {
+        cache.putRefs(CACHE_CONTENT_BOUNDS, contentBoundsMethods)
+        cache.putRef(CACHE_HU_TOUCH, huTouchDispatchMethod)
+        if (lpparam.processName != processCar && layoutInfoConstructors.isNotEmpty()) {
+            cache.putString(CACHE_LAYOUT_INFO, layoutInfoConstructors[0].declaringClass.name)
+        }
+    }
+
     override fun loadDexClass(bridge: DexKitBridge, lpparam: XC_LoadPackage.LoadPackageParam) {
         contentBoundsMethods = try {
             val byKey = bridge.findMethod {
@@ -268,7 +326,10 @@ object AaUiHook: AaHook() {
         )
 
         startMethod = resolveCarStartActivityMethod()
+        loadProjectionResources()
+    }
 
+    private fun loadProjectionResources() {
         val pkg = InitFields.appContext.packageName
         val res = InitFields.appContext.resources
         fun layoutId(name: String): Int = res.getIdentifier(name, "layout", pkg).also { id ->

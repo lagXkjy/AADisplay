@@ -14,6 +14,7 @@ import de.robv.android.xposed.XC_MethodReplacement
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
+import io.github.nitsuya.aa.display.xposed.hook.DexKitMethodCache
 import io.github.nitsuya.aa.display.xposed.util.log
 import org.luckypray.dexkit.DexKitBridge
 import java.lang.reflect.InvocationTargetException
@@ -31,6 +32,9 @@ import java.lang.reflect.Method
  */
 object AaMediaPlaceholderHook : AaHook() {
     override val tagName: String = "AAD_AaMediaPlaceholderHook"
+    override val usesDexKit: Boolean = true
+
+    private const val CACHE_INSET = "hook.AaMediaPlaceholderHook.inset_assert"
 
     private const val MEDIA_CAR_APP =
         "com.google.android.apps.auto.components.media.app.MediaCarAppService"
@@ -39,6 +43,23 @@ object AaMediaPlaceholderHook : AaHook() {
 
     override fun isSupportProcess(processName: String): Boolean {
         return processProjection == processName || processCar == processName
+    }
+
+    override fun applyCache(
+        cache: DexKitMethodCache.Session,
+        lpparam: XC_LoadPackage.LoadPackageParam,
+    ): Boolean {
+        val refs = cache.getRefs(CACHE_INSET) ?: return false
+        insetAssertMethods = cache.resolveAll(lpparam.classLoader, refs) ?: return false
+        log(tagName, "inset assert methods=${insetAssertMethods.size} (cache)")
+        return true
+    }
+
+    override fun saveCache(
+        cache: DexKitMethodCache.Session,
+        lpparam: XC_LoadPackage.LoadPackageParam,
+    ) {
+        cache.putRefs(CACHE_INSET, insetAssertMethods)
     }
 
     override fun loadDexClass(bridge: DexKitBridge, lpparam: XC_LoadPackage.LoadPackageParam) {

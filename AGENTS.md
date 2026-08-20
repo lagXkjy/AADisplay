@@ -240,6 +240,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 | 分屏 VD / restore / reclaim | `SplitVdLifecycle.kt`、`SplitLaunchRestore.kt`、`SplitOwnership.kt` |
 | 手机状态页（LSPosed 打开） | `ui/main/MainActivity.kt` |
 | 分屏快照 | `util/LastSplitStore.kt` |
+| AA DexKit 坐标缓存 | `xposed/hook/DexKitMethodCache.kt`（gearhead `cache/aadisplay_dexkit_*.properties`） |
 | IPC 契约 | `aidl/.../ICoreManager.aidl` |
 | 隐藏 API stubs | `lib-stub/` |
 | 作用域 | `res/values/arrays.xml` |
