@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- **AutoOpen 事件驱动：** 去掉盲等首档 1.2s；武装后立即 + 加密早期重试（0/100/250/…ms）。Hook `CarSystemUiControllerService` 的 car-connected 监听（Coolwalk `"Car connected."` / 官方排队 flush 同刻）立刻再踢一次 `a(Intent)`。未连接时的 `IllegalStateException` 与 CAMS 空静默失败仍靠重试，仅 `AA_DISPLAY_SHOWN` 停。
+
 ### Added
 - **DexKit 方法坐标缓存：** gearhead `:car` / `:projection` 冷启把 DexKit 命中写成 `cache/aadisplay_dexkit_*.properties`（类#方法#参数），按 gearhead versionCode+lastUpdateTime、模块 versionCode、进程名失效。缓存全命中时跳过 `libdexkit` 扫包，缓解开机 `USB_STATE`→`CarUsbTriggerReceiver` 广播 ANR。解析失败回退 live DexKit。
 
@@ -12,6 +15,7 @@
 - **仪表横条歌词收窄为车机版播放器：** 移除手机网易云/QQ 及 OPlus spoof 全部配套。
 
 ### Fixed
+- **断开重连分辨率卡在全宽 HU（800 vs 720 壳）：** soft-reconnect 先 defer-shrink，但 AA UI 把 `lastCreate` 记成 720 后 `requestDisplay` 跳过相同尺寸，shrink 永远确认不了（现场 VD≈490+302、Presentation=720）。服务端在 confirm 窗口后自动 `shrink-auto` + `onReconnected`；客户端 resume 900ms/1700ms 清 `lastCreate` 再请求。
 - **分屏/全屏黑条（800×480 VD vs 720×480 壳）：** soft-reconnect 时 `displayProfile` 从含 Coolwalk 左轨的全宽（800）缩到内容区（720），pane VD 与 TextureView 对齐。
 - **仪表横条歌名兜底过期：** 播放中定期 touch `aadisplay_cluster_np_updated_ms`，避免 15s 后 gearhead 出站变陈旧。
 

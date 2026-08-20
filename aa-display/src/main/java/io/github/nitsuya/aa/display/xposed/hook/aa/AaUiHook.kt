@@ -46,7 +46,9 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType
 import java.lang.reflect.Constructor
+import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -156,19 +158,26 @@ object AaUiHook: AaHook() {
         "content_bounds", "contentBounds", "content_insets", "contentInsets"
     )
     /**
-     * CarSystemUiControllerService.a(Intent) swallows IllegalStateException when the
-     * controller is not ready yet ("Unable to start activity"). A single early attempt
-     * then permanently blocks Auto Open — retry across the connect window instead.
-     * Keep attempts few and spaced so a successful start can cancel before the next retry
-     * (repeated start recreates/refocuses CarActivity and feels janky).
+     * CarSystemUiControllerService.a(Intent) readiness (AA 17.4):
+     *  - `wmu.be(khh.r())` throws IllegalStateException if Car API client is not connected
+     *  - CAMS null in :car → silent no-op (no exception; "CAMS is null")
+     * Coolwalk's binder path queues the Intent until SysUi onCarConnected; we mirror that
+     * with [mAutoOpenArmed] + a kick on the SysUi car-connected listener, and keep dense
+     * early retries for the CAMS race. Stop only on [ACTION_AA_DISPLAY_SHOWN].
      */
-    private val AUTO_OPEN_DELAYS_MS = longArrayOf(1200L, 4000L, 8000L, 14000L, 22000L)
+    private val AUTO_OPEN_DELAYS_MS = longArrayOf(
+        0L, 100L, 250L, 500L, 900L, 1500L, 2800L, 5000L, 9000L, 16000L, 24000L,
+    )
     private val AUTO_OPEN_TOKEN = Any()
     /** Uptime of the last armed Auto Open session; used to debounce LayoutInfo storms. */
     private var mAutoOpenSessionAtMs = 0L
     private val AUTO_OPEN_REARM_GAP_MS = 12_000L
     @Volatile private var mAaDisplayShownThisSession = false
+    /** True while retries are live; car-connected kick may fire an immediate start. */
+    @Volatile private var mAutoOpenArmed = false
     private var mAutoOpenShownReceiver: android.content.BroadcastReceiver? = null
+    private var mCarConnectedKickHooked = false
+    private var mCarConnectedListenerHooked = false
     /** Coalesce reclaim follow-ups per view across soft-reconnect storms. */
     private val mReclaimFollowUps = java.util.WeakHashMap<View, Runnable>()
 
@@ -401,6 +410,7 @@ object AaUiHook: AaHook() {
         // falls back to the bottom facet bar (GhFacetBar 800×80 on 800×480 HUs).
         hookLayoutInfo()
         registerAutoOpenShownReceiver()
+        hookCarSystemUiConnectedKick()
         if (canHookFacetBar) {
             hookFacetBar()
             hookFacetWindowAttach()
@@ -1723,9 +1733,101 @@ object AaUiHook: AaHook() {
         }
     }
 
+    /**
+     * Mirror Coolwalk: when CarSystemUiControllerService's car-connected listener fires
+     * (`xcs.a(qpm)` / "Car connected."), immediately try AutoOpen if a session is armed.
+     * Listener class names are obfuscated; discover via the service field that references
+     * the service instance.
+     */
+    private fun hookCarSystemUiConnectedKick() {
+        if (mCarConnectedKickHooked) return
+        val svcClass = try {
+            loadClass("com.google.android.projection.gearhead.service.CarSystemUiControllerService")
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: AutoOpen connected-kick: SysUi service missing", e)
+            return
+        }
+        try {
+            val onCreate = svcClass.declaredMethods.firstOrNull {
+                it.name == "onCreate" && it.parameterCount == 0
+            } ?: run {
+                log(tagName, "AaUiHook: AutoOpen connected-kick: onCreate missing")
+                return
+            }
+            onCreate.isAccessible = true
+            onCreate.hookAfter { param ->
+                val service = param.thisObject ?: return@hookAfter
+                installCarConnectedKickOnService(service, svcClass)
+            }
+            mCarConnectedKickHooked = true
+            logDebug(tagName, "AaUiHook: AutoOpen connected-kick hooked SysUi onCreate")
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: AutoOpen connected-kick hook failed", e)
+        }
+    }
+
+    private fun installCarConnectedKickOnService(service: Any, svcClass: Class<*>) {
+        if (mCarConnectedListenerHooked) return
+        for (field in svcClass.declaredFields) {
+            if (Modifier.isStatic(field.modifiers)) continue
+            field.isAccessible = true
+            val listener = try {
+                field.get(service)
+            } catch (_: Throwable) {
+                null
+            } ?: continue
+            if (listener === service) continue
+            if (listener is Intent || listener is List<*> || listener is android.os.IBinder) continue
+            val lClass = listener.javaClass
+            val refsService = lClass.declaredFields.any { f ->
+                f.isAccessible = true
+                try {
+                    f.get(listener) === service
+                } catch (_: Throwable) {
+                    false
+                }
+            }
+            if (!refsService) continue
+            var hooked = 0
+            for (m in lClass.declaredMethods) {
+                if (Modifier.isStatic(m.modifiers)) continue
+                if (m.parameterCount != 1) continue
+                if (m.returnType != Void.TYPE && m.returnType != Void::class.java) continue
+                val p0 = m.parameterTypes[0]
+                if (p0.isPrimitive || p0 == Intent::class.java) continue
+                try {
+                    m.isAccessible = true
+                    m.hookAfter {
+                        onCarClientConnectedSignal("sysui.${m.name}")
+                    }
+                    hooked++
+                } catch (_: Throwable) {
+                }
+            }
+            if (hooked > 0) {
+                mCarConnectedListenerHooked = true
+                logDebug(
+                    tagName,
+                    "AaUiHook: AutoOpen connected-kick hooked $hooked method(s) on ${lClass.name}",
+                )
+                return
+            }
+        }
+        logDebug(tagName, "AaUiHook: AutoOpen connected-kick: no SysUi listener field matched")
+    }
+
+    private fun onCarClientConnectedSignal(reason: String) {
+        if (!mAutoOpenArmed || mAaDisplayShownThisSession) return
+        logDebug(tagName, "AaUiHook: AutoOpen connected kick ($reason)")
+        mFacetEnsureHandler.post {
+            tryAutoOpenAaDisplay(-1L)
+        }
+    }
+
     private fun markAaDisplayShown(reason: String) {
         if (mAaDisplayShownThisSession) return
         mAaDisplayShownThisSession = true
+        mAutoOpenArmed = false
         mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
         logDebug(tagName, "AaUiHook: AutoOpen stop retries ($reason)")
     }
@@ -1741,31 +1843,47 @@ object AaUiHook: AaHook() {
         }
         mAutoOpenSessionAtMs = now
         mAaDisplayShownThisSession = false
+        mAutoOpenArmed = true
         mFacetEnsureHandler.removeCallbacksAndMessages(AUTO_OPEN_TOKEN)
-        logDebug(tagName, "AaUiHook: arm AutoOpen retries ($reason) delays=${AUTO_OPEN_DELAYS_MS.contentToString()}")
+        logDebug(
+            tagName,
+            "AaUiHook: arm AutoOpen retries ($reason) delays=${AUTO_OPEN_DELAYS_MS.contentToString()}",
+        )
         for (delayMs in AUTO_OPEN_DELAYS_MS) {
             mFacetEnsureHandler.postAtTime(
                 { tryAutoOpenAaDisplay(delayMs) },
                 AUTO_OPEN_TOKEN,
-                now + delayMs
+                now + delayMs,
             )
         }
     }
 
     private fun tryAutoOpenAaDisplay(delayMs: Long) {
         // Only stop on real resume (AA_DISPLAY_SHOWN). CarSystemUiControllerService
-        // swallows "Unable to start activity" — invoke can "succeed" without opening,
-        // so do not cancel remaining retries on a bare invoke.
+        // may "succeed" without opening when CAMS is still null, and throws when the
+        // Car API client is not connected yet — keep retries / connected kick armed.
         if (mAaDisplayShownThisSession) {
             markAaDisplayShown("flag")
             return
         }
+        if (!mAutoOpenArmed) return
         val method = startMethod ?: return
+        val label = if (delayMs < 0L) "connected" else "${delayMs}ms"
         try {
             method.invoke(null, aaDisplayLaunchIntent())
-            logDebug(tagName, "AaUiHook: AutoOpen invoke at ${delayMs}ms")
+            logDebug(tagName, "AaUiHook: AutoOpen invoke at $label")
+        } catch (e: InvocationTargetException) {
+            val cause = e.cause ?: e
+            if (cause is IllegalStateException) {
+                // Typical: Car client not connected (wmu.be(khh.r())).
+                logDebug(tagName, "AaUiHook: AutoOpen not-ready at $label: ${cause.message}")
+            } else {
+                log(tagName, "AaUiHook: AutoOpen invoke failed at $label", cause)
+            }
+        } catch (e: IllegalStateException) {
+            logDebug(tagName, "AaUiHook: AutoOpen not-ready at $label: ${e.message}")
         } catch (e: Throwable) {
-            log(tagName, "AaUiHook: AutoOpen invoke failed at ${delayMs}ms", e)
+            log(tagName, "AaUiHook: AutoOpen invoke failed at $label", e)
         }
     }
 

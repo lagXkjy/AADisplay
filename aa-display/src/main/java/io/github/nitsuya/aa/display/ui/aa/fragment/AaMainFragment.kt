@@ -40,6 +40,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         private const val SETTLE_LATE_MS = 900L
         private const val RECONNECT_PROFILE_RETRY_MS = 900L
         /**
+         * Second pass after [RECONNECT_PROFILE_RETRY_MS] so soft-reconnect shrink
+         * (800→720) can be confirmed even if the first retry still hit the defer window.
+         * Must be > retry + CoreManagerService shrink confirm (700ms).
+         */
+        private const val RECONNECT_PROFILE_CONFIRM_MS = 1700L
+        /**
          * Extra host sizing trace for reconnect（定位“720/800 宽度分裂”）。
          * 默认关闭，避免 logcat 噪音。
          */
@@ -62,8 +68,22 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private var imeChipPane = SplitPane.PRIMARY
     private val resumeProfileRetry = Runnable {
         if (!isAdded) return@Runnable
+        // Bust lastCreate so an identical host size (e.g. 720) is re-sent after soft
+        // reconnect. Otherwise requestDisplay skips and the server never confirms
+        // deferred shrink from a locked full-HU profile (800).
+        lastCreateWidth = 0
+        lastCreateHeight = 0
+        lastCreateDpi = 0
         reportAaUiDisplayId()
         requestDisplay("resume-retry")
+    }
+    private val resumeProfileConfirm = Runnable {
+        if (!isAdded) return@Runnable
+        lastCreateWidth = 0
+        lastCreateHeight = 0
+        lastCreateDpi = 0
+        reportAaUiDisplayId()
+        requestDisplay("resume-confirm")
     }
 
     private val broadcastReceiver = object : BroadcastReceiver() {
@@ -233,7 +253,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             }
             requestDisplay("resume")
             baseBinding.root.removeCallbacks(resumeProfileRetry)
+            baseBinding.root.removeCallbacks(resumeProfileConfirm)
             baseBinding.root.postDelayed(resumeProfileRetry, RECONNECT_PROFILE_RETRY_MS)
+            baseBinding.root.postDelayed(resumeProfileConfirm, RECONNECT_PROFILE_CONFIRM_MS)
         }
     }
 
@@ -245,6 +267,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             baseBinding.root.removeCallbacks(afterOccupancySync)
             baseBinding.root.removeCallbacks(afterSwapSettle)
             baseBinding.root.removeCallbacks(resumeProfileRetry)
+            baseBinding.root.removeCallbacks(resumeProfileConfirm)
         } catch (_: Throwable) {
         }
         try {

@@ -139,7 +139,7 @@ DexKit 查询 **不要** 写 `searchPackages = listOf("")`（2.0.7 会只搜无�
 2. `LayoutInfo` 强制 `hasVerticalRail=true`，避免 800×480 掉回底栏。
 3. 改 FacetBar：藏 launcher/dashboard 图标，把内容区让给 `AaDisplayActivity`。
 4. `rewriteVirtualDisplayArgs`：名为 `Dashboard` 的 VD **饿成 1×1**（空媒体卡）。
-5. Auto Open：多次延迟调用 `CarSystemUiControllerService` 静态 `start(Intent)`，组件是本模块 `AaActivityService`。收到 `ACTION_AA_DISPLAY_SHOWN` 才停重点。
+5. Auto Open：武装后立刻 + 分档重试调用 `CarSystemUiControllerService` 静态 `start(Intent)`（组件为本模块 `AaActivityService`）；另在 SysUi **car-connected** 回调上踢一次（对齐 Coolwalk 排队 flush）。收到 `ACTION_AA_DISPLAY_SHOWN` 才停重试。
 
 **`:car`（HU 输入 / content_bounds）**
 
