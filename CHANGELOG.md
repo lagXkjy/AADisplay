@@ -6,6 +6,7 @@
 - **DexKit 方法坐标缓存：** gearhead `:car` / `:projection` 冷启把 DexKit 命中写成 `cache/aadisplay_dexkit_*.properties`（类#方法#参数），按 gearhead versionCode+lastUpdateTime、模块 versionCode、进程名失效。缓存全命中时跳过 `libdexkit` 扫包，缓解开机 `USB_STATE`→`CarUsbTriggerReceiver` 广播 ANR。解析失败回退 live DexKit。
 
 ### Changed
+- **少打 ATMS 双查：** `refreshPanePackagesFromAtms` 每窗只 `getAllRootTaskInfosOnDisplay` 一次再派生 user 栈；`ensureTasksFillDisplay` 复用同一次 snapshot 做 bring + forced resize。
 - **热路径日志降级：** 会话期/冷启成功与诊断日志改用 `logDebug`（仅 Log.d），错误与硬失败仍 `log`（Logcat + XposedBridge），减轻 system_server 栈风暴与 gearhead 冷连时的 LSPosed IO。
 - **仪表横条歌词扩展 QQ 音乐 HD：** `LyricLineExtractor` 同时读 `qqmusiccar` 与 `qqmusicpad` 的 `METADATA_KEY_LYRIC`；双 QQ 并存时 `qqmusiccar` 优先。保留 LRC position-tick 与 Settings 保活。
 - **仪表横条歌词收窄为车机版播放器：** 移除手机网易云/QQ 及 OPlus spoof 全部配套。

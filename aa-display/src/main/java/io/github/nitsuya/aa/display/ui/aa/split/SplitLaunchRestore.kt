@@ -412,7 +412,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                         Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
                     }.orEmpty()
                 )
-                val userPkgsBottomToTop = c.ownership.snapshotUserRootTasks(displayId)
+                val userPkgsBottomToTop = c.ownership.snapshotUserRootTasks(tasks)
                     .mapNotNull { it.packageName?.trim()?.takeIf { p -> p.isNotEmpty() } }
                     .distinct()
                 // Prefer visible root; after normalize, last user task is the front.

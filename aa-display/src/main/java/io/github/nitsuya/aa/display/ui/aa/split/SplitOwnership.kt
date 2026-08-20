@@ -501,7 +501,17 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
                 Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
             }.orEmpty()
         )
-        return tasks.mapNotNull { info ->
+        return snapshotUserRootTasks(tasks)
+    }
+
+    /**
+     * Same filter as [snapshotUserRootTasks] for an already bottom→top normalized list
+     * (avoids a second [getAllRootTaskInfosOnDisplay] when the caller already has it).
+     */
+    fun snapshotUserRootTasks(
+        tasksBottomToTop: List<ActivityTaskManager.RootTaskInfo>,
+    ): List<PaneTaskRef> {
+        return tasksBottomToTop.mapNotNull { info ->
             if (c.input.isSystemHomeTask(info)) return@mapNotNull null
             val pkg = info.topActivity?.packageName
                 ?: runCatching {
@@ -564,12 +574,14 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
                 log(SplitDisplayController.TAG, "ensureTasksFillDisplay nudge failed display=$displayId:", e)
             }
         }
-        val front = snapshotUserRootTasks(displayId).lastOrNull()
+        // One ATMS walk: bring front then forced-resize the same snapshot (task ids stable).
+        val userTasks = snapshotUserRootTasks(displayId)
+        val front = userTasks.lastOrNull()
         front?.let { bringTaskToFront(it.taskId) }
         // Still try FORCED resize as a secondary path on OEMs that honor it for VD tasks.
         val bounds = Rect(0, 0, width, height)
         var forced = 0
-        for (ref in snapshotUserRootTasks(displayId)) {
+        for (ref in userTasks) {
             if (resizeTaskToBounds(ref.taskId, bounds, RESIZE_MODE_SYSTEM_FORCED)) forced++
         }
         logDebug(
