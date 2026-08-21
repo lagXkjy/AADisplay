@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **藏车机媒体壳图标：** `AaClusterMediaIconHideHook` 在 gearhead 过滤 `MediaBrowserService` 枚举，去掉本包 `ClusterLyricMediaService`；投影入口保留，`warmStart` / Title 出站 / 显式绑定不受影响。回调 `try/catch` 不抛进 PM；非媒体 / 外包 / 显式 component 早退；列表仅在命中壳时 copy；成功与失败日志各最多一次。
 - **仪表横条隐形媒体壳（免未知来源）：** `ClusterLyricMediaService`（进程 `:cluster`）把 `ClusterLyricStore` 歌词写成 AA `MediaSession` Title；`automotive_app_desc` 增加 `media`。`AaMediaAllowlistHook` 对本包绕过 unknown-sources / 媒体资格，无需开 AA 开发者「未知来源」。采集仍走 `ClusterLyricMirror`；不改分屏 reconnect / 左轨 reclaim。Dashboard starve + Presentation 隐藏保留，并略扩壳相关媒体窗抑制。
 
 ### Changed

@@ -83,7 +83,7 @@ flowchart LR
 - `…:projection`
 - `…:car`
 
-已注册 AA 钩子：`AaSignatureHook`、`AaBtnEventHook`、`AaUiHook`、`AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`、`AaMediaAllowlistHook`、`AaClusterLyricEgressHook`（按 `isSupportProcess` 过滤；Frx/Ui/Allowlist 依赖 DexKit；Nav 禁组件；Media 保持 MediaCarApp 出站 + Ui 饿 Dashboard VD；Allowlist 本包免未知来源；Cluster 歌词改写 Title）。
+已注册 AA 钩子：`AaSignatureHook`、`AaBtnEventHook`、`AaUiHook`、`AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`、`AaMediaAllowlistHook`、`AaClusterMediaIconHideHook`、`AaClusterLyricEgressHook`（按 `isSupportProcess` 过滤；Frx/Ui/Allowlist 依赖 DexKit；Nav 禁组件；Media 保持 MediaCarApp 出站 + Ui 饿 Dashboard VD；Allowlist 本包免未知来源；Cluster 媒体壳从 AA 应用列表隐藏；Cluster 歌词改写 Title）。
 
 ### 跨进程 IPC
 
@@ -104,7 +104,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 ### LSPosed scope
 
 见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`。改 scope 会影响模块生效范围，勿随意删改。
-仪表横条歌词：QQ 音乐车载（`com.tencent.qqmusiccar` → `METADATA_KEY_LYRIC`）+ QQ 音乐 HD（`com.tencent.qqmusicpad` → 同字段）；`ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title 出站；`AaMediaAllowlistHook` 免开未知来源。LSPosed scope 仅 `android` + `gearhead`。
+仪表横条歌词：QQ 音乐车载（`com.tencent.qqmusiccar` → `METADATA_KEY_LYRIC`）+ QQ 音乐 HD（`com.tencent.qqmusicpad` → 同字段）；`ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title 出站；`AaMediaAllowlistHook` 免开未知来源；`AaClusterMediaIconHideHook` 从 AA 媒体应用列表隐藏该壳。LSPosed scope 仅 `android` + `gearhead`。
 
 ## 4. 构建与验证
 
@@ -232,7 +232,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 | Xposed 入口 / 包路由 | `xposed/XposedInit.kt` |
 | 系统 VirtualDisplay / Binder 桥 | `xposed/hook/AndroidHook.kt`、`CoreManagerService.kt` |
 | VD DPI pin / 竖屏 letterbox 铺满 / Presentation 拦截 / IME 落屏 | `xposed/hook/VdDensityPin.kt`、`VdOrientationFill.kt`、`PanePresentationGuard.kt`、`VdImeDisplayPin.kt` |
-| 仪表横条歌词（AA Title） | `xposed/cluster/ClusterLyricMirror.kt`、`LyricLineExtractor.kt`；`service/ClusterLyricMediaService.kt`（`:cluster`）；gearhead `AaMediaAllowlistHook` / `AaClusterLyricEgressHook` |
+| 仪表横条歌词（AA Title） | `xposed/cluster/ClusterLyricMirror.kt`、`LyricLineExtractor.kt`；`service/ClusterLyricMediaService.kt`（`:cluster`）；gearhead `AaMediaAllowlistHook` / `AaClusterMediaIconHideHook` / `AaClusterLyricEgressHook` |
 | AA 钩子总控 | `xposed/hook/AndroidAutoHook.kt` |
 | 车机画面与触控 | `ui/aa/AaDisplayActivity*.java/kt`、`AaMainFragment.kt` |
 | 显示会话策略（Delay Destroy / keep-awake） | `ui/window/DisplaySessionPolicy.kt` |

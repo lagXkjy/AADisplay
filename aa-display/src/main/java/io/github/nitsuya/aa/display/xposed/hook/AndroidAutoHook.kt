@@ -10,6 +10,7 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaBtnEventHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaClusterLyricEgressHook
+import io.github.nitsuya.aa.display.xposed.hook.aa.AaClusterMediaIconHideHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaFrxRequiredAppsHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaMediaAllowlistHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.AaMediaPlaceholderHook
@@ -59,6 +60,7 @@ object AndroidAutoHook : BaseHook() {
             AaNavFallbackHook,
             AaMediaPlaceholderHook,
             AaMediaAllowlistHook,
+            AaClusterMediaIconHideHook,
             AaClusterLyricEgressHook,
         ).filter { i -> i.isSupportProcess(processName) }
         if(hooks.isEmpty()) return
