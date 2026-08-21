@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **热路径减负（歌词 + 触控）：** 同句歌词跳过 Settings.Global 三写（靠 5s `touch` keepalive）；LRC 按 mediaId+blob 缓存解析，300ms tick 只二分取句；`:cluster` 不再观察 `updated_ms`；`injectInputEvent` 缓存 `InputEvent.setDisplayId` Method。
 - **r11-T→r12 审计收敛：** 去掉试验叠层——重连缩窗仅服务端 `shrink-auto`（删客户端 900/1700ms `lastCreate` bust）；soft-reconnect 同 profile 跳过 VD resize；AutoOpen 梯子收为 `0/1.5/5/12/24s` 且 `REARM_GAP≥末档`，保留 car-connected kick；`AaClusterLyricEgressHook` 仅改写 `aadisplay.cluster:` 壳 MEDIA_ID；歌词 `warmStart` 不再每句触发；Allowlist unknown-sources pref 仅在 pkg-bool 未命中时回退。
 - **仪表歌词主路径：** `ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title；Egress 为壳会话兜底。优先包仅 QQ 车载 / HD。
 - **藏车机媒体壳图标：** `AaClusterMediaIconHideHook` 过滤 `MediaBrowserService` 枚举，去掉本包壳；投影入口 / 显式绑定保留。
@@ -22,9 +23,9 @@
 ### Verify（仪表歌词 + 重连）
 1. Soft-reconnect：宽度稳定为内容区（非卡 800 vs 720）；无连续双重 resize 卡顿
 2. 冷连 AutoOpen：仍能进 AaDisplay；connected kick 后无 100ms 级刷屏重试
-3. QQ 车载/HD 横条歌词；「未知来源」关着仍可 bind 壳；壳图标仍隐藏
+3. QQ 车载/HD 横条歌词随句切换；同句 hold 时 Settings/壳无每 300ms 刷；壳图标仍隐藏
 4. 方控短按仍控真实播放器（Egress 不再改写 QQ Title）
-5. 分屏栈切换 / Recent 置顶无明显变慢
+5. 分屏栈切换 / Recent 置顶 / 触控滑动无明显变慢
 
 ## 0.24#17.4-r10
 

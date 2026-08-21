@@ -125,10 +125,10 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         }
         observer = obs
         val cr = contentResolver
+        // Do not observe updated_ms — touch() keepalive would wake applyStore with no title change.
         listOf(
             ClusterLyricStore.SETTINGS_TITLE,
             ClusterLyricStore.SETTINGS_SUBTITLE,
-            ClusterLyricStore.SETTINGS_UPDATED_MS,
         ).forEach { key ->
             runCatching {
                 cr.registerContentObserver(

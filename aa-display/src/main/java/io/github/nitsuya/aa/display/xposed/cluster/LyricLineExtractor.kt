@@ -37,6 +37,12 @@ object LyricLineExtractor {
         """\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]\s*(.*)""",
     )
 
+    /** Avoid re-regex / re-parse of the same LRC blob every 300ms position tick. */
+    private var cachedLrcMediaId: String = ""
+    private var cachedLrcRaw: String = ""
+    private var cachedLrcIsTimed: Boolean = false
+    private var cachedLrcEntries: List<LrcEntry> = emptyList()
+
     data class Extracted(
         val tickerTitle: String,
         val artist: String,
@@ -74,9 +80,10 @@ object LyricLineExtractor {
         val positionMs = estimatePositionMs(controller.playbackState)
         val rawLyricBlob = findRawLyricBlob(controller.playbackState?.extras, metadata)
         val unwrapped = rawLyricBlob?.let { unwrapLyricPayload(it) }
-        val timedLrc = unwrapped?.takeIf { looksLikeLrc(it) }
+        val timedEntries = unwrapped?.let { cachedTimedLrc(mediaId, it) }
         val resolved = resolveLyricText(
             unwrapped = unwrapped,
+            timedEntries = timedEntries,
             positionMs = positionMs,
             songTitle = songTitle,
             artist = artist,
@@ -90,7 +97,7 @@ object LyricLineExtractor {
             mediaId = mediaId,
             songTitle = songTitle.ifEmpty { ticker },
             fromLyric = resolved != null,
-            needsPositionTick = resolved?.fromLrc == true || timedLrc != null,
+            needsPositionTick = timedEntries != null,
         )
     }
 
@@ -110,16 +117,32 @@ object LyricLineExtractor {
 
     private data class ResolvedLyric(val text: String, val fromLrc: Boolean)
 
+    /**
+     * Returns parsed timed entries when [raw] is LRC for [mediaId]; null when not timed LRC.
+     * Cache keyed by mediaId + raw blob so position ticks only binary-search.
+     */
+    private fun cachedTimedLrc(mediaId: String, raw: String): List<LrcEntry>? {
+        if (mediaId == cachedLrcMediaId && raw == cachedLrcRaw) {
+            return if (cachedLrcIsTimed) cachedLrcEntries else null
+        }
+        cachedLrcMediaId = mediaId
+        cachedLrcRaw = raw
+        cachedLrcIsTimed = looksLikeLrc(raw)
+        cachedLrcEntries = if (cachedLrcIsTimed) parseLrc(raw) else emptyList()
+        return if (cachedLrcIsTimed) cachedLrcEntries else null
+    }
+
     private fun resolveLyricText(
         unwrapped: String?,
+        timedEntries: List<LrcEntry>?,
         positionMs: Long,
         songTitle: String,
         artist: String,
     ): ResolvedLyric? {
         val raw = unwrapped ?: return null
 
-        if (looksLikeLrc(raw)) {
-            val line = lineAtPosition(parseLrc(raw), positionMs)
+        if (timedEntries != null) {
+            val line = lineAtPosition(timedEntries, positionMs)
             if (!line.isNullOrBlank()) {
                 return ResolvedLyric(line, fromLrc = true)
             }

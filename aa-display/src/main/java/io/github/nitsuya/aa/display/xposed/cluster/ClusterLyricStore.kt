@@ -31,6 +31,11 @@ object ClusterLyricStore {
     fun publish(cr: ContentResolver, title: String, subtitle: String) {
         val t = title.trim()
         val s = subtitle.trim()
+        // Same line / same artist: only refresh updated_ms (egress stale gate).
+        if (t == cachedTitle && s == cachedSubtitle) {
+            touch(cr)
+            return
+        }
         cachedTitle = t
         cachedSubtitle = s
         runCatching {

@@ -20,6 +20,7 @@ import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.model.RecentTaskInfo
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
+import java.lang.reflect.Method
 
 internal class SplitInputRecents(private val c: SplitDisplayController) {
 
@@ -32,7 +33,13 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
     fun injectInputEvent(displayId: Int, event: InputEvent): Boolean {
         val identity = Binder.clearCallingIdentity()
         return try {
-            event.invokeMethod("setDisplayId", args(displayId), argTypes(Integer.TYPE))
+            val setId = setDisplayIdMethod
+            if (setId != null) {
+                setId.invoke(event, displayId)
+            } else {
+                log(SplitDisplayController.TAG, "injectInputEvent: setDisplayId Method missing")
+                return false
+            }
             Instances.iInputManager.injectInputEvent(event, 0)
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "injectInputEvent exception:", e)
@@ -230,6 +237,11 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
     }
 
     companion object {
+        /** Hot path: resolve once — every MOVE used to re-lookup via ezxhelper invokeMethod. */
+        private val setDisplayIdMethod: Method? = runCatching {
+            InputEvent::class.java.getMethod("setDisplayId", Int::class.javaPrimitiveType)
+        }.getOrNull()
+
         /** Cap tasks per display to keep Binder payload bounded. */
         private const val MAX_RECENT_PER_DISPLAY = 12
         private const val MAX_RECENT_ICON_EDGE_PX = 96

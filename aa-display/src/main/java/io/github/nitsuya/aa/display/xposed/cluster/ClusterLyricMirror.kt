@@ -44,6 +44,7 @@ object ClusterLyricMirror {
     private var lastSongTitle: String = ""
     private var lastArtist: String = ""
     private var lastPushedTitle: String = ""
+    private var lastPushedArtist: String = ""
     private var lastPushElapsedMs: Long = 0L
     private var dumpedExtrasForMediaId: String = ""
     private var pausedClearScheduled = false
@@ -374,13 +375,17 @@ object ClusterLyricMirror {
         reason: String,
     ) {
         val now = SystemClock.elapsedRealtime()
-        if (!force &&
-            title == lastPushedTitle &&
-            now - lastPushElapsedMs < TITLE_MIN_INTERVAL_MS
-        ) {
-            return
+        if (!force) {
+            // Identical ticker: rely on 5s staleKeepalive touch — no Settings spam each 300ms tick.
+            if (title == lastPushedTitle && artist == lastPushedArtist) {
+                return
+            }
+            if (now - lastPushElapsedMs < TITLE_MIN_INTERVAL_MS) {
+                return
+            }
         }
         lastPushedTitle = title
+        lastPushedArtist = artist
         lastPushElapsedMs = now
         val ctx = appContext
         if (ctx != null) {
@@ -399,6 +404,7 @@ object ClusterLyricMirror {
         lastSongTitle = ""
         lastArtist = ""
         lastPushedTitle = ""
+        lastPushedArtist = ""
         dumpedExtrasForMediaId = ""
         pausedClearScheduled = false
         warmStartPending = true
