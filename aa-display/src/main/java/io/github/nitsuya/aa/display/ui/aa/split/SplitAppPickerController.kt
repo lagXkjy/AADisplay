@@ -1,13 +1,16 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.ViewGroup
-import android.util.Log
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -17,36 +20,57 @@ import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.FragmentAaMainBinding
 import io.github.nitsuya.aa.display.databinding.ItemSplitAppBinding
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.LastSplitStore
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 data class SplitAppEntry(
     val packageName: String,
     val label: String,
-    val icon: Drawable?,
+    @Volatile var icon: Drawable? = null,
 )
 
 /**
  * Bottom overlay app picker embedded in the split shell.
- * Lists recent VD/phone tasks first, then all launchable apps.
+ * Lists recent VD packages first, then all launchable apps.
+ *
+ * Launchable metadata is cached and prefetched; icons load lazily on bind.
  */
 class SplitAppPickerController(
     private val binding: FragmentAaMainBinding,
+    private val recentPackagesProvider: () -> List<String> = { emptyList() },
 ) {
     companion object {
         private const val TAG = "AADisplay_AppPicker"
         private fun logPicker(msg: String) = Log.d(TAG, msg)
     }
+
     private var targetPane: Int = SplitPane.PRIMARY
     private val mainHandler = Handler(Looper.getMainLooper())
     private val loadExecutor = Executors.newSingleThreadExecutor()
     private val loadGeneration = AtomicInteger(0)
-    private val adapter = Adapter { entry ->
-        logPicker("pick pane=$targetPane pkg=${entry.packageName} label=${entry.label}")
-        CoreApi.startActivityOnPane(entry.packageName, 0, targetPane)
-        hide()
-        onAppPicked?.invoke(targetPane, entry.packageName)
+    private val iconInFlight = ConcurrentHashMap.newKeySet<String>()
+
+    @Volatile
+    private var launchableCache: List<SplitAppEntry>? = null
+
+    private var packageReceiverRegistered = false
+    private val packageReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            invalidateCache()
+        }
     }
+
+    private val adapter = Adapter(
+        onClick = { entry ->
+            logPicker("pick pane=$targetPane pkg=${entry.packageName} label=${entry.label}")
+            CoreApi.startActivityOnPane(entry.packageName, 0, targetPane)
+            hide()
+            onAppPicked?.invoke(targetPane, entry.packageName)
+        },
+        requestIcon = { entry, position -> requestIconLoad(entry, position) },
+    )
 
     var onAppPicked: ((pane: Int, packageName: String) -> Unit)? = null
     var onVisibilityChanged: ((Boolean) -> Unit)? = null
@@ -71,6 +95,17 @@ class SplitAppPickerController(
         val sheet = binding.appPickerHost.getChildAt(0) as? ViewGroup
         sheet?.isClickable = false
         sheet?.isFocusable = false
+        registerPackageReceiver()
+    }
+
+    /** Warm launchable metadata off the critical path (labels only; icons stay lazy). */
+    fun prefetch() {
+        loadExecutor.execute {
+            try {
+                ensureLaunchableCache()
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     fun show(pane: Int) {
@@ -105,6 +140,45 @@ class SplitAppPickerController(
         onVisibilityChanged?.invoke(false)
     }
 
+    fun destroy() {
+        hide()
+        unregisterPackageReceiver()
+        loadExecutor.shutdownNow()
+    }
+
+    private fun invalidateCache() {
+        launchableCache = null
+        iconInFlight.clear()
+    }
+
+    private fun registerPackageReceiver() {
+        if (packageReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addDataScheme("package")
+        }
+        try {
+            binding.root.context.registerReceiver(
+                packageReceiver,
+                filter,
+                Context.RECEIVER_NOT_EXPORTED,
+            )
+            packageReceiverRegistered = true
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun unregisterPackageReceiver() {
+        if (!packageReceiverRegistered) return
+        try {
+            binding.root.context.unregisterReceiver(packageReceiver)
+        } catch (_: Throwable) {
+        }
+        packageReceiverRegistered = false
+    }
+
     /** Tell Coolwalk rail-steal to inject into AaDisplay UI while the picker is open. */
     private fun setAaUiRailConsume(consume: Boolean) {
         try {
@@ -124,7 +198,7 @@ class SplitAppPickerController(
     }
 
     private fun buildPickerRows(): List<Row> {
-        val all = loadLaunchableApps()
+        val all = ensureLaunchableCache()
         val byPkg = all.associateBy { it.packageName }
         val recentPkgs = loadRecentPackages()
         val recentEntries = recentPkgs.mapNotNull { byPkg[it] }.distinctBy { it.packageName }
@@ -140,20 +214,32 @@ class SplitAppPickerController(
         return rows
     }
 
+    /** Local stacks + live occupancy — no RecentTask Binder / bitmap IPC. */
     private fun loadRecentPackages(): List<String> {
-        val recent = try {
-            CoreApi.recentTask
-        } catch (_: Throwable) {
-            null
-        } ?: return emptyList()
         val ordered = linkedSetOf<String>()
-        recent.virtualDisplay.forEach { info ->
-            info.packageName?.trim()?.takeIf { it.isNotEmpty() }?.let { ordered.add(it) }
+        fun addPkg(raw: String?) {
+            raw?.trim()?.takeIf { it.isNotEmpty() }?.let { ordered.add(it) }
         }
-        recent.mainDisplay.forEach { info ->
-            info.packageName?.trim()?.takeIf { it.isNotEmpty() }?.let { ordered.add(it) }
+        try {
+            LastSplitStore.load(binding.root.context.contentResolver)?.let { snap ->
+                // Stacks are bottom→top; picker "最近" wants front (top) first.
+                snap.primaryPackagesBottomToTop().asReversed().forEach(::addPkg)
+                snap.secondaryPackagesBottomToTop().asReversed().forEach(::addPkg)
+            }
+        } catch (_: Throwable) {
+        }
+        try {
+            recentPackagesProvider().forEach(::addPkg)
+        } catch (_: Throwable) {
         }
         return ordered.toList()
+    }
+
+    private fun ensureLaunchableCache(): List<SplitAppEntry> {
+        launchableCache?.let { return it }
+        val loaded = loadLaunchableApps()
+        launchableCache = loaded
+        return loaded
     }
 
     private fun loadLaunchableApps(): List<SplitAppEntry> {
@@ -171,14 +257,38 @@ class SplitAppPickerController(
             SplitAppEntry(
                 packageName = pkg,
                 label = ai.loadLabel(pm)?.toString() ?: pkg,
-                icon = ai.loadIcon(pm),
+                icon = null,
             )
         }.distinctBy { it.packageName }
             .sortedBy { it.label.lowercase() }
     }
 
+    private fun requestIconLoad(entry: SplitAppEntry, position: Int) {
+        if (entry.icon != null) return
+        val pkg = entry.packageName
+        if (!iconInFlight.add(pkg)) return
+        val gen = loadGeneration.get()
+        loadExecutor.execute {
+            val icon = try {
+                binding.root.context.packageManager.getApplicationIcon(pkg)
+            } catch (_: Throwable) {
+                null
+            }
+            iconInFlight.remove(pkg)
+            if (icon == null) return@execute
+            entry.icon = icon
+            // Keep cache entry in sync when rows share the same SplitAppEntry instance.
+            launchableCache?.firstOrNull { it.packageName == pkg }?.icon = icon
+            mainHandler.post {
+                if (gen != loadGeneration.get() || !binding.appPickerHost.isVisible) return@post
+                adapter.notifyIconLoaded(position, pkg, icon)
+            }
+        }
+    }
+
     private class Adapter(
         private val onClick: (SplitAppEntry) -> Unit,
+        private val requestIcon: (SplitAppEntry, Int) -> Unit,
     ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         companion object {
             const val TYPE_HEADER = 0
@@ -191,6 +301,13 @@ class SplitAppPickerController(
             items.clear()
             items.addAll(list)
             notifyDataSetChanged()
+        }
+
+        fun notifyIconLoaded(position: Int, packageName: String, icon: Drawable) {
+            val row = items.getOrNull(position) as? Row.App ?: return
+            if (row.entry.packageName != packageName) return
+            row.entry.icon = icon
+            notifyItemChanged(position)
         }
 
         override fun getItemViewType(position: Int): Int = when (items[position]) {
@@ -214,7 +331,11 @@ class SplitAppPickerController(
                 is Row.App -> {
                     val b = (holder as VH).b
                     b.tvLabel.text = row.entry.label
-                    b.ivIcon.setImageDrawable(row.entry.icon)
+                    val icon = row.entry.icon
+                    b.ivIcon.setImageDrawable(icon)
+                    if (icon == null) {
+                        requestIcon(row.entry, position)
+                    }
                     b.root.isClickable = true
                     b.root.isFocusable = true
                     b.root.setOnClickListener { onClick(row.entry) }

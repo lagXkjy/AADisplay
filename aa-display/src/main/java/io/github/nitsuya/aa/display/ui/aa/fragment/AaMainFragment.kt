@@ -52,6 +52,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     /** Track picker visibility so we can auto-hide it after system_server restart. */
     private var isPickerVisible: Boolean = false
     private val paneHasApp = booleanArrayOf(false, false)
+    /** Live front packages for picker "最近" (empty string = vacant). */
+    private val panePackages = arrayOf("", "")
     private var imeChipVisible = false
     private var imeChipPane = SplitPane.PRIMARY
 
@@ -71,6 +73,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     if (SplitPane.isValid(pane)) {
                         if (!keepOccupancy) {
                             paneHasApp[pane] = false
+                            panePackages[pane] = ""
                             updateEmptyOverlays()
                         }
                         appPicker.show(pane)
@@ -160,9 +163,17 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
 
     override fun initViews() {
         Log.d(TAG, "initViews")
-        appPicker = SplitAppPickerController(baseBinding).also {
-            it.onAppPicked = { pane, _ ->
-                paneHasApp[pane] = true
+        appPicker = SplitAppPickerController(baseBinding) {
+            listOfNotNull(
+                panePackages[SplitPane.PRIMARY].takeIf { it.isNotEmpty() },
+                panePackages[SplitPane.SECONDARY].takeIf { it.isNotEmpty() },
+            )
+        }.also {
+            it.onAppPicked = { pane, packageName ->
+                if (SplitPane.isValid(pane)) {
+                    paneHasApp[pane] = true
+                    panePackages[pane] = packageName.trim()
+                }
                 updateEmptyOverlays()
                 // Confirm with system_server after launch settles.
                 scheduleOccupancySync(400L)
@@ -175,6 +186,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     refreshImeChip()
                 }
             }
+            it.prefetch()
         }
 
         LastSplitStore.load(requireContext().contentResolver)?.let { snap ->
@@ -184,6 +196,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             // Optimistic: hide "tap to choose" while system_server restores the pair.
             paneHasApp[SplitPane.PRIMARY] = true
             paneHasApp[SplitPane.SECONDARY] = true
+            panePackages[SplitPane.PRIMARY] = snap.primaryPackage.trim()
+            panePackages[SplitPane.SECONDARY] = snap.secondaryPackage.trim()
         }
         if (SplitPane.isFullscreenPane(fullscreenPane)) {
             applyFullscreenLayout(fullscreenPane)
@@ -244,7 +258,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         } catch (_: Throwable) {
         }
         try {
-            if (::appPicker.isInitialized) appPicker.hide()
+            if (::appPicker.isInitialized) appPicker.destroy()
         } catch (_: Throwable) {
         }
         // Drop coalesced MOVE before tearing down VDs — never inject after destroy.
@@ -886,6 +900,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         for (pane in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
             val pkg = tryOrNull { CoreApi.getPanePackage(pane) }?.trim().orEmpty()
             paneHasApp[pane] = pkg.isNotEmpty()
+            panePackages[pane] = pkg
         }
         updateEmptyOverlays()
         maybeAutoHidePickerWhenOccupied()
@@ -893,8 +908,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
 
     private fun applyOccupancyFromPackages(primaryPkg: String, secondaryPkg: String) {
         if (!isAdded || view == null || dividerDragging) return
-        paneHasApp[SplitPane.PRIMARY] = primaryPkg.trim().isNotEmpty()
-        paneHasApp[SplitPane.SECONDARY] = secondaryPkg.trim().isNotEmpty()
+        val primary = primaryPkg.trim()
+        val secondary = secondaryPkg.trim()
+        paneHasApp[SplitPane.PRIMARY] = primary.isNotEmpty()
+        paneHasApp[SplitPane.SECONDARY] = secondary.isNotEmpty()
+        panePackages[SplitPane.PRIMARY] = primary
+        panePackages[SplitPane.SECONDARY] = secondary
         updateEmptyOverlays()
         maybeAutoHidePickerWhenOccupied()
     }
