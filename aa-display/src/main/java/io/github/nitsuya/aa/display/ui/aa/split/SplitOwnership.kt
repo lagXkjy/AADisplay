@@ -137,7 +137,15 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         val tasks = tryOrNull {
             Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
         }.orEmpty()
-        return tasks.firstOrNull { info ->
+        return findPackageTaskInRoots(packageName, tasks, liveOnly)
+    }
+
+    fun findPackageTaskInRoots(
+        packageName: String,
+        roots: List<ActivityTaskManager.RootTaskInfo>,
+        liveOnly: Boolean = true,
+    ): Int? {
+        return roots.firstOrNull { info ->
             taskInfoMatchesPackage(info, packageName, requireTop = liveOnly)
         }?.taskId
     }
@@ -222,7 +230,14 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         return false
     }
 
-    fun bringTaskToFront(taskId: Int): Boolean {
+    fun bringTaskToFront(
+        taskId: Int,
+        /**
+         * Optional ATMS roots already fetched for one or more displays (displayId → raw list).
+         * Skips repeated [getAllRootTaskInfosOnDisplay] in topmost verification.
+         */
+        cachedRootsByDisplay: Map<Int, List<ActivityTaskManager.RootTaskInfo>>? = null,
+    ): Boolean {
         return try {
             // Samsung VDs often ignore bare moveTaskToFront unless the root task is focused.
             runCatching {
@@ -235,16 +250,16 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
                 method?.invoke(atm, taskId)
             }
             Instances.activityManager.moveTaskToFront(taskId, 0)
-            if (isTaskTopmostOnItsDisplay(taskId)) return true
+            if (isTaskTopmostOnItsDisplay(taskId, cachedRootsByDisplay)) return true
             // Prefer the task's live topActivity: 高德 LAUNCHER is UsbFillActivity, but the
             // VD root is often MainMapActivity — MAIN/LAUNCHER REORDER misses that task.
             if (reorderExistingTask(taskId, preferTopActivity = true) &&
-                isTaskTopmostOnItsDisplay(taskId)
+                isTaskTopmostOnItsDisplay(taskId, cachedRootsByDisplay)
             ) {
                 return true
             }
             if (reorderExistingTask(taskId, preferTopActivity = false) &&
-                isTaskTopmostOnItsDisplay(taskId)
+                isTaskTopmostOnItsDisplay(taskId, cachedRootsByDisplay)
             ) {
                 return true
             }
@@ -260,12 +275,16 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     }
 
     /** True when [taskId] is the topmost root on whatever display currently hosts it. */
-    private fun isTaskTopmostOnItsDisplay(taskId: Int): Boolean {
+    private fun isTaskTopmostOnItsDisplay(
+        taskId: Int,
+        cachedRootsByDisplay: Map<Int, List<ActivityTaskManager.RootTaskInfo>>? = null,
+    ): Boolean {
         for (displayId in listOf(c.primaryDisplayId, c.secondaryDisplayId, Display.DEFAULT_DISPLAY)) {
             if (displayId == Display.INVALID_DISPLAY) continue
-            val tasks = tryOrNull {
-                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
-            }.orEmpty()
+            val tasks = cachedRootsByDisplay?.get(displayId)
+                ?: tryOrNull {
+                    Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+                }.orEmpty()
             if (tasks.none { it.taskId == taskId }) continue
             // Prefer the visible root — list order alone is wrong on Samsung (top→bottom).
             val visible = tasks.firstOrNull { isRootTaskVisible(it) }
@@ -452,6 +471,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
 
     /** Bring the current stack-front task to the foreground for each pane. */
     fun promoteStackFronts(panes: Collection<Int>) {
+        val rootsCache = HashMap<Int, List<ActivityTaskManager.RootTaskInfo>>(2)
         for (pane in panes) {
             val frontPkg = c.stacks.front(pane)
             c.mPanePackages[pane] = frontPkg
@@ -460,8 +480,13 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
                 continue
             }
             val displayId = c.input.displayIdFor(pane) ?: continue
-            val taskId = findPackageTaskOnDisplay(frontPkg, displayId, liveOnly = true) ?: continue
-            bringTaskToFront(taskId)
+            val roots = rootsCache.getOrPut(displayId) {
+                tryOrNull {
+                    Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+                }.orEmpty()
+            }
+            val taskId = findPackageTaskInRoots(frontPkg, roots, liveOnly = true) ?: continue
+            bringTaskToFront(taskId, cachedRootsByDisplay = rootsCache)
         }
     }
 

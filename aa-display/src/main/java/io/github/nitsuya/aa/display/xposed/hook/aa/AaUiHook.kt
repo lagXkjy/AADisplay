@@ -37,6 +37,7 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.service.AaActivityService
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.ReconnectSizingTrace
 import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.xposed.CoreManager
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
@@ -59,12 +60,6 @@ object AaUiHook: AaHook() {
     private const val CACHE_CONTENT_BOUNDS = "hook.AaUiHook.content_bounds"
     private const val CACHE_HU_TOUCH = "hook.AaUiHook.hu_touch"
     private const val CACHE_LAYOUT_INFO = "hook.AaUiHook.layout_info_class"
-
-    /**
-     * Extra sizing trace for reconnect（用于定位“720/800 宽度分裂”）。
-     * 默认关闭，避免系统日志在断线重连时过于嘈杂。
-     */
-    private const val TRACE_RECONNECT_SIZING_LOGS = false
 
     /**
      * Gearhead dimens that reserve the vertical rail / edge column.
@@ -162,16 +157,17 @@ object AaUiHook: AaHook() {
      *  - `wmu.be(khh.r())` throws IllegalStateException if Car API client is not connected
      *  - CAMS null in :car → silent no-op (no exception; "CAMS is null")
      * Coolwalk's binder path queues the Intent until SysUi onCarConnected; we mirror that
-     * with [mAutoOpenArmed] + a kick on the SysUi car-connected listener, and keep dense
-     * early retries for the CAMS race. Stop only on [ACTION_AA_DISPLAY_SHOWN].
+     * with [mAutoOpenArmed] + a kick on the SysUi car-connected listener, plus sparse
+     * CAMS retries. Stop only on [ACTION_AA_DISPLAY_SHOWN].
      */
     private val AUTO_OPEN_DELAYS_MS = longArrayOf(
-        0L, 100L, 250L, 500L, 900L, 1500L, 2800L, 5000L, 9000L, 16000L, 24000L,
+        0L, 1500L, 5000L, 12_000L, 24_000L,
     )
     private val AUTO_OPEN_TOKEN = Any()
     /** Uptime of the last armed Auto Open session; used to debounce LayoutInfo storms. */
     private var mAutoOpenSessionAtMs = 0L
-    private val AUTO_OPEN_REARM_GAP_MS = 12_000L
+    /** Must be ≥ last [AUTO_OPEN_DELAYS_MS] entry so rearm cannot cancel in-flight retries. */
+    private val AUTO_OPEN_REARM_GAP_MS = 24_000L
     @Volatile private var mAaDisplayShownThisSession = false
     /** True while retries are live; car-connected kick may fire an immediate start. */
     @Volatile private var mAutoOpenArmed = false
@@ -238,7 +234,6 @@ object AaUiHook: AaHook() {
             "AaUiHook: LayoutInfo ctors=${layoutInfoConstructors.size} (cache) " +
                 layoutInfoConstructors.joinToString { "p${it.parameterCount}" },
         )
-        startMethod = resolveCarStartActivityMethod()
         loadProjectionResources()
         return true
     }
@@ -334,7 +329,6 @@ object AaUiHook: AaHook() {
                 layoutInfoConstructors.joinToString { "p${it.parameterCount}" }
         )
 
-        startMethod = resolveCarStartActivityMethod()
         loadProjectionResources()
     }
 
@@ -486,7 +480,7 @@ object AaUiHook: AaHook() {
     }
 
     private fun logProjectionConfigRewriteOnce(message: String) {
-        if (!TRACE_RECONNECT_SIZING_LOGS) return
+        if (!ReconnectSizingTrace.ENABLED) return
         if (mLastProjectionConfigRewrite == message) return
         mLastProjectionConfigRewrite = message
         logDebug(tagName, message)

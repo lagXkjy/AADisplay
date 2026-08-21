@@ -5,16 +5,18 @@ import com.github.kyuubiran.ezxhelper.init.InitFields
 import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import io.github.nitsuya.aa.display.service.ClusterLyricMediaService
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricStore
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
 /**
- * M3 fallback: when Gearhead reads [MediaMetadata] Title for AA Now Playing,
+ * Fallback: when Gearhead reads our cluster shell [MediaMetadata] Title/Artist,
  * substitute [ClusterLyricStore] ticker text published by system_server.
  *
- * Keeps Dashboard UI suppressed elsewhere; only rewrites metadata strings.
+ * Only rewrites metadata whose MEDIA_ID starts with `aadisplay.cluster:` so QQ
+ * (and other real players) keep their own Title for non-cluster UI / steering.
  */
 object AaClusterLyricEgressHook : AaHook() {
     override val tagName: String = "AAD_AaClusterLyricEgressHook"
@@ -38,10 +40,6 @@ object AaClusterLyricEgressHook : AaHook() {
         hookPlatformMediaMetadata()
         hookCompatMediaMetadata(
             "android.support.v4.media.MediaMetadataCompat",
-            lpparam.classLoader,
-        )
-        hookCompatMediaMetadata(
-            "androidx.media.MediaMetadataCompat",
             lpparam.classLoader,
         )
     }
@@ -89,6 +87,8 @@ object AaClusterLyricEgressHook : AaHook() {
         param: de.robv.android.xposed.XC_MethodHook.MethodHookParam,
     ) {
         if (key.isNullOrEmpty()) return
+        if (key !in titleKeys && key !in subtitleKeys) return
+        if (!isClusterShellMetadata(param.thisObject)) return
         val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return
         when {
             key in titleKeys -> {
@@ -98,5 +98,30 @@ object AaClusterLyricEgressHook : AaHook() {
                 param.result = ClusterLyricStore.readFreshSubtitle(cr) ?: return
             }
         }
+    }
+
+    /** Only our invisible shell session — never rewrite QQ / Spotify titles. */
+    private fun isClusterShellMetadata(metadata: Any?): Boolean {
+        if (metadata == null) return false
+        return runCatching {
+            when (metadata) {
+                is MediaMetadata -> {
+                    metadata.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)
+                        ?.startsWith(ClusterLyricMediaService.MEDIA_ID_PREFIX) == true
+                }
+                else -> {
+                    val getString = metadata.javaClass.methods.firstOrNull { m ->
+                        m.name == "getString" &&
+                            m.parameterTypes.size == 1 &&
+                            m.parameterTypes[0] == String::class.java
+                    } ?: return@runCatching false
+                    val mediaId = getString.invoke(
+                        metadata,
+                        MediaMetadata.METADATA_KEY_MEDIA_ID,
+                    ) as? String
+                    mediaId?.startsWith(ClusterLyricMediaService.MEDIA_ID_PREFIX) == true
+                }
+            }
+        }.getOrDefault(false)
     }
 }

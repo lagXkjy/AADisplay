@@ -2,58 +2,29 @@
 
 ## Unreleased
 
-### Added
-- **藏车机媒体壳图标：** `AaClusterMediaIconHideHook` 在 gearhead 过滤 `MediaBrowserService` 枚举，去掉本包 `ClusterLyricMediaService`；投影入口保留，`warmStart` / Title 出站 / 显式绑定不受影响。回调 `try/catch` 不抛进 PM；非媒体 / 外包 / 显式 component 早退；列表仅在命中壳时 copy；成功与失败日志各最多一次。
-- **仪表横条隐形媒体壳（免未知来源）：** `ClusterLyricMediaService`（进程 `:cluster`）把 `ClusterLyricStore` 歌词写成 AA `MediaSession` Title；`automotive_app_desc` 增加 `media`。`AaMediaAllowlistHook` 对本包绕过 unknown-sources / 媒体资格，无需开 AA 开发者「未知来源」。采集仍走 `ClusterLyricMirror`；不改分屏 reconnect / 左轨 reclaim。Dashboard starve + Presentation 隐藏保留，并略扩壳相关媒体窗抑制。
-
 ### Changed
-- **仪表歌词去掉影子 Session：** 真机已通媒体壳出站后删除 `ShadowNowPlayingSession`；`ClusterLyricMirror` 只写 `ClusterLyricStore` + `warmStart` `:cluster`。`AaClusterLyricEgressHook` 仍作兜底。
-- **AutoOpen 事件驱动：** 去掉盲等首档 1.2s；武装后立即 + 加密早期重试（0/100/250/…ms）。Hook `CarSystemUiControllerService` 的 car-connected 监听（Coolwalk `"Car connected."` / 官方排队 flush 同刻）立刻再踢一次 `a(Intent)`。未连接时的 `IllegalStateException` 与 CAMS 空静默失败仍靠重试，仅 `AA_DISPLAY_SHOWN` 停。
-
-### Added
-- **DexKit 方法坐标缓存：** gearhead `:car` / `:projection` 冷启把 DexKit 命中写成 `cache/aadisplay_dexkit_*.properties`（类#方法#参数），按 gearhead versionCode+lastUpdateTime、模块 versionCode、进程名失效。缓存全命中时跳过 `libdexkit` 扫包，缓解开机 `USB_STATE`→`CarUsbTriggerReceiver` 广播 ANR。解析失败回退 live DexKit。
-
-### Changed
-- **少打 ATMS 双查：** `refreshPanePackagesFromAtms` 每窗只 `getAllRootTaskInfosOnDisplay` 一次再派生 user 栈；`ensureTasksFillDisplay` 复用同一次 snapshot 做 bring + forced resize。
-- **热路径日志降级：** 会话期/冷启成功与诊断日志改用 `logDebug`（仅 Log.d），错误与硬失败仍 `log`（Logcat + XposedBridge），减轻 system_server 栈风暴与 gearhead 冷连时的 LSPosed IO。
-- **仪表横条歌词扩展 QQ 音乐 HD：** `LyricLineExtractor` 同时读 `qqmusiccar` 与 `qqmusicpad` 的 `METADATA_KEY_LYRIC`；双 QQ 并存时 `qqmusiccar` 优先。保留 LRC position-tick 与 Settings 保活。
-- **仪表横条歌词收窄为车机版播放器：** 移除手机网易云/QQ 及 OPlus spoof 全部配套。
+- **r11-T→r12 审计收敛：** 去掉试验叠层——重连缩窗仅服务端 `shrink-auto`（删客户端 900/1700ms `lastCreate` bust）；soft-reconnect 同 profile 跳过 VD resize；AutoOpen 梯子收为 `0/1.5/5/12/24s` 且 `REARM_GAP≥末档`，保留 car-connected kick；`AaClusterLyricEgressHook` 仅改写 `aadisplay.cluster:` 壳 MEDIA_ID；歌词 `warmStart` 不再每句触发；Allowlist unknown-sources pref 仅在 pkg-bool 未命中时回退。
+- **仪表歌词主路径：** `ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title；Egress 为壳会话兜底。优先包仅 QQ 车载 / HD。
+- **藏车机媒体壳图标：** `AaClusterMediaIconHideHook` 过滤 `MediaBrowserService` 枚举，去掉本包壳；投影入口 / 显式绑定保留。
+- **仪表横条隐形媒体壳（免未知来源）：** `ClusterLyricMediaService` + `AaMediaAllowlistHook`（本包 pkg-bool）；Dashboard starve + Presentation 隐藏保留。
+- **AutoOpen 事件驱动：** 武装后立即 + 稀疏 CAMS 重试；Hook SysUi car-connected 立刻再踢 `a(Intent)`；仅 `AA_DISPLAY_SHOWN` 停。
+- **DexKit 方法坐标缓存：** gearhead 冷启缓存命中跳过 `libdexkit` 扫包；失败回退 live DexKit。
+- **少打 ATMS：** `ensureTasksFillDisplay` / `bringTaskToFront`（press-key、promote）复用同一次 display snapshot。
+- **热路径日志降级：** 成功与诊断用 `logDebug`；错误仍 `log`。
+- **MediaCarApp 与 Dashboard UI 拆分：** 保持 MediaCarApp 出站；Dashboard VD starve + Presentation 隐藏保留。
 
 ### Fixed
-- **方控长按对调：** 长按上一曲/快退（88/89）打开 Recent；长按下一曲/快进（87/90）换分屏（与分隔条点按相同）；去掉长按播放/暂停。
-- **断开重连分辨率卡在全宽 HU（800 vs 720 壳）：** soft-reconnect 先 defer-shrink，但 AA UI 把 `lastCreate` 记成 720 后 `requestDisplay` 跳过相同尺寸，shrink 永远确认不了（现场 VD≈490+302、Presentation=720）。服务端在 confirm 窗口后自动 `shrink-auto` + `onReconnected`；客户端 resume 900ms/1700ms 清 `lastCreate` 再请求。
-- **分屏/全屏黑条（800×480 VD vs 720×480 壳）：** soft-reconnect 时 `displayProfile` 从含 Coolwalk 左轨的全宽（800）缩到内容区（720），pane VD 与 TextureView 对齐。
-- **仪表横条歌名兜底过期：** 播放中定期 touch `aadisplay_cluster_np_updated_ms`，避免 15s 后 gearhead 出站变陈旧。
+- **方控长按对调：** 长按上一曲/快退开 Recent；长按下一曲/快进换分屏；去掉长按播放/暂停。
+- **断开重连分辨率卡全宽 HU（800 vs 720）：** 服务端 confirm 窗口后 `shrink-auto` + 按需 `onReconnected`。
+- **分屏/全屏黑条：** soft-reconnect 时 `displayProfile` 缩到内容区，pane VD 与 TextureView 对齐。
+- **仪表横条歌名兜底过期：** 播放中定期 touch `aadisplay_cluster_np_updated_ms`。
 
-### Added
-- **QQ 音乐 HD 仪表歌词：** `LyricLineExtractor` 读 `com.tencent.qqmusicpad` 的 `METADATA_KEY_LYRIC`（与车机版同路径）；LRC position-tick、Title=当前句、Subtitle=歌手名；未写字段时 fallback 歌名。
-- **仪表横条歌词（AA Now Playing Title）：** `ClusterLyricMirror` 镜像活跃 MediaSession 到影子 session，写入 `Settings.Global`（`aadisplay_cluster_np_*`）。读车机版 `LYRIC` / extras 当前句，否则歌名。`AaClusterLyricEgressHook` 在 gearhead 改写出站。
-- **M0 真车基线（需用户确认）：** 原生 AA + Spotify 时速度表/转速表之间横条是否有字；有则该车吃 AA Title，本功能才适用。
-- **方控长按映射：** 长按上一曲/下一曲与分隔条点按相同（分屏左右整栈对调，全屏只切可见窗不搬栈）；长按播放/暂停开/关 Recent（与分隔条长按相同）。短按三键仍走媒体 / 直播间滑动。
-- **车机壳「收起键盘」：** 窗 VD 上 IME 弹出后，AA 壳在该窗底边出芯片（不被键盘画面盖住）。点按经 `hideIme` 走 WMS/IMM hide，失败才对该 display 打 BACK，**不** `bringTaskToFront`。AIDL 末尾追加 `hideIme` / `getImePane`（需重装并重启 system_server）。
-
-### Changed
-- **MediaCarApp 与 Dashboard UI 拆分：** `AaMediaPlaceholderHook` 不再禁用 `MediaCarAppService`（并在曾被禁用时重新 ENABLE），以恢复 AA 元数据出站；Dashboard VD starve（`AaUiHook`）与 Presentation 隐藏/cover assert 抑制仍保留，避免中控空媒体卡。
-- **近期 system_server 钩子防拖垮：** `findSystemMethod` 缺方法返回 null；`VdOrientationFill` / `VdImeDisplayPin` / `PanePresentationGuard` / `VdDensityPin` 统一：安装失败隔离、回调 `try/catch` 不抛进 WM、无 AA 会话早退；方向钩只保留 config-time resolve（禁用 `getOrientation` 热路径）。
-- **最低系统 Android 13（`minSdk` 33）：** 去掉 API 33 以下的 PackageManager / `registerReceiver` / `getParcelable` / `getPackageUid` 兼容分支。
-- **DPI / 左轨触控热路径：** `VdDensityPin` 对非 AA display 早退（缓存 `getDisplayId`，VD id 不再每次问 VirtualDisplay）；`:car` 左轨 MOVE 按帧合并，DOWN 不再同步 Binder 查全屏（只信 `SPLIT_STATE_CHANGED`）。
-
-### Fixed
-- **全屏比分屏更窄：** 分屏半窗多为竖屏比例（如 396×480）时竖屏应用能铺满；全屏 VD 变成 800×480 横屏后，竖屏应用仍 `SCREEN_ORIENTATION_PORTRAIT`，WM `FIXED_ORIENTATION` letterbox 成居中 288×480。`VdOrientationFill` 只跳过 AA VD 上的 `resolveFixedOrientationConfiguration` / `resolveAspectRatioRestriction`（不钩 `getOrientation` 等热路径，避免 `:car` ANR）。另修三星无 `getOverrideOrientation` 时 `findMethod` 抛错导致 hooks 装失败。需重装并重启。
-- **合盖折叠屏 AA VD 拉不起输入法：** 三星 `getDisplayIdOfInputMethodWindowToBeAdded` 在 `isFolded` 时强制 `displayId=0`（灭掉的内屏），IMM 已 `mInputShown` 但 HoneyBoard 窗不可见。`VdImeDisplayPin`：目标是 AA VD 时保留该 display（不按机型分支）；`getDisplayIdToShowImeLocked` 作通用兜底。需重装并重启 system_server。
-- **DexKit 2.0.7 升完 AA 直接不能用：** `searchPackages("")` 在 2.0.7 只搜无名包，`AaSignatureHook` / `AaUiHook` LayoutInfo 命中 0；`:car` 里一抛后续钩子全跳过。去掉空包过滤，并隔离单个 hook 的 DexKit 失败。
-- **Android Studio Run「Default Activity not found」：** 隐藏桌面图标后无 `LAUNCHER`；运行配置改为安装后打开 `MainActivity`。
-- **16KB 页对齐：** DexKit `2.0.0-rc3` → `2.0.7`，`libdexkit.so` 按 16KB 对齐。
-- **长按分隔条 / 方控开 Recent 直接闪退退出 AADisplay：** 非 hook 失效。Release 下子类 `::baseBinding.isInitialized` 经 R8 访问父类 `private set` 字段触发 `IllegalAccessError`，进程崩溃后 AA `Crash loop, fallback`。改为 `BaseFragment.isBaseBindingInitialized()`，并 keep `template.bases`。
-
-### Verify（仪表歌词）
-1. **M0：** 关掉 AADisplay / 原生 AA + Spotify → 速度表与转速表之间横条有 Now Playing 字
-2. **M1：** 启用本模块 + QQ 音乐车载播放 → 横条至少出现歌名；中控仍无空 Dashboard 卡
-3. **M2：** 车机版写出 `METADATA_KEY_LYRIC` → 横条 `lyric-tick` 随句更新；切歌不串句；方控短按仍控真实播放器
-4. **M3（QQ HD）：** `com.tencent.qqmusicpad` 播放 → logcat `extras lyric-key=android.media.metadata.LYRIC`；横条随句更新
-5. 冷连接 / 重连后横条仍更新；logcat `AAD_ClusterLyricMirror` / `AAD_ClusterLyricMedia` / `AAD_AaMediaAllowlistHook` / `AAD_AaClusterLyricEgressHook`
-6. **免未知来源：** AA 开发者「Unknown sources」关闭时壳仍可被 gearhead bind（`AAD_AaMediaAllowlistHook`）
-7. **回归：** soft-reconnect 分屏宽度正确（非卡 800 vs 720）；左轨/导航条保持收起；不抢 QQ 方控
+### Verify（仪表歌词 + 重连）
+1. Soft-reconnect：宽度稳定为内容区（非卡 800 vs 720）；无连续双重 resize 卡顿
+2. 冷连 AutoOpen：仍能进 AaDisplay；connected kick 后无 100ms 级刷屏重试
+3. QQ 车载/HD 横条歌词；「未知来源」关着仍可 bind 壳；壳图标仍隐藏
+4. 方控短按仍控真实播放器（Egress 不再改写 QQ Title）
+5. 分屏栈切换 / Recent 置顶无明显变慢
 
 ## 0.24#17.4-r10
 

@@ -34,7 +34,8 @@ object AaClusterMediaIconHideHook : AaHook() {
     private const val MEDIA_BROWSER_ACTION = MediaBrowserService.SERVICE_INTERFACE
 
     @Volatile private var loggedHide = false
-    @Volatile private var loggedCallbackError = false
+    @Volatile private var loggedFilterCallbackError = false
+    @Volatile private var loggedParceledRebuildError = false
 
     override fun isSupportProcess(processName: String): Boolean {
         return processProjection == processName || processCar == processName
@@ -60,8 +61,8 @@ object AaClusterMediaIconHideHook : AaHook() {
                             filterMediaBrowserList(param)
                         } catch (t: Throwable) {
                             // Never propagate into gearhead PM — keep original result.
-                            if (!loggedCallbackError) {
-                                loggedCallbackError = true
+                            if (!loggedFilterCallbackError) {
+                                loggedFilterCallbackError = true
                                 log(tagName, "filter callback failed (stock list kept)", t)
                             }
                         }
@@ -139,8 +140,8 @@ object AaClusterMediaIconHideHook : AaHook() {
             ctor.isAccessible = true
             ctor.newInstance(filtered)
         }.onFailure { e ->
-            if (!loggedCallbackError) {
-                loggedCallbackError = true
+            if (!loggedParceledRebuildError) {
+                loggedParceledRebuildError = true
                 logDebug(tagName, "ParceledListSlice rebuild failed (stock kept): ${e.message}")
             }
         }.getOrNull()
@@ -150,6 +151,6 @@ object AaClusterMediaIconHideHook : AaHook() {
         val si = ri.serviceInfo ?: return false
         if (si.packageName != selfPkg) return false
         val name = si.name ?: return false
-        return name == shellClass || name.endsWith(".ClusterLyricMediaService")
+        return name == shellClass
     }
 }

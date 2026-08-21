@@ -46,9 +46,11 @@ object ClusterLyricMirror {
     private var lastPushedTitle: String = ""
     private var lastPushElapsedMs: Long = 0L
     private var dumpedExtrasForMediaId: String = ""
-    private var pausedSinceElapsedMs: Long = 0L
+    private var pausedClearScheduled = false
     private var positionTickArmed = false
     private var staleKeepaliveArmed = false
+    /** After clear / start, wake `:cluster` once on the next publish (not every lyric line). */
+    private var warmStartPending = true
 
     private val sessionsChangedListener =
         MediaSessionManager.OnActiveSessionsChangedListener { sessions ->
@@ -133,28 +135,16 @@ object ClusterLyricMirror {
                 handler,
             )
             onSessionsChanged(sm.getActiveSessionsSafe())
-            // Wake :cluster MediaBrowserService so Title can egress before AA binds.
+            // Wake :cluster MediaBrowserService once so Title can egress before AA binds.
+            warmStartPending = true
             runCatching { ClusterLyricMediaService.warmStart(appContext!!) }
                 .onFailure { log(TAG, "ClusterLyricMediaService.warmStart failed", it) }
+                .onSuccess { warmStartPending = false }
             log(TAG, "started")
         } catch (e: Throwable) {
             log(TAG, "start failed", e)
             started = false
         }
-    }
-
-    fun stop() {
-        if (!started) return
-        handler.removeCallbacksAndMessages(null)
-        runCatching {
-            sessionManager?.removeOnActiveSessionsChangedListener(sessionsChangedListener)
-        }
-        unbindController()
-        clearOutput("stop")
-        sessionManager = null
-        appContext = null
-        started = false
-        log(TAG, "stopped")
     }
 
     private fun MediaSessionManager.getActiveSessionsSafe(): List<MediaController>? {
@@ -218,7 +208,7 @@ object ClusterLyricMirror {
             if (pkg == "android") return@filter false
             if (pkg.startsWith("com.google.android.projection.gearhead")) return@filter false
             val mediaId = c.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_MEDIA_ID)
-            if (mediaId?.startsWith("aadisplay.cluster:") == true) return@filter false
+            if (mediaId?.startsWith(ClusterLyricMediaService.MEDIA_ID_PREFIX) == true) return@filter false
             true
         }
         if (filtered.isEmpty()) return null
@@ -315,7 +305,7 @@ object ClusterLyricMirror {
             PlaybackState.STATE_FAST_FORWARDING,
             PlaybackState.STATE_REWINDING,
             -> {
-                pausedSinceElapsedMs = 0L
+                pausedClearScheduled = false
                 handler.removeCallbacks(pausedClear)
                 if (extracted.needsPositionTick) {
                     armPositionTick()
@@ -329,8 +319,8 @@ object ClusterLyricMirror {
             -> {
                 disarmPositionTick()
                 disarmStaleKeepalive()
-                if (pausedSinceElapsedMs == 0L) {
-                    pausedSinceElapsedMs = SystemClock.elapsedRealtime()
+                if (!pausedClearScheduled) {
+                    pausedClearScheduled = true
                     handler.removeCallbacks(pausedClear)
                     handler.postDelayed(pausedClear, PAUSED_CLEAR_MS)
                 }
@@ -395,8 +385,10 @@ object ClusterLyricMirror {
         val ctx = appContext
         if (ctx != null) {
             ClusterLyricStore.publish(ctx.contentResolver, title, artist)
-            // Keep :cluster shell alive so ContentObserver applies Title promptly.
-            ClusterLyricMediaService.warmStart(ctx)
+            if (warmStartPending) {
+                ClusterLyricMediaService.warmStart(ctx)
+                warmStartPending = false
+            }
         }
         logDebug(TAG, "push reason=$reason title=$title mediaId=$mediaId pkg=$boundPackage")
     }
@@ -408,7 +400,8 @@ object ClusterLyricMirror {
         lastArtist = ""
         lastPushedTitle = ""
         dumpedExtrasForMediaId = ""
-        pausedSinceElapsedMs = 0L
+        pausedClearScheduled = false
+        warmStartPending = true
         disarmPositionTick()
         disarmStaleKeepalive()
         handler.removeCallbacks(trackSwitchSettle)

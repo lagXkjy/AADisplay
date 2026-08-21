@@ -116,11 +116,13 @@ object AaMediaAllowlistHook : AaHook() {
 
     override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
         hookPackageBoolMethods()
-        hookUnknownSourcesPreference()
-        log(
-            tagName,
-            "armed pkg=$selfPkg pkgBoolHooks=${packageBoolMethods.size} + unknown-sources pref",
-        )
+        // Pref force is global in gearhead — only use when pkg-bool DexKit found nothing.
+        if (packageBoolMethods.isEmpty()) {
+            hookUnknownSourcesPreference()
+            log(tagName, "armed pkg=$selfPkg pkgBoolHooks=0 + unknown-sources pref fallback")
+        } else {
+            log(tagName, "armed pkg=$selfPkg pkgBoolHooks=${packageBoolMethods.size}")
+        }
     }
 
     private fun hookPackageBoolMethods() {
@@ -147,9 +149,8 @@ object AaMediaAllowlistHook : AaHook() {
     }
 
     /**
-     * When Gearhead reads the Unknown-sources developer pref, force true so our
-     * sideloaded media shell is discoverable. Preference is process-local to gearhead;
-     * we still only advertise [selfPkg] via package-bool hooks above.
+     * Fallback only: force Unknown-sources pref true when pkg-bool methods were not found.
+     * Prefer [hookPackageBoolMethods] which scopes allow to [selfPkg] only.
      */
     private fun hookUnknownSourcesPreference() {
         try {

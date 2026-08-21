@@ -14,6 +14,7 @@ import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
+import io.github.nitsuya.aa.display.util.ReconnectSizingTrace
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
 import io.github.nitsuya.aa.display.xposed.hook.VdImeDisplayPin
@@ -71,12 +72,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         private const val RECONNECT_SHRINK_CONFIRM_MS = 700L
         private val mMainHandler = Handler(Looper.getMainLooper())
         private val mApplyPendingShrinkRunnable = Runnable { applyPendingReconnectShrinkIfDue() }
-        /**
-         * Extra reconnect sizing trace（用于定位“720/800 宽度分裂”）。
-         * 默认关闭，避免断线重连时日志过多。
-         */
-        private const val TRACE_RECONNECT_SIZING_LOGS = false
-
         private fun sanitizeDisplayProfile(width: Int, height: Int, densityDpi: Int): DisplayProfile {
             return DisplayProfile(
                 width = width.coerceAtLeast(1),
@@ -96,10 +91,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         }
 
         /**
-         * Soft reconnect often reports content width (720) once, then the AA UI client
-         * caches lastCreate and skips identical retries — so shrink never confirmed.
-         * Auto-apply the pending shrink after the confirm window without waiting for
-         * another Binder call.
+         * Soft reconnect may briefly report content width (720) once while the lock
+         * still holds full-HU (800). Auto-apply the pending shrink after the confirm
+         * window — sole owner of shrink confirmation (no client lastCreate bust ladder).
          */
         private fun applyPendingReconnectShrinkIfDue() {
             val pending = mPendingReconnectShrink ?: return
@@ -176,7 +170,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                     cancelPendingReconnectShrinkApply()
                     mPendingReconnectShrink = null
                     mLockedDisplayProfile = candidate
-                    if (TRACE_RECONNECT_SIZING_LOGS) {
+                    if (ReconnectSizingTrace.ENABLED) {
                         logDebug(
                             TAG,
                             "displayProfile relocked(grow): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
@@ -211,7 +205,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                         )
                         schedulePendingReconnectShrinkApply()
                     }
-                    if (TRACE_RECONNECT_SIZING_LOGS) {
+                    if (ReconnectSizingTrace.ENABLED) {
                         logDebug(
                             TAG,
                             "displayProfile defer-shrink(reconnect): locked=${current.width}*${current.height},${current.densityDpi}, incoming=${candidate.width}*${candidate.height},${candidate.densityDpi}, pendingForMs=${now - (mPendingReconnectShrink?.firstSeenAtMs ?: now)}"
@@ -221,7 +215,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 }
                 cancelPendingReconnectShrinkApply()
                 mPendingReconnectShrink = null
-                if (TRACE_RECONNECT_SIZING_LOGS) {
+                if (ReconnectSizingTrace.ENABLED) {
                     logDebug(
                         TAG,
                         "displayProfile keep-locked(reconnect): locked=${current.width}*${current.height},${current.densityDpi}, incoming=${candidate.width}*${candidate.height},${candidate.densityDpi}"
@@ -307,7 +301,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 densityDpi = densityDpi,
                 newSession = mSplitController == null
             )
-            if (TRACE_RECONNECT_SIZING_LOGS) {
+            if (ReconnectSizingTrace.ENABLED) {
                 logDebug(
                     TAG,
                     "onCreateSplitDisplay resolved profile: incoming=${width}x${height},${densityDpi} " +
@@ -520,24 +514,3 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runIO { noteUserInteraction() }
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

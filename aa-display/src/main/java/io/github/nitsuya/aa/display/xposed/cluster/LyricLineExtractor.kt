@@ -5,6 +5,7 @@ import android.media.session.MediaController
 import android.media.session.PlaybackState
 import android.os.Bundle
 import android.os.SystemClock
+import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.json.JSONObject
 
@@ -16,25 +17,21 @@ import org.json.JSONObject
  */
 object LyricLineExtractor {
     private const val TAG = "AAD_LyricLineExtractor"
-    const val MAX_CHARS = 80
+    private const val MAX_CHARS = 80
 
     /** Same as [MediaMetadata.METADATA_KEY_LYRIC] (API 34+); string literal for compileSdk stubs. */
     private const val METADATA_KEY_LYRIC = "android.media.metadata.LYRIC"
 
     private const val QQ_CAR_PKG = "com.tencent.qqmusiccar"
-    const val QQ_PAD_PKG = "com.tencent.qqmusicpad"
+    private const val QQ_PAD_PKG = "com.tencent.qqmusicpad"
 
     /** Preferred sources for cluster lyric mirror; earlier wins when multiple match. */
     val PREFERRED_PACKAGE_ORDER = listOf(
         QQ_CAR_PKG,
         QQ_PAD_PKG,
-        "com.spotify.music",
-        "com.google.android.apps.youtube.music",
     )
 
     private val PREFERRED_PACKAGES = PREFERRED_PACKAGE_ORDER.toSet()
-
-    private val LYRIC_KEYS = listOf(METADATA_KEY_LYRIC)
 
     private val LRC_LINE = Regex(
         """\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]\s*(.*)""",
@@ -45,7 +42,6 @@ object LyricLineExtractor {
         val artist: String,
         val mediaId: String,
         val songTitle: String,
-        val durationMs: Long,
         val fromLyric: Boolean,
         val needsPositionTick: Boolean,
     )
@@ -77,11 +73,10 @@ object LyricLineExtractor {
 
         val positionMs = estimatePositionMs(controller.playbackState)
         val rawLyricBlob = findRawLyricBlob(controller.playbackState?.extras, metadata)
-        val timedLrcBlob = rawLyricBlob
-            ?.let { unwrapLyricPayload(it) }
-            ?.takeIf { looksLikeLrc(it) }
+        val unwrapped = rawLyricBlob?.let { unwrapLyricPayload(it) }
+        val timedLrc = unwrapped?.takeIf { looksLikeLrc(it) }
         val resolved = resolveLyricText(
-            rawLyricBlob = rawLyricBlob,
+            unwrapped = unwrapped,
             positionMs = positionMs,
             songTitle = songTitle,
             artist = artist,
@@ -94,51 +89,34 @@ object LyricLineExtractor {
             artist = artist,
             mediaId = mediaId,
             songTitle = songTitle.ifEmpty { ticker },
-            durationMs = durationMs,
             fromLyric = resolved != null,
-            needsPositionTick = resolved?.fromLrc == true || timedLrcBlob != null,
+            needsPositionTick = resolved?.fromLrc == true || timedLrc != null,
         )
     }
 
-    fun estimatePositionMs(state: PlaybackState?): Long {
-        if (state == null) return 0L
-        val base = state.position.coerceAtLeast(0L)
-        val updated = state.lastPositionUpdateTime
-        if (updated <= 0L) return base
-        val st = state.state
-        if (st != PlaybackState.STATE_PLAYING &&
-            st != PlaybackState.STATE_FAST_FORWARDING &&
-            st != PlaybackState.STATE_REWINDING
-        ) {
-            return base
-        }
-        val speed = state.playbackSpeed.let { if (it == 0f) 1f else it }
-        val elapsed = (SystemClock.elapsedRealtime() - updated).coerceAtLeast(0L)
-        return (base + (elapsed * speed).toLong()).coerceAtLeast(0L)
-    }
-
+    /** Debug-only extras dump for verifying LYRIC keys on-device. */
     fun dumpExtrasOnce(packageName: String, state: PlaybackState?, metadata: MediaMetadata?) {
+        if (!BuildConfig.DEBUG) return
         val keys = linkedSetOf<String>()
         collectKeys(state?.extras, keys)
         collectKeys(metadata?.bundleCompat(), keys)
         logDebug(TAG, "extras dump pkg=$packageName keys=${keys.sorted().joinToString()}")
-        for (key in LYRIC_KEYS) {
-            val v = state?.extras?.nonBlankString(key)
-                ?: metadata?.bundleCompat()?.nonBlankString(key)
-                ?: continue
-            logDebug(TAG, "extras lyric-key=$key len=${v.length} head=${v.take(96)}")
-        }
+        val v = state?.extras?.nonBlankString(METADATA_KEY_LYRIC)
+            ?: metadata?.bundleCompat()?.nonBlankString(METADATA_KEY_LYRIC)
+            ?: metadata?.getString(METADATA_KEY_LYRIC)?.trim()?.takeIf { it.isNotEmpty() }
+            ?: return
+        logDebug(TAG, "extras lyric-key=$METADATA_KEY_LYRIC len=${v.length} head=${v.take(96)}")
     }
 
     private data class ResolvedLyric(val text: String, val fromLrc: Boolean)
 
     private fun resolveLyricText(
-        rawLyricBlob: String?,
+        unwrapped: String?,
         positionMs: Long,
         songTitle: String,
         artist: String,
     ): ResolvedLyric? {
-        val raw = rawLyricBlob?.let { unwrapLyricPayload(it) } ?: return null
+        val raw = unwrapped ?: return null
 
         if (looksLikeLrc(raw)) {
             val line = lineAtPosition(parseLrc(raw), positionMs)
@@ -157,8 +135,25 @@ object LyricLineExtractor {
         return null
     }
 
+    private fun estimatePositionMs(state: PlaybackState?): Long {
+        if (state == null) return 0L
+        val base = state.position.coerceAtLeast(0L)
+        val updated = state.lastPositionUpdateTime
+        if (updated <= 0L) return base
+        val st = state.state
+        if (st != PlaybackState.STATE_PLAYING &&
+            st != PlaybackState.STATE_FAST_FORWARDING &&
+            st != PlaybackState.STATE_REWINDING
+        ) {
+            return base
+        }
+        val speed = state.playbackSpeed.let { if (it == 0f) 1f else it }
+        val elapsed = (SystemClock.elapsedRealtime() - updated).coerceAtLeast(0L)
+        return (base + (elapsed * speed).toLong()).coerceAtLeast(0L)
+    }
+
     /** Some players wrap timed LRC inside JSON metadata extras. */
-    fun unwrapLyricPayload(raw: String): String {
+    private fun unwrapLyricPayload(raw: String): String {
         val trimmed = raw.trim()
         if (!trimmed.startsWith("{") || !trimmed.contains("lyric")) return raw
         return runCatching {
@@ -177,22 +172,12 @@ object LyricLineExtractor {
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?.let { return it }
-        for (key in LYRIC_KEYS) {
-            playbackExtras?.nonBlankString(key)?.let { return it }
-        }
-        val metaBundle = metadata?.bundleCompat()
-        for (key in LYRIC_KEYS) {
-            metaBundle?.nonBlankString(key)?.let { return it }
-            runCatching { metadata?.getString(key) }
-                ?.getOrNull()
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
-                ?.let { return it }
-        }
+        playbackExtras?.nonBlankString(METADATA_KEY_LYRIC)?.let { return it }
+        metadata?.bundleCompat()?.nonBlankString(METADATA_KEY_LYRIC)?.let { return it }
         return null
     }
 
-    fun looksLikeLrc(text: String): Boolean {
+    private fun looksLikeLrc(text: String): Boolean {
         if (!text.contains('[')) return false
         var hits = 0
         for (line in text.lineSequence()) {
@@ -204,9 +189,9 @@ object LyricLineExtractor {
         return LRC_LINE.containsMatchIn(text)
     }
 
-    data class LrcEntry(val timeMs: Long, val text: String)
+    private data class LrcEntry(val timeMs: Long, val text: String)
 
-    fun parseLrc(raw: String): List<LrcEntry> {
+    private fun parseLrc(raw: String): List<LrcEntry> {
         val out = ArrayList<LrcEntry>(64)
         for (line in raw.lineSequence()) {
             val trimmed = line.trim()
@@ -239,7 +224,7 @@ object LyricLineExtractor {
         return out
     }
 
-    fun lineAtPosition(entries: List<LrcEntry>, positionMs: Long): String? {
+    private fun lineAtPosition(entries: List<LrcEntry>, positionMs: Long): String? {
         if (entries.isEmpty()) return null
         var lo = 0
         var hi = entries.size - 1
@@ -279,7 +264,7 @@ object LyricLineExtractor {
         }.getOrNull()
     }
 
-    fun truncate(text: String): String {
+    private fun truncate(text: String): String {
         if (text.length <= MAX_CHARS) return text
         return text.take(MAX_CHARS)
     }

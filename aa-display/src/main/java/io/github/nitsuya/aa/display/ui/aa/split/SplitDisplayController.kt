@@ -18,6 +18,7 @@ import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.ReconnectSizingTrace
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -55,12 +56,6 @@ class SplitDisplayController(
         internal const val MAX_RESTORE_VERIFY_ATTEMPTS = 3
         /** Token for post-fullscreen focus restore kicks (cancel on destroy / re-enter). */
         internal val FULLSCREEN_FOCUS_TOKEN = Any()
-
-        /**
-         * Extra reconnect sizing trace（用于定位“720/800 宽度分裂”）。
-         * 默认关闭，避免断线重连时日志过多。
-         */
-        private const val TRACE_RECONNECT_SIZING_LOGS = false
     }
 
     internal val vd = SplitVdLifecycle(this)
@@ -269,17 +264,25 @@ class SplitDisplayController(
     }
 
     fun onReconnected(width: Int, height: Int, densityDpi: Int) {
-        mWidth = width.coerceAtLeast(1)
-        mHeight = height.coerceAtLeast(1)
-        mDensityDpi = densityDpi.coerceAtLeast(1)
-        if (TRACE_RECONNECT_SIZING_LOGS) {
+        val w = width.coerceAtLeast(1)
+        val h = height.coerceAtLeast(1)
+        val dpi = densityDpi.coerceAtLeast(1)
+        val profileChanged = mWidth != w || mHeight != h || mDensityDpi != dpi
+        mWidth = w
+        mHeight = h
+        mDensityDpi = dpi
+        if (ReconnectSizingTrace.ENABLED) {
             logDebug(
                 TAG,
                 "onReconnected profile=${mWidth}x${mHeight},${mDensityDpi} " +
+                    "changed=$profileChanged " +
                     "surfaces=${mPrimarySurface != null}/${mSecondarySurface != null}"
             )
         }
-        vd.resizePanesInternal("reconnect")
+        // Identical soft-reconnect profile: skip expensive VD resize; still re-assert policies.
+        if (profileChanged) {
+            vd.resizePanesInternal("reconnect")
+        }
         vd.applyPolicies(SplitPane.PRIMARY, "reconnect")
         vd.applyPolicies(SplitPane.SECONDARY, "reconnect")
         ime.start()
@@ -707,9 +710,18 @@ class SplitDisplayController(
                 resolveKeyInjectionDisplayId()
             }
             if (displayId == Display.INVALID_DISPLAY) return@runOnHandlerBlocking false
-            val topTask = ownership.snapshotUserRootTasks(displayId).lastOrNull()
+            val roots = tryOrNull {
+                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+            }.orEmpty()
+            val userTasks = ownership.snapshotUserRootTasks(
+                ownership.normalizeRootTasksBottomToTop(roots),
+            )
+            val topTask = userTasks.lastOrNull()
             topTask?.let { ref ->
-                ownership.bringTaskToFront(ref.taskId)
+                ownership.bringTaskToFront(
+                    ref.taskId,
+                    cachedRootsByDisplay = mapOf(displayId to roots),
+                )
                 paneForDisplayId(displayId)?.let { mFocusedPane = it }
             }
             // knownLive: already confirmed by resolvePaneDisplayId — skip a second ATMS walk.

@@ -31,7 +31,8 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
     companion object {
         private const val TAG = "AAD_ClusterLyricMedia"
         private const val ROOT_ID = "aadisplay_cluster_root"
-        private const val MEDIA_ID_PREFIX = "aadisplay.cluster:"
+        /** Shared with [io.github.nitsuya.aa.display.xposed.hook.aa.AaClusterLyricEgressHook] scope gate. */
+        const val MEDIA_ID_PREFIX = "aadisplay.cluster:"
         private const val GEARHEAD = "com.google.android.projection.gearhead"
 
         val COMPONENT: ComponentName =
@@ -190,7 +191,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         sess.setPlaybackState(state)
         if (!sess.isActive) {
             sess.isActive = true
-            Log.i(TAG, "active reason=$reason title=$title")
+            Log.d(TAG, "active reason=$reason title=$title")
         } else {
             Log.d(TAG, "update reason=$reason title=$title")
         }

@@ -83,7 +83,7 @@ flowchart LR
 - `…:projection`
 - `…:car`
 
-已注册 AA 钩子：`AaSignatureHook`、`AaBtnEventHook`、`AaUiHook`、`AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`、`AaMediaAllowlistHook`、`AaClusterMediaIconHideHook`、`AaClusterLyricEgressHook`（按 `isSupportProcess` 过滤；Frx/Ui/Allowlist 依赖 DexKit；Nav 禁组件；Media 保持 MediaCarApp 出站 + Ui 饿 Dashboard VD；Allowlist 本包免未知来源；Cluster 媒体壳从 AA 应用列表隐藏；Cluster 歌词改写 Title）。
+已注册 AA 钩子：`AaSignatureHook`、`AaBtnEventHook`、`AaUiHook`、`AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`、`AaMediaAllowlistHook`、`AaClusterMediaIconHideHook`、`AaClusterLyricEgressHook`（按 `isSupportProcess` 过滤；Frx/Ui/Allowlist 依赖 DexKit；Nav 禁组件；Media 保持 MediaCarApp 出站 + Ui 饿 Dashboard VD；Allowlist 本包免未知来源；Cluster 媒体壳从 AA 应用列表隐藏；Cluster Egress 仅改写 `aadisplay.cluster:` 壳 Title/Artist）。
 
 ### 跨进程 IPC
 
@@ -104,7 +104,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 ### LSPosed scope
 
 见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`。改 scope 会影响模块生效范围，勿随意删改。
-仪表横条歌词：QQ 音乐车载（`com.tencent.qqmusiccar` → `METADATA_KEY_LYRIC`）+ QQ 音乐 HD（`com.tencent.qqmusicpad` → 同字段）；`ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title 出站；`AaMediaAllowlistHook` 免开未知来源；`AaClusterMediaIconHideHook` 从 AA 媒体应用列表隐藏该壳。LSPosed scope 仅 `android` + `gearhead`。
+仪表横条歌词：QQ 音乐车载（`com.tencent.qqmusiccar` → `METADATA_KEY_LYRIC`）+ QQ 音乐 HD（`com.tencent.qqmusicpad` → 同字段）；`ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title 出站；`AaClusterLyricEgressHook` 仅兜底改写壳 `MEDIA_ID`（`aadisplay.cluster:`）；`AaMediaAllowlistHook` 免开未知来源；`AaClusterMediaIconHideHook` 从 AA 媒体应用列表隐藏该壳。LSPosed scope 仅 `android` + `gearhead`。
 
 ## 4. 构建与验证
 
