@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.ContextParams
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.view.Display
 import android.view.MotionEvent
 import android.view.Surface
@@ -14,6 +13,7 @@ import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
+import io.github.nitsuya.aa.display.util.DisplayProfileSettle
 import io.github.nitsuya.aa.display.util.ReconnectSizingTrace
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
@@ -62,16 +62,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 get() = width >= height
         }
 
-        private data class PendingReconnectShrink(
-            val profile: DisplayProfile,
-            val firstSeenAtMs: Long
-        )
-
         private var mLockedDisplayProfile: DisplayProfile? = null
-        private var mPendingReconnectShrink: PendingReconnectShrink? = null
-        private const val RECONNECT_SHRINK_CONFIRM_MS = 700L
+        /** Soft-reconnect: rail VD may appear shortly after first create call. */
+        private const val RAIL_SETTLE_RETRY_MS = 450L
         private val mMainHandler = Handler(Looper.getMainLooper())
-        private val mApplyPendingShrinkRunnable = Runnable { applyPendingReconnectShrinkIfDue() }
+        private val mRailSettleRetryRunnable = Runnable { retryRailAwareSettle() }
+
         private fun sanitizeDisplayProfile(width: Int, height: Int, densityDpi: Int): DisplayProfile {
             return DisplayProfile(
                 width = width.coerceAtLeast(1),
@@ -80,158 +76,136 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             )
         }
 
-        private fun cancelPendingReconnectShrinkApply() {
-            mMainHandler.removeCallbacks(mApplyPendingShrinkRunnable)
+        private fun cancelRailSettleRetry() {
+            mMainHandler.removeCallbacks(mRailSettleRetryRunnable)
         }
 
-        private fun schedulePendingReconnectShrinkApply() {
-            cancelPendingReconnectShrinkApply()
-            // Slight slack past the confirm window so age check succeeds on first fire.
-            mMainHandler.postDelayed(mApplyPendingShrinkRunnable, RECONNECT_SHRINK_CONFIRM_MS + 50L)
+        private fun scheduleRailSettleRetry() {
+            cancelRailSettleRetry()
+            mMainHandler.postDelayed(mRailSettleRetryRunnable, RAIL_SETTLE_RETRY_MS)
         }
 
         /**
-         * Soft reconnect may briefly report content width (720) once while the lock
-         * still holds full-HU (800). Auto-apply the pending shrink after the confirm
-         * window — sole owner of shrink confirmation (no client lastCreate bust ladder).
+         * After soft reconnect, GhFacetBar may appear (or be starved) a beat after the
+         * first create. Re-settle so we neither stay at full-HU with a live 80px strip
+         * nor stay at HU−rail after the strip is gone.
          */
-        private fun applyPendingReconnectShrinkIfDue() {
-            val pending = mPendingReconnectShrink ?: return
-            val now = SystemClock.uptimeMillis()
-            val remaining = RECONNECT_SHRINK_CONFIRM_MS - (now - pending.firstSeenAtMs)
-            if (remaining > 0L) {
-                mMainHandler.postDelayed(mApplyPendingShrinkRunnable, remaining + 20L)
-                return
-            }
-            val current = mLockedDisplayProfile
-            if (current == null || current == pending.profile) {
-                mPendingReconnectShrink = null
-                return
-            }
-            mPendingReconnectShrink = null
-            mLockedDisplayProfile = pending.profile
+        private fun retryRailAwareSettle() {
+            val current = mLockedDisplayProfile ?: return
+            if (mSplitController == null) return
+            if (!hasSystemContext) return
+            val railW = DisplayProfileSettle.observeLiveRailWidthPx(systemContext)
+            val fullW = DisplayProfileSettle.observeFullHuWidthPx(
+                systemContext,
+                current.width.coerceAtLeast(1),
+                current.height,
+            )
+            val settled = DisplayProfileSettle.settle(
+                DisplayProfileSettle.Size(fullW, current.height, current.densityDpi),
+                railWidthPx = railW,
+                fullHuWidthPx = fullW,
+            )
+            val next = sanitizeDisplayProfile(settled.width, settled.height, settled.densityDpi)
+            if (next == current) return
+            mLockedDisplayProfile = next
             logDebug(
                 TAG,
-                "displayProfile relocked(shrink-auto): ${current.width}*${current.height},${current.densityDpi} -> ${pending.profile.width}*${pending.profile.height},${pending.profile.densityDpi}"
+                "displayProfile relocked(rail-settle): ${current.width}*${current.height} -> " +
+                    "${next.width}*${next.height} rail=$railW full=$fullW"
             )
-            mSplitController?.onReconnected(
-                pending.profile.width,
-                pending.profile.height,
-                pending.profile.densityDpi,
-            )
+            mSplitController?.onReconnected(next.width, next.height, next.densityDpi)
         }
 
+        /**
+         * Single settle rule (see [DisplayProfileSettle]): live rail strip → HU−rail;
+         * otherwise full HU. Replaces the old grow-immediate / shrink-confirm tug-of-war.
+         */
         private fun resolveDisplayProfile(
             width: Int,
             height: Int,
             densityDpi: Int,
             newSession: Boolean
         ): DisplayProfile {
-            val candidate = sanitizeDisplayProfile(width, height, densityDpi)
+            val reported = sanitizeDisplayProfile(width, height, densityDpi)
+            val railW = if (hasSystemContext) {
+                DisplayProfileSettle.observeLiveRailWidthPx(systemContext)
+            } else {
+                0
+            }
+            val fullW = if (hasSystemContext) {
+                DisplayProfileSettle.observeFullHuWidthPx(systemContext, reported.width, reported.height)
+            } else {
+                reported.width
+            }
+            val settledSize = DisplayProfileSettle.settle(
+                DisplayProfileSettle.Size(reported.width, reported.height, reported.densityDpi),
+                railWidthPx = railW,
+                fullHuWidthPx = fullW,
+            )
+            val candidate = sanitizeDisplayProfile(
+                settledSize.width,
+                settledSize.height,
+                settledSize.densityDpi,
+            )
             val current = mLockedDisplayProfile
             if (current == null) {
-                cancelPendingReconnectShrinkApply()
-                mPendingReconnectShrink = null
                 mLockedDisplayProfile = candidate
-                logDebug(TAG, "displayProfile locked: ${candidate.width}*${candidate.height},${candidate.densityDpi}")
+                logDebug(
+                    TAG,
+                    "displayProfile locked: ${candidate.width}*${candidate.height},${candidate.densityDpi} " +
+                        "(reported=${reported.width} rail=$railW full=$fullW)"
+                )
+                if (!newSession) scheduleRailSettleRetry()
                 return candidate
             }
             if (newSession) {
-                cancelPendingReconnectShrinkApply()
-                mPendingReconnectShrink = null
+                cancelRailSettleRetry()
                 if (current != candidate) {
                     mLockedDisplayProfile = candidate
                     logDebug(
                         TAG,
-                        "displayProfile relocked(new-session): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
+                        "displayProfile relocked(new-session): ${current.width}*${current.height} -> " +
+                            "${candidate.width}*${candidate.height} rail=$railW full=$fullW"
                     )
                 }
                 return mLockedDisplayProfile!!
             }
             if (current.isLandscape != candidate.isLandscape) {
-                cancelPendingReconnectShrinkApply()
-                mPendingReconnectShrink = null
+                cancelRailSettleRetry()
                 mLockedDisplayProfile = candidate
                 logDebug(
                     TAG,
-                    "displayProfile relocked(orientation): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
+                    "displayProfile relocked(orientation): ${current.width}*${current.height} -> " +
+                        "${candidate.width}*${candidate.height}"
                 )
                 return candidate
             }
             if (current != candidate) {
-                // Soft reconnect may briefly report pre-rail-reclaim size; allow monotonic grow
-                // so panes fill the reclaimed gutter.
-                val grew =
-                    current.isLandscape == candidate.isLandscape &&
-                        candidate.width >= current.width &&
-                        candidate.height >= current.height &&
-                        (candidate.width > current.width || candidate.height > current.height)
-                if (grew) {
-                    cancelPendingReconnectShrinkApply()
-                    mPendingReconnectShrink = null
-                    mLockedDisplayProfile = candidate
-                    if (ReconnectSizingTrace.ENABLED) {
-                        logDebug(
-                            TAG,
-                            "displayProfile relocked(grow): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
-                        )
-                    }
-                    return candidate
-                }
-                val shrank =
-                    current.isLandscape == candidate.isLandscape &&
-                        candidate.width <= current.width &&
-                        candidate.height <= current.height &&
-                        (candidate.width < current.width || candidate.height < current.height)
-                if (shrank) {
-                    val now = SystemClock.uptimeMillis()
-                    val pending = mPendingReconnectShrink
-                    if (pending?.profile == candidate &&
-                        now - pending.firstSeenAtMs >= RECONNECT_SHRINK_CONFIRM_MS
-                    ) {
-                        cancelPendingReconnectShrinkApply()
-                        mPendingReconnectShrink = null
-                        mLockedDisplayProfile = candidate
-                        logDebug(
-                            TAG,
-                            "displayProfile relocked(shrink-confirmed): ${current.width}*${current.height},${current.densityDpi} -> ${candidate.width}*${candidate.height},${candidate.densityDpi}"
-                        )
-                        return candidate
-                    }
-                    if (pending?.profile != candidate) {
-                        mPendingReconnectShrink = PendingReconnectShrink(
-                            profile = candidate,
-                            firstSeenAtMs = now
-                        )
-                        schedulePendingReconnectShrinkApply()
-                    }
-                    if (ReconnectSizingTrace.ENABLED) {
-                        logDebug(
-                            TAG,
-                            "displayProfile defer-shrink(reconnect): locked=${current.width}*${current.height},${current.densityDpi}, incoming=${candidate.width}*${candidate.height},${candidate.densityDpi}, pendingForMs=${now - (mPendingReconnectShrink?.firstSeenAtMs ?: now)}"
-                        )
-                    }
-                    return current
-                }
-                cancelPendingReconnectShrinkApply()
-                mPendingReconnectShrink = null
-                if (ReconnectSizingTrace.ENABLED) {
-                    logDebug(
-                        TAG,
-                        "displayProfile keep-locked(reconnect): locked=${current.width}*${current.height},${current.densityDpi}, incoming=${candidate.width}*${candidate.height},${candidate.densityDpi}"
-                    )
-                }
+                mLockedDisplayProfile = candidate
+                logDebug(
+                    TAG,
+                    "displayProfile relocked(settle): ${current.width}*${current.height} -> " +
+                        "${candidate.width}*${candidate.height} " +
+                        "reported=${reported.width} rail=$railW full=$fullW"
+                )
+            } else if (ReconnectSizingTrace.ENABLED) {
+                logDebug(
+                    TAG,
+                    "displayProfile keep: ${current.width}*${current.height} " +
+                        "reported=${reported.width} rail=$railW full=$fullW"
+                )
             }
-            return current
+            // Rail / starve often lands after the first soft-reconnect create; one retry.
+            scheduleRailSettleRetry()
+            return mLockedDisplayProfile!!
         }
 
         private fun clearDisplayProfileLock() {
             mLockedDisplayProfile?.also {
                 logDebug(TAG, "displayProfile cleared: ${it.width}*${it.height},${it.densityDpi}")
             }
-            cancelPendingReconnectShrinkApply()
+            cancelRailSettleRetry()
             mLockedDisplayProfile = null
-            mPendingReconnectShrink = null
         }
 
         fun systemReady() {

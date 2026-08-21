@@ -225,8 +225,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             if (displayId == Display.INVALID_DISPLAY) {
                 isDisplayCreateRequested = false
             }
-            // Soft-reconnect shrink is owned by CoreManagerService.shrink-auto;
-            // do not arm client lastCreate bust retries here.
+            // Soft-reconnect sizing is owned by CoreManagerService DisplayProfileSettle.
             requestDisplay("resume")
         }
     }

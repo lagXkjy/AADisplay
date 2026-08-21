@@ -1548,10 +1548,17 @@ object AaUiHook: AaHook() {
             name?.contains("GhFacet", ignoreCase = true) == true ||
             name?.contains("VerticalRail", ignoreCase = true) == true ||
             name?.contains("EdgeColumn", ignoreCase = true) == true
-        // Named FacetBar VD: observe width for railHitWidthPx / content expand only.
+        // Named FacetBar: remember real strip width for touch hit-tests, then starve the
+        // compositor slot to 1px so content_bounds expand + displayProfile share one truth
+        // (full HU). Leaving it at 80px was the 800-vs-720 reconnect oscillation source.
         if (railName) {
             if (width > 1) {
                 mObservedRailWidthPx = width
+                logDebug(
+                    tagName,
+                    "AaUiHook: starve FacetBar VD name=$name ${width}x$height → 1x$height"
+                )
+                return 1 to height
             }
             return null
         }

@@ -15,19 +15,20 @@
 - **少打 ATMS：** `ensureTasksFillDisplay` / `bringTaskToFront`（press-key、promote）复用同一次 display snapshot。
 - **热路径日志降级：** 成功与诊断用 `logDebug`；错误仍 `log`。
 - **MediaCarApp 与 Dashboard UI 拆分：** 保持 MediaCarApp 出站；Dashboard VD starve + Presentation 隐藏保留。
+- **重连分辨率单一结算：** `DisplayProfileSettle` 取代 grow/shrink confirm；有活 FacetBar 条带用 `HU−rail`，否则全宽；450ms rail-settle 重试。
 
 ### Fixed
+- **断开重连分辨率 800/720 反复错位：** 具名 `GhFacetBar` VD 饿成 `1×H`（触控仍用观测轨宽），与 `content_bounds` 扩满共用全宽真值；服务端按 rail 观测结算 profile。
 - **方控长按对调：** 长按上一曲/快退开 Recent；长按下一曲/快进换分屏；去掉长按播放/暂停。
-- **断开重连分辨率卡全宽 HU（800 vs 720）：** 服务端 confirm 窗口后 `shrink-auto` + 按需 `onReconnected`。
-- **分屏/全屏黑条：** soft-reconnect 时 `displayProfile` 缩到内容区，pane VD 与 TextureView 对齐。
 - **仪表横条歌名兜底过期：** 播放中定期 touch `aadisplay_cluster_np_updated_ms`。
 
 ### Verify（仪表歌词 + 重连）
-1. Soft-reconnect：宽度稳定为内容区（非卡 800 vs 720）；无连续双重 resize 卡顿
+1. Soft-reconnect：`GhFacetBar` 饿死后 profile 稳定全宽；日志可见 `displayProfile relocked(settle|rail-settle)` / `starve FacetBar`；无右侧 gutter / 黑条
 2. 冷连 AutoOpen：仍能进 AaDisplay；connected kick 后无 100ms 级刷屏重试
 3. QQ 车载/HD 横条歌词随句切换；同句 hold 时 Settings/壳无每 300ms 刷；媒体列表出现壳图标可接受
 4. 方控短按仍控真实播放器（Egress 不再改写 QQ Title）
 5. 分屏栈切换 / Recent 置顶 / 触控滑动无明显变慢
+6. 左轨触控仍能注入 AaDisplay（starve 后 hit 带宽用观测轨宽）
 
 ## 0.24#17.4-r10
 
