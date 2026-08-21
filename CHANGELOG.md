@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- **仪表横条隐形媒体壳（免未知来源）：** `ClusterLyricMediaService`（进程 `:cluster`）把 `ClusterLyricStore` 歌词写成 AA `MediaSession` Title；`automotive_app_desc` 增加 `media`。`AaMediaAllowlistHook` 对本包绕过 unknown-sources / 媒体资格，无需开 AA 开发者「未知来源」。采集仍走 `ClusterLyricMirror`；不改分屏 reconnect / 左轨 reclaim。Dashboard starve + Presentation 隐藏保留，并略扩壳相关媒体窗抑制。
+
 ### Changed
 - **AutoOpen 事件驱动：** 去掉盲等首档 1.2s；武装后立即 + 加密早期重试（0/100/250/…ms）。Hook `CarSystemUiControllerService` 的 car-connected 监听（Coolwalk `"Car connected."` / 官方排队 flush 同刻）立刻再踢一次 `a(Intent)`。未连接时的 `IllegalStateException` 与 CAMS 空静默失败仍靠重试，仅 `AA_DISPLAY_SHOWN` 停。
 
@@ -46,7 +49,9 @@
 2. **M1：** 启用本模块 + QQ 音乐车载播放 → 横条至少出现歌名；中控仍无空 Dashboard 卡
 3. **M2：** 车机版写出 `METADATA_KEY_LYRIC` → 横条 `lyric-tick` 随句更新；切歌不串句；方控短按仍控真实播放器
 4. **M3（QQ HD）：** `com.tencent.qqmusicpad` 播放 → logcat `extras lyric-key=android.media.metadata.LYRIC`；横条随句更新
-5. 冷连接 / 重连后横条仍更新；logcat `AAD_ClusterLyricMirror` / `AAD_ShadowNowPlaying` / `AAD_AaClusterLyricEgressHook` / `AAD_LyricLineExtractor`
+5. 冷连接 / 重连后横条仍更新；logcat `AAD_ClusterLyricMirror` / `AAD_ClusterLyricMedia` / `AAD_AaMediaAllowlistHook` / `AAD_AaClusterLyricEgressHook`
+6. **免未知来源：** AA 开发者「Unknown sources」关闭时壳仍可被 gearhead bind（`AAD_AaMediaAllowlistHook`）
+7. **回归：** soft-reconnect 分屏宽度正确（非卡 800 vs 720）；左轨/导航条保持收起；不抢 QQ 方控
 
 ## 0.24#17.4-r10
 

@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.nitsuya.aa.display"
         minSdk = 33
         targetSdk = 36
-        versionCode = 3068
-        versionName = "0.24#17.4-r12"
+        versionCode = 3074
+        versionName = "0.24#17.4-r14"
         buildConfigField("long", "BUILD_TIME", buildTime.toString())
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -114,6 +114,8 @@ dependencies {
     implementation("androidx.fragment:fragment-ktx:1.8.9")
     implementation("androidx.constraintlayout:constraintlayout:2.2.1")
     implementation("androidx.recyclerview:recyclerview:1.4.0")
+    // Cluster lyric invisible MediaBrowserService shell (Title egress to AA Now Playing).
+    implementation("androidx.media:media:1.7.0")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 

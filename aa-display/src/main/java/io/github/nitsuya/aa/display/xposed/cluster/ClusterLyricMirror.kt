@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import io.github.nitsuya.aa.display.BuildConfig
+import io.github.nitsuya.aa.display.service.ClusterLyricMediaService
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
@@ -133,6 +134,9 @@ object ClusterLyricMirror {
                 handler,
             )
             onSessionsChanged(sm.getActiveSessionsSafe())
+            // Wake :cluster MediaBrowserService so Title can egress before AA binds.
+            runCatching { ClusterLyricMediaService.warmStart(appContext!!) }
+                .onFailure { log(TAG, "ClusterLyricMediaService.warmStart failed", it) }
             log(TAG, "started")
         } catch (e: Throwable) {
             log(TAG, "start failed", e)
@@ -414,6 +418,8 @@ object ClusterLyricMirror {
         val ctx = appContext
         if (ctx != null) {
             ClusterLyricStore.publish(ctx.contentResolver, title, artist)
+            // Keep :cluster shell alive so ContentObserver applies Title promptly.
+            ClusterLyricMediaService.warmStart(ctx)
         }
         shadow?.update(
             title = title,

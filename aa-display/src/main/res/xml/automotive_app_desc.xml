@@ -3,4 +3,6 @@
     <uses name="service" tools:ignore="InvalidUsesTagAttribute"/>
     <uses name="projection" tools:ignore="InvalidUsesTagAttribute"/>
     <uses name="notification"/>
+    <!-- Cluster lyric egress: invisible MediaBrowserService shell (process :cluster). -->
+    <uses name="media"/>
 </automotiveApp>

@@ -51,6 +51,17 @@
                 <category android:name="com.google.android.gms.car.category.CATEGORY_PROJECTION_OEM" />
             </intent-filter>
         </service>
+        <!-- Invisible AA media shell for instrument-cluster lyric Title egress.
+             Isolated from projection UI so session lifecycle cannot tear down split VDs. -->
+        <service
+            android:name=".service.ClusterLyricMediaService"
+            android:exported="true"
+            android:process=":cluster"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>

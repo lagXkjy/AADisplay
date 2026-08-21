@@ -13,6 +13,7 @@ import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.XC_MethodReplacement
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.hook.DexKitMethodCache
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -30,6 +31,10 @@ import java.lang.reflect.Method
  * Now Playing metadata can still egress to the HU/instrument cluster, while
  * hiding leftover Dashboard Presentation windows and swallowing Coolwalk's
  * Dashboard cover assert after `content_bounds` expand.
+ *
+ * Cluster lyric media shell (`ClusterLyricMediaService`) must stay UI-less:
+ * also hide private presentations whose title mentions the shell / media browse
+ * for our package — never hide [io.github.nitsuya.aa.display.ui.aa.AaDisplayActivity].
  */
 object AaMediaPlaceholderHook : AaHook() {
     override val tagName: String = "AAD_AaMediaPlaceholderHook"
@@ -183,6 +188,17 @@ object AaMediaPlaceholderHook : AaHook() {
     private fun isDashboardWindow(lp: WindowManager.LayoutParams?, root: View): Boolean {
         val title = lp?.title?.toString().orEmpty()
         if (title.contains("Dashboard", ignoreCase = true)) return true
+        // Cluster lyric shell / media-browse leftovers — never AaDisplayActivity projection.
+        if (!title.contains("AaDisplayActivity", ignoreCase = true) &&
+            !title.contains("AaMainFragment", ignoreCase = true)
+        ) {
+            if (title.contains("ClusterLyric", ignoreCase = true)) return true
+            if (title.contains("MediaBrowse", ignoreCase = true) &&
+                title.contains(BuildConfig.APPLICATION_ID, ignoreCase = true)
+            ) {
+                return true
+            }
+        }
         if (lp != null && lp.type == 2030 /* TYPE_PRIVATE_PRESENTATION */) {
             val w = lp.width
             val h = lp.height

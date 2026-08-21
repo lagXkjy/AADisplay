@@ -23,7 +23,8 @@
 |------|--------|----------|------------|
 | `system_server` | `AndroidHook` | `CoreManagerService`、`SplitDisplayController`、`DisplaySessionPolicy`、`ClusterLyricMirror` | 不要从这里 inflate 车机 UI |
 | `io.github.nitsuya.aa.display` | 无 Xposed 钩子 | `AaDisplayActivity` / `AaMainFragment` | 不要直接操作 VD / ATMS |
-| `gearhead`（`:projection` / `:car`） | `AndroidAutoHook` → `Aa*Hook` | Coolwalk 壳、HU 触控、Auto Open、仪表 Title 改写 | 不要在这里创建分屏 VD |
+| `io.github.nitsuya.aa.display:cluster` | 无 | `ClusterLyricMediaService`（隐形媒体壳 Title 出站） | 不要碰分屏 VD / 投影 UI |
+| `gearhead`（`:projection` / `:car`） | `AndroidAutoHook` → `Aa*Hook` | Coolwalk 壳、HU 触控、Auto Open、仪表 Title 改写 / 媒体白名单 | 不要在这里创建分屏 VD |
 | 被投 App | 无（仅 DPI pin 等 system 侧） | 任务窗口画在 VD 上 | — |
 
 `CoreApi` 选路（`CoreApi.kt`）：**只有真正的 system_server**（`AndroidHook.isReadyForSystemHooks()`）才用 `CoreManagerService.instance`；其余一律 `CoreManager` 经 PMS 桥拿 Binder。不要用 `uid == 1000` 判断——三星等 OEM 系统应用也是 1000。
@@ -124,7 +125,8 @@ DexKit 查询 **不要** 写 `searchPackages = listOf("")`（2.0.7 会只搜无�
 | `AaSignatureHook` | `:car` | 本模块包名签名校验返回 true，AA 才肯跑 CarActivity |
 | `AaFrxRequiredAppsHook` | 两者 | Google App / Maps / TTS 的 FRX 状态强制 READY |
 | `AaNavFallbackHook` | 两者 | 禁用 `NavigationFallbackCarActivityService`（缺 Maps 否则占位页崩 `:car`） |
-| `AaMediaPlaceholderHook` | 两者 | **保持** `MediaCarAppService` 启用（元数据出站）；隐藏残留 Dashboard Presentation；吞 Dashboard cover 断言 |
+| `AaMediaPlaceholderHook` | 两者 | **保持** `MediaCarAppService` 启用（元数据出站）；隐藏残留 Dashboard / 壳相关媒体 Presentation；吞 Dashboard cover 断言 |
+| `AaMediaAllowlistHook` | 两者 | 本包免「未知来源」/ 媒体资格；配合 `:cluster` `ClusterLyricMediaService` 出站仪表 Title |
 | `AaClusterLyricEgressHook` | 两者 | 读 `MediaMetadata` Title/Subtitle 时注入 `ClusterLyricStore` 仪表横条文案 |
 | `AaBtnEventHook` | `:projection` | 偷 MEDIA_BUTTON / projected.KEY_EVENT → 广播给车机 UI |
 | `AaUiHook` | 两者（职责不同） | 见下节 |
@@ -475,6 +477,7 @@ flowchart TB
 | 快照恢复错误 | `LastSplitStore.kt`、`restoreLastSplitNow`、ATMS 底→顶 |
 | 方控 | `AaBtnEventHook`、`AaMainFragment` `ACTION_STEERING_WHEEL_CONTROL` |
 | FRX / 无 Maps 崩溃 / 空媒体卡 | `AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`、`rewriteVirtualDisplayArgs` |
+| 仪表横条歌词采得到但推不过去 | `ClusterLyricMediaService`（`:cluster`）、`AaMediaAllowlistHook`、`ClusterLyricStore`、`AaClusterLyricEgressHook` |
 | 抖音盖导航 / 外窗 Presentation | `PanePresentationGuard`、`SplitPresentationGuard` |
 | AA VD 键盘落错屏 / 合盖无键盘 | `VdImeDisplayPin` |
 | 应用 DPI 不对 | `VdDensityPin` |
