@@ -60,7 +60,7 @@ object AaClusterLyricEgressHook : AaHook() {
                     parameterCount == 1 &&
                     parameterTypes[0] == String::class.java
             }.hookAfter { param ->
-                rewriteTitleArg(param.args[0] as? String, param, asCharSequence = true)
+                rewriteTitleArg(param.args[0] as? String, param)
             }
             log(tagName, "hooked android.media.MediaMetadata getString/getText")
         } catch (e: Throwable) {
@@ -87,18 +87,15 @@ object AaClusterLyricEgressHook : AaHook() {
     private fun rewriteTitleArg(
         key: String?,
         param: de.robv.android.xposed.XC_MethodHook.MethodHookParam,
-        asCharSequence: Boolean = false,
     ) {
         if (key.isNullOrEmpty()) return
         val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return
         when {
             key in titleKeys -> {
-                val override = ClusterLyricStore.readFreshTitle(cr) ?: return
-                param.result = if (asCharSequence) override else override
+                param.result = ClusterLyricStore.readFreshTitle(cr) ?: return
             }
             key in subtitleKeys -> {
-                val override = ClusterLyricStore.readFreshSubtitle(cr) ?: return
-                param.result = if (asCharSequence) override else override
+                param.result = ClusterLyricStore.readFreshSubtitle(cr) ?: return
             }
         }
     }

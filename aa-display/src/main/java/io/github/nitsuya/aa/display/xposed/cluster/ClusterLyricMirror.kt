@@ -14,8 +14,9 @@ import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
 /**
- * Mirrors the active music [MediaController] into [ShadowNowPlayingSession] and
- * [ClusterLyricStore] so AA Now Playing Title can feed the instrument-cluster ticker.
+ * Mirrors the active music [MediaController] into [ClusterLyricStore] so
+ * [io.github.nitsuya.aa.display.service.ClusterLyricMediaService] / gearhead egress
+ * can feed the instrument-cluster ticker.
  *
  * Runs in system_server after [io.github.nitsuya.aa.display.xposed.CoreManagerService.systemReady].
  */
@@ -35,7 +36,6 @@ object ClusterLyricMirror {
 
     private var appContext: Context? = null
     private var sessionManager: MediaSessionManager? = null
-    private var shadow: ShadowNowPlayingSession? = null
     private var boundController: MediaController? = null
     private var boundPackage: String? = null
 
@@ -122,7 +122,6 @@ object ClusterLyricMirror {
         appContext = context.applicationContext ?: context
         try {
             sessionManager = context.getSystemService(MediaSessionManager::class.java)
-            shadow = ShadowNowPlayingSession(context)
             val sm = sessionManager
             if (sm == null) {
                 log(TAG, "MediaSessionManager null; cluster lyric mirror idle")
@@ -152,8 +151,6 @@ object ClusterLyricMirror {
         }
         unbindController()
         clearOutput("stop")
-        shadow?.release()
-        shadow = null
         sessionManager = null
         appContext = null
         started = false
@@ -217,7 +214,7 @@ object ClusterLyricMirror {
         val filtered = sessions.filter { c ->
             val pkg = c.packageName ?: return@filter false
             if (pkg == selfPkg) return@filter false
-            // Shadow session is created in system_server (package often "android").
+            // Skip system / gearhead sessions; never re-bind our :cluster shell.
             if (pkg == "android") return@filter false
             if (pkg.startsWith("com.google.android.projection.gearhead")) return@filter false
             val mediaId = c.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_MEDIA_ID)
@@ -258,7 +255,6 @@ object ClusterLyricMirror {
         }
         val state = controller.playbackState
         val playbackState = state?.state ?: PlaybackState.STATE_NONE
-        val position = LyricLineExtractor.estimatePositionMs(state)
 
         if (extracted.mediaId != dumpedExtrasForMediaId) {
             dumpedExtrasForMediaId = extracted.mediaId
@@ -284,9 +280,6 @@ object ClusterLyricMirror {
                 title = extracted.songTitle,
                 artist = extracted.artist,
                 mediaId = extracted.mediaId,
-                durationMs = extracted.durationMs,
-                playbackState = playbackState,
-                positionMs = position,
                 force = true,
                 reason = "track-switch",
             )
@@ -302,9 +295,6 @@ object ClusterLyricMirror {
                 title = extracted.songTitle,
                 artist = extracted.artist,
                 mediaId = extracted.mediaId,
-                durationMs = extracted.durationMs,
-                playbackState = playbackState,
-                positionMs = position,
                 force = false,
                 reason = "switching-$reason",
             )
@@ -355,9 +345,6 @@ object ClusterLyricMirror {
             title = extracted.tickerTitle,
             artist = extracted.artist,
             mediaId = extracted.mediaId,
-            durationMs = extracted.durationMs,
-            playbackState = playbackState,
-            positionMs = position,
             force = false,
             reason = if (extracted.fromLyric) "lyric-$reason" else "title-$reason",
         )
@@ -393,20 +380,10 @@ object ClusterLyricMirror {
         title: String,
         artist: String,
         mediaId: String,
-        durationMs: Long,
-        playbackState: Int,
-        positionMs: Long,
         force: Boolean,
         reason: String,
     ) {
         val now = SystemClock.elapsedRealtime()
-        if (!force &&
-            title == lastPushedTitle &&
-            mediaId == trackingMediaId &&
-            now - lastPushElapsedMs < TITLE_MIN_INTERVAL_MS
-        ) {
-            return
-        }
         if (!force &&
             title == lastPushedTitle &&
             now - lastPushElapsedMs < TITLE_MIN_INTERVAL_MS
@@ -421,15 +398,7 @@ object ClusterLyricMirror {
             // Keep :cluster shell alive so ContentObserver applies Title promptly.
             ClusterLyricMediaService.warmStart(ctx)
         }
-        shadow?.update(
-            title = title,
-            artist = artist,
-            mediaId = "aadisplay.cluster:$mediaId",
-            durationMs = durationMs,
-            playbackState = playbackState,
-            positionMs = positionMs,
-        )
-        logDebug(TAG, "push reason=$reason title=$title pkg=$boundPackage")
+        logDebug(TAG, "push reason=$reason title=$title mediaId=$mediaId pkg=$boundPackage")
     }
 
     private fun clearOutput(reason: String) {
@@ -445,7 +414,6 @@ object ClusterLyricMirror {
         handler.removeCallbacks(trackSwitchSettle)
         handler.removeCallbacks(pausedClear)
         appContext?.let { ClusterLyricStore.clear(it.contentResolver) }
-        shadow?.deactivate()
         logDebug(TAG, "clear reason=$reason")
     }
 
