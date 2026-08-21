@@ -77,18 +77,19 @@ object ClusterLyricStore {
         }
     }
 
-    /** Gearhead-side read; empty when unset or stale. */
-    fun readFreshTitle(cr: ContentResolver): String? {
+    /** Gearhead-side read; empty when unset or stale. Title + subtitle in one Settings pass. */
+    fun readFresh(cr: ContentResolver): Pair<String, String>? {
         val title = Settings.Global.getString(cr, SETTINGS_TITLE)?.trim().orEmpty()
         if (title.isEmpty()) return null
         val updated = Settings.Global.getString(cr, SETTINGS_UPDATED_MS)?.toLongOrNull() ?: 0L
         if (updated <= 0L) return null
         if (System.currentTimeMillis() - updated > STALE_AFTER_MS) return null
-        return title
+        val subtitle = Settings.Global.getString(cr, SETTINGS_SUBTITLE)?.trim().orEmpty()
+        return title to subtitle
     }
 
-    fun readFreshSubtitle(cr: ContentResolver): String? {
-        if (readFreshTitle(cr) == null) return null
-        return Settings.Global.getString(cr, SETTINGS_SUBTITLE)?.trim()?.takeIf { it.isNotEmpty() }
-    }
+    fun readFreshTitle(cr: ContentResolver): String? = readFresh(cr)?.first
+
+    fun readFreshSubtitle(cr: ContentResolver): String? =
+        readFresh(cr)?.second?.takeIf { it.isNotEmpty() }
 }

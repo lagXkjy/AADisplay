@@ -15,6 +15,7 @@ import com.github.kyuubiran.ezxhelper.utils.newInstance
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.LastSplitStore
+import io.github.nitsuya.aa.display.util.PmResolveCache
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
@@ -343,6 +344,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
 
     fun resolveLaunchComponent(packageName: String): ComponentName? {
         val pkg = packageName.trim().takeIf { it.isNotEmpty() } ?: return null
+        PmResolveCache.get(pkg)?.let { return it }
         return try {
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(pkg)
             val pm = c.context.packageManager
@@ -351,7 +353,9 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                 ?: pm.queryIntentActivities(intent, flags).firstOrNull()
                 ?: return null
             val ai = ri.activityInfo ?: return null
-            ComponentName(ai.packageName, ai.name)
+            val cn = ComponentName(ai.packageName, ai.name)
+            PmResolveCache.put(pkg, cn)
+            cn
         } catch (_: Throwable) {
             null
         }

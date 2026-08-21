@@ -47,9 +47,11 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType
 import java.lang.reflect.Constructor
+import java.lang.reflect.Field
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -1363,6 +1365,36 @@ object AaUiHook: AaHook() {
     private val carDisplayIdAccessorNames = setOf(
         "getDisplayId", "displayId", "getId", "id", "getAndroidDisplayId", "androidDisplayId",
     )
+    private val carDisplayIdFieldNames = setOf("mDisplayId", "displayId", "id")
+
+    /** Per-class whitelist Method/Field accessors for CarDisplayId → Android displayId. */
+    private data class CarDisplayIdAccessors(
+        val methods: List<Method>,
+        val fields: List<Field>,
+    )
+
+    private val carDisplayIdAccessorsByClass =
+        ConcurrentHashMap<Class<*>, CarDisplayIdAccessors>()
+
+    private fun resolveCarDisplayIdAccessors(clazz: Class<*>): CarDisplayIdAccessors {
+        carDisplayIdAccessorsByClass[clazz]?.let { return it }
+        val methods = clazz.methods.filter { m ->
+            m.parameterCount == 0 &&
+                m.name in carDisplayIdAccessorNames &&
+                (m.returnType == Int::class.javaPrimitiveType || m.returnType == Integer::class.java)
+        }.onEach { it.isAccessible = true }
+        val fields = clazz.declaredFields.filter { f ->
+            !Modifier.isStatic(f.modifiers) &&
+                (f.name in carDisplayIdAccessorNames || f.name in carDisplayIdFieldNames) &&
+                (f.type == Int::class.javaPrimitiveType || f.type == Integer::class.java)
+        }.onEach { it.isAccessible = true }
+        val resolved = CarDisplayIdAccessors(methods, fields)
+        // Only cache when at least one accessor exists; empty → keep discovering each call.
+        if (methods.isNotEmpty() || fields.isNotEmpty()) {
+            carDisplayIdAccessorsByClass[clazz] = resolved
+        }
+        return resolved
+    }
 
     /** Best-effort CarDisplayId / wrapper → Android displayId (whitelist accessors only). */
     private fun androidDisplayIdFromCarDisplayId(carDisplayId: Any): Int? {
@@ -1370,29 +1402,16 @@ object AaUiHook: AaHook() {
             is Int -> return carDisplayId.takeIf { it != Display.INVALID_DISPLAY }
             is Number -> return carDisplayId.toInt().takeIf { it != Display.INVALID_DISPLAY }
         }
+        val accessors = resolveCarDisplayIdAccessors(carDisplayId.javaClass)
         val candidates = linkedSetOf<Int>()
-        for (m in carDisplayId.javaClass.methods) {
-            if (m.parameterCount != 0) continue
-            if (m.name !in carDisplayIdAccessorNames) continue
-            if (m.returnType != Int::class.javaPrimitiveType && m.returnType != Integer::class.java) {
-                continue
-            }
+        for (m in accessors.methods) {
             runCatching {
-                m.isAccessible = true
                 val v = (m.invoke(carDisplayId) as? Number)?.toInt() ?: return@runCatching
                 if (v >= 0) candidates += v
             }
         }
-        for (f in carDisplayId.javaClass.declaredFields) {
-            if (java.lang.reflect.Modifier.isStatic(f.modifiers)) continue
-            if (f.name !in carDisplayIdAccessorNames &&
-                f.name !in setOf("mDisplayId", "displayId", "id")
-            ) {
-                continue
-            }
-            if (f.type != Int::class.javaPrimitiveType && f.type != Integer::class.java) continue
+        for (f in accessors.fields) {
             runCatching {
-                f.isAccessible = true
                 val v = (f.get(carDisplayId) as? Number)?.toInt() ?: return@runCatching
                 if (v >= 0) candidates += v
             }
@@ -1445,41 +1464,96 @@ object AaUiHook: AaHook() {
     }
 
     /**
+     * Cached field layout for obfuscated Coolwalk ProjectionTouchEvent.
+     * Layout (AA 17.4): action:int, actionIndex:int, time:long, pointers:[{x,y,id}:int].
+     */
+    private data class PteLayout(
+        val actionField: Field,
+        val pointersField: Field,
+        val pointerX: Field,
+        val pointerY: Field,
+        val pointerId: Field,
+    )
+
+    private val pteLayoutByClass = ConcurrentHashMap<Class<*>, PteLayout>()
+
+    private class PtePointerBuffers {
+        var props = Array(8) { MotionEvent.PointerProperties() }
+        var coords = Array(8) { MotionEvent.PointerCoords() }
+
+        fun ensure(count: Int) {
+            if (props.size >= count) return
+            val n = count.coerceAtLeast(props.size * 2)
+            props = Array(n) { i -> if (i < props.size) props[i] else MotionEvent.PointerProperties() }
+            coords = Array(n) { i -> if (i < coords.size) coords[i] else MotionEvent.PointerCoords() }
+        }
+    }
+
+    private val ptePointerBuffers = ThreadLocal.withInitial { PtePointerBuffers() }
+
+    private fun resolvePteLayout(pte: Any): PteLayout? {
+        val clazz = pte.javaClass
+        pteLayoutByClass[clazz]?.let { return it }
+        val intFields = mutableListOf<Field>()
+        var pointersField: Field? = null
+        for (f in clazz.declaredFields) {
+            if (Modifier.isStatic(f.modifiers)) continue
+            f.isAccessible = true
+            when (f.type) {
+                Int::class.javaPrimitiveType -> intFields += f
+                else -> {
+                    if (f.type.isArray) {
+                        pointersField = f
+                    } else {
+                        val v = runCatching { f.get(pte) }.getOrNull()
+                        if (v != null && v.javaClass.isArray) pointersField = f
+                    }
+                }
+            }
+        }
+        val actionField = intFields.getOrNull(0) ?: return null
+        val pf = pointersField ?: return null
+        val arr = runCatching { pf.get(pte) as? Array<*> }.getOrNull()
+        val pointerClass = arr?.firstOrNull()?.javaClass
+            ?: arr?.javaClass?.componentType
+            ?: pf.type.componentType
+            ?: return null
+        val pInts = pointerClass.declaredFields
+            .filter { !Modifier.isStatic(it.modifiers) && it.type == Int::class.javaPrimitiveType }
+            .onEach { it.isAccessible = true }
+        if (pInts.size < 3) return null
+        val layout = PteLayout(
+            actionField = actionField,
+            pointersField = pf,
+            pointerX = pInts[0],
+            pointerY = pInts[1],
+            pointerId = pInts[2],
+        )
+        pteLayoutByClass[clazz] = layout
+        return layout
+    }
+
+    /**
      * Best-effort decode of obfuscated Coolwalk ProjectionTouchEvent → [MotionEvent].
      * Layout (AA 17.4): action:int, actionIndex:int, time:long, pointers:[{x,y,id}:int].
      */
     private fun projectionTouchEventToMotionEvent(pte: Any?): MotionEvent? {
         if (pte == null) return null
         return try {
-            val ints = mutableListOf<Pair<java.lang.reflect.Field, Int>>()
-            var pointersField: java.lang.reflect.Field? = null
-            for (f in pte.javaClass.declaredFields) {
-                if (java.lang.reflect.Modifier.isStatic(f.modifiers)) continue
-                f.isAccessible = true
-                when (f.type) {
-                    Int::class.javaPrimitiveType -> ints += f to f.getInt(pte)
-                    else -> {
-                        val v = f.get(pte)
-                        if (v != null && v.javaClass.isArray) pointersField = f
-                    }
-                }
-            }
-            if (ints.size < 1 || pointersField == null) return null
-            // Declaration order matches AA 17.4 toString: action, actionIndex.
-            val action = ints[0].second
-            val pointers = pointersField.get(pte) as? Array<*> ?: return null
+            val layout = resolvePteLayout(pte) ?: return null
+            val action = layout.actionField.getInt(pte)
+            val pointers = layout.pointersField.get(pte) as? Array<*> ?: return null
             if (pointers.isEmpty()) return null
-            val props = Array(pointers.size) { MotionEvent.PointerProperties() }
-            val coords = Array(pointers.size) { MotionEvent.PointerCoords() }
+            val buffers = ptePointerBuffers.get()!!
+            buffers.ensure(pointers.size)
+            val props = buffers.props
+            val coords = buffers.coords
             for (i in pointers.indices) {
                 val p = pointers[i] ?: return null
-                val pInts = p.javaClass.declaredFields
-                    .filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) && it.type == Int::class.javaPrimitiveType }
-                    .onEach { it.isAccessible = true }
                 // AA 17.4 VirtualTouchEvent path: e=x, f=y, g=pointerId
-                val x = pInts.getOrNull(0)?.getInt(p) ?: 0
-                val y = pInts.getOrNull(1)?.getInt(p) ?: 0
-                val id = pInts.getOrNull(2)?.getInt(p) ?: i
+                val x = layout.pointerX.getInt(p)
+                val y = layout.pointerY.getInt(p)
+                val id = layout.pointerId.getInt(p)
                 props[i].id = id
                 props[i].toolType = MotionEvent.TOOL_TYPE_FINGER
                 coords[i].x = x.toFloat()
@@ -1513,6 +1587,8 @@ object AaUiHook: AaHook() {
                 0,
             )
         } catch (e: Throwable) {
+            // Layout drift / bad cache — drop and rediscover next event.
+            pte?.javaClass?.let { pteLayoutByClass.remove(it) }
             log(tagName, "AaUiHook: ProjectionTouchEvent decode failed", e)
             null
         }

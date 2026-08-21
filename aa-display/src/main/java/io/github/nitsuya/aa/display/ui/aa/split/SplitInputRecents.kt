@@ -18,6 +18,7 @@ import com.github.kyuubiran.ezxhelper.utils.args
 import com.github.kyuubiran.ezxhelper.utils.invokeMethod
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.model.RecentTaskInfo
+import io.github.nitsuya.aa.display.util.PmIconCache
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import java.lang.reflect.Method
@@ -207,21 +208,34 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
                 if (isSystemHomeTask(taskInfo)) return@mapNotNull null
                 val topActivity = taskInfo.topActivity ?: return@mapNotNull null
                 if (SplitChromePackages.BOUNCE_EXCLUDED.contains(topActivity.packageName)) return@mapNotNull null
+                val cacheKey = topActivity.flattenToString()
                 var taskDescription = taskInfo.taskDescription
                     ?: Instances.iActivityTaskManager.getTaskDescription(taskInfo.taskId)
                     ?: return@mapNotNull null
                 var icon = runCatching { taskDescription.icon }.getOrNull()
+                var iconFromPm = false
+                if (icon == null) {
+                    icon = PmIconCache.getBitmap(cacheKey)
+                }
                 if (icon == null) {
                     icon = Instances.packageManager.getActivityIcon(topActivity).toBitmap()
+                    iconFromPm = true
                 }
                 icon = downsampleForIpc(icon, MAX_RECENT_ICON_EDGE_PX)
+                if (iconFromPm) {
+                    PmIconCache.putBitmap(cacheKey, icon)
+                }
                 var label = taskDescription.label
+                if (label == null) {
+                    label = PmIconCache.getLabel(cacheKey)
+                }
                 if (label == null) {
                     val activityInfo = Instances.packageManager.getActivityInfo(
                         topActivity,
                         PackageManager.ComponentInfoFlags.of(0)
                     )
                     label = activityInfo.loadLabel(Instances.packageManager).toString()
+                    PmIconCache.putLabel(cacheKey, label)
                 }
                 RecentTaskInfo(icon, taskInfo.taskId, label, topActivity.packageName)
             }

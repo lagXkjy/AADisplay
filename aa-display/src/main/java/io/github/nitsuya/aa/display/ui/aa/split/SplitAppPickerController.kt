@@ -21,6 +21,8 @@ import io.github.nitsuya.aa.display.databinding.FragmentAaMainBinding
 import io.github.nitsuya.aa.display.databinding.ItemSplitAppBinding
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.LastSplitStore
+import io.github.nitsuya.aa.display.util.PmCaches
+import io.github.nitsuya.aa.display.util.PmIconCache
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -149,6 +151,7 @@ class SplitAppPickerController(
     private fun invalidateCache() {
         launchableCache = null
         iconInFlight.clear()
+        PmCaches.invalidateAll()
     }
 
     private fun registerPackageReceiver() {
@@ -269,11 +272,10 @@ class SplitAppPickerController(
         if (!iconInFlight.add(pkg)) return
         val gen = loadGeneration.get()
         loadExecutor.execute {
-            val icon = try {
-                binding.root.context.packageManager.getApplicationIcon(pkg)
-            } catch (_: Throwable) {
-                null
-            }
+            val icon = PmIconCache.getOrLoadDrawable(
+                binding.root.context.packageManager,
+                pkg,
+            )
             iconInFlight.remove(pkg)
             if (icon == null) return@execute
             entry.icon = icon

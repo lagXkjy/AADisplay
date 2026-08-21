@@ -148,8 +148,9 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
 
     private fun applyStore(reason: String) {
         val cr = contentResolver
-        val title = ClusterLyricStore.readFreshTitle(cr)
+        val fresh = ClusterLyricStore.readFresh(cr)
         val sess = session ?: return
+        val title = fresh?.first
         if (title.isNullOrEmpty()) {
             if (sess.isActive || lastTitle.isNotEmpty()) {
                 lastTitle = ""
@@ -161,7 +162,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             }
             return
         }
-        val subtitle = ClusterLyricStore.readFreshSubtitle(cr).orEmpty()
+        val subtitle = fresh.second
         if (title == lastTitle && subtitle == lastSubtitle && sess.isActive) {
             return
         }

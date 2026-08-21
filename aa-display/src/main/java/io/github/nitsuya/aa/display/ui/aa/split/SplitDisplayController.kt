@@ -1,8 +1,10 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.hardware.display.VirtualDisplay
 import android.os.Binder
 import android.os.Handler
@@ -18,6 +20,7 @@ import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.PmCaches
 import io.github.nitsuya.aa.display.util.ReconnectSizingTrace
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
@@ -159,10 +162,52 @@ class SplitDisplayController(
     internal var mLastSecondaryH = 0
     internal val mPendingResize = Runnable { vd.resizePanesInternal("ratio-throttled") }
 
+    private var packageReceiverRegistered = false
+    private val packageReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val pkg = intent?.data?.schemeSpecificPart
+            if (pkg.isNullOrBlank()) {
+                PmCaches.invalidateAll()
+            } else {
+                PmCaches.invalidatePackage(pkg)
+            }
+        }
+    }
+
     init {
+        registerPackageReceiver()
         scope.launch {
             onReady()
         }
+    }
+
+    private fun registerPackageReceiver() {
+        if (packageReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addDataScheme("package")
+        }
+        try {
+            context.registerReceiver(
+                packageReceiver,
+                filter,
+                Context.RECEIVER_NOT_EXPORTED,
+            )
+            packageReceiverRegistered = true
+        } catch (e: Throwable) {
+            log(TAG, "register package receiver failed", e)
+        }
+    }
+
+    private fun unregisterPackageReceiver() {
+        if (!packageReceiverRegistered) return
+        try {
+            context.unregisterReceiver(packageReceiver)
+        } catch (_: Throwable) {
+        }
+        packageReceiverRegistered = false
     }
 
     fun isAaVirtualDisplay(displayId: Int): Boolean {
@@ -512,6 +557,7 @@ class SplitDisplayController(
     }
 
     fun onDestroy() {
+        unregisterPackageReceiver()
         try {
             launch.persistSnapshot(force = true, logSettingsFailures = true)
         } catch (e: Throwable) {

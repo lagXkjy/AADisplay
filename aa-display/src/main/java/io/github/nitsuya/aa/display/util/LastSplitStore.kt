@@ -43,6 +43,10 @@ object LastSplitStore {
     private const val FILE_LEFT_STACK = "LastSplitLeftStack"
     private const val FILE_RIGHT_STACK = "LastSplitRightStack"
 
+    private val cacheLock = Any()
+    @Volatile
+    private var cachedSnapshot: Snapshot? = null
+
     data class Snapshot(
         val primaryPackage: String,
         val secondaryPackage: String,
@@ -62,11 +66,29 @@ object LastSplitStore {
 
         fun secondaryPackagesBottomToTop(): List<String> =
             normalizeStack(secondaryStack, secondaryPackage)
+
+        /** Content equality for skip-identical save (normalized stacks). */
+        fun contentEquals(other: Snapshot): Boolean {
+            if (primaryPackage != other.primaryPackage) return false
+            if (secondaryPackage != other.secondaryPackage) return false
+            if (primaryRatio != other.primaryRatio) return false
+            if (fullscreenPane != other.fullscreenPane) return false
+            if (primaryPackagesBottomToTop() != other.primaryPackagesBottomToTop()) return false
+            if (secondaryPackagesBottomToTop() != other.secondaryPackagesBottomToTop()) return false
+            return true
+        }
     }
 
     fun load(contentResolver: ContentResolver? = null): Snapshot? {
-        loadFromSettings(contentResolver)?.let { return it }
-        return loadFromFile()
+        cachedSnapshot?.let { return it }
+        synchronized(cacheLock) {
+            cachedSnapshot?.let { return it }
+            val loaded = loadFromSettings(contentResolver) ?: loadFromFile()
+            if (loaded != null) {
+                cachedSnapshot = loaded
+            }
+            return loaded
+        }
     }
 
     /**
@@ -75,18 +97,38 @@ object LastSplitStore {
      * Both backends are always written when possible. [logSettingsFailures] only controls
      * whether a Settings failure is logged as a warning (true) or left quiet (false);
      * it does not switch to a file-only path.
+     *
+     * Identical content to the last successful save/load skips I/O.
      */
     fun save(
         snapshot: Snapshot,
         contentResolver: ContentResolver? = null,
         logSettingsFailures: Boolean = false,
     ): Boolean {
+        synchronized(cacheLock) {
+            cachedSnapshot?.let { prev ->
+                if (prev.contentEquals(snapshot)) return true
+            }
+        }
         val settingsOk = saveToSettings(snapshot, contentResolver)
         val fileOk = saveToFile(snapshot)
         if (!settingsOk && logSettingsFailures) {
             Log.w(TAG, "settings save failed")
         }
-        return settingsOk || fileOk
+        val ok = settingsOk || fileOk
+        if (ok) {
+            synchronized(cacheLock) {
+                cachedSnapshot = snapshot
+            }
+        }
+        return ok
+    }
+
+    /** Drop in-process memo (does not clear durable Settings/file). */
+    fun invalidateCache() {
+        synchronized(cacheLock) {
+            cachedSnapshot = null
+        }
     }
 
     fun encodeStack(packagesBottomToTop: List<String>): String =
