@@ -2,11 +2,13 @@
 
 ## Unreleased
 
+### Removed
+- **藏车机媒体壳图标：** 删除 `AaClusterMediaIconHideHook`（不再 hook `queryIntentServices` 过滤本包壳）。全屏投影下桌面列表本就会闪，隐藏收益低且增加 hook 面。
+
 ### Changed
 - **热路径减负（歌词 + 触控）：** 同句歌词跳过 Settings.Global 三写（靠 5s `touch` keepalive）；LRC 按 mediaId+blob 缓存解析，300ms tick 只二分取句；`:cluster` 不再观察 `updated_ms`；`injectInputEvent` 缓存 `InputEvent.setDisplayId` Method。
 - **r11-T→r12 审计收敛：** 去掉试验叠层——重连缩窗仅服务端 `shrink-auto`（删客户端 900/1700ms `lastCreate` bust）；soft-reconnect 同 profile 跳过 VD resize；AutoOpen 梯子收为 `0/1.5/5/12/24s` 且 `REARM_GAP≥末档`，保留 car-connected kick；`AaClusterLyricEgressHook` 仅改写 `aadisplay.cluster:` 壳 MEDIA_ID；歌词 `warmStart` 不再每句触发；Allowlist unknown-sources pref 仅在 pkg-bool 未命中时回退。
 - **仪表歌词主路径：** `ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title；Egress 为壳会话兜底。优先包仅 QQ 车载 / HD。
-- **藏车机媒体壳图标：** `AaClusterMediaIconHideHook` 过滤 `MediaBrowserService` 枚举，去掉本包壳；投影入口 / 显式绑定保留。
 - **仪表横条隐形媒体壳（免未知来源）：** `ClusterLyricMediaService` + `AaMediaAllowlistHook`（本包 pkg-bool）；Dashboard starve + Presentation 隐藏保留。
 - **AutoOpen 事件驱动：** 武装后立即 + 稀疏 CAMS 重试；Hook SysUi car-connected 立刻再踢 `a(Intent)`；仅 `AA_DISPLAY_SHOWN` 停。
 - **DexKit 方法坐标缓存：** gearhead 冷启缓存命中跳过 `libdexkit` 扫包；失败回退 live DexKit。
@@ -23,7 +25,7 @@
 ### Verify（仪表歌词 + 重连）
 1. Soft-reconnect：宽度稳定为内容区（非卡 800 vs 720）；无连续双重 resize 卡顿
 2. 冷连 AutoOpen：仍能进 AaDisplay；connected kick 后无 100ms 级刷屏重试
-3. QQ 车载/HD 横条歌词随句切换；同句 hold 时 Settings/壳无每 300ms 刷；壳图标仍隐藏
+3. QQ 车载/HD 横条歌词随句切换；同句 hold 时 Settings/壳无每 300ms 刷；媒体列表出现壳图标可接受
 4. 方控短按仍控真实播放器（Egress 不再改写 QQ Title）
 5. 分屏栈切换 / Recent 置顶 / 触控滑动无明显变慢
 
