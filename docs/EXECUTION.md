@@ -266,10 +266,10 @@ Keep-awake 硬规则：
 | `setSplitRatio` / `getSplitRatio` | 分隔条松手 | resize VD；全屏中只改 `mRatioBeforeFullscreen` |
 | `setSplitFullscreen` / `getSplitFullscreenPane` | 拖过边缘 / peel | 两 VD 满幅或按比例 |
 | `getPanePackage` / `setFocusedPane` / `getFocusedPane` | 空窗遮罩 / Recent 焦点 | 栈顶包名；焦点窗记录 |
-| `swapSplitPanes` | 点分隔条 / 方控长按上下曲 | 整栈 `moveRootTask` 对调，**VD 身份不变** |
+| `swapSplitPanes` | 点分隔条 / 方控长按下一曲（快进） | 整栈 `moveRootTask` 对调，**VD 身份不变** |
 | `startActivity` / `startActivityOnPane` | 选择器 / Recent 点选 | `PaneAppStack.pushToTop` + 启动或置顶 |
 | `moveTaskId` / `moveTaskIdToPane` / `moveTaskToFront` | Recent 拖拽 | 跨 display 搬任务 |
-| `moveSecondTaskToFront` | 方控长按快进键 | 当前焦点窗栈内第二任务置顶 |
+| `moveSecondTaskToFront` | 同窗栈内第二任务置顶（非方控长按） | 当前焦点窗栈内第二任务置顶 |
 | `removeTask` | Recent Close | 关任务；栈顶空则下一档 |
 | `pressKey` | 方控短按 / Activity 方向键 | 注入到焦点窗 |
 | `hideIme` **oneway** | 壳层「收起键盘」 | WMS/IMM hide；失败才对该 display 打 BACK（不 bringTaskToFront） |
@@ -378,8 +378,8 @@ flowchart TB
     BtnHook --> BR["ACTION_STEERING_WHEEL_CONTROL"]
     BR --> MAIN["AaMainFragment"]
     MAIN -->|短按媒体键| pressKey
-    MAIN -->|长按上下曲| swap或切全屏
-    MAIN -->|长按播放| Recent
+    MAIN -->|长按下一曲/快进| swap或切全屏
+    MAIN -->|长按上一曲/快退| Recent
 
     touchPane --> IM["IInputManager.inject 到窗 VD"]
     touchPrimaryPane --> IM
@@ -392,9 +392,8 @@ flowchart TB
 方控映射（`AaMainFragment` 收 `ACTION_STEERING_WHEEL_CONTROL`）：
 
 - 短按（`EXTRA_TYPE=0`）：媒体键 → `CoreApi.pressKey`（直播顶窗里 next/prev 可能被改写成滑动，见 `SplitInputRecents`）。
-- 长按上下曲（`EXTRA_TYPE=1`）：与点分隔条相同（分屏对调整栈；全屏只切可见侧）。
-- 长按播放/暂停：开/关 Recent。
-- 长按快进（`KEYCODE_MEDIA_FAST_FORWARD`）：`CoreApi.moveSecondTaskToFront()`（同窗栈内第二任务置顶）。
+- 长按下一曲/快进（`EXTRA_TYPE=1`，87/90）：与点分隔条相同（分屏对调整栈；全屏只切可见侧）。
+- 长按上一曲/快退（88/89）：开/关 Recent。
 
 `pressKey` / 触控 DOWN 会 `DisplaySessionPolicy.onVirtualDisplayUserInteraction`。
 

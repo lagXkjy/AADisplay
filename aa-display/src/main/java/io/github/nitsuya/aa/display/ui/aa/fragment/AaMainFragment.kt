@@ -163,11 +163,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                         1 -> {
                             when (action) {
                                 // MIB3 long-next is FAST_FORWARD (90); long-prev is REWIND (89).
-                                KeyEvent.KEYCODE_MEDIA_NEXT,
-                                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> openRecentsFromSteering()
                                 KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-                                KeyEvent.KEYCODE_MEDIA_REWIND -> performSwapClick()
-                                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> openRecentsFromSteering()
+                                KeyEvent.KEYCODE_MEDIA_REWIND -> openRecentsFromSteering()
+                                KeyEvent.KEYCODE_MEDIA_NEXT,
+                                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> performSwapClick()
                             }
                         }
                     }
