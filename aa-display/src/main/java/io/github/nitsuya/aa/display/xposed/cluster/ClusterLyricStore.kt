@@ -12,7 +12,9 @@ import io.github.nitsuya.aa.display.xposed.util.log
  */
 object ClusterLyricStore {
     const val SETTINGS_TITLE = "aadisplay_cluster_np_title"
+    /** Car panel artist line — typically「歌名 — 歌手」. */
     const val SETTINGS_SUBTITLE = "aadisplay_cluster_np_subtitle"
+    const val SETTINGS_ALBUM = "aadisplay_cluster_np_album"
     const val SETTINGS_UPDATED_MS = "aadisplay_cluster_np_updated_ms"
 
     /** Stale after this — gearhead must not keep injecting an old lyric. */
@@ -28,19 +30,37 @@ object ClusterLyricStore {
     var cachedSubtitle: String = ""
         private set
 
-    fun publish(cr: ContentResolver, title: String, subtitle: String) {
+    @Volatile
+    var cachedAlbum: String = ""
+        private set
+
+    data class Fresh(
+        val title: String,
+        val subtitle: String,
+        val album: String,
+    )
+
+    fun publish(
+        cr: ContentResolver,
+        title: String,
+        subtitle: String,
+        album: String,
+    ) {
         val t = title.trim()
         val s = subtitle.trim()
-        // Same line / same artist: only refresh updated_ms (egress stale gate).
-        if (t == cachedTitle && s == cachedSubtitle) {
+        val a = album.trim()
+        // Same line / same artist / same album: only refresh updated_ms (egress stale gate).
+        if (t == cachedTitle && s == cachedSubtitle && a == cachedAlbum) {
             touch(cr)
             return
         }
         cachedTitle = t
         cachedSubtitle = s
+        cachedAlbum = a
         runCatching {
             Settings.Global.putString(cr, SETTINGS_TITLE, t)
             Settings.Global.putString(cr, SETTINGS_SUBTITLE, s)
+            Settings.Global.putString(cr, SETTINGS_ALBUM, a)
             writeUpdatedMs(cr)
         }.onFailure { e ->
             log(TAG, "publish Settings.Global failed", e)
@@ -68,28 +88,35 @@ object ClusterLyricStore {
     fun clear(cr: ContentResolver) {
         cachedTitle = ""
         cachedSubtitle = ""
+        cachedAlbum = ""
         runCatching {
             Settings.Global.putString(cr, SETTINGS_TITLE, "")
             Settings.Global.putString(cr, SETTINGS_SUBTITLE, "")
+            Settings.Global.putString(cr, SETTINGS_ALBUM, "")
             Settings.Global.putString(cr, SETTINGS_UPDATED_MS, "0")
+            ClusterArtStore.clear(cr)
         }.onFailure { e ->
             log(TAG, "clear Settings.Global failed", e)
         }
     }
 
-    /** Gearhead-side read; empty when unset or stale. Title + subtitle in one Settings pass. */
-    fun readFresh(cr: ContentResolver): Pair<String, String>? {
+    /** Gearhead-side read; empty when unset or stale. Title + subtitle + album in one Settings pass. */
+    fun readFresh(cr: ContentResolver): Fresh? {
         val title = Settings.Global.getString(cr, SETTINGS_TITLE)?.trim().orEmpty()
         if (title.isEmpty()) return null
         val updated = Settings.Global.getString(cr, SETTINGS_UPDATED_MS)?.toLongOrNull() ?: 0L
         if (updated <= 0L) return null
         if (System.currentTimeMillis() - updated > STALE_AFTER_MS) return null
         val subtitle = Settings.Global.getString(cr, SETTINGS_SUBTITLE)?.trim().orEmpty()
-        return title to subtitle
+        val album = Settings.Global.getString(cr, SETTINGS_ALBUM)?.trim().orEmpty()
+        return Fresh(title, subtitle, album)
     }
 
-    fun readFreshTitle(cr: ContentResolver): String? = readFresh(cr)?.first
+    fun readFreshTitle(cr: ContentResolver): String? = readFresh(cr)?.title
 
     fun readFreshSubtitle(cr: ContentResolver): String? =
-        readFresh(cr)?.second?.takeIf { it.isNotEmpty() }
+        readFresh(cr)?.subtitle?.takeIf { it.isNotEmpty() }
+
+    fun readFreshAlbum(cr: ContentResolver): String? =
+        readFresh(cr)?.album?.takeIf { it.isNotEmpty() }
 }

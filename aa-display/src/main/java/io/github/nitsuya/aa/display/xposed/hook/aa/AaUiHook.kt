@@ -2343,9 +2343,11 @@ object AaUiHook: AaHook() {
 
     private fun isWindowDecorOrRoot(view: View): Boolean {
         val name = view.javaClass.name
-        return name.contains("DecorView") ||
-            name.endsWith("ViewRootImpl") ||
-            view.parent == null && view === view.rootView
+        if (name.contains("DecorView") || name.endsWith("ViewRootImpl")) return true
+        // Inflate-time facet hosts are often unattached FrameLayouts (parent == null) that
+        // share rootView with themselves — must not treat them as window roots or reconnect
+        // leaves the ~107px left gutter ("导航栏黑条").
+        return view.isAttachedToWindow && view.parent == null && view === view.rootView
     }
 
     private fun measuredOrLpWidth(view: View): Int {

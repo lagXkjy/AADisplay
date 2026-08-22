@@ -28,6 +28,10 @@ object ClusterLyricMirror {
     private const val POSITION_TICK_MS = 300L
     /** Keep gearhead egress alive when title/lyric line is unchanged (below [ClusterLyricStore.STALE_AFTER_MS]). */
     private const val STALE_TOUCH_MS = 5_000L
+    /** Re-pick when bound to a paused session — list listener misses playback-only changes. */
+    private const val REPICK_INTERVAL_MS = 500L
+    /** Prefer a fresher playing session over a stale preferred-package PLAYING ghost. */
+    private const val STALE_PLAYING_MS = 1_500L
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -45,11 +49,13 @@ object ClusterLyricMirror {
     private var lastArtist: String = ""
     private var lastPushedTitle: String = ""
     private var lastPushedArtist: String = ""
+    private var lastPushedAlbum: String = ""
     private var lastPushElapsedMs: Long = 0L
     private var dumpedExtrasForMediaId: String = ""
     private var pausedClearScheduled = false
     private var positionTickArmed = false
     private var staleKeepaliveArmed = false
+    private var repickArmed = false
     /** After clear / start, wake `:cluster` once on the next publish (not every lyric line). */
     private var warmStartPending = true
 
@@ -109,6 +115,16 @@ object ClusterLyricMirror {
             appContext?.contentResolver?.let { ClusterLyricStore.touch(it) }
             if (staleKeepaliveArmed) {
                 handler.postDelayed(this, STALE_TOUCH_MS)
+            }
+        }
+    }
+
+    private val repickRunnable = object : Runnable {
+        override fun run() {
+            if (!repickArmed) return
+            onSessionsChanged(sessionManager?.getActiveSessionsSafe())
+            if (repickArmed) {
+                handler.postDelayed(this, REPICK_INTERVAL_MS)
             }
         }
     }
@@ -227,14 +243,20 @@ object ClusterLyricMirror {
             return null
         }
 
-        pickPreferred { isPlaying(it) }?.let { return it }
+        fun freshness(c: MediaController): Long =
+            c.playbackState?.lastPositionUpdateTime ?: 0L
 
-        val anyPlaying = filtered.firstOrNull { isPlaying(it) }
-        if (anyPlaying != null) return anyPlaying
+        // Freshest playing session wins — do not let a ghost qqmusiccar PLAYING block Luna.
+        val playing = filtered.filter { isPlaying(it) }
+        if (playing.isNotEmpty()) {
+            return playing.maxByOrNull { freshness(it) }
+        }
 
+        // Handoff between qqmusiccar / qqmusicpad when both idle briefly.
         pickPreferred { isActive(it) }?.let { return it }
 
-        return filtered.firstOrNull { isActive(it) } ?: filtered.firstOrNull()
+        return filtered.filter { isActive(it) }.maxByOrNull { freshness(it) }
+            ?: filtered.firstOrNull()
     }
 
     private fun refreshFromBound(reason: String) {
@@ -269,10 +291,12 @@ object ClusterLyricMirror {
             // Never leave the previous lyric on the ticker while switching.
             push(
                 title = extracted.songTitle,
-                artist = extracted.artist,
+                panelArtist = extracted.panelArtist,
+                album = extracted.album,
                 mediaId = extracted.mediaId,
                 force = true,
                 reason = "track-switch",
+                metadata = controller.metadata,
             )
             trackingMediaId = extracted.mediaId
             lastSongTitle = extracted.songTitle
@@ -284,10 +308,12 @@ object ClusterLyricMirror {
             // Still debouncing: keep song title only.
             push(
                 title = extracted.songTitle,
-                artist = extracted.artist,
+                panelArtist = extracted.panelArtist,
+                album = extracted.album,
                 mediaId = extracted.mediaId,
                 force = false,
                 reason = "switching-$reason",
+                metadata = controller.metadata,
             )
             trackingMediaId = extracted.mediaId
             lastSongTitle = extracted.songTitle
@@ -308,6 +334,7 @@ object ClusterLyricMirror {
             -> {
                 pausedClearScheduled = false
                 handler.removeCallbacks(pausedClear)
+                disarmRepick()
                 if (extracted.needsPositionTick) {
                     armPositionTick()
                 } else {
@@ -320,6 +347,7 @@ object ClusterLyricMirror {
             -> {
                 disarmPositionTick()
                 disarmStaleKeepalive()
+                armRepickIfIdle()
                 if (!pausedClearScheduled) {
                     pausedClearScheduled = true
                     handler.removeCallbacks(pausedClear)
@@ -329,15 +357,18 @@ object ClusterLyricMirror {
             else -> {
                 disarmPositionTick()
                 disarmStaleKeepalive()
+                armRepickIfIdle()
             }
         }
 
         push(
             title = extracted.tickerTitle,
-            artist = extracted.artist,
+            panelArtist = extracted.panelArtist,
+            album = extracted.album,
             mediaId = extracted.mediaId,
             force = false,
             reason = if (extracted.fromLyric) "lyric-$reason" else "title-$reason",
+            metadata = controller.metadata,
         )
     }
 
@@ -369,15 +400,23 @@ object ClusterLyricMirror {
 
     private fun push(
         title: String,
-        artist: String,
+        panelArtist: String,
+        album: String,
         mediaId: String,
         force: Boolean,
         reason: String,
+        metadata: android.media.MediaMetadata? = null,
     ) {
+        if (shouldAttemptArtPublish(reason)) {
+            publishArtIfNeeded(metadata, mediaId)
+        }
         val now = SystemClock.elapsedRealtime()
         if (!force) {
             // Identical ticker: rely on 5s staleKeepalive touch — no Settings spam each 300ms tick.
-            if (title == lastPushedTitle && artist == lastPushedArtist) {
+            if (title == lastPushedTitle &&
+                panelArtist == lastPushedArtist &&
+                album == lastPushedAlbum
+            ) {
                 return
             }
             if (now - lastPushElapsedMs < TITLE_MIN_INTERVAL_MS) {
@@ -385,17 +424,34 @@ object ClusterLyricMirror {
             }
         }
         lastPushedTitle = title
-        lastPushedArtist = artist
+        lastPushedArtist = panelArtist
+        lastPushedAlbum = album
         lastPushElapsedMs = now
         val ctx = appContext
         if (ctx != null) {
-            ClusterLyricStore.publish(ctx.contentResolver, title, artist)
+            ClusterLyricStore.publish(ctx.contentResolver, title, panelArtist, album)
             if (warmStartPending) {
                 ClusterLyricMediaService.warmStart(ctx)
                 warmStartPending = false
             }
         }
-        logDebug(TAG, "push reason=$reason title=$title mediaId=$mediaId pkg=$boundPackage")
+        logDebug(
+            TAG,
+            "push reason=$reason title=$title artist=$panelArtist album=$album mediaId=$mediaId pkg=$boundPackage",
+        )
+    }
+
+    /** LRC position ticks cannot change cover — skip extract to avoid 300ms metadata.getBitmap spam. */
+    private fun shouldAttemptArtPublish(reason: String): Boolean = !reason.endsWith("-tick")
+
+    /** Luna often publishes [METADATA_KEY_ART] after the track title; retry on metadata/state/switch. */
+    private fun publishArtIfNeeded(
+        metadata: android.media.MediaMetadata?,
+        mediaId: String,
+    ) {
+        if (metadata == null || mediaId.isEmpty()) return
+        val ctx = appContext ?: return
+        ClusterArtStore.publishFromMetadata(ctx.contentResolver, metadata, mediaId)
     }
 
     private fun clearOutput(reason: String) {
@@ -405,11 +461,13 @@ object ClusterLyricMirror {
         lastArtist = ""
         lastPushedTitle = ""
         lastPushedArtist = ""
+        lastPushedAlbum = ""
         dumpedExtrasForMediaId = ""
         pausedClearScheduled = false
         warmStartPending = true
         disarmPositionTick()
         disarmStaleKeepalive()
+        disarmRepick()
         handler.removeCallbacks(trackSwitchSettle)
         handler.removeCallbacks(pausedClear)
         appContext?.let { ClusterLyricStore.clear(it.contentResolver) }
@@ -419,6 +477,7 @@ object ClusterLyricMirror {
     private fun unbindController() {
         disarmPositionTick()
         disarmStaleKeepalive()
+        disarmRepick()
         boundController?.let { c ->
             runCatching { c.unregisterCallback(controllerCallback) }
         }
@@ -426,21 +485,49 @@ object ClusterLyricMirror {
         boundPackage = null
     }
 
-    /** Bound session paused while another preferred player is actively playing. */
+    /**
+     * Re-bind when another session is actually playing, or when the current bind is a stale
+     * preferred-package PLAYING ghost left behind after switching to e.g. Luna.
+     */
     private fun maybeSwitchToPlayingSession(reason: String): Boolean {
         val controller = boundController ?: return false
-        if (isPlayingState(controller.playbackState?.state ?: PlaybackState.STATE_NONE)) {
-            return false
-        }
         val sessions = sessionManager?.getActiveSessionsSafe() ?: return false
         val pick = pickController(sessions) ?: return false
         if (pick.sessionToken == controller.sessionToken) return false
-        if (!isPlayingState(pick.playbackState?.state ?: PlaybackState.STATE_NONE)) {
-            return false
+
+        val pickPlaying = isPlayingState(pick.playbackState?.state ?: PlaybackState.STATE_NONE)
+        val boundPlaying = isPlayingState(controller.playbackState?.state ?: PlaybackState.STATE_NONE)
+        if (!pickPlaying) return false
+
+        if (!boundPlaying) {
+            logDebug(TAG, "switch pkg=$boundPackage -> ${pick.packageName} reason=$reason")
+            onSessionsChanged(sessions)
+            return true
         }
-        logDebug(TAG, "switch pkg=$boundPackage -> ${pick.packageName} reason=$reason")
-        onSessionsChanged(sessions)
-        return true
+
+        val pickFresh = pick.playbackState?.lastPositionUpdateTime ?: 0L
+        val boundFresh = controller.playbackState?.lastPositionUpdateTime ?: 0L
+        if (pickFresh > boundFresh + STALE_PLAYING_MS) {
+            logDebug(TAG, "switch stale pkg=$boundPackage -> ${pick.packageName} reason=$reason")
+            onSessionsChanged(sessions)
+            return true
+        }
+        return false
+    }
+
+    private fun armRepickIfIdle() {
+        if (repickArmed) return
+        val state = boundController?.playbackState?.state ?: PlaybackState.STATE_NONE
+        if (isPlayingState(state)) return
+        repickArmed = true
+        handler.removeCallbacks(repickRunnable)
+        handler.postDelayed(repickRunnable, REPICK_INTERVAL_MS)
+    }
+
+    private fun disarmRepick() {
+        if (!repickArmed) return
+        repickArmed = false
+        handler.removeCallbacks(repickRunnable)
     }
 
     private fun isPlayingState(state: Int): Boolean {

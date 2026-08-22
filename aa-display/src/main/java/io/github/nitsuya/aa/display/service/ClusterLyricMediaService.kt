@@ -17,6 +17,7 @@ import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.media.MediaBrowserServiceCompat
 import io.github.nitsuya.aa.display.BuildConfig
+import io.github.nitsuya.aa.display.xposed.cluster.ClusterArtStore
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricStore
 
 /**
@@ -56,6 +57,8 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
     private var observer: ContentObserver? = null
     private var lastTitle: String = ""
     private var lastSubtitle: String = ""
+    private var lastAlbum: String = ""
+    private var lastArtMediaId: String = ""
 
     override fun onCreate() {
         super.onCreate()
@@ -129,6 +132,8 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         listOf(
             ClusterLyricStore.SETTINGS_TITLE,
             ClusterLyricStore.SETTINGS_SUBTITLE,
+            ClusterLyricStore.SETTINGS_ALBUM,
+            ClusterArtStore.SETTINGS_ART_MEDIA_ID,
         ).forEach { key ->
             runCatching {
                 cr.registerContentObserver(
@@ -150,11 +155,13 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         val cr = contentResolver
         val fresh = ClusterLyricStore.readFresh(cr)
         val sess = session ?: return
-        val title = fresh?.first
+        val title = fresh?.title
         if (title.isNullOrEmpty()) {
             if (sess.isActive || lastTitle.isNotEmpty()) {
                 lastTitle = ""
                 lastSubtitle = ""
+                lastAlbum = ""
+                lastArtMediaId = ""
                 sess.isActive = false
                 sess.setMetadata(null)
                 sess.setPlaybackState(idleState())
@@ -162,22 +169,48 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             }
             return
         }
-        val subtitle = fresh.second
-        if (title == lastTitle && subtitle == lastSubtitle && sess.isActive) {
+        val subtitle = fresh.subtitle
+        val album = fresh.album
+        val artMediaId = Settings.Global.getString(cr, ClusterArtStore.SETTINGS_ART_MEDIA_ID)
+            ?.trim()
+            .orEmpty()
+        if (title == lastTitle &&
+            subtitle == lastSubtitle &&
+            album == lastAlbum &&
+            artMediaId == lastArtMediaId &&
+            sess.isActive
+        ) {
             return
         }
         lastTitle = title
         lastSubtitle = subtitle
-        val meta = MediaMetadataCompat.Builder()
+        lastAlbum = album
+        lastArtMediaId = artMediaId
+        val shellMediaId = MEDIA_ID_PREFIX + (
+            artMediaId.ifEmpty { album.ifEmpty { subtitle } }
+                .hashCode()
+                .toUInt()
+                .toString(16)
+            )
+        val builder = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
             .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, title)
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, subtitle)
             .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, subtitle)
-            .putString(
-                MediaMetadataCompat.METADATA_KEY_MEDIA_ID,
-                MEDIA_ID_PREFIX + title.hashCode().toUInt().toString(16),
-            )
-            .build()
+            .putString(MediaMetadataCompat.METADATA_KEY_MEDIA_ID, shellMediaId)
+        if (album.isNotEmpty()) {
+            builder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album)
+        }
+        // URI-only in the live session — never putBitmap here. SystemUI / Bluetooth
+        // parcel session metadata across Binder; reusing one Bitmap for multiple keys
+        // (or recycling while still referenced) crashes with "Can't parcel a recycled bitmap".
+        // Gearhead reads art via [AaClusterLyricEgressHook] from [ClusterArtStore] file cache.
+        ClusterArtStore.artUriString()?.let { uri ->
+            builder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, uri)
+            builder.putString(MediaMetadataCompat.METADATA_KEY_ART_URI, uri)
+            builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI, uri)
+        }
+        val meta = builder.build()
         // Playing state keeps AA Now Playing egress alive; actions=0 so keys stay on QQ.
         val state = PlaybackStateCompat.Builder()
             .setActions(0)
@@ -194,7 +227,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             sess.isActive = true
             Log.d(TAG, "active reason=$reason title=$title")
         } else {
-            Log.d(TAG, "update reason=$reason title=$title")
+            Log.d(TAG, "update reason=$reason title=$title album=$album art=$artMediaId")
         }
     }
 

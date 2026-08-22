@@ -24,11 +24,15 @@ object LyricLineExtractor {
 
     private const val QQ_CAR_PKG = "com.tencent.qqmusiccar"
     private const val QQ_PAD_PKG = "com.tencent.qqmusicpad"
+    private const val LUNA_PKG = "com.luna.music"
+
+    private val PANEL_ARTIST_SEP = Regex("""\s+[—-]\s+""")
 
     /** Preferred sources for cluster lyric mirror; earlier wins when multiple match. */
     val PREFERRED_PACKAGE_ORDER = listOf(
         QQ_CAR_PKG,
         QQ_PAD_PKG,
+        LUNA_PKG,
     )
 
     private val PREFERRED_PACKAGES = PREFERRED_PACKAGE_ORDER.toSet()
@@ -45,7 +49,10 @@ object LyricLineExtractor {
 
     data class Extracted(
         val tickerTitle: String,
+        /** Car panel artist line —「歌名 — 歌手」. */
+        val panelArtist: String,
         val artist: String,
+        val album: String,
         val mediaId: String,
         val songTitle: String,
         val fromLyric: Boolean,
@@ -66,7 +73,7 @@ object LyricLineExtractor {
                 ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
                 ?: displaySub.takeIf { it.isNotEmpty() && !looksLikeLrc(it) }
             )?.trim().orEmpty()
-        val album = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM)?.trim().orEmpty()
+        val album = extractAlbum(metadata)
         val durationMs = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION).coerceAtLeast(0L)
         val baseId = metadata.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)?.trim().orEmpty()
         val mediaId = when {
@@ -91,14 +98,72 @@ object LyricLineExtractor {
         val ticker = truncate(resolved?.text?.takeIf { it.isNotBlank() } ?: songTitle)
         if (ticker.isEmpty()) return null
 
+        val panelArtist = formatPanelArtist(
+            packageName = controller.packageName,
+            songTitle = songTitle.ifEmpty { ticker },
+            artist = artist,
+            album = album,
+        )
+
         return Extracted(
             tickerTitle = ticker,
+            panelArtist = panelArtist,
             artist = artist,
+            album = album,
             mediaId = mediaId,
             songTitle = songTitle.ifEmpty { ticker },
             fromLyric = resolved != null,
             needsPositionTick = timedEntries != null,
         )
+    }
+
+    /**
+     * Car panel artist field. Luna already ships「歌名 — 歌手」in ARTIST; QQ gets the same shape here.
+     */
+    private fun formatPanelArtist(
+        packageName: String?,
+        songTitle: String,
+        artist: String,
+        album: String,
+    ): String {
+        if (packageName == LUNA_PKG && artist.isNotEmpty()) {
+            return artist
+        }
+        if (artist.isNotEmpty() && PANEL_ARTIST_SEP.containsMatchIn(artist)) {
+            return artist
+        }
+        if (songTitle.isNotEmpty() && artist.isNotEmpty()) {
+            return "$songTitle — $artist"
+        }
+        if (artist.isNotEmpty()) return artist
+        if (songTitle.isNotEmpty()) return songTitle
+        return album
+    }
+
+    private fun extractAlbum(metadata: MediaMetadata): String {
+        metadata.getString(MediaMetadata.METADATA_KEY_ALBUM)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { return it }
+        metadata.bundleCompat()?.getString(MediaMetadata.METADATA_KEY_ALBUM)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { return it }
+        // Luna / others: album name often lives in MediaDescription.description.
+        metadata.description?.description?.toString()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { return it }
+        metadata.description?.subtitle?.toString()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && !PANEL_ARTIST_SEP.containsMatchIn(it) }
+            ?.let { return it }
+        val bundle = metadata.bundleCompat() ?: return ""
+        for (key in bundle.keySet()) {
+            if (!key.contains("album", ignoreCase = true)) continue
+            bundle.getString(key)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        return ""
     }
 
     /** Debug-only extras dump for verifying LYRIC keys on-device. */

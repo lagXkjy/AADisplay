@@ -6,6 +6,7 @@ import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.service.ClusterLyricMediaService
+import io.github.nitsuya.aa.display.xposed.cluster.ClusterArtStore
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricStore
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -21,6 +22,10 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
 object AaClusterLyricEgressHook : AaHook() {
     override val tagName: String = "AAD_AaClusterLyricEgressHook"
 
+    private const val METADATA_KEY_ALBUM_ART = "android.media.metadata.ALBUM_ART"
+    private const val METADATA_KEY_ART = "android.media.metadata.ART"
+    private const val METADATA_KEY_DISPLAY_ICON = "android.media.metadata.DISPLAY_ICON"
+
     private val titleKeys = setOf(
         MediaMetadata.METADATA_KEY_TITLE,
         MediaMetadata.METADATA_KEY_DISPLAY_TITLE,
@@ -30,6 +35,16 @@ object AaClusterLyricEgressHook : AaHook() {
         MediaMetadata.METADATA_KEY_ARTIST,
         MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE,
         MediaMetadata.METADATA_KEY_ALBUM_ARTIST,
+    )
+
+    private val albumKeys = setOf(
+        MediaMetadata.METADATA_KEY_ALBUM,
+    )
+
+    private val artKeys = setOf(
+        METADATA_KEY_ALBUM_ART,
+        METADATA_KEY_ART,
+        METADATA_KEY_DISPLAY_ICON,
     )
 
     override fun isSupportProcess(processName: String): Boolean {
@@ -60,7 +75,14 @@ object AaClusterLyricEgressHook : AaHook() {
             }.hookAfter { param ->
                 rewriteTitleArg(param.args[0] as? String, param)
             }
-            log(tagName, "hooked android.media.MediaMetadata getString/getText")
+            findMethod(MediaMetadata::class.java) {
+                name == "getBitmap" &&
+                    parameterCount == 1 &&
+                    parameterTypes[0] == String::class.java
+            }.hookAfter { param ->
+                rewriteArtArg(param.args[0] as? String, param)
+            }
+            log(tagName, "hooked android.media.MediaMetadata getString/getText/getBitmap")
         } catch (e: Throwable) {
             log(tagName, "hook MediaMetadata failed", e)
         }
@@ -76,7 +98,14 @@ object AaClusterLyricEgressHook : AaHook() {
             }.hookAfter { param ->
                 rewriteTitleArg(param.args[0] as? String, param)
             }
-            log(tagName, "hooked $className.getString")
+            findMethod(clazz) {
+                name == "getBitmap" &&
+                    parameterCount == 1 &&
+                    parameterTypes[0] == String::class.java
+            }.hookAfter { param ->
+                rewriteArtArg(param.args[0] as? String, param)
+            }
+            log(tagName, "hooked $className.getString/getBitmap")
         } catch (e: Throwable) {
             logDebug(tagName, "hook $className skipped: ${e.message}")
         }
@@ -87,7 +116,7 @@ object AaClusterLyricEgressHook : AaHook() {
         param: de.robv.android.xposed.XC_MethodHook.MethodHookParam,
     ) {
         if (key.isNullOrEmpty()) return
-        if (key !in titleKeys && key !in subtitleKeys) return
+        if (key !in titleKeys && key !in subtitleKeys && key !in albumKeys) return
         if (!isClusterShellMetadata(param.thisObject)) return
         val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return
         when {
@@ -97,7 +126,19 @@ object AaClusterLyricEgressHook : AaHook() {
             key in subtitleKeys -> {
                 param.result = ClusterLyricStore.readFreshSubtitle(cr) ?: return
             }
+            key in albumKeys -> {
+                param.result = ClusterLyricStore.readFreshAlbum(cr) ?: return
+            }
         }
+    }
+
+    private fun rewriteArtArg(
+        key: String?,
+        param: de.robv.android.xposed.XC_MethodHook.MethodHookParam,
+    ) {
+        if (key.isNullOrEmpty() || key !in artKeys) return
+        if (!isClusterShellMetadata(param.thisObject)) return
+        param.result = ClusterArtStore.loadBitmap() ?: return
     }
 
     /** Only our invisible shell session — never rewrite QQ / Spotify titles. */
