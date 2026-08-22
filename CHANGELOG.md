@@ -23,7 +23,7 @@
 ### Fixed
 - **左侧导航栏黑条重连复发：** FacetBar 窗口一打 tag 就停掉 8s 回收轮询，真正占着 ~107px 的 GhostActivity 宿主从未被扫到。改为对进程内全部窗口持续回收到连接窗口结束。
 - **仪表进度双外推：** 壳 session 写入原始采样 + `positionAtElapsedMs`；Egress `getPlaybackState` 写入已外推位置 + `elapsedRealtime()`；位置不超过 duration。
-- **仪表进度随歌词重置：** 换句仍 `setMetadata`（车机只在此时刷新标题）；进度在 metadata 前后写出，并在 40/80/160/320ms 再推 PlaybackState，避免时钟停在 0:00。只出位置 + duration，时间排版交给各车机。
+- **仪表进度随歌词重置：** 歌词仍走 TITLE。换句发去掉 duration/封面的 MediaInfo（不当新歌）；壳不重推 PlaybackState；Egress 丢掉重复 PlaybackStatus、不改写整秒，避免剩余时间先退 1s 再进 2s。真切歌才带时长。
 - **封面 recycled bitmap：** Egress 解码缓存只丢引用不 `recycle`；session 封面一律 `ARGB_8888` copy。
 - **歌词 MSM 空启动卡死：** `MediaSessionManager` 为空时 `started=false` 并 2s/10s 重试（上限 8）。
 - **快句歌词被 200ms 节流丢掉：** 间隔内记下最新一句，到期 flush。
@@ -38,7 +38,7 @@
 3. QQ 车载/HD 横条歌词随句切换（快句不丢）；同句 hold 时 Settings 标题无每 300ms 刷、进度最多约 1s 一写；媒体列表出现壳图标可接受
 4. 方控短按仍控真实播放器（Egress 不再改写 QQ Title）
 5. QQ 与汽水同时后台：只跟正在播的源；切到汽水未出封面时不残留 QQ 封面；QQ 车载↔HD 同曲仍可晚到封面；暂停 120s 清空不会误清刚切过去的源
-5b. 歌词随句刷新；进度接近真实位置（换句后时钟能跟上、不长时间停在 0:00）；时间排版由车机自己做；暂停冻结；seek 立刻跟上；切歌封面不闪崩 / 无 recycled bitmap
+5b. AA 顶栏与奥迪仪表歌词随句刷新；换句不闪 0:00、剩余时间不倒跳 1 秒；真切歌才重置
 6. 分屏栈切换 / Recent 置顶 / 触控滑动无明显变慢
 7. 左轨触控仍能注入 AaDisplay（starve 后 hit 带宽用观测轨宽）
 

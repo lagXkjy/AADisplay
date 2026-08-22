@@ -104,7 +104,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 ### LSPosed scope
 
 见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`。改 scope 会影响模块生效范围，勿随意删改。
-仪表横条歌词：QQ 音乐车载（`com.tencent.qqmusiccar` → `METADATA_KEY_LYRIC`）+ QQ 音乐 HD（`com.tencent.qqmusicpad` → 同字段）+ 汽水（`com.luna.music`）；`ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title 出站；换句会 `setMetadata`（车机靠这次刷新歌词），随后补推 PlaybackState 以免时钟停在 0:00；`AaClusterLyricEgressHook` 仅改写壳 `aadisplay.cluster:`；进度只出位置 + duration，不写死时间文案；`AaMediaAllowlistHook` 免开未知来源。LSPosed scope 仅 `android` + `gearhead`。
+仪表横条歌词：QQ 音乐车载（`com.tencent.qqmusiccar` → `METADATA_KEY_LYRIC`）+ QQ 音乐 HD（`com.tencent.qqmusicpad` → 同字段）+ 汽水（`com.luna.music`）；`ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title 出站。换句仍改 TITLE；`AaClusterLyricEgressHook` 拦截 Gearhead `setTitle` 原地改字（避免 StatusBar 切换动画），同曲换句 GAL MediaInfo 去掉 duration/封面（不当新歌）；壳不重推进度，Egress 丢掉重复 PlaybackStatus、不改写整秒。MEDIA_ID 按曲稳定（不含 artRevision）；进度只出位置 + duration；`AaMediaAllowlistHook` 免开未知来源。LSPosed scope 仅 `android` + `gearhead`。
 
 ## 4. 构建与验证
 

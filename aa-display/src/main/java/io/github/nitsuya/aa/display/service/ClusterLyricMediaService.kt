@@ -34,9 +34,18 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         private const val ROOT_ID = "aadisplay_cluster_root"
         /** Shared with [io.github.nitsuya.aa.display.xposed.hook.aa.AaClusterLyricEgressHook] scope gate. */
         const val MEDIA_ID_PREFIX = "aadisplay.cluster:"
+        private const val PLAYBACK_EXTRAS_MEDIA_ID =
+            "androidx.media.PlaybackStateCompat.Extras.KEY_MEDIA_ID"
         private const val GEARHEAD = "com.google.android.projection.gearhead"
         /** Re-push position after Title metadata so the HU clock can recover. */
         private val PROGRESS_REASSERT_MS = longArrayOf(40L, 80L, 160L, 320L)
+        private const val CLUSTER_ACTIONS =
+            PlaybackStateCompat.ACTION_PLAY or
+                PlaybackStateCompat.ACTION_PAUSE or
+                PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                PlaybackStateCompat.ACTION_SEEK_TO or
+                PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
 
         val COMPONENT: ComponentName =
             ComponentName(
@@ -62,6 +71,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
     private var lastAlbum: String = ""
     private var lastArtMediaId: String = ""
     private var lastArtRevision: Long = 0L
+    private var lastShellMediaId: String = ""
     private var lastDurationMs: Long = -1L
     private var lastPositionMs: Long = -1L
     private val reassertProgress = Runnable {
@@ -74,8 +84,13 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             setCallback(object : MediaSessionCompat.Callback() {
                 // Never consume media keys — real QQ session must stay in control.
                 override fun onMediaButtonEvent(mediaButtonEvent: Intent?): Boolean = false
+                override fun onPlay() {}
+                override fun onPause() {}
+                override fun onSkipToNext() {}
+                override fun onSkipToPrevious() {}
+                override fun onSeekTo(pos: Long) {}
             })
-            setFlags(0)
+            setFlags(MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS)
             setPlaybackState(idleState())
         }
         session = sess
@@ -188,6 +203,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
                 lastAlbum = ""
                 lastArtMediaId = ""
                 lastArtRevision = 0L
+                lastShellMediaId = ""
                 lastDurationMs = -1L
                 lastPositionMs = -1L
                 handler.removeCallbacks(reassertProgress)
@@ -216,19 +232,25 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         ) {
             return
         }
+        val shellMediaId = MEDIA_ID_PREFIX + artMediaId.ifEmpty {
+            (album.ifEmpty { subtitle }).hashCode().toUInt().toString(16)
+        }
+        val lyricOnly = sess.isActive &&
+            lastDurationMs >= 0L &&
+            durationMs == lastDurationMs &&
+            subtitle == lastSubtitle &&
+            album == lastAlbum &&
+            artMediaId == lastArtMediaId &&
+            shellMediaId == lastShellMediaId &&
+            title != lastTitle
         lastTitle = title
         lastSubtitle = subtitle
         lastAlbum = album
         lastArtMediaId = artMediaId
         lastArtRevision = artRevision
-        val sessionTitle = subtitle.ifEmpty { album.ifEmpty { title } }
-        val shellMediaId = MEDIA_ID_PREFIX + (
-            artRevision.toString(16) + ":" +
-                artMediaId.ifEmpty { album.ifEmpty { subtitle } }
-                    .hashCode()
-                    .toUInt()
-                    .toString(16)
-            )
+        // Stable per track (CarPlay-style persistent id). Do not fold artRevision
+        // in — a late cover would look like a new song and reset the HU clock.
+        lastShellMediaId = shellMediaId
         val builder = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
             .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, title)
@@ -253,6 +275,11 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI, uri)
         }
         val meta = builder.build()
+        if (lyricOnly) {
+            sess.setMetadata(meta)
+            Log.d(TAG, "lyric-only reason=$reason title=$title")
+            return
+        }
         applyProgress("pre-meta-$reason", sess, force = true)
         sess.setMetadata(meta)
         applyProgress("applyStore-$reason", sess, force = true)
@@ -312,7 +339,9 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             else -> PlaybackStateCompat.STATE_PLAYING
         }
         return PlaybackStateCompat.Builder()
-            .setActions(0)
+            .setActions(CLUSTER_ACTIONS)
+            .setActiveQueueItemId(queueItemId(lastShellMediaId))
+            .setExtras(playbackExtras(lastShellMediaId))
             .setState(
                 compatState,
                 positionMs.coerceAtLeast(0L),
@@ -320,6 +349,19 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
                 SystemClock.elapsedRealtime(),
             )
             .build()
+    }
+
+    private fun playbackExtras(mediaId: String): Bundle {
+        if (mediaId.isEmpty()) return Bundle.EMPTY
+        return Bundle().apply {
+            putString(PLAYBACK_EXTRAS_MEDIA_ID, mediaId)
+            putString(MediaMetadataCompat.METADATA_KEY_MEDIA_ID, mediaId)
+        }
+    }
+
+    private fun queueItemId(mediaId: String): Long {
+        if (mediaId.isEmpty()) return PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN
+        return mediaId.hashCode().toLong() and 0x7fff_ffffL
     }
 
     private fun idleState(): PlaybackStateCompat =
