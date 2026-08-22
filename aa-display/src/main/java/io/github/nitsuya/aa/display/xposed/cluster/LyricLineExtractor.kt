@@ -8,6 +8,7 @@ import android.os.SystemClock
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.json.JSONObject
+import java.lang.reflect.Field
 
 /**
  * Resolves the instrument-cluster ticker string from a real [MediaController].
@@ -41,11 +42,18 @@ object LyricLineExtractor {
         """\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]\s*(.*)""",
     )
 
-    /** Avoid re-regex / re-parse of the same LRC blob every 300ms position tick. */
+    /** Avoid re-unwrap / re-regex / re-parse of the same lyric blob every 300ms position tick. */
     private var cachedLrcMediaId: String = ""
     private var cachedLrcRaw: String = ""
+    private var cachedUnwrapped: String = ""
     private var cachedLrcIsTimed: Boolean = false
     private var cachedLrcEntries: List<LrcEntry> = emptyList()
+
+    private val metadataBundleField: Field? by lazy {
+        runCatching {
+            MediaMetadata::class.java.getDeclaredField("mBundle").apply { isAccessible = true }
+        }.getOrNull()
+    }
 
     data class Extracted(
         val tickerTitle: String,
@@ -63,6 +71,18 @@ object LyricLineExtractor {
         val pkg = packageName ?: return false
         return pkg in PREFERRED_PACKAGES
     }
+
+    /** QQ 车载 / HD share a library — keep deferred cover across that handoff. */
+    fun sameCoverSource(a: String?, b: String?): Boolean {
+        val left = a?.trim().orEmpty()
+        val right = b?.trim().orEmpty()
+        if (left.isEmpty() || right.isEmpty()) return false
+        if (left == right) return true
+        return isQqMusicPackage(left) && isQqMusicPackage(right)
+    }
+
+    private fun isQqMusicPackage(packageName: String): Boolean =
+        packageName == QQ_CAR_PKG || packageName == QQ_PAD_PKG
 
     fun extract(controller: MediaController): Extracted? {
         val metadata = controller.metadata ?: return null
@@ -86,8 +106,9 @@ object LyricLineExtractor {
 
         val positionMs = estimatePositionMs(controller.playbackState)
         val rawLyricBlob = findRawLyricBlob(controller.playbackState?.extras, metadata)
-        val unwrapped = rawLyricBlob?.let { unwrapLyricPayload(it) }
-        val timedEntries = unwrapped?.let { cachedTimedLrc(mediaId, it) }
+        val prepared = rawLyricBlob?.let { cachedLyric(mediaId, it) }
+        val unwrapped = prepared?.unwrapped
+        val timedEntries = prepared?.timedEntries
         val resolved = resolveLyricText(
             unwrapped = unwrapped,
             timedEntries = timedEntries,
@@ -183,18 +204,27 @@ object LyricLineExtractor {
     private data class ResolvedLyric(val text: String, val fromLrc: Boolean)
 
     /**
-     * Returns parsed timed entries when [raw] is LRC for [mediaId]; null when not timed LRC.
-     * Cache keyed by mediaId + raw blob so position ticks only binary-search.
+     * Unwrap + parse timed LRC once per mediaId+raw blob; position ticks only binary-search.
      */
-    private fun cachedTimedLrc(mediaId: String, raw: String): List<LrcEntry>? {
+    private data class PreparedLyric(val unwrapped: String, val timedEntries: List<LrcEntry>?)
+
+    private fun cachedLyric(mediaId: String, raw: String): PreparedLyric {
         if (mediaId == cachedLrcMediaId && raw == cachedLrcRaw) {
-            return if (cachedLrcIsTimed) cachedLrcEntries else null
+            return PreparedLyric(
+                cachedUnwrapped,
+                if (cachedLrcIsTimed) cachedLrcEntries else null,
+            )
         }
         cachedLrcMediaId = mediaId
         cachedLrcRaw = raw
-        cachedLrcIsTimed = looksLikeLrc(raw)
-        cachedLrcEntries = if (cachedLrcIsTimed) parseLrc(raw) else emptyList()
-        return if (cachedLrcIsTimed) cachedLrcEntries else null
+        val unwrapped = unwrapLyricPayload(raw)
+        cachedUnwrapped = unwrapped
+        cachedLrcIsTimed = looksLikeLrc(unwrapped)
+        cachedLrcEntries = if (cachedLrcIsTimed) parseLrc(unwrapped) else emptyList()
+        return PreparedLyric(
+            unwrapped,
+            if (cachedLrcIsTimed) cachedLrcEntries else null,
+        )
     }
 
     private fun resolveLyricText(
@@ -223,7 +253,9 @@ object LyricLineExtractor {
         return null
     }
 
-    private fun estimatePositionMs(state: PlaybackState?): Long {
+    private fun estimatePositionMs(state: PlaybackState?): Long = extrapolatePositionMs(state)
+
+    fun extrapolatePositionMs(state: PlaybackState?): Long {
         if (state == null) return 0L
         val base = state.position.coerceAtLeast(0L)
         val updated = state.lastPositionUpdateTime
@@ -344,12 +376,8 @@ object LyricLineExtractor {
     }
 
     private fun MediaMetadata.bundleCompat(): Bundle? {
-        return runCatching {
-            val field = MediaMetadata::class.java.getDeclaredField("mBundle").apply {
-                isAccessible = true
-            }
-            field.get(this) as? Bundle
-        }.getOrNull()
+        val field = metadataBundleField ?: return null
+        return runCatching { field.get(this) as? Bundle }.getOrNull()
     }
 
     private fun truncate(text: String): String {

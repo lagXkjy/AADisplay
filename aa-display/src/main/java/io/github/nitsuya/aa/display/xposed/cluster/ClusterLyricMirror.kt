@@ -32,6 +32,11 @@ object ClusterLyricMirror {
     private const val REPICK_INTERVAL_MS = 500L
     /** Prefer a fresher playing session over a stale preferred-package PLAYING ghost. */
     private const val STALE_PLAYING_MS = 1_500L
+    private const val START_RETRY_FIRST_MS = 2_000L
+    private const val START_RETRY_NEXT_MS = 10_000L
+    private const val START_RETRY_MAX = 8
+    /** Re-scan other playing sessions from LRC ticks at most this often. */
+    private const val TICK_SWITCH_INTERVAL_MS = 1_000L
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -58,6 +63,13 @@ object ClusterLyricMirror {
     private var repickArmed = false
     /** After clear / start, wake `:cluster` once on the next publish (not every lyric line). */
     private var warmStartPending = true
+    private var startRetryCount = 0
+    private var lastTickSwitchElapsedMs: Long = 0L
+    private var pendingTitle: String? = null
+    private var pendingArtist: String = ""
+    private var pendingAlbum: String = ""
+    private var pendingMediaId: String = ""
+    private var pendingMetadata: android.media.MediaMetadata? = null
 
     private val sessionsChangedListener =
         MediaSessionManager.OnActiveSessionsChangedListener { sessions ->
@@ -129,6 +141,25 @@ object ClusterLyricMirror {
         }
     }
 
+    private val pendingFlush = Runnable {
+        val title = pendingTitle ?: return@Runnable
+        pendingTitle = null
+        val artist = pendingArtist
+        val album = pendingAlbum
+        val mediaId = pendingMediaId
+        val metadata = pendingMetadata
+        pendingMetadata = null
+        push(
+            title = title,
+            panelArtist = artist,
+            album = album,
+            mediaId = mediaId,
+            force = true,
+            reason = "pending-flush",
+            metadata = metadata,
+        )
+    }
+
     private enum class Phase {
         Idle,
         Tracking,
@@ -144,8 +175,11 @@ object ClusterLyricMirror {
             val sm = sessionManager
             if (sm == null) {
                 log(TAG, "MediaSessionManager null; cluster lyric mirror idle")
+                started = false
+                scheduleStartRetry(context)
                 return
             }
+            startRetryCount = 0
             sm.addOnActiveSessionsChangedListener(
                 sessionsChangedListener,
                 null as ComponentName?,
@@ -162,6 +196,16 @@ object ClusterLyricMirror {
             log(TAG, "start failed", e)
             started = false
         }
+    }
+
+    private fun scheduleStartRetry(context: Context) {
+        if (startRetryCount >= START_RETRY_MAX) {
+            log(TAG, "MediaSessionManager start retries exhausted")
+            return
+        }
+        val delay = if (startRetryCount == 0) START_RETRY_FIRST_MS else START_RETRY_NEXT_MS
+        startRetryCount++
+        handler.postDelayed({ start(context) }, delay)
     }
 
     private fun MediaSessionManager.getActiveSessionsSafe(): List<MediaController>? {
@@ -194,6 +238,10 @@ object ClusterLyricMirror {
             LyricLineExtractor.isPreferredPackage(pkg)
         ) {
             refreshFromBound("sessions-keep-bound")
+            return
+        }
+        if (shouldKeepBoundPlaying(pick)) {
+            refreshFromBound("sessions-keep-fresh")
             return
         }
         unbindController()
@@ -268,6 +316,7 @@ object ClusterLyricMirror {
         }
         val state = controller.playbackState
         val playbackState = state?.state ?: PlaybackState.STATE_NONE
+        publishProgress(controller, state, playbackState)
 
         if (extracted.mediaId != dumpedExtrasForMediaId) {
             dumpedExtrasForMediaId = extracted.mediaId
@@ -335,11 +384,9 @@ object ClusterLyricMirror {
                 pausedClearScheduled = false
                 handler.removeCallbacks(pausedClear)
                 disarmRepick()
-                if (extracted.needsPositionTick) {
-                    armPositionTick()
-                } else {
-                    disarmPositionTick()
-                }
+                // Progress egress needs ticks even without timed LRC (Luna / QQ often
+                // stop updating PlaybackState.position until the next metadata event).
+                armPositionTick()
                 armStaleKeepalive()
             }
             PlaybackState.STATE_PAUSED,
@@ -419,10 +466,19 @@ object ClusterLyricMirror {
             ) {
                 return
             }
-            if (now - lastPushElapsedMs < TITLE_MIN_INTERVAL_MS) {
+            val wait = TITLE_MIN_INTERVAL_MS - (now - lastPushElapsedMs)
+            if (wait > 0L) {
+                pendingTitle = title
+                pendingArtist = panelArtist
+                pendingAlbum = album
+                pendingMediaId = mediaId
+                pendingMetadata = metadata
+                handler.removeCallbacks(pendingFlush)
+                handler.postDelayed(pendingFlush, wait)
                 return
             }
         }
+        cancelPendingFlush()
         lastPushedTitle = title
         lastPushedArtist = panelArtist
         lastPushedAlbum = album
@@ -451,7 +507,33 @@ object ClusterLyricMirror {
     ) {
         if (metadata == null || mediaId.isEmpty()) return
         val ctx = appContext ?: return
-        ClusterArtStore.publishFromMetadata(ctx.contentResolver, metadata, mediaId)
+        ClusterArtStore.publishFromMetadata(
+            ctx.contentResolver,
+            metadata,
+            mediaId,
+            boundPackage.orEmpty(),
+        )
+    }
+
+    private fun publishProgress(
+        controller: MediaController,
+        state: PlaybackState?,
+        playbackState: Int,
+    ) {
+        val ctx = appContext ?: return
+        val metadata = controller.metadata ?: return
+        val durationMs = metadata.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION)
+            .coerceAtLeast(0L)
+        val positionMs = LyricLineExtractor.extrapolatePositionMs(state)
+        val speed = state?.playbackSpeed?.let { if (it == 0f) 1f else it } ?: 1f
+        ClusterLyricStore.publishProgress(
+            ctx.contentResolver,
+            positionMs,
+            durationMs,
+            SystemClock.elapsedRealtime(),
+            playbackState,
+            speed,
+        )
     }
 
     private fun clearOutput(reason: String) {
@@ -465,6 +547,7 @@ object ClusterLyricMirror {
         dumpedExtrasForMediaId = ""
         pausedClearScheduled = false
         warmStartPending = true
+        cancelPendingFlush()
         disarmPositionTick()
         disarmStaleKeepalive()
         disarmRepick()
@@ -474,10 +557,18 @@ object ClusterLyricMirror {
         logDebug(TAG, "clear reason=$reason")
     }
 
+    private fun cancelPendingFlush() {
+        pendingTitle = null
+        pendingMetadata = null
+        handler.removeCallbacks(pendingFlush)
+    }
+
     private fun unbindController() {
         disarmPositionTick()
         disarmStaleKeepalive()
         disarmRepick()
+        pausedClearScheduled = false
+        handler.removeCallbacks(pausedClear)
         boundController?.let { c ->
             runCatching { c.unregisterCallback(controllerCallback) }
         }
@@ -490,6 +581,11 @@ object ClusterLyricMirror {
      * preferred-package PLAYING ghost left behind after switching to e.g. Luna.
      */
     private fun maybeSwitchToPlayingSession(reason: String): Boolean {
+        if (reason == "tick") {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastTickSwitchElapsedMs < TICK_SWITCH_INTERVAL_MS) return false
+            lastTickSwitchElapsedMs = now
+        }
         val controller = boundController ?: return false
         val sessions = sessionManager?.getActiveSessionsSafe() ?: return false
         val pick = pickController(sessions) ?: return false
@@ -505,14 +601,26 @@ object ClusterLyricMirror {
             return true
         }
 
+        if (shouldKeepBoundPlaying(pick)) return false
+        logDebug(TAG, "switch stale pkg=$boundPackage -> ${pick.packageName} reason=$reason")
+        onSessionsChanged(sessions)
+        return true
+    }
+
+    /**
+     * Both sessions report PLAYING but [pick] is not meaningfully fresher.
+     * Keeps sessions-changed in line with the 1.5s tick deadband so list
+     * callbacks cannot flap QQ ghost PLAYING vs Luna.
+     */
+    private fun shouldKeepBoundPlaying(pick: MediaController): Boolean {
+        val bound = boundController ?: return false
+        if (pick.sessionToken == bound.sessionToken) return false
+        val pickPlaying = isPlayingState(pick.playbackState?.state ?: PlaybackState.STATE_NONE)
+        val boundPlaying = isPlayingState(bound.playbackState?.state ?: PlaybackState.STATE_NONE)
+        if (!pickPlaying || !boundPlaying) return false
         val pickFresh = pick.playbackState?.lastPositionUpdateTime ?: 0L
-        val boundFresh = controller.playbackState?.lastPositionUpdateTime ?: 0L
-        if (pickFresh > boundFresh + STALE_PLAYING_MS) {
-            logDebug(TAG, "switch stale pkg=$boundPackage -> ${pick.packageName} reason=$reason")
-            onSessionsChanged(sessions)
-            return true
-        }
-        return false
+        val boundFresh = bound.playbackState?.lastPositionUpdateTime ?: 0L
+        return pickFresh <= boundFresh + STALE_PLAYING_MS
     }
 
     private fun armRepickIfIdle() {

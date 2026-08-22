@@ -185,6 +185,11 @@ object AaUiHook: AaHook() {
     /** Last observed GhFacetBar / thin-rail VD width in px (for content expand fallback). */
     @Volatile private var mObservedRailWidthPx: Int = 0
     /**
+     * Largest landscape HU-sized VD width seen in this process (excludes rail / Dashboard /
+     * phone portrait). Used when LayoutInfo still reports the content slot (HU−rail).
+     */
+    @Volatile private var mObservedFullHuWidthPx: Int = 0
+    /**
      * Android displayId of the live FacetBar / thin-rail VD (per-process).
      * Used so :car can steal every touch routed to that display even when
      * LayoutInfo width is unavailable and x-band heuristics would under-steal.
@@ -838,6 +843,21 @@ object AaUiHook: AaHook() {
         val fullW = layoutWidthPx().takeIf { it > 0 } ?: rect.right
         val fullH = layoutHeightPx().takeIf { it > 0 } ?: rect.bottom
         val range = railPxRange(fullW)
+        // Left-aligned content slot Rect(0,0,HU−rail,H) — common when LayoutInfo is missing
+        // and [fullW] was taken from rect.right. Re-evaluate against observed full HU.
+        val observedFull = mObservedFullHuWidthPx
+        if (rect.left <= 0 && observedFull > fullW + 8) {
+            val gap = observedFull - rect.right
+            if (gap in railPxRange(observedFull) && rect.top <= 0) {
+                val before = Rect(rect)
+                mObservedRailWidthPx = gap
+                rect.set(0, 0, observedFull, fullH.coerceAtLeast(rect.bottom))
+                logProjectionConfigRewriteOnce(
+                    "AaUiHook: content_bounds expanded $before→$rect layout=${observedFull}x${fullH}"
+                )
+                return rect
+            }
+        }
         // LHD: left gutter reserved for vertical rail.
         if (rect.left in range && rect.right >= fullW - 2 && rect.top <= 0) {
             val before = Rect(rect)
@@ -1288,7 +1308,9 @@ object AaUiHook: AaHook() {
      */
     private fun ensureRailObservationFromDisplays() {
         clearUntrustedRailObservation()
-        if (isTrustedRailDisplayId(mObservedRailDisplayId) && mObservedRailWidthPx > 0) return
+        // Starved FacetBar is 1px so width stays 0 — still keep the display id or every
+        // HU touch rediscovers and spams "discovered rail … w=1".
+        if (isTrustedRailDisplayId(mObservedRailDisplayId)) return
         val dm = runCatching {
             InitFields.appContext.getSystemService(DisplayManager::class.java)
         }.getOrNull() ?: return
@@ -1634,6 +1656,9 @@ object AaUiHook: AaHook() {
                     tagName,
                     "AaUiHook: starve FacetBar VD name=$name ${width}x$height → 1x$height"
                 )
+                // Host (GhostActivity) often rebuilds the leftover gutter after this starve.
+                mFacetEnsureHandler.post { reclaimAllWindowGutters("starve-facet") }
+                scheduleEnsureFacetBar("starve-facet")
                 return 1 to height
             }
             return null
@@ -1649,6 +1674,7 @@ object AaUiHook: AaHook() {
             }
             return null
         }
+        rememberFullHuSize(width, height)
         val fullW = layoutWidthPx()
         val fullH = layoutHeightPx()
         if (fullW <= 0 || fullH <= 0) return null
@@ -1669,7 +1695,13 @@ object AaUiHook: AaHook() {
         return fullW to height
     }
 
-    private fun layoutWidthPx(): Int = mLayoutWidthDp.takeIf { it > 0 } ?: 0
+    private fun layoutWidthPx(): Int =
+        maxOf(mLayoutWidthDp, mObservedFullHuWidthPx).takeIf { it > 0 } ?: 0
+
+    private fun rememberFullHuSize(width: Int, height: Int) {
+        if (width < 640 || height < 320 || width <= height) return
+        if (width > mObservedFullHuWidthPx) mObservedFullHuWidthPx = width
+    }
 
     private fun layoutHeightPx(): Int = mLayoutHeightDp.takeIf { it > 0 } ?: 0
 
@@ -2080,12 +2112,13 @@ object AaUiHook: AaHook() {
                 val root = param.args[0] as? ViewGroup ?: return@hookAfter
                 root.post {
                     if (!canHookFacetBar || mInjectingFacetBar) return@post
-                    if (hasInjectedFacet(root)) {
-                        reclaimLeftGutter(root)
-                        return@post
+                    // Dual-VD: GhostActivity / rail-host has the leftover ~107px column but
+                    // no facet chrome ids (those live on GhFacetBar). Reclaim every attach.
+                    reclaimLeftGutter(root)
+                    reclaimAllWindowGutters("windowAttach")
+                    if (!hasInjectedFacet(root) && containsFacetChrome(root)) {
+                        scheduleEnsureFacetBar("windowAttach")
                     }
-                    if (!containsFacetChrome(root)) return@post
-                    scheduleEnsureFacetBar("windowAttach")
                 }
             }
             logDebug(tagName, "AaUiHook: hooked WindowManagerGlobal.addView for facet ensure")
@@ -2110,10 +2143,6 @@ object AaUiHook: AaHook() {
         if (!canHookFacetBar || mInjectingFacetBar) return
         try {
             val roots = collectWindowRootViews()
-            if (roots.any { hasInjectedFacet(it) }) {
-                mFacetEnsureHandler.removeCallbacksAndMessages(FACET_ENSURE_TOKEN)
-                return
-            }
             var attempted = 0
             for (root in roots) {
                 if (!containsFacetChrome(root)) continue
@@ -2122,18 +2151,11 @@ object AaUiHook: AaHook() {
             }
             if (attempted > 0) {
                 logDebug(tagName, "AaUiHook: ensure facet injected [$reason] count=$attempted")
-                for (root in roots) {
-                    reclaimLeftGutter(root)
-                }
-                mFacetEnsureHandler.removeCallbacksAndMessages(FACET_ENSURE_TOKEN)
-                return
             }
-            // Even without a successful inject, try reclaiming any leftover left gutter.
-            for (root in roots) {
-                if (containsFacetChrome(root) || hasInjectedFacet(root)) {
-                    reclaimLeftGutter(root)
-                }
-            }
+            // Always sweep every window. Stopping at "FacetBar already tagged" was why the
+            // left nav gutter kept coming back: chrome lives on GhFacetBar, the ~107px
+            // column lives on GhostActivity and is rebuilt after inject.
+            reclaimAllWindowGutters(reason)
             val now = SystemClock.uptimeMillis()
             if (now < mFacetEnsureDeadlineMs) {
                 mFacetEnsureHandler.postAtTime(
@@ -2141,7 +2163,9 @@ object AaUiHook: AaHook() {
                     FACET_ENSURE_TOKEN,
                     now + FACET_ENSURE_POLL_MS
                 )
-            } else if (reason.endsWith("-poll") || reason.indexOf('-') < 0) {
+            } else if (!roots.any { hasInjectedFacet(it) } &&
+                (reason.endsWith("-poll") || reason.indexOf('-') < 0)
+            ) {
                 log(
                     tagName,
                     "AaUiHook: ensure facet still missing [$reason] roots=${roots.size} " +
@@ -2269,6 +2293,8 @@ object AaUiHook: AaHook() {
         scheduleAutoOpenIfNeeded("facet:$reason")
         logDebug(tagName, "AaUiHook: collapse facet rail ($reason)")
         reclaimRailSpace(facetHost)
+        reclaimAllWindowGutters("collapse:$reason")
+        scheduleEnsureFacetBar("collapse:$reason")
     }
 
     /**
@@ -2475,6 +2501,20 @@ object AaUiHook: AaHook() {
         set.applyTo(parent)
     }
 
+    /** Collapse leftover left gutters on every live window in this process. */
+    private fun reclaimAllWindowGutters(reason: String) {
+        val roots = collectWindowRootViews()
+        var n = 0
+        for (root in roots) {
+            if (!root.isAttachedToWindow) continue
+            reclaimLeftGutter(root)
+            n++
+        }
+        if (n > 0) {
+            logDebug(tagName, "AaUiHook: reclaim all gutters [$reason] roots=$n")
+        }
+    }
+
     /** Scan a window/rail root for a leftover left gutter and reclaim it. */
     private fun reclaimLeftGutter(root: ViewGroup) {
         try {
@@ -2486,7 +2526,7 @@ object AaUiHook: AaHook() {
             if (column != null) {
                 reclaimRailSpace(column)
             }
-            // Fallback: leftmost thin child of any horizontal LinearLayout under root.
+            // Fallback: leftmost thin child of any horizontal LinearLayout / ConstraintLayout.
             val maxSidePx = maxSideRailPx(root)
             val queue = ArrayDeque<ViewGroup>()
             queue.add(root)
@@ -2496,6 +2536,15 @@ object AaUiHook: AaHook() {
                     val first = vg.getChildAt(0) ?: continue
                     if (isThinSideRail(first, maxSidePx) || first.visibility == View.GONE) {
                         reclaimRailSpace(first)
+                        return
+                    }
+                }
+                if (vg is ConstraintLayout && vg.childCount >= 2) {
+                    for (i in 0 until vg.childCount) {
+                        val c = vg.getChildAt(i) ?: continue
+                        if (!isThinSideRail(c, maxSidePx)) continue
+                        if (c.left > 16 && c.x > 16f) continue
+                        reclaimRailSpace(c)
                         return
                     }
                 }

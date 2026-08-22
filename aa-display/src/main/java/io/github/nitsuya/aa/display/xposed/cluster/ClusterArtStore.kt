@@ -8,6 +8,7 @@ import android.graphics.Matrix
 import android.media.MediaMetadata
 import android.net.Uri
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.provider.Settings
@@ -16,7 +17,6 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.util.Arrays
 
 /**
  * Album-art bridge: system_server writes a world-readable JPEG under `/data/system`;
@@ -28,6 +28,7 @@ object ClusterArtStore {
     const val SETTINGS_ART_REVISION = "aadisplay_cluster_np_art_revision"
     /** Shared with [io.github.nitsuya.aa.display.service.ClusterLyricMediaService] / egress hook. */
     const val ART_PATH = "/data/system/aadisplay_cluster_art.jpg"
+    private const val ART_TMP_PATH = "/data/system/aadisplay_cluster_art.jpg.tmp"
     private const val TAG = "AAD_ClusterArtStore"
     private const val MAX_EDGE_PX = 512
     private const val JPEG_QUALITY = 85
@@ -36,10 +37,18 @@ object ClusterArtStore {
 
     private const val METADATA_KEY_ALBUM_ART = "android.media.metadata.ALBUM_ART"
     private const val METADATA_KEY_ART = "android.media.metadata.ART"
+    private const val METADATA_KEY_DISPLAY_ICON = "android.media.metadata.DISPLAY_ICON"
     private const val METADATA_KEY_ALBUM_ART_URI = "android.media.metadata.ALBUM_ART_URI"
+    private const val METADATA_KEY_ART_URI = "android.media.metadata.ART_URI"
     private const val METADATA_KEY_DISPLAY_ICON_URI = "android.media.metadata.DISPLAY_ICON_URI"
 
     private val handler = Handler(Looper.getMainLooper())
+
+    private val artThread: HandlerThread by lazy {
+        HandlerThread("aad-cluster-art").apply { start() }
+    }
+
+    private val artHandler: Handler by lazy { Handler(artThread.looper) }
 
     @Volatile
     private var pendingClearMediaId: String? = null
@@ -52,6 +61,14 @@ object ClusterArtStore {
 
     @Volatile
     private var cachedRevision: Long = 0L
+
+    /** Last package that owned the on-disk JPEG; empty after [clear]. */
+    @Volatile
+    private var lastArtPackage: String = ""
+
+    /** Bumped to drop in-flight encode/write after a newer publish or [clear]. */
+    @Volatile
+    private var publishGen: Long = 0L
 
     fun artFile(): File = File(ART_PATH)
 
@@ -69,54 +86,68 @@ object ClusterArtStore {
         resolver: ContentResolver,
         metadata: MediaMetadata?,
         mediaId: String,
+        packageName: String = "",
     ) {
         if (mediaId.isEmpty()) return
         cancelPendingClear()
-        val bitmap = extractArt(resolver, metadata)
-        if (bitmap == null) {
-            logDebug(TAG, "no art mediaId=$mediaId (deferred clear)")
-            scheduleDeferredClear(resolver, mediaId)
-            return
-        }
-        val scaled = scaleDown(bitmap)
-        if (scaled !== bitmap) {
-            bitmap.recycle()
-        }
-        val jpegBytes = runCatching {
-            ByteArrayOutputStream().use { out ->
-                scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
-                out.toByteArray()
+        val pkg = packageName.trim()
+        val sourceChanged =
+            pkg.isNotEmpty() &&
+                lastArtPackage.isNotEmpty() &&
+                !LyricLineExtractor.sameCoverSource(lastArtPackage, pkg)
+        val gen = ++publishGen
+        // Session bitmaps must be copied on this thread — the live MediaMetadata
+        // instance may recycle them as soon as we return to the session.
+        val sessionBitmap = extractSessionBitmaps(metadata)
+        artHandler.post {
+            if (gen != publishGen) {
+                sessionBitmap?.recycle()
+                return@post
             }
-        }.getOrElse { e ->
-            log(TAG, "compress art failed mediaId=$mediaId", e)
-            scaled.recycle()
-            return
-        }
-        scaled.recycle()
-        if (jpegBytes.isEmpty()) return
-
-        val file = artFile()
-        if (file.exists() && file.length() == jpegBytes.size.toLong()) {
-            val existing = runCatching { file.readBytes() }.getOrNull()
-            if (existing != null && Arrays.equals(existing, jpegBytes)) {
+            val bitmap = sessionBitmap ?: extractUriArt(resolver, metadata)
+            if (bitmap == null) {
+                handler.post {
+                    if (gen != publishGen) return@post
+                    if (sourceChanged) {
+                        logDebug(TAG, "source changed without art $lastArtPackage -> $pkg (immediate clear)")
+                        clear(resolver)
+                        lastArtPackage = pkg
+                        return@post
+                    }
+                    logDebug(TAG, "no art mediaId=$mediaId (deferred clear)")
+                    scheduleDeferredClear(resolver, mediaId)
+                }
+                return@post
+            }
+            val jpegBytes = encodeJpeg(bitmap, mediaId)
+            if (jpegBytes == null || jpegBytes.isEmpty()) return@post
+            if (gen != publishGen) return@post
+            val file = artFile()
+            if (file.exists() && file.length() == jpegBytes.size.toLong()) {
                 val cachedId = Settings.Global.getString(resolver, SETTINGS_ART_MEDIA_ID)?.trim().orEmpty()
                 if (cachedId == mediaId) {
+                    handler.post {
+                        if (gen != publishGen) return@post
+                        if (pkg.isNotEmpty()) lastArtPackage = pkg
+                    }
                     logDebug(TAG, "art unchanged mediaId=$mediaId")
-                    return
+                    return@post
                 }
             }
-        }
-
-        runCatching {
-            FileOutputStream(file).use { out ->
-                out.write(jpegBytes)
+            val wrote = atomicWriteJpeg(jpegBytes)
+            if (!wrote) return@post
+            if (gen != publishGen) return@post
+            handler.post {
+                if (gen != publishGen) return@post
+                runCatching {
+                    Settings.Global.putString(resolver, SETTINGS_ART_MEDIA_ID, mediaId)
+                    if (pkg.isNotEmpty()) lastArtPackage = pkg
+                    val revision = bumpRevision(resolver)
+                    logDebug(TAG, "art saved mediaId=$mediaId bytes=${file.length()} rev=$revision")
+                }.onFailure { e ->
+                    log(TAG, "publish art failed mediaId=$mediaId", e)
+                }
             }
-            file.setReadable(true, false)
-            Settings.Global.putString(resolver, SETTINGS_ART_MEDIA_ID, mediaId)
-            val revision = bumpRevision(resolver)
-            logDebug(TAG, "art saved mediaId=$mediaId bytes=${file.length()} rev=$revision")
-        }.onFailure { e ->
-            log(TAG, "publish art failed mediaId=$mediaId", e)
         }
     }
 
@@ -147,13 +178,64 @@ object ClusterArtStore {
 
     fun clear(resolver: ContentResolver) {
         cancelPendingClear()
+        val gen = ++publishGen
         evictBitmapCache()
+        lastArtPackage = ""
         runCatching {
             Settings.Global.putString(resolver, SETTINGS_ART_MEDIA_ID, "")
-            artFile().delete()
             bumpRevision(resolver)
         }.onFailure { e ->
             log(TAG, "clear art failed", e)
+        }
+        artHandler.post {
+            if (gen != publishGen) return@post
+            artFile().delete()
+            File(ART_TMP_PATH).delete()
+        }
+    }
+
+    private fun encodeJpeg(bitmap: Bitmap, mediaId: String): ByteArray? {
+        val scaled = scaleDown(bitmap)
+        if (scaled !== bitmap) {
+            bitmap.recycle()
+        }
+        val jpegBytes = runCatching {
+            ByteArrayOutputStream().use { out ->
+                scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+                out.toByteArray()
+            }
+        }.getOrElse { e ->
+            log(TAG, "compress art failed mediaId=$mediaId", e)
+            scaled.recycle()
+            return null
+        }
+        scaled.recycle()
+        return jpegBytes
+    }
+
+    private fun atomicWriteJpeg(jpegBytes: ByteArray): Boolean {
+        val tmp = File(ART_TMP_PATH)
+        val file = artFile()
+        return runCatching {
+            FileOutputStream(tmp).use { out ->
+                out.write(jpegBytes)
+                out.flush()
+                out.fd.sync()
+            }
+            if (!tmp.renameTo(file)) {
+                file.delete()
+                if (!tmp.renameTo(file)) {
+                    log(TAG, "rename art tmp failed")
+                    tmp.delete()
+                    return false
+                }
+            }
+            file.setReadable(true, false)
+            true
+        }.getOrElse { e ->
+            log(TAG, "write art failed", e)
+            tmp.delete()
+            false
         }
     }
 
@@ -197,18 +279,27 @@ object ClusterArtStore {
     }
 
     private fun evictBitmapCache() {
-        cachedBitmap?.takeIf { !it.isRecycled }?.recycle()
+        // Never recycle — gearhead / SystemUI may still parcel or draw the previous Bitmap.
         cachedBitmap = null
         cachedRevision = 0L
     }
 
-    private fun extractArt(resolver: ContentResolver, metadata: MediaMetadata?): Bitmap? {
+    private fun extractSessionBitmaps(metadata: MediaMetadata?): Bitmap? {
         if (metadata == null) return null
-        // Never return/recycle bitmaps still owned by the active MediaSession — SystemUI
-        // parcels the same metadata and crashes with "Can't parcel a recycled bitmap".
-        // Luna (com.luna.music) uses ART; QQ uses ALBUM_ART — check both.
         metadata.getBitmap(METADATA_KEY_ART)?.let { ownedCopy(it) }?.let { return it }
         metadata.getBitmap(METADATA_KEY_ALBUM_ART)?.let { ownedCopy(it) }?.let { return it }
+        metadata.getBitmap(METADATA_KEY_DISPLAY_ICON)?.let { ownedCopy(it) }?.let { return it }
+        metadata.description?.iconBitmap?.let { ownedCopy(it) }?.let { return it }
+        return null
+    }
+
+    private fun extractUriArt(resolver: ContentResolver, metadata: MediaMetadata?): Bitmap? {
+        if (metadata == null) return null
+        metadata.getString(METADATA_KEY_ART_URI)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { loadUri(resolver, it) }
+            ?.let { return it }
         metadata.getString(METADATA_KEY_ALBUM_ART_URI)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
@@ -219,43 +310,75 @@ object ClusterArtStore {
             ?.takeIf { it.isNotEmpty() }
             ?.let { loadUri(resolver, it) }
             ?.let { return it }
-        metadata.description?.let { desc ->
-            desc.iconBitmap?.let { ownedCopy(it) }?.let { return it }
-            desc.iconUri?.toString()
-                ?.takeIf { it.isNotEmpty() }
-                ?.let { loadUri(resolver, it) }
-                ?.let { return it }
-        }
+        metadata.description?.iconUri?.toString()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { loadUri(resolver, it) }
+            ?.let { return it }
         return null
     }
 
-    /** Detached copy safe to scale/recycle without breaking live session metadata. */
+    /** Detached ARGB copy safe to scale/recycle without breaking live session metadata. */
     private fun ownedCopy(source: Bitmap): Bitmap? {
         if (source.isRecycled) return null
-        return source.copy(source.config ?: Bitmap.Config.ARGB_8888, false)
+        return runCatching { source.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
     }
 
     private fun loadUri(resolver: ContentResolver, uriString: String): Bitmap? {
         val uri = Uri.parse(uriString)
-        return runCatching {
-            resolver.openInputStream(uri).use { stream ->
-                BitmapFactory.decodeStream(stream)
-            }
-        }.getOrNull()
+        return decodeSampled(resolver, uri)
             ?: runCatching {
                 resolver.openFileDescriptor(uri, "r").use { pfd ->
-                    decodeFd(pfd)
+                    decodeFdSampled(pfd)
                 }
             }.getOrNull()
     }
 
-    private fun decodeFd(pfd: ParcelFileDescriptor?): Bitmap? {
-        if (pfd == null) return null
+    private fun decodeSampled(resolver: ContentResolver, uri: Uri): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        runCatching {
+            resolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, bounds)
+            }
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val opts = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight)
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
         return runCatching {
-            ParcelFileDescriptor.AutoCloseInputStream(pfd).use { stream ->
-                BitmapFactory.decodeStream(stream)
+            resolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, opts)
             }
         }.getOrNull()
+    }
+
+    private fun decodeFdSampled(pfd: ParcelFileDescriptor?): Bitmap? {
+        if (pfd == null) return null
+        return runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            ParcelFileDescriptor.dup(pfd.fileDescriptor).use { dup ->
+                ParcelFileDescriptor.AutoCloseInputStream(dup).use { stream ->
+                    BitmapFactory.decodeStream(stream, null, bounds)
+                }
+            }
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight)
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            ParcelFileDescriptor.AutoCloseInputStream(pfd).use { stream ->
+                BitmapFactory.decodeStream(stream, null, opts)
+            }
+        }.getOrNull()
+    }
+
+    private fun sampleSize(width: Int, height: Int): Int {
+        val max = maxOf(width, height)
+        if (max <= MAX_EDGE_PX) return 1
+        var sample = 1
+        while (max / (sample * 2) >= MAX_EDGE_PX) {
+            sample *= 2
+        }
+        return sample
     }
 
     private fun scaleDown(source: Bitmap): Bitmap {

@@ -35,6 +35,8 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         /** Shared with [io.github.nitsuya.aa.display.xposed.hook.aa.AaClusterLyricEgressHook] scope gate. */
         const val MEDIA_ID_PREFIX = "aadisplay.cluster:"
         private const val GEARHEAD = "com.google.android.projection.gearhead"
+        /** Re-push position after Title metadata so the HU clock can recover. */
+        private val PROGRESS_REASSERT_MS = longArrayOf(40L, 80L, 160L, 320L)
 
         val COMPONENT: ComponentName =
             ComponentName(
@@ -60,6 +62,11 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
     private var lastAlbum: String = ""
     private var lastArtMediaId: String = ""
     private var lastArtRevision: Long = 0L
+    private var lastDurationMs: Long = -1L
+    private var lastPositionMs: Long = -1L
+    private val reassertProgress = Runnable {
+        applyProgress("reassert", force = true)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -84,6 +91,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(reassertProgress)
         unregisterStoreObserver()
         session?.run {
             isActive = false
@@ -124,7 +132,14 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         if (observer != null) return
         val obs = object : ContentObserver(handler) {
             override fun onChange(selfChange: Boolean, uri: Uri?) {
-                applyStore("observer")
+                val key = uri?.lastPathSegment
+                if (key == ClusterLyricStore.SETTINGS_POSITION_MS ||
+                    key == ClusterLyricStore.SETTINGS_DURATION_MS
+                ) {
+                    applyProgress("observer-position")
+                } else {
+                    applyStore("observer")
+                }
             }
         }
         observer = obs
@@ -136,6 +151,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             ClusterLyricStore.SETTINGS_ALBUM,
             ClusterArtStore.SETTINGS_ART_MEDIA_ID,
             ClusterArtStore.SETTINGS_ART_REVISION,
+            ClusterLyricStore.SETTINGS_POSITION_MS,
         ).forEach { key ->
             runCatching {
                 cr.registerContentObserver(
@@ -153,6 +169,13 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         runCatching { contentResolver.unregisterContentObserver(obs) }
     }
 
+    private fun scheduleProgressReassert() {
+        handler.removeCallbacks(reassertProgress)
+        for (delay in PROGRESS_REASSERT_MS) {
+            handler.postDelayed(reassertProgress, delay)
+        }
+    }
+
     private fun applyStore(reason: String) {
         val cr = contentResolver
         val fresh = ClusterLyricStore.readFresh(cr)
@@ -165,6 +188,9 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
                 lastAlbum = ""
                 lastArtMediaId = ""
                 lastArtRevision = 0L
+                lastDurationMs = -1L
+                lastPositionMs = -1L
+                handler.removeCallbacks(reassertProgress)
                 sess.isActive = false
                 sess.setMetadata(null)
                 sess.setPlaybackState(idleState())
@@ -178,11 +204,14 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             ?.trim()
             .orEmpty()
         val artRevision = ClusterArtStore.readRevision(cr)
+        val progress = ClusterLyricStore.readProgress(cr)
+        val durationMs = progress?.durationMs ?: 0L
         if (title == lastTitle &&
             subtitle == lastSubtitle &&
             album == lastAlbum &&
             artMediaId == lastArtMediaId &&
             artRevision == lastArtRevision &&
+            durationMs == lastDurationMs &&
             sess.isActive
         ) {
             return
@@ -192,6 +221,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         lastAlbum = album
         lastArtMediaId = artMediaId
         lastArtRevision = artRevision
+        val sessionTitle = subtitle.ifEmpty { album.ifEmpty { title } }
         val shellMediaId = MEDIA_ID_PREFIX + (
             artRevision.toString(16) + ":" +
                 artMediaId.ifEmpty { album.ifEmpty { subtitle } }
@@ -208,6 +238,10 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         if (album.isNotEmpty()) {
             builder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album)
         }
+        if (durationMs > 0L) {
+            builder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durationMs)
+        }
+        lastDurationMs = durationMs
         // URI-only in the live session — never putBitmap here. SystemUI / Bluetooth
         // parcel session metadata across Binder; reusing one Bitmap for multiple keys
         // (or recycling while still referenced) crashes with "Can't parcel a recycled bitmap".
@@ -219,24 +253,73 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI, uri)
         }
         val meta = builder.build()
-        // Playing state keeps AA Now Playing egress alive; actions=0 so keys stay on QQ.
-        val state = PlaybackStateCompat.Builder()
-            .setActions(0)
-            .setState(
-                PlaybackStateCompat.STATE_PLAYING,
-                PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN,
-                1f,
-                SystemClock.elapsedRealtime(),
-            )
-            .build()
+        applyProgress("pre-meta-$reason", sess, force = true)
         sess.setMetadata(meta)
-        sess.setPlaybackState(state)
+        applyProgress("applyStore-$reason", sess, force = true)
+        scheduleProgressReassert()
         if (!sess.isActive) {
             sess.isActive = true
             Log.d(TAG, "active reason=$reason title=$title")
         } else {
             Log.d(TAG, "update reason=$reason title=$title album=$album art=$artMediaId rev=$artRevision")
         }
+    }
+
+    private fun applyProgress(
+        reason: String,
+        sess: MediaSessionCompat? = session,
+        force: Boolean = false,
+    ) {
+        val sessionRef = sess ?: return
+        if (!sessionRef.isActive && !force) return
+        val cr = contentResolver
+        val progress = ClusterLyricStore.readProgress(cr) ?: return
+        if (sessionRef.isActive &&
+            lastDurationMs >= 0L &&
+            progress.durationMs != lastDurationMs
+        ) {
+            applyStore("duration-catchup")
+            return
+        }
+        val positionMs = ClusterLyricStore.extrapolatePosition(progress)
+        if (!force &&
+            progress.durationMs == lastDurationMs &&
+            kotlin.math.abs(positionMs - lastPositionMs) < 250L
+        ) {
+            return
+        }
+        lastDurationMs = progress.durationMs
+        lastPositionMs = positionMs
+        val compatState = mapCompatPlaybackState(progress, positionMs)
+        sessionRef.setPlaybackState(compatState)
+        if (force || reason.contains("position")) {
+            Log.d(
+                TAG,
+                "progress reason=$reason pos=${positionMs / 1000f}s dur=${progress.durationMs / 1000f}s",
+            )
+        }
+    }
+
+    private fun mapCompatPlaybackState(
+        progress: ClusterLyricStore.Progress,
+        positionMs: Long,
+    ): PlaybackStateCompat {
+        val compatState = when (progress.playbackState) {
+            android.media.session.PlaybackState.STATE_PLAYING -> PlaybackStateCompat.STATE_PLAYING
+            android.media.session.PlaybackState.STATE_PAUSED -> PlaybackStateCompat.STATE_PAUSED
+            android.media.session.PlaybackState.STATE_BUFFERING -> PlaybackStateCompat.STATE_BUFFERING
+            android.media.session.PlaybackState.STATE_STOPPED -> PlaybackStateCompat.STATE_STOPPED
+            else -> PlaybackStateCompat.STATE_PLAYING
+        }
+        return PlaybackStateCompat.Builder()
+            .setActions(0)
+            .setState(
+                compatState,
+                positionMs.coerceAtLeast(0L),
+                progress.playbackSpeed,
+                SystemClock.elapsedRealtime(),
+            )
+            .build()
     }
 
     private fun idleState(): PlaybackStateCompat =

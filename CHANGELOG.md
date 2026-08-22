@@ -10,7 +10,8 @@
 - **分屏应用选择器加速：** launchable 列表进程内缓存 + 会话预热；图标懒加载；「最近」改用 `LastSplitStore`/occupancy 包名，不再拉完整 `recentTask` Bitmap IPC。
 - **热路径减负（歌词 + 触控）：** 同句歌词跳过 Settings.Global 三写（靠 5s `touch` keepalive）；LRC 按 mediaId+blob 缓存解析，300ms tick 只二分取句；`:cluster` 不再观察 `updated_ms`；`injectInputEvent` 缓存 `InputEvent.setDisplayId` Method。
 - **r11-T→r12 审计收敛：** 去掉试验叠层——重连缩窗仅服务端 `shrink-auto`（删客户端 900/1700ms `lastCreate` bust）；soft-reconnect 同 profile 跳过 VD resize；AutoOpen 梯子收为 `0/1.5/5/12/24s` 且 `REARM_GAP≥末档`，保留 car-connected kick；`AaClusterLyricEgressHook` 仅改写 `aadisplay.cluster:` 壳 MEDIA_ID；歌词 `warmStart` 不再每句触发；Allowlist unknown-sources pref 仅在 pkg-bool 未命中时回退。
-- **仪表歌词主路径：** `ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title；Egress 为壳会话兜底。优先包仅 QQ 车载 / HD。
+- **仪表歌词 / 封面 / 进度热路径：** 进度 Settings 去重（seek / 状态变化立刻写，其余最多 1s）；tick 上 `getActiveSessions` 1s 节流；Egress 200ms Fresh/Progress 缓存 + Compat `getString` Method 缓存；LRC unwrap/`mBundle` 缓存；封面 JPEG 后台线程 + `inSampleSize` + 原子 rename；快句歌词 pending flush。
+- **仪表歌词主路径：** `ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title；Egress 为壳会话兜底。优先包 QQ 车载 / HD / 汽水（`com.luna.music`）。
 - **仪表横条隐形媒体壳（免未知来源）：** `ClusterLyricMediaService` + `AaMediaAllowlistHook`（本包 pkg-bool）；Dashboard starve + Presentation 隐藏保留。
 - **AutoOpen 事件驱动：** 武装后立即 + 稀疏 CAMS 重试；Hook SysUi car-connected 立刻再踢 `a(Intent)`；仅 `AA_DISPLAY_SHOWN` 停。
 - **DexKit 方法坐标缓存：** gearhead 冷启缓存命中跳过 `libdexkit` 扫包；失败回退 live DexKit。
@@ -20,6 +21,13 @@
 - **重连分辨率单一结算：** `DisplayProfileSettle` 取代 grow/shrink confirm；有活 FacetBar 条带用 `HU−rail`，否则全宽；450ms rail-settle 重试。
 
 ### Fixed
+- **左侧导航栏黑条重连复发：** FacetBar 窗口一打 tag 就停掉 8s 回收轮询，真正占着 ~107px 的 GhostActivity 宿主从未被扫到。改为对进程内全部窗口持续回收到连接窗口结束。
+- **仪表进度双外推：** 壳 session 写入原始采样 + `positionAtElapsedMs`；Egress `getPlaybackState` 写入已外推位置 + `elapsedRealtime()`；位置不超过 duration。
+- **仪表进度随歌词重置：** 换句仍 `setMetadata`（车机只在此时刷新标题）；进度在 metadata 前后写出，并在 40/80/160/320ms 再推 PlaybackState，避免时钟停在 0:00。只出位置 + duration，时间排版交给各车机。
+- **封面 recycled bitmap：** Egress 解码缓存只丢引用不 `recycle`；session 封面一律 `ARGB_8888` copy。
+- **歌词 MSM 空启动卡死：** `MediaSessionManager` 为空时 `started=false` 并 2s/10s 重试（上限 8）。
+- **快句歌词被 200ms 节流丢掉：** 间隔内记下最新一句，到期 flush。
+- **QQ / 汽水同时后台抢 Now Playing：** 双方都报 PLAYING 时，`onSessionsChanged` 与 tick 共用 1.5s freshness 死区，避免会话列表抖动闪烁；`unbind` 取消上一源的 120s `pausedClear`；跨源（QQ↔汽水）无封面时立刻丢掉旧 JPEG，同包仍保留 2s 晚到封面窗口。
 - **断开重连分辨率 800/720 反复错位：** 具名 `GhFacetBar` VD 饿成 `1×H`（触控仍用观测轨宽），与 `content_bounds` 扩满共用全宽真值；服务端按 rail 观测结算 profile。
 - **方控长按对调：** 长按上一曲/快退开 Recent；长按下一曲/快进换分屏；去掉长按播放/暂停。
 - **仪表横条歌名兜底过期：** 播放中定期 touch `aadisplay_cluster_np_updated_ms`。
@@ -27,10 +35,12 @@
 ### Verify（仪表歌词 + 重连）
 1. Soft-reconnect：`GhFacetBar` 饿死后 profile 稳定全宽；日志可见 `displayProfile relocked(settle|rail-settle)` / `starve FacetBar`；无右侧 gutter / 黑条
 2. 冷连 AutoOpen：仍能进 AaDisplay；connected kick 后无 100ms 级刷屏重试
-3. QQ 车载/HD 横条歌词随句切换；同句 hold 时 Settings/壳无每 300ms 刷；媒体列表出现壳图标可接受
+3. QQ 车载/HD 横条歌词随句切换（快句不丢）；同句 hold 时 Settings 标题无每 300ms 刷、进度最多约 1s 一写；媒体列表出现壳图标可接受
 4. 方控短按仍控真实播放器（Egress 不再改写 QQ Title）
-5. 分屏栈切换 / Recent 置顶 / 触控滑动无明显变慢
-6. 左轨触控仍能注入 AaDisplay（starve 后 hit 带宽用观测轨宽）
+5. QQ 与汽水同时后台：只跟正在播的源；切到汽水未出封面时不残留 QQ 封面；QQ 车载↔HD 同曲仍可晚到封面；暂停 120s 清空不会误清刚切过去的源
+5b. 歌词随句刷新；进度接近真实位置（换句后时钟能跟上、不长时间停在 0:00）；时间排版由车机自己做；暂停冻结；seek 立刻跟上；切歌封面不闪崩 / 无 recycled bitmap
+6. 分屏栈切换 / Recent 置顶 / 触控滑动无明显变慢
+7. 左轨触控仍能注入 AaDisplay（starve 后 hit 带宽用观测轨宽）
 
 ## 0.24#17.4-r10
 
