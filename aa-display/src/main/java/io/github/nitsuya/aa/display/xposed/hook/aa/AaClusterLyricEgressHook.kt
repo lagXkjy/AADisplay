@@ -25,6 +25,9 @@ object AaClusterLyricEgressHook : AaHook() {
     private const val METADATA_KEY_ALBUM_ART = "android.media.metadata.ALBUM_ART"
     private const val METADATA_KEY_ART = "android.media.metadata.ART"
     private const val METADATA_KEY_DISPLAY_ICON = "android.media.metadata.DISPLAY_ICON"
+    private const val METADATA_KEY_ALBUM_ART_URI = "android.media.metadata.ALBUM_ART_URI"
+    private const val METADATA_KEY_ART_URI = "android.media.metadata.ART_URI"
+    private const val METADATA_KEY_DISPLAY_ICON_URI = "android.media.metadata.DISPLAY_ICON_URI"
 
     private val titleKeys = setOf(
         MediaMetadata.METADATA_KEY_TITLE,
@@ -47,6 +50,15 @@ object AaClusterLyricEgressHook : AaHook() {
         METADATA_KEY_DISPLAY_ICON,
     )
 
+    private val artUriKeys = setOf(
+        METADATA_KEY_ALBUM_ART_URI,
+        METADATA_KEY_ART_URI,
+        METADATA_KEY_DISPLAY_ICON_URI,
+        MediaMetadata.METADATA_KEY_ALBUM_ART_URI,
+        MediaMetadata.METADATA_KEY_ART_URI,
+        MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI,
+    )
+
     override fun isSupportProcess(processName: String): Boolean {
         return processProjection == processName || processCar == processName
     }
@@ -66,7 +78,7 @@ object AaClusterLyricEgressHook : AaHook() {
                     parameterCount == 1 &&
                     parameterTypes[0] == String::class.java
             }.hookAfter { param ->
-                rewriteTitleArg(param.args[0] as? String, param)
+                rewriteStringArg(param.args[0] as? String, param)
             }
             findMethod(MediaMetadata::class.java) {
                 name == "getText" &&
@@ -96,7 +108,7 @@ object AaClusterLyricEgressHook : AaHook() {
                     parameterCount == 1 &&
                     parameterTypes[0] == String::class.java
             }.hookAfter { param ->
-                rewriteTitleArg(param.args[0] as? String, param)
+                rewriteStringArg(param.args[0] as? String, param)
             }
             findMethod(clazz) {
                 name == "getBitmap" &&
@@ -109,6 +121,18 @@ object AaClusterLyricEgressHook : AaHook() {
         } catch (e: Throwable) {
             logDebug(tagName, "hook $className skipped: ${e.message}")
         }
+    }
+
+    private fun rewriteStringArg(
+        key: String?,
+        param: de.robv.android.xposed.XC_MethodHook.MethodHookParam,
+    ) {
+        if (key.isNullOrEmpty()) return
+        if (key in artUriKeys) {
+            rewriteArtUriArg(key, param)
+            return
+        }
+        rewriteTitleArg(key, param)
     }
 
     private fun rewriteTitleArg(
@@ -132,13 +156,25 @@ object AaClusterLyricEgressHook : AaHook() {
         }
     }
 
+    private fun rewriteArtUriArg(
+        key: String?,
+        param: de.robv.android.xposed.XC_MethodHook.MethodHookParam,
+    ) {
+        if (key.isNullOrEmpty() || key !in artUriKeys) return
+        if (!isClusterShellMetadata(param.thisObject)) return
+        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return
+        val revision = ClusterArtStore.readRevision(cr)
+        param.result = ClusterArtStore.artUriString(revision) ?: return
+    }
+
     private fun rewriteArtArg(
         key: String?,
         param: de.robv.android.xposed.XC_MethodHook.MethodHookParam,
     ) {
         if (key.isNullOrEmpty() || key !in artKeys) return
         if (!isClusterShellMetadata(param.thisObject)) return
-        param.result = ClusterArtStore.loadBitmap() ?: return
+        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return
+        param.result = ClusterArtStore.loadBitmap(cr) ?: return
     }
 
     /** Only our invisible shell session — never rewrite QQ / Spotify titles. */

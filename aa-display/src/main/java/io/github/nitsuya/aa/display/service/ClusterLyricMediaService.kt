@@ -59,6 +59,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
     private var lastSubtitle: String = ""
     private var lastAlbum: String = ""
     private var lastArtMediaId: String = ""
+    private var lastArtRevision: Long = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -134,6 +135,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             ClusterLyricStore.SETTINGS_SUBTITLE,
             ClusterLyricStore.SETTINGS_ALBUM,
             ClusterArtStore.SETTINGS_ART_MEDIA_ID,
+            ClusterArtStore.SETTINGS_ART_REVISION,
         ).forEach { key ->
             runCatching {
                 cr.registerContentObserver(
@@ -162,6 +164,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
                 lastSubtitle = ""
                 lastAlbum = ""
                 lastArtMediaId = ""
+                lastArtRevision = 0L
                 sess.isActive = false
                 sess.setMetadata(null)
                 sess.setPlaybackState(idleState())
@@ -174,10 +177,12 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         val artMediaId = Settings.Global.getString(cr, ClusterArtStore.SETTINGS_ART_MEDIA_ID)
             ?.trim()
             .orEmpty()
+        val artRevision = ClusterArtStore.readRevision(cr)
         if (title == lastTitle &&
             subtitle == lastSubtitle &&
             album == lastAlbum &&
             artMediaId == lastArtMediaId &&
+            artRevision == lastArtRevision &&
             sess.isActive
         ) {
             return
@@ -186,11 +191,13 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         lastSubtitle = subtitle
         lastAlbum = album
         lastArtMediaId = artMediaId
+        lastArtRevision = artRevision
         val shellMediaId = MEDIA_ID_PREFIX + (
-            artMediaId.ifEmpty { album.ifEmpty { subtitle } }
-                .hashCode()
-                .toUInt()
-                .toString(16)
+            artRevision.toString(16) + ":" +
+                artMediaId.ifEmpty { album.ifEmpty { subtitle } }
+                    .hashCode()
+                    .toUInt()
+                    .toString(16)
             )
         val builder = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
@@ -205,7 +212,8 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         // parcel session metadata across Binder; reusing one Bitmap for multiple keys
         // (or recycling while still referenced) crashes with "Can't parcel a recycled bitmap".
         // Gearhead reads art via [AaClusterLyricEgressHook] from [ClusterArtStore] file cache.
-        ClusterArtStore.artUriString()?.let { uri ->
+        ClusterArtStore.artUriString(artRevision).let { uri ->
+            if (uri == null) return@let
             builder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, uri)
             builder.putString(MediaMetadataCompat.METADATA_KEY_ART_URI, uri)
             builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI, uri)
@@ -227,7 +235,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             sess.isActive = true
             Log.d(TAG, "active reason=$reason title=$title")
         } else {
-            Log.d(TAG, "update reason=$reason title=$title album=$album art=$artMediaId")
+            Log.d(TAG, "update reason=$reason title=$title album=$album art=$artMediaId rev=$artRevision")
         }
     }
 
