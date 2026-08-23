@@ -144,11 +144,12 @@ object AaUiHook: AaHook() {
     private val facetBarInjectedTag = Any()
     private val mFacetEnsureHandler = Handler(Looper.getMainLooper())
     /**
-     * Soft reconnect (no USB replug) often rebuilds LayoutInfo before GhFacetBar chrome
-     * is attached; keep a single poll chain across the connect window (no N fixed kicks).
+     * Soft reconnect can rebuild LayoutInfo before GhFacetBar chrome attaches.
+     * Short burst only — late chrome re-arms from LayoutInfo / window attach, not an
+     * 8s blind poll. Collapse/starve must not reset this deadline.
      */
-    private val FACET_ENSURE_WINDOW_MS = 8_000L
-    private val FACET_ENSURE_POLL_MS = 400L
+    private val FACET_ENSURE_WINDOW_MS = 2_000L
+    private val FACET_ENSURE_POLL_MS = 250L
     private val FACET_ENSURE_TOKEN = Any()
     private var mFacetEnsureDeadlineMs = 0L
     private val PROJECTION_CONFIG_KEYS = setOf(
@@ -1657,8 +1658,9 @@ object AaUiHook: AaHook() {
                     "AaUiHook: starve FacetBar VD name=$name ${width}x$height → 1x$height"
                 )
                 // Host (GhostActivity) often rebuilds the leftover gutter after this starve.
+                // One-shot sweep only; do not re-arm the ensure window (LayoutInfo / attach
+                // already cover late chrome).
                 mFacetEnsureHandler.post { reclaimAllWindowGutters("starve-facet") }
-                scheduleEnsureFacetBar("starve-facet")
                 return 1 to height
             }
             return null
@@ -2128,10 +2130,13 @@ object AaUiHook: AaHook() {
     }
 
     private fun scheduleEnsureFacetBar(reason: String) {
-        mFacetEnsureHandler.removeCallbacksAndMessages(FACET_ENSURE_TOKEN)
         val now = SystemClock.uptimeMillis()
-        mFacetEnsureDeadlineMs = now + FACET_ENSURE_WINDOW_MS
-        // One immediate kick; continue via a single poll chain until success or deadline.
+        if (now >= mFacetEnsureDeadlineMs) {
+            mFacetEnsureDeadlineMs = now + FACET_ENSURE_WINDOW_MS
+        }
+        // Immediate kick, but never extend a live window (LayoutInfo storms used to
+        // reset 8s on every ctor).
+        mFacetEnsureHandler.removeCallbacksAndMessages(FACET_ENSURE_TOKEN)
         mFacetEnsureHandler.postAtTime(
             { ensureFacetBarInjected(reason) },
             FACET_ENSURE_TOKEN,
@@ -2152,10 +2157,11 @@ object AaUiHook: AaHook() {
             if (attempted > 0) {
                 logDebug(tagName, "AaUiHook: ensure facet injected [$reason] count=$attempted")
             }
-            // Always sweep every window. Stopping at "FacetBar already tagged" was why the
-            // left nav gutter kept coming back: chrome lives on GhFacetBar, the ~107px
-            // column lives on GhostActivity and is rebuilt after inject.
+            // Sweep every window (chrome is on GhFacetBar; leftover ~107px column is on
+            // GhostActivity). Then stop if inject already landed — attach / LayoutInfo
+            // re-arm if chrome shows up later.
             reclaimAllWindowGutters(reason)
+            if (roots.any { hasInjectedFacet(it) }) return
             val now = SystemClock.uptimeMillis()
             if (now < mFacetEnsureDeadlineMs) {
                 mFacetEnsureHandler.postAtTime(
@@ -2163,9 +2169,7 @@ object AaUiHook: AaHook() {
                     FACET_ENSURE_TOKEN,
                     now + FACET_ENSURE_POLL_MS
                 )
-            } else if (!roots.any { hasInjectedFacet(it) } &&
-                (reason.endsWith("-poll") || reason.indexOf('-') < 0)
-            ) {
+            } else if (reason.endsWith("-poll") || reason.indexOf('-') < 0) {
                 log(
                     tagName,
                     "AaUiHook: ensure facet still missing [$reason] roots=${roots.size} " +
@@ -2294,7 +2298,6 @@ object AaUiHook: AaHook() {
         logDebug(tagName, "AaUiHook: collapse facet rail ($reason)")
         reclaimRailSpace(facetHost)
         reclaimAllWindowGutters("collapse:$reason")
-        scheduleEnsureFacetBar("collapse:$reason")
     }
 
     /**

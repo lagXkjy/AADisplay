@@ -472,7 +472,11 @@ object AaClusterLyricEgressHook : AaHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val song = param.args[0] as? String
                         val artist = param.args[1] as? String
-                        injectShellAlbumArg(param, song, artist)
+                        val fresh = clusterFreshForHu(song, artist) ?: return
+                        // setTitle is swallowed in-place; Gearhead may keep the previous
+                        // song on this push. Always write the current lyric line.
+                        param.args[0] = fresh.title
+                        injectShellAlbumArg(param, fresh)
                     }
                 })
                 log(tagName, "hooked HU metadata push ${method.declaringClass.name}#${method.name}")
@@ -488,27 +492,32 @@ object AaClusterLyricEgressHook : AaHook() {
         return title.toString() == fresh.title
     }
 
-    private fun isClusterShellSong(song: String?, artist: String?): Boolean {
-        if (song.isNullOrEmpty()) return false
-        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return false
-        val fresh = readFreshCached(cr) ?: return false
-        if (song != fresh.title) return false
-        if (artist.isNullOrEmpty() || fresh.subtitle.isEmpty()) return true
-        return artist == fresh.subtitle
+    /**
+     * Cluster shell HU packet. Artist match is enough — song may still be the
+     * previous lyric after [setTitle] is skipped in-place.
+     */
+    private fun clusterFreshForHu(
+        song: String?,
+        artist: String?,
+    ): ClusterLyricStore.Fresh? {
+        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return null
+        val fresh = readFreshCached(cr) ?: return null
+        if (!artist.isNullOrEmpty() && fresh.subtitle.isNotEmpty()) {
+            if (artist == fresh.subtitle) return fresh
+        }
+        if (!song.isNullOrEmpty() && song == fresh.title) return fresh
+        return null
     }
 
     /** Audi cluster shows「未知专辑」when HU album arg is empty — inject from store. */
     private fun injectShellAlbumArg(
         param: XC_MethodHook.MethodHookParam,
-        song: String?,
-        artist: String?,
+        fresh: ClusterLyricStore.Fresh,
     ): String? {
-        if (!isClusterShellSong(song, artist)) return null
         if (param.args.size <= 2) return null
         val current = param.args[2] as? String
         if (!current.isNullOrEmpty()) return current
-        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return null
-        val album = readFreshCached(cr)?.album?.takeIf { it.isNotEmpty() } ?: return null
+        val album = fresh.album.takeIf { it.isNotEmpty() } ?: return null
         param.args[2] = album
         logDebug(tagName, "inject HU album=$album")
         return album

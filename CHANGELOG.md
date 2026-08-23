@@ -7,7 +7,7 @@
 
 ### Changed
 - **仪表歌词 0:00 试验层清理：** 移除已证伪的 GAL skip、playback DexKit 解析、Mirror 方案 C 整秒延迟、壳 lyric-only pre-progress；Egress 仅保留 metadata 注入、`setTitle` 原地、HU album 补全。
-- **仪表歌词时钟试验备忘：** [docs/CLUSTER_LYRIC_CLOCK.md](docs/CLUSTER_LYRIC_CLOCK.md) 含 **v5～v10 真机矩阵**（2026-08-23 奥迪）：歌词须 HU song；v8/v10 Title+进度 OK 仍闪 0:00；事后 push / 方案 C 无效。
+- **仪表歌词时钟试验备忘：** [docs/CLUSTER_LYRIC_CLOCK.md](docs/CLUSTER_LYRIC_CLOCK.md) 含 **v5～v11 真机矩阵**（2026-08-23 奥迪）：歌词须 HU song；v8/v10 Title+进度 OK 仍闪 0:00；v11 HU 歌词+GAL 曲名仍闪，已回滚。回滚后补回 HU `song`=当前句（不改 GAL），避免 `setTitle` 原地拦截后横条停在旧句。
 - **分屏应用选择器加速：** launchable 列表进程内缓存 + 会话预热；图标懒加载；「最近」改用 `LastSplitStore`/occupancy 包名，不再拉完整 `recentTask` Bitmap IPC。
 - **热路径减负（歌词 + 触控）：** 同句歌词跳过 Settings.Global 三写（靠 5s `touch` keepalive）；LRC 按 mediaId+blob 缓存解析，300ms tick 只二分取句；`:cluster` 不再观察 `updated_ms`；`injectInputEvent` 缓存 `InputEvent.setDisplayId` Method。
 - **r11-T→r12 审计收敛：** 去掉试验叠层——重连缩窗仅服务端 `shrink-auto`（删客户端 900/1700ms `lastCreate` bust）；soft-reconnect 同 profile 跳过 VD resize；AutoOpen 梯子收为 `0/1.5/5/12/24s` 且 `REARM_GAP≥末档`，保留 car-connected kick；`AaClusterLyricEgressHook` 仅改写 `aadisplay.cluster:` 壳 MEDIA_ID；歌词 `warmStart` 不再每句触发；Allowlist unknown-sources pref 仅在 pkg-bool 未命中时回退。
@@ -20,9 +20,10 @@
 - **热路径日志降级：** 成功与诊断用 `logDebug`；错误仍 `log`。
 - **MediaCarApp 与 Dashboard UI 拆分：** 保持 MediaCarApp 出站；Dashboard VD starve + Presentation 隐藏保留。
 - **重连分辨率单一结算：** `DisplayProfileSettle` 取代 grow/shrink confirm；有活 FacetBar 条带用 `HU−rail`，否则全宽；450ms rail-settle 重试。
+- **左轨 ensure 窗口收敛：** FacetBar 回收 poll 从 8s/400ms 收为 2s/250ms；inject 成功即停；collapse/starve 只做一次全窗 reclaim，不再把 deadline 续满。晚到 chrome 仍靠 LayoutInfo / `windowAttach` 再武装。
 
 ### Fixed
-- **左侧导航栏黑条重连复发：** FacetBar 窗口一打 tag 就停掉 8s 回收轮询，真正占着 ~107px 的 GhostActivity 宿主从未被扫到。改为对进程内全部窗口持续回收到连接窗口结束。
+- **左侧导航栏黑条重连复发：** FacetBar 窗口一打 tag 就停掉回收，真正占着 ~107px 的 GhostActivity 宿主从未被扫到。改为每次 ensure / attach / collapse / starve 都扫进程内全部窗口；inject 成功即停 poll，晚到 chrome 靠 LayoutInfo / `windowAttach` 再武装。
 - **仪表进度双外推：** 壳 session 写入原始采样 + `positionAtElapsedMs`；Egress `getPlaybackState` 写入已外推位置 + `elapsedRealtime()`；位置不超过 duration。
 - **仪表换句闪 0:00（已知限制）：** 奥迪 HU `song` 变即重置显示；Title/进度正常，无代码层修复。详见 `docs/CLUSTER_LYRIC_CLOCK.md` §5 矩阵。
 - **封面 recycled bitmap：** Egress 解码缓存只丢引用不 `recycle`；session 封面一律 `ARGB_8888` copy。

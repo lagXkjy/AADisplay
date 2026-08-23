@@ -274,6 +274,7 @@ adb install -r aa-display/build/outputs/apk/debug/aa-display-*.apk
   - 拦 HU + GAL strip / setTitle（v5/v6）
   - HU 剥 duration（v7）
   - 进度全丢 / 未观测的方案 B
+  - **v11：HU 歌词 + GAL 原曲名**（仍闪 0:00；身份不听 GAL song）
 
 可选方向（低把握）：
   - 壳 TITLE=稳定曲名、DISPLAY_TITLE=歌词，看 Gearhead 是否用 DISPLAY 填 HU song
@@ -289,6 +290,12 @@ adb install -r aa-display/build/outputs/apk/debug/aa-display-*.apk
 
 **环境：** `0.24#17.4-r12`，Gearhead 17.4，奥迪仪表横条，QQ 车载。  
 **部署：** 改 `ClusterLyricMirror` / 壳 → **重启手机**；改 Egress → `force-stop gearhead`。
+
+### v11 — HU 歌词 + GAL 原曲名（已回滚）
+
+| 做法 | HU `song`=歌词；GAL `song`=QQ/汽水原曲名；GAL duration/封面完整、不 skip |
+| 结果 | 歌词仍滚；换句 **仍闪 0:00** |
+| 推论 | 奥迪切歌/时钟 **不跟 GAL song 是否稳定**；HU `song` 变仍重置。猜想错误，代码已回滚 |
 
 ### v5 — 拦截 HU + GAL MediaInfo
 
