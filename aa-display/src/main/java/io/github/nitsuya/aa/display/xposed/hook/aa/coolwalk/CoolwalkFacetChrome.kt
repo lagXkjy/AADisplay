@@ -1,14 +1,17 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk
 
+import android.content.Context
 import android.os.SystemClock
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.LinearLayout
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.constraintlayout.widget.ConstraintSet
 import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
+import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
@@ -64,13 +67,30 @@ object CoolwalkFacetChrome {
 
     private fun hookFacetWindowAttach(env: CoolwalkHookEnv) {
         try {
-            findMethod(Class.forName("android.view.WindowManagerGlobal")) {
+            val wmGlobalClass = Class.forName("android.view.WindowManagerGlobal")
+            findMethod(wmGlobalClass) {
+                name == "addView" && parameterCount >= 2
+            }.hookBefore { param ->
+                if (!env.canHookFacetBar || env.mInjectingFacetBar) return@hookBefore
+                val attrs = param.args.getOrNull(1) as? WindowManager.LayoutParams ?: return@hookBefore
+                val title = attrs.title?.toString() ?: return@hookBefore
+                if (!CoolwalkRailMath.isRailVirtualDisplayName(title)) return@hookBefore
+                if (attrs.width <= 1) return@hookBefore
+                val fromW = attrs.width
+                attrs.width = 1
+                logDebug(
+                    CoolwalkHookEnv.TAG,
+                    "AaUiHook: clamp facet window addView [$title] $fromW→1",
+                )
+            }
+            findMethod(wmGlobalClass) {
                 name == "addView" && parameterCount >= 1
             }.hookAfter { param ->
                 if (!env.canHookFacetBar || env.mInjectingFacetBar) return@hookAfter
                 val root = param.args[0] as? ViewGroup ?: return@hookAfter
                 root.post {
                     if (!env.canHookFacetBar || env.mInjectingFacetBar) return@post
+                    suppressFacetBarPresentationRoot(env, root, "windowAttach")
                     reclaimLeftGutter(env, root)
                     dispatchGutterReclaim("windowAttach")
                     if (!hasInjectedFacet(env, root) && containsFacetChrome(env, root)) {
@@ -438,13 +458,65 @@ object CoolwalkFacetChrome {
         }
         val roots = collectWindowRootViews()
         var n = 0
+        var suppressed = 0
         for (root in roots) {
             if (!root.isAttachedToWindow) continue
+            if (suppressFacetBarPresentationRoot(env, root, reason)) suppressed++
             reclaimLeftGutter(env, root)
             n++
         }
         if (n > 0) {
-            logDebug(CoolwalkHookEnv.TAG, "AaUiHook: reclaim all gutters [$reason] roots=$n")
+            logDebug(
+                CoolwalkHookEnv.TAG,
+                "AaUiHook: reclaim all gutters [$reason] roots=$n suppressed=$suppressed",
+            )
+        }
+    }
+
+    /**
+     * GhFacetBar runs in :car on its own Presentation VD. Starving the VD to 1×H does not
+     * shrink the 107px window surface; hide it so Coolwalk stops reserving the compositor slot.
+     */
+    private fun suppressFacetBarPresentationRoot(
+        env: CoolwalkHookEnv,
+        root: ViewGroup,
+        reason: String,
+    ): Boolean {
+        val displayName = runCatching { root.display?.name }.getOrNull() ?: return false
+        if (!CoolwalkRailMath.isRailVirtualDisplayName(displayName)) return false
+        val fullW = env.layoutWidthPx().takeIf { it > 0 }
+            ?: CoolwalkRailCoordinator.current().fullHuWidthPx
+        val w = measuredOrLpWidth(root).takeIf { it > 0 }
+            ?: root.resources.displayMetrics.widthPixels
+        val h = measuredOrLpHeight(root).takeIf { it > 0 }
+            ?: root.resources.displayMetrics.heightPixels
+        hideFacetBarPresentationWindow(root)
+        logDebug(
+            CoolwalkHookEnv.TAG,
+            "AaUiHook: suppress FacetBar presentation [$reason] $displayName ${w}x$h",
+        )
+        return true
+    }
+
+    private fun hideFacetBarPresentationWindow(root: View) {
+        root.visibility = View.GONE
+        root.isClickable = false
+        root.isFocusable = false
+        root.isEnabled = false
+        root.alpha = 0f
+        runCatching {
+            val lp = root.layoutParams
+            if (lp is WindowManager.LayoutParams) {
+                lp.width = 0
+                lp.x = 0
+                lp.alpha = 0f
+                val wm = root.context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                wm.updateViewLayout(root, lp)
+            }
+        }
+        val content = (root as? ViewGroup)?.getChildAt(0)
+        if (content != null) {
+            applyZeroWidthGone(env, content, root.layoutParams)
         }
     }
 

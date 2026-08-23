@@ -30,6 +30,10 @@ import io.github.duzhaokun123.template.utils.runMain
 import io.github.qauxv.ui.CommonContextWrapper
 
 class CoreManagerService private constructor() : ICoreManager.Stub() {
+
+    @Volatile
+    private var coolwalkReconnectEpochMs = 0L
+
     companion object {
         const val TAG = "CoreManagerService"
 
@@ -112,6 +116,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 "displayProfile relocked(rail-settle): ${current.width}*${current.height} -> " +
                     "${next.width}*${next.height} rail=$railW full=$fullW"
             )
+            if (next.width > current.width &&
+                DisplayProfileSettle.isContentSlotVsFull(current.width, next.width)
+            ) {
+                instance.notifyCoolwalkFullBleed()
+            }
             mSplitController?.onReconnected(next.width, next.height, next.densityDpi)
         }
 
@@ -124,7 +133,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         }
 
         private fun resolveObservedFullHuWidthPx(reportedWidth: Int, reportedHeight: Int): Int {
-            val snap = CoolwalkRailStore.effectiveSnapshot()
+            val snap = CoolwalkRailStore.effectiveSnapshot(
+                if (hasSystemContext) systemContext.contentResolver else null,
+            )
             val observed = DisplayProfileSettle.observeFullHuWidthPx(
                 systemContext,
                 reportedWidth.coerceAtLeast(1),
@@ -208,6 +219,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                         "${candidate.width}*${candidate.height} " +
                         "reported=${reported.width} rail=$railW full=$fullW"
                 )
+                if (candidate.width > current.width &&
+                    DisplayProfileSettle.isContentSlotVsFull(current.width, candidate.width)
+                ) {
+                    instance.notifyCoolwalkFullBleed()
+                }
             }
             // Rail / starve often lands after the first soft-reconnect create; one retry.
             scheduleRailSettleRetry()
@@ -491,6 +507,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         fullHuWidthPx: Int,
         facetDisplayId: Int,
     ) {
+        if (phase == RailPhase.ReconnectSettling.code) {
+            coolwalkReconnectEpochMs = android.os.SystemClock.uptimeMillis()
+        }
         val snapshot = io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailSnapshot(
             phase = RailPhase.fromCode(phase),
             effectiveRailWidthPx = 0,
@@ -501,15 +520,16 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             lastEvent = "client-report",
         )
         val prevFull = CoolwalkRailStore.serverSnapshot.fullHuWidthPx
-        CoolwalkRailStore.rememberFromReport(snapshot)
+        val cr = if (hasSystemContext) systemContext.contentResolver else null
+        CoolwalkRailStore.rememberFromReport(snapshot, cr)
         val published = if (snapshot.phase == RailPhase.ReconnectSettling && snapshot.fullHuWidthPx <= 0) {
-            CoolwalkRailStore.snapshotWithSession(snapshot)
+            CoolwalkRailStore.snapshotWithSession(snapshot, cr)
         } else {
             snapshot
         }
         CoolwalkRailStore.publishServer(published)
         if (hasSystemContext) {
-            CoolwalkRailStore.write(systemContext.contentResolver, snapshot)
+            CoolwalkRailStore.write(systemContext.contentResolver, published)
         }
         logDebug(
             TAG,
@@ -521,9 +541,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     override fun getCoolwalkRailSnapshot(): IntArray {
-        val s = CoolwalkRailStore.effectiveSnapshot()
+        val s = CoolwalkRailStore.effectiveSnapshot(if (hasSystemContext) systemContext.contentResolver else null)
         return intArrayOf(s.phase.code, s.touchRailWidthPx, s.fullHuWidthPx, s.facetDisplayId)
     }
+
+    override fun getCoolwalkReconnectEpochMs(): Long = coolwalkReconnectEpochMs
 
     override fun notifyCoolwalkFullBleed() {
         mSessionPolicy?.sendCoolwalkFullBleedBroadcast()

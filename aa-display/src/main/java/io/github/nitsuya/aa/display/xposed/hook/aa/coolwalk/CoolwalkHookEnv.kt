@@ -29,6 +29,7 @@ class CoolwalkHookEnv {
     @Volatile var hasVerticalRailField: Field? = null
     @Volatile var layoutResourceIdField: Field? = null
     var contentBoundsMethods: List<Method> = emptyList()
+    var facetBarSurfaceMethods: List<Method> = emptyList()
     var huTouchDispatchMethod: Method? = null
 
     @Volatile var mRailHostDownTime = 0L
@@ -228,6 +229,7 @@ class CoolwalkHookEnv {
         const val FACET_ENSURE_POLL_MS = 250L
         val FACET_ENSURE_TOKEN = Any()
         val AUTO_OPEN_TOKEN = Any()
+        val FULL_BLEED_RELAUNCH_TOKEN = Any()
         const val AUTO_OPEN_REARM_GAP_MS = 24_000L
 
         val PROJECTION_CONFIG_KEYS = setOf(

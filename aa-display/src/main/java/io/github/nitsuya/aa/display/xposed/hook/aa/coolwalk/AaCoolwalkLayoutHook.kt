@@ -119,16 +119,38 @@ object AaCoolwalkLayoutHook {
      * content_bounds reclaim zeroed the compositor slot. hasVerticalRail stays true.
      */
     private fun widenLayoutInfoToFullHu(env: CoolwalkHookEnv, args: Array<Any?>) {
-        val w = args[1] as? Int ?: return
-        if (w <= 0) return
+        val rawW = args[1] as? Int ?: return
+        if (rawW <= 0) return
+        val h = (args[2] as? Int)?.takeIf { it > 0 } ?: env.mLayoutHeightDp
+        CoolwalkRailCoordinator.syncExternalTruth()
         CoolwalkRailCoordinator.maybeBeginReconnectIfNeeded("layoutInfo:pre-widen")
-        val target = CoolwalkRailMath.targetPresentationWidthPx(CoolwalkRailCoordinator.current(), w)
-        if (target <= w) return
+        val snap = CoolwalkRailCoordinator.current()
+        val rail = snap.touchRailWidthPx
+        val sessionH = snap.layoutHeightPx.takeIf { it > 0 } ?: h
+        val anchor = CoolwalkRailCoordinator.resolveAnchorFullHuWidth(rawW, h, rail)
+        val fullHu = CoolwalkRailMath.pickConnectionFullHuWidth(anchor, sessionH, rawW, h, rail)
+        val snapForResolve = snap.copy(fullHuWidthPx = fullHu)
+        val target = CoolwalkRailMath.resolveLayoutCanvasTargetPx(snapForResolve, rawW, h)
+        if (target <= rawW) return
         args[1] = target
         env.mLayoutWidthDp = target
         logDebug(
             CoolwalkHookEnv.TAG,
-            "AaUiHook: widen LayoutInfo canvas ${w}→$target (hasVerticalRail kept)",
+            "AaUiHook: widen LayoutInfo canvas ${rawW}→$target (hasVerticalRail kept)",
+        )
+    }
+
+    /** After content_bounds reclaim when LayoutInfo ctor already ran at transient width. */
+    fun recheckPresentationCanvas(env: CoolwalkHookEnv, reason: String) {
+        val snap = CoolwalkRailCoordinator.current()
+        val h = snap.layoutHeightPx.takeIf { it > 0 } ?: env.mLayoutHeightDp
+        val contentW = snap.layoutWidthPx.coerceAtLeast(env.mLayoutWidthDp)
+        val target = CoolwalkRailMath.resolveLayoutCanvasTargetPx(snap, contentW, h)
+        if (target <= contentW) return
+        env.mLayoutWidthDp = target
+        logDebug(
+            CoolwalkHookEnv.TAG,
+            "AaUiHook: post-reclaim canvas widen ${contentW}→$target ($reason)",
         )
     }
 

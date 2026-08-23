@@ -101,7 +101,7 @@ object CoolwalkDrawingSpecWiden {
 
     private fun resolveTargetWidthAaDisplay(width: Int, height: Int): Int {
         val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return width
-        val snap = CoolwalkRailStore.snapshotWithSession(CoolwalkRailStore.read(cr))
+        val snap = CoolwalkRailStore.snapshotWithSession(CoolwalkRailStore.read(cr), cr)
         return resolveTargetWidth(width, snap)
     }
 

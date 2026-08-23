@@ -42,6 +42,15 @@ object CoolwalkRailMath {
     }
 
     /**
+     * True when [gap] between anchor full HU and a narrower LayoutInfo width looks like a
+     * transient compositor slot (~≤30% of anchor), not a genuinely smaller head unit.
+     */
+    internal fun isStaleLayoutInfoWidthGap(gap: Int, anchorFull: Int): Boolean {
+        if (gap <= 2 || anchorFull <= 0) return false
+        return gap <= (anchorFull * 0.30f).roundToInt()
+    }
+
+    /**
      * Prefer a smaller HU width when the larger one is the smaller plus 1–3 rail strips
      * (runaway +rail inflation). Otherwise keep the max (real HU grew **in this session**).
      * Do not use this across connections — different cars are not +rail siblings.
@@ -99,6 +108,24 @@ object CoolwalkRailMath {
         if (measured <= 0) return session
         if (session <= 0) return measured
         if (!isSameHuGeometry(session, sessionHeight, measured, measuredH, railWidthPx)) {
+            // Cross-geometry: width shrank but height grew — leaked slot, not a rail trim or new HU.
+            if (session > measured &&
+                sessionHeight > 0 && measuredH > 0 &&
+                abs(sessionHeight - measuredH) > 8 &&
+                measured < session &&
+                measuredH > sessionHeight + 8
+            ) {
+                return session
+            }
+            // Same HU height but width shrank without a single-rail gap — stale LayoutInfo slot.
+            if (session > measured &&
+                sessionHeight > 0 && measuredH > 0 &&
+                abs(sessionHeight - measuredH) <= 8 &&
+                !isPlausibleRailGap(session - measured, session, railWidthPx) &&
+                isStaleLayoutInfoWidthGap(session - measured, session)
+            ) {
+                return session
+            }
             return measured
         }
         if (session > measured && isPlausibleRailGap(session - measured, session, railWidthPx)) {
@@ -216,9 +243,15 @@ object CoolwalkRailMath {
                 formBMatches -> maxOf(formB, layoutW, observedFull)
                 else -> formA
             }
-            if (left <= 0 && abs(right - target) <= 2) return null
-            if (target > contentW + 2) {
-                return ExpandedBounds(target, fullH, left)
+            val snappedTarget = snapExpandedTargetToObservedFull(
+                target,
+                left,
+                right,
+                observedFull,
+            )
+            if (left <= 0 && abs(right - snappedTarget) <= 2) return null
+            if (snappedTarget > contentW + 2) {
+                return ExpandedBounds(snappedTarget, fullH, left)
             }
             return null
         }
@@ -238,6 +271,64 @@ object CoolwalkRailMath {
             }
         }
         return null
+    }
+
+    /**
+     * LayoutInfo / presentation canvas target after facet reclaim.
+     * Widens stale LayoutInfo shrink during reconnect settle, and after this session's
+     * content_bounds reclaim even when no second LayoutInfo ctor runs.
+     */
+    fun resolveLayoutCanvasTargetPx(snapshot: RailSnapshot, contentWidth: Int, heightPx: Int): Int {
+        val w = contentWidth.coerceAtLeast(0)
+        val sessionH = snapshot.layoutHeightPx.takeIf { it > 0 } ?: heightPx
+        val full = pickConnectionFullHuWidth(
+            snapshot.fullHuWidthPx,
+            sessionH,
+            w,
+            heightPx,
+            snapshot.touchRailWidthPx,
+        ).coerceAtLeast(w)
+        if (w <= 0 || full <= w + 2) return w.coerceAtLeast(1)
+        val gap = full - w
+        // Stale LayoutInfo shrink on the same HU height — not a rail-trimmed content slot.
+        if (gap > 2 &&
+            abs(sessionH - heightPx) <= 8 &&
+            !isPlausibleRailGap(gap, full, snapshot.touchRailWidthPx) &&
+            isStaleLayoutInfoWidthGap(gap, full)
+        ) {
+            return full
+        }
+        if (snapshot.effectiveRailWidthPx > 1) return w
+        when (snapshot.phase) {
+            RailPhase.Reclaiming,
+            RailPhase.FullBleed,
+            -> return full
+            RailPhase.ReconnectSettling -> {
+                if (snapshot.fullBleedStableCount > 0) return full
+            }
+            else -> Unit
+        }
+        if (snapshot.fullBleedStableCount > 0 &&
+            snapshot.phase != RailPhase.ReconnectSettling &&
+            isPlausibleRailGap(full - w, full, snapshot.touchRailWidthPx)
+        ) {
+            return full
+        }
+        return w
+    }
+
+    internal fun snapExpandedTargetToObservedFull(
+        target: Int,
+        left: Int,
+        right: Int,
+        observedFull: Int,
+        tolerancePx: Int = 32,
+    ): Int {
+        if (observedFull <= 0 || target >= observedFull) return target
+        val formB = right + left
+        if (abs(formB - observedFull) <= tolerancePx) return observedFull
+        if (left > 0 && abs(target + left - observedFull) <= tolerancePx) return observedFull
+        return target
     }
 
     fun applyExpandedContentBounds(
@@ -274,15 +365,7 @@ object CoolwalkRailMath {
      * content_bounds reclaim already zeroed the compositor rail slot.
      */
     fun targetPresentationWidthPx(snapshot: RailSnapshot, contentWidth: Int): Int {
-        val w = contentWidth.coerceAtLeast(0)
-        val full = snapshot.fullHuWidthPx
-        if (w <= 0 || full <= w + 2) return w.coerceAtLeast(1)
-        if (snapshot.effectiveRailWidthPx > 1) return w
-        val reclaimed = snapshot.fullBleedStableCount > 0 &&
-            snapshot.phase != RailPhase.ReconnectSettling
-        if (!reclaimed) return w
-        if (!isPlausibleRailGap(full - w, full, snapshot.touchRailWidthPx)) return w
-        return full
+        return resolveLayoutCanvasTargetPx(snapshot, contentWidth, snapshot.layoutHeightPx)
     }
 
     fun railHitWidthPx(snapshot: RailSnapshot): Int {

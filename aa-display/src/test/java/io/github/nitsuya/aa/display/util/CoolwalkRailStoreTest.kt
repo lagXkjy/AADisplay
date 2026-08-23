@@ -80,6 +80,38 @@ class CoolwalkRailStoreTest {
     }
 
     @Test
+    fun snapshot_with_session_restores_audi_geometry_over_stale_1280() {
+        CoolwalkRailStore.rememberFromReport(
+            RailSnapshot(phase = RailPhase.FullBleed, touchRailWidthPx = 107, fullHuWidthPx = 1412),
+        )
+        val live = RailSnapshot(
+            phase = RailPhase.Reclaiming,
+            touchRailWidthPx = 107,
+            fullHuWidthPx = 1280,
+            layoutHeightPx = 720,
+        )
+        val merged = CoolwalkRailStore.snapshotWithSession(live)
+        assertEquals(1412, merged.fullHuWidthPx)
+        assertEquals(107, merged.touchRailWidthPx)
+        assertEquals(RailPhase.Reclaiming, merged.phase)
+    }
+
+    @Test
+    fun snapshot_with_session_restores_800_over_transient_600_from_persisted() {
+        CoolwalkRailStore.rememberFromReport(
+            RailSnapshot(phase = RailPhase.FullBleed, touchRailWidthPx = 107, fullHuWidthPx = 800),
+        )
+        val live = RailSnapshot(
+            phase = RailPhase.ReconnectSettling,
+            touchRailWidthPx = 107,
+            fullHuWidthPx = 600,
+            layoutHeightPx = 480,
+        )
+        val merged = CoolwalkRailStore.snapshotWithSession(live)
+        assertEquals(800, merged.fullHuWidthPx)
+    }
+
+    @Test
     fun effective_snapshot_matches_session_merge() {
         CoolwalkRailStore.rememberFromReport(
             RailSnapshot(phase = RailPhase.FullBleed, touchRailWidthPx = 107, fullHuWidthPx = 1280),

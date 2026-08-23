@@ -97,6 +97,9 @@ interface ICoreManager {
      */
     int[] getCoolwalkRailSnapshot();
 
+    /** [SystemClock.uptimeMillis] of the latest gearhead soft reconnect; 0 if none. */
+    long getCoolwalkReconnectEpochMs();
+
     /**
      * system_server → AADisplay: gearhead cannot reliably deliver package-targeted
      * broadcasts on Android 13+; relay through system uid like [ACTION_REQUEST_DISPLAY_RECOVERY].

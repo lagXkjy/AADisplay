@@ -9,6 +9,7 @@ import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.AaCoolwalkHuTouchHoo
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.AaCoolwalkLayoutHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.AaCoolwalkProjectionHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkDrawingSpecWiden
+import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkFacetBarSurfaceHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkFacetChrome
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkHookEnv
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -21,6 +22,7 @@ object AaUiHook : AaHook() {
     override val usesDexKit: Boolean = true
 
     private const val CACHE_CONTENT_BOUNDS = "hook.AaUiHook.content_bounds"
+    private const val CACHE_FACET_SURFACE = "hook.AaUiHook.facet_surface"
     private const val CACHE_HU_TOUCH = "hook.AaUiHook.hu_touch"
     private const val CACHE_LAYOUT_INFO = "hook.AaUiHook.layout_info_class"
 
@@ -36,6 +38,10 @@ object AaUiHook : AaHook() {
     ): Boolean {
         val contentRefs = cache.getRefs(CACHE_CONTENT_BOUNDS) ?: return false
         env.contentBoundsMethods = cache.resolveAll(lpparam.classLoader, contentRefs) ?: return false
+        env.facetBarSurfaceMethods = cache.getRefs(CACHE_FACET_SURFACE)?.let { refs ->
+            cache.resolveAll(lpparam.classLoader, refs)
+        } ?: return false
+        if (env.facetBarSurfaceMethods.isEmpty()) return false
         if (!cache.hasKey(CACHE_HU_TOUCH)) return false
         env.huTouchDispatchMethod = cache.getRef(CACHE_HU_TOUCH)?.let { ref ->
             cache.resolve(lpparam.classLoader, ref) ?: return false
@@ -76,6 +82,7 @@ object AaUiHook : AaHook() {
         lpparam: XC_LoadPackage.LoadPackageParam,
     ) {
         cache.putRefs(CACHE_CONTENT_BOUNDS, env.contentBoundsMethods)
+        cache.putRefs(CACHE_FACET_SURFACE, env.facetBarSurfaceMethods)
         cache.putRef(CACHE_HU_TOUCH, env.huTouchDispatchMethod)
         if (lpparam.processName != processCar && env.layoutInfoConstructors.isNotEmpty()) {
             cache.putString(CACHE_LAYOUT_INFO, env.layoutInfoConstructors[0].declaringClass.name)
@@ -130,6 +137,28 @@ object AaUiHook : AaHook() {
             null
         }
 
+        env.facetBarSurfaceMethods = try {
+            val byWidth = bridge.findMethod {
+                matcher { usingStrings("onWindowSurfaceAvailable width:") }
+            }
+            val byDims = bridge.findMethod {
+                matcher { usingStrings("onWindowSurfaceAvailable dimensions:") }
+            }
+            (byWidth + byDims).mapNotNull { md ->
+                runCatching { md.getMethodInstance(lpparam.classLoader) }.getOrNull()
+            }.distinctBy { "${it.declaringClass.name}#${it.name}#${it.parameterTypes.joinToString { p -> p.name }}" }
+                .also { list ->
+                    log(
+                        tagName,
+                        "AaUiHook: facet-bar surface methods=${list.size} " +
+                            list.map { "${it.declaringClass.name}#${it.name}" },
+                    )
+                }
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: DexKit facet-bar surface methods failed", e)
+            emptyList()
+        }
+
         env.startMethod = env.resolveCarStartActivityMethod()
 
         if (lpparam.processName == processCar) {
@@ -159,11 +188,16 @@ object AaUiHook : AaHook() {
     override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
         env.loadProjectionResources()
         CoolwalkDrawingSpecWiden.installGearhead(lpparam.classLoader)
+        CoolwalkFacetBarSurfaceHook.install(env)
         AaCoolwalkProjectionHook.install(env)
         if (lpparam.processName == processCar) {
             AaCoolwalkLayoutHook.installRailWidthDimens(env)
             AaCoolwalkCompositorHook.install(env)
+            if (env.canHookFacetBar) {
+                CoolwalkFacetChrome.install(env)
+            }
             AaCoolwalkHuTouchHook.install(env, lpparam)
+            logDebug(tagName, "AaUiHook: Coolwalk hooks installed (:car)")
             return
         }
         AaCoolwalkLayoutHook.install(env)

@@ -10,11 +10,18 @@ import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import com.github.kyuubiran.ezxhelper.utils.loadClass
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.DisplayProfileSettle
 import io.github.nitsuya.aa.display.xposed.CoreManager
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
+import kotlin.math.abs
 
 object AaCoolwalkProjectionHook {
+
+    @Volatile
+    private var lastSlotRelaunchUptimeMs = -1L
+
+    private const val SLOT_RELAUNCH_DEBOUNCE_MS = 2_000L
 
     fun install(env: CoolwalkHookEnv) {
         CoolwalkRailCoordinator.syncExternalTruth()
@@ -305,11 +312,19 @@ object AaCoolwalkProjectionHook {
             CoolwalkRailCoordinator.observedRailWidthPx(),
         ) ?: return null
         CoolwalkRailCoordinator.rememberFullHuSize(expanded.targetWidthPx, expanded.targetHeightPx)
-        val alreadyReclaimed = snapBefore.fullHuWidthPx == expanded.targetWidthPx &&
+        val incomingAlreadyFullBleed = before.left <= 0 &&
+            abs(before.width() - expanded.targetWidthPx) <= 2
+        val needsPresentationWiden = before.left <= 0 &&
+            expanded.targetWidthPx > before.width() + 2 &&
+            DisplayProfileSettle.isContentSlotVsFull(before.width(), expanded.targetWidthPx)
+        val coordinatorReclaimed = snapBefore.fullHuWidthPx == expanded.targetWidthPx &&
             snapBefore.effectiveRailWidthPx == 0 &&
             snapBefore.phase != RailPhase.ReconnectSettling &&
-            snapBefore.phase != RailPhase.Bootstrapping
-        if (!alreadyReclaimed) {
+            snapBefore.phase != RailPhase.Bootstrapping &&
+            !CoolwalkRailCoordinator.recentReconnectReclaim()
+        val skipReclaimDispatch = coordinatorReclaimed &&
+            (incomingAlreadyFullBleed || needsPresentationWiden)
+        if (!skipReclaimDispatch) {
             val actions = CoolwalkRailCoordinator.onEvent(
                 RailEvent.ContentBoundsExpanded(
                     expanded.targetWidthPx,
@@ -322,10 +337,11 @@ object AaCoolwalkProjectionHook {
         }
         env.mLayoutWidthDp = kotlin.math.max(env.mLayoutWidthDp, expanded.targetWidthPx)
         env.mLayoutHeightDp = kotlin.math.max(env.mLayoutHeightDp, expanded.targetHeightPx)
+        AaCoolwalkLayoutHook.recheckPresentationCanvas(env, "content_bounds")
         env.logProjectionConfigRewriteOnce(
             "AaUiHook: content_bounds expanded $before→$rect layout=${expanded.targetWidthPx}x${expanded.targetHeightPx}",
         )
-        if (!alreadyReclaimed) {
+        if (!skipReclaimDispatch) {
             notifyAaUiFullBleed()
             if (env.mAaDisplayShownThisSession && expanded.railWidthPx > 0) {
                 AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(env, "content_bounds")
@@ -334,6 +350,22 @@ object AaCoolwalkProjectionHook {
             }
             env.mFacetEnsureHandler.post {
                 CoolwalkFacetChrome.reclaimAllWindowGutters("content_bounds-post")
+            }
+        } else if (needsPresentationWiden) {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (lastSlotRelaunchUptimeMs < 0L ||
+                now - lastSlotRelaunchUptimeMs >= SLOT_RELAUNCH_DEBOUNCE_MS
+            ) {
+                lastSlotRelaunchUptimeMs = now
+                notifyAaUiFullBleed()
+                if (env.mAaDisplayShownThisSession) {
+                    AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(env, "content_bounds-slot")
+                } else {
+                    AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "content_bounds-slot")
+                }
+                env.mFacetEnsureHandler.post {
+                    CoolwalkFacetChrome.reclaimAllWindowGutters("content_bounds-slot")
+                }
             }
         }
         return rect

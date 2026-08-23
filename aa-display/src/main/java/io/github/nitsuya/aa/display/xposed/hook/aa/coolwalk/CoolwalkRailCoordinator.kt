@@ -82,7 +82,11 @@ object CoolwalkRailCoordinator {
         if (snap.fullHuWidthPx <= 0 && snap.phase == RailPhase.Bootstrapping) return false
         if (snap.phase == RailPhase.ReconnectSettling) return false
         // Mid-reclaim on this connection — do not wipe live content_bounds progress.
-        if (snap.phase == RailPhase.Reclaiming && snap.fullBleedStableCount > 0) return false
+        if (snap.phase == RailPhase.Reclaiming && snap.fullBleedStableCount > 0 &&
+            sessionGapMs <= PROJECTION_SESSION_GAP_MS
+        ) {
+            return false
+        }
         // Same-session rail republication — not a reconnect reset.
         if (snap.phase == RailPhase.RailPresent && sessionGapMs <= PROJECTION_SESSION_GAP_MS) return false
         val actions = onEvent(RailEvent.ReconnectStarted(reason)).second
@@ -110,17 +114,24 @@ object CoolwalkRailCoordinator {
         val actions = mutableListOf<RailAction>()
         when (event) {
             is RailEvent.LayoutInfo -> {
-                val picked = CoolwalkRailMath.pickConnectionFullHuWidth(
+                syncExternalTruth()
+                val anchorFull = resolveAnchorFullHuWidth(
                     next.fullHuWidthPx,
-                    next.layoutHeightPx,
+                    next.layoutHeightPx.coerceAtLeast(event.heightPx),
+                    next.touchRailWidthPx,
+                )
+                val picked = CoolwalkRailMath.pickConnectionFullHuWidth(
+                    anchorFull,
+                    next.layoutHeightPx.coerceAtLeast(event.heightPx),
                     event.widthPx,
                     event.heightPx,
                     next.touchRailWidthPx,
                 )
+                val resolvedFull = picked
                 next = next.copy(
                     layoutWidthPx = event.widthPx,
                     layoutHeightPx = event.heightPx,
-                    fullHuWidthPx = picked,
+                    fullHuWidthPx = resolvedFull,
                     lastEvent = event.reason,
                     updatedUptimeMs = now,
                 )
@@ -207,6 +218,8 @@ object CoolwalkRailCoordinator {
             is RailEvent.ReconnectStarted -> {
                 // Drop previous connection's HU; the next LayoutInfo / content_bounds
                 // is the only truth for this session (cars and resolutions vary).
+                val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull()
+                CoolwalkRailStore.markReconnectEpoch(cr)
                 next = RailSnapshot(
                     phase = RailPhase.ReconnectSettling,
                     lastEvent = event.reason,
@@ -266,6 +279,28 @@ object CoolwalkRailCoordinator {
         return CoolwalkRailMath.pickConnectionFullHuWidth(localFull, localH, externalFull, localH, rail)
     }
 
+    /**
+     * Merge session / IPC / Settings into a single anchor before LayoutInfo or content_bounds
+     * can shrink this connection's HU width (e.g. transient 600 on 800×480 reconnect).
+     */
+    internal fun resolveAnchorFullHuWidth(localFull: Int, localH: Int, railPx: Int): Int {
+        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull()
+        var anchor = localFull.coerceAtLeast(0)
+        CoolwalkRailStore.resolvedSession(cr)?.fullHuWidthPx?.takeIf { it > 0 }?.let { sessionFull ->
+            anchor = CoolwalkRailMath.pickConnectionFullHuWidth(
+                anchor,
+                localH,
+                sessionFull,
+                localH,
+                maxOf(railPx, CoolwalkRailStore.resolvedSession(cr)?.touchRailWidthPx ?: 0),
+            )
+        }
+        CoreManager.tryGetCoolwalkRailSnapshot()?.getOrNull(2)?.takeIf { it > 0 }?.let { ipcFull ->
+            anchor = CoolwalkRailMath.pickConnectionFullHuWidth(anchor, localH, ipcFull, localH, railPx)
+        }
+        return anchor
+    }
+
     /** Merge server IPC + Settings.Global so :car can expand before :projection LayoutInfo. */
     fun syncExternalTruth(cr: ContentResolver? = null) {
         val resolver = cr ?: runCatching { InitFields.appContext.contentResolver }.getOrNull()
@@ -286,6 +321,20 @@ object CoolwalkRailCoordinator {
         }
         val ipc = CoreManager.tryGetCoolwalkRailSnapshot()
         if (ipc != null && ipc.size >= 4) {
+            val ipcPhase = RailPhase.fromCode(ipc[0])
+            if (ipcPhase == RailPhase.ReconnectSettling &&
+                snapshot.phase != RailPhase.ReconnectSettling &&
+                snapshot.phase != RailPhase.Bootstrapping
+            ) {
+                snapshot = RailSnapshot(
+                    phase = RailPhase.ReconnectSettling,
+                    touchRailWidthPx = maxOf(snapshot.touchRailWidthPx, ipc[1]),
+                    facetDisplayId = ipc[3].takeIf { it != Display.INVALID_DISPLAY } ?: snapshot.facetDisplayId,
+                    lastEvent = "ipc-reconnect",
+                    updatedUptimeMs = SystemClock.uptimeMillis(),
+                )
+                lastReconnectReclaimUptimeMs = SystemClock.uptimeMillis()
+            }
             mergedFull = absorbExternalFullHu(mergedFull, mergedLayoutH, ipc[2], railForMerge)
             if (ipc[1] > mergedTouch) mergedTouch = ipc[1]
         }
@@ -306,7 +355,19 @@ object CoolwalkRailCoordinator {
     /** Local coordinator state merged with system_server session cache (IPC). */
     fun effectiveSnapshot(): RailSnapshot {
         syncExternalTruth()
-        return snapshot
+        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull()
+        return CoolwalkRailStore.snapshotWithSession(snapshot, cr)
+    }
+
+    /** True when a soft-reconnect reclaim ran recently — content_bounds must not idempotent-skip. */
+    fun recentReconnectReclaim(windowMs: Long = 30_000L): Boolean {
+        val now = SystemClock.uptimeMillis()
+        val t = lastReconnectReclaimUptimeMs
+        if (t >= 0L && now - t < windowMs) return true
+        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull()
+        if (CoolwalkRailStore.isRecentReconnectEpoch(cr, windowMs)) return true
+        val ipcEpoch = CoreManager.tryGetCoolwalkReconnectEpochMs()
+        return ipcEpoch > 0L && now - ipcEpoch < windowMs
     }
 
     fun bestObservedFullHuWidthPx(): Int = effectiveSnapshot().fullHuWidthPx
@@ -413,7 +474,10 @@ object CoolwalkRailCoordinator {
         }
     }
 
-    fun serverSnapshotForSettle(): RailSnapshot = CoolwalkRailStore.effectiveSnapshot()
+    fun serverSnapshotForSettle(): RailSnapshot {
+        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull()
+        return CoolwalkRailStore.effectiveSnapshot(cr)
+    }
 
     /** system_server may publish ReconnectSettling with cleared HU; IPC carries session merge. */
     private fun resolveServerSnapshot(server: RailSnapshot): RailSnapshot {

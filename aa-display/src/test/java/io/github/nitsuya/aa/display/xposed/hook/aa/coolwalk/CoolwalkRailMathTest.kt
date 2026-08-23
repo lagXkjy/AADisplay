@@ -3,8 +3,10 @@ package io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk
 import io.github.nitsuya.aa.display.util.CoolwalkRailStore
 import io.github.nitsuya.aa.display.util.DisplayProfileSettle
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -109,6 +111,103 @@ class CoolwalkRailMathTest {
         assertNotNull(expanded)
         assertEquals(1412, expanded!!.targetWidthPx)
         assertEquals(107, expanded.railWidthPx)
+    }
+
+    @Test
+    fun expand_audi_stale_1280_slot_with_observed_1412() {
+        val expanded = CoolwalkRailMath.computeExpandedContentBounds(
+            left = 107, top = 0, right = 1280, bottom = 720,
+            layoutWidthPx = 1280, layoutHeightPx = 720,
+            observedFullHuWidthPx = 1412,
+        )
+        assertNotNull(expanded)
+        assertEquals(1412, expanded!!.targetWidthPx)
+        assertEquals(107, expanded.railWidthPx)
+    }
+
+    @Test
+    fun pick_connection_rejects_stale_shrunk_width_over_session() {
+        assertEquals(
+            800,
+            CoolwalkRailMath.pickConnectionFullHuWidth(
+                sessionFull = 800, sessionHeight = 480,
+                measuredW = 600, measuredH = 480, railWidthPx = 107,
+            ),
+        )
+    }
+
+    @Test
+    fun pick_connection_rejects_stale_cross_geometry_measurement() {
+        assertEquals(
+            1412,
+            CoolwalkRailMath.pickConnectionFullHuWidth(
+                sessionFull = 1412, sessionHeight = 654,
+                measuredW = 1280, measuredH = 720, railWidthPx = 107,
+            ),
+        )
+    }
+
+    @Test
+    fun resolve_layout_canvas_widens_stale_shrink_not_rail_gap() {
+        val snap = RailSnapshot(
+            phase = RailPhase.ReconnectSettling,
+            fullHuWidthPx = 800,
+            layoutWidthPx = 600,
+            layoutHeightPx = 480,
+            touchRailWidthPx = 107,
+        )
+        assertEquals(800, CoolwalkRailMath.resolveLayoutCanvasTargetPx(snap, 600, 480))
+    }
+
+    @Test
+    fun resolve_layout_canvas_widens_stale_shrink_even_with_live_rail() {
+        val snap = RailSnapshot(
+            phase = RailPhase.ReconnectSettling,
+            fullHuWidthPx = 1280,
+            layoutWidthPx = 961,
+            layoutHeightPx = 720,
+            touchRailWidthPx = 107,
+            effectiveRailWidthPx = 107,
+        )
+        assertEquals(1280, CoolwalkRailMath.resolveLayoutCanvasTargetPx(snap, 961, 720))
+    }
+
+    @Test
+    fun resolve_layout_canvas_keeps_width_when_hu_geometry_changed() {
+        val snap = RailSnapshot(
+            phase = RailPhase.ReconnectSettling,
+            fullHuWidthPx = 1280,
+            layoutHeightPx = 720,
+            touchRailWidthPx = 107,
+        )
+        assertEquals(800, CoolwalkRailMath.resolveLayoutCanvasTargetPx(snap, 800, 480))
+    }
+
+    @Test
+    fun pick_connection_keeps_measured_when_session_width_is_different_hu() {
+        assertEquals(
+            800,
+            CoolwalkRailMath.pickConnectionFullHuWidth(
+                sessionFull = 1280, sessionHeight = 480,
+                measuredW = 800, measuredH = 480, railWidthPx = 107,
+            ),
+        )
+    }
+
+    @Test
+    fun reconnect_starts_after_long_gap_even_when_reclaiming_stable() {
+        repeat(3) {
+            CoolwalkRailCoordinator.onEvent(
+                RailEvent.ContentBoundsExpanded(800, 480, 107, "stable"),
+            )
+        }
+        assertEquals(RailPhase.FullBleed, CoolwalkRailCoordinator.current().phase)
+        val t = maxOf(android.os.SystemClock.uptimeMillis(), 10_000L)
+        CoolwalkRailCoordinator.setLastProjectionConfigUptimeForTests(t - 10_000L)
+        CoolwalkRailCoordinator.resetReconnectReclaimDebounceForTests()
+        val signal = CoolwalkRailCoordinator.onProjectionConfigSignal("long-gap", syncExternal = false)
+        assertEquals(true, signal.reconnectStarted)
+        assertEquals(RailPhase.ReconnectSettling, CoolwalkRailCoordinator.current().phase)
     }
 
     @Test
@@ -269,6 +368,19 @@ class CoolwalkRailMathTest {
             touchRailWidthPx = 107,
         )
         assertEquals(1173, CoolwalkRailMath.targetPresentationWidthPx(snap, 1173))
+    }
+
+    @Test
+    fun resolve_layout_canvas_widens_after_content_bounds_on_reconnect() {
+        val snap = RailSnapshot(
+            phase = RailPhase.ReconnectSettling,
+            fullHuWidthPx = 800,
+            layoutWidthPx = 693,
+            layoutHeightPx = 480,
+            touchRailWidthPx = 107,
+            fullBleedStableCount = 1,
+        )
+        assertEquals(800, CoolwalkRailMath.resolveLayoutCanvasTargetPx(snap, 693, 480))
     }
 
     @Test

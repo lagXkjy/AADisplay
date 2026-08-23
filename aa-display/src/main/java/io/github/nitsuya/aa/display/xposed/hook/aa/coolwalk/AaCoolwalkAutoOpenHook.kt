@@ -70,14 +70,20 @@ object AaCoolwalkAutoOpenHook {
      */
     fun scheduleFullBleedRelaunch(env: CoolwalkHookEnv, reason: String) {
         if (env.startMethod == null) return
+        if (!env.mAaDisplayShownThisSession) {
+            logDebug(CoolwalkHookEnv.TAG, "AaUiHook: full-bleed relaunch ($reason) → AutoOpen (not shown)")
+            scheduleAutoOpenIfNeeded(env, reason)
+            return
+        }
         env.mAaDisplayShownThisSession = false
         env.mAutoOpenArmed = true
-        env.mFacetEnsureHandler.removeCallbacksAndMessages(CoolwalkHookEnv.AUTO_OPEN_TOKEN)
+        env.mFacetEnsureHandler.removeCallbacksAndMessages(CoolwalkHookEnv.FULL_BLEED_RELAUNCH_TOKEN)
         logDebug(CoolwalkHookEnv.TAG, "AaUiHook: full-bleed relaunch ($reason)")
         for (delayMs in longArrayOf(0L, 400L, 1500L)) {
-            env.mFacetEnsureHandler.postDelayed(
+            env.mFacetEnsureHandler.postAtTime(
                 { tryAutoOpenAaDisplay(env, -2L) },
-                delayMs,
+                CoolwalkHookEnv.FULL_BLEED_RELAUNCH_TOKEN,
+                android.os.SystemClock.uptimeMillis() + delayMs,
             )
         }
     }

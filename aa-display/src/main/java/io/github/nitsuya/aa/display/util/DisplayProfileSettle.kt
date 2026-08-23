@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.util
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.view.Display
+import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailPhase
 import kotlin.math.abs
 
 /**
@@ -112,10 +113,9 @@ internal object DisplayProfileSettle {
         val full = fullHuWidthPx.coerceAtLeast(reported.width).coerceAtLeast(1)
         if (railWidthPx <= 1) {
             // FacetBar starved, but CarActivity presentation may still be HU−rail.
-            // Inflating split VDs to full HU then letterboxes inside the smaller
-            // presentation (and resizing that VD blacks the HU). Stay with reported
-            // until presentation itself is full-bleed.
-            if (isContentSlotVsFull(reported.width, full)) {
+            // After content_bounds reclaim is visible in the server snapshot, settle to
+            // full HU so split VDs are not stuck at 693 while the compositor gutter is gone.
+            if (isContentSlotVsFull(reported.width, full) && !coolwalkReclaimProven(full)) {
                 return Size(reported.width.coerceAtLeast(1), h, dpi)
             }
             return Size(full, h, dpi)
@@ -128,5 +128,14 @@ internal object DisplayProfileSettle {
             return Size(full, h, dpi)
         }
         return Size(contentW, h, dpi)
+    }
+
+    private fun coolwalkReclaimProven(fullHuWidthPx: Int): Boolean {
+        val snap = CoolwalkRailStore.serverSnapshot
+        if (snap.phase == RailPhase.FullBleed || snap.phase == RailPhase.Reclaiming) {
+            return snap.fullHuWidthPx >= fullHuWidthPx - 2
+        }
+        val sessionFull = CoolwalkRailStore.resolvedSession()?.fullHuWidthPx ?: 0
+        return sessionFull >= fullHuWidthPx - 2 && snap.fullHuWidthPx >= fullHuWidthPx - 2
     }
 }

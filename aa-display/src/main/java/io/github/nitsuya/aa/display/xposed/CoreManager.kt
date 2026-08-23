@@ -185,6 +185,15 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
+    override fun getCoolwalkReconnectEpochMs(): Long {
+        return try {
+            getService()?.coolwalkReconnectEpochMs ?: 0L
+        } catch (e: Throwable) {
+            Log.e(TAG, "getCoolwalkReconnectEpochMs failed", e)
+            0L
+        }
+    }
+
     override fun notifyCoolwalkFullBleed() {
         try {
             getService()?.notifyCoolwalkFullBleed()
@@ -215,6 +224,15 @@ object CoreManager : ICoreManager, DeathRecipient {
         } catch (e: Throwable) {
             Log.e(TAG, "getCoolwalkRailSnapshot failed", e)
             null
+        }
+    }
+
+    fun tryGetCoolwalkReconnectEpochMs(): Long {
+        return try {
+            getService()?.coolwalkReconnectEpochMs ?: 0L
+        } catch (e: Throwable) {
+            Log.e(TAG, "getCoolwalkReconnectEpochMs failed", e)
+            0L
         }
     }
 
