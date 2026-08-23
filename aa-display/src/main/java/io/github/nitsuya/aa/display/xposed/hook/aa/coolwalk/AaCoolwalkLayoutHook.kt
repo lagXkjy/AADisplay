@@ -171,23 +171,29 @@ object AaCoolwalkLayoutHook {
             return
         }
         fun hookDimenMethod(clazz: Class<*>, methodName: String, zero: Any) {
-            try {
-                findMethod(clazz) {
-                    name == methodName && parameterCount == 1 &&
-                        parameterTypes[0] == Int::class.javaPrimitiveType
-                }.hookAfter { param ->
-                    val id = param.args[0] as? Int ?: return@hookAfter
-                    if (env.railWidthDimenIds.contains(id)) {
+            fun hookOne(paramType: Class<*>) {
+                try {
+                    findMethod(clazz) {
+                        name == methodName && parameterCount == 1 && parameterTypes[0] == paramType
+                    }.hookAfter { param ->
+                        val id = when (val raw = param.args[0]) {
+                            is Int -> raw
+                            is Long -> raw.toInt()
+                            else -> return@hookAfter
+                        }
+                        if (!env.railWidthDimenIds.contains(id)) return@hookAfter
                         param.result = zero
                         val actions = CoolwalkRailCoordinator.onEvent(
                             RailEvent.RailWidthObserved(0, "dimen-zero:$id"),
                         ).second
                         CoolwalkRailCoordinator.dispatchActions(actions)
                     }
+                } catch (_: Throwable) {
+                    // API level may only expose int or long overload.
                 }
-            } catch (e: Throwable) {
-                log(CoolwalkHookEnv.TAG, "AaUiHook: hook $clazz.$methodName failed", e)
             }
+            hookOne(Integer.TYPE)
+            hookOne(java.lang.Long.TYPE)
         }
         hookDimenMethod(Resources::class.java, "getDimensionPixelSize", 0)
         hookDimenMethod(Resources::class.java, "getDimensionPixelOffset", 0)

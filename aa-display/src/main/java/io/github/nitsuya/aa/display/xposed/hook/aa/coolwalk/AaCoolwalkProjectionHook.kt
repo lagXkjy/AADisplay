@@ -296,6 +296,7 @@ object AaCoolwalkProjectionHook {
     private fun applyExpandedContentBounds(env: CoolwalkHookEnv, rect: Rect): Rect? {
         CoolwalkRailCoordinator.syncExternalTruth(InitFields.appContext.contentResolver)
         val before = Rect(rect)
+        val snapBefore = CoolwalkRailCoordinator.current()
         val expanded = CoolwalkRailMath.applyExpandedContentBounds(
             rect,
             env.layoutWidthPx(),
@@ -304,24 +305,36 @@ object AaCoolwalkProjectionHook {
             CoolwalkRailCoordinator.observedRailWidthPx(),
         ) ?: return null
         CoolwalkRailCoordinator.rememberFullHuSize(expanded.targetWidthPx, expanded.targetHeightPx)
-        val actions = CoolwalkRailCoordinator.onEvent(
-            RailEvent.ContentBoundsExpanded(
-                expanded.targetWidthPx,
-                expanded.targetHeightPx,
-                expanded.railWidthPx,
-                "content_bounds",
-            ),
-        ).second
-        CoolwalkRailCoordinator.dispatchActions(actions)
+        val alreadyReclaimed = snapBefore.fullHuWidthPx == expanded.targetWidthPx &&
+            snapBefore.effectiveRailWidthPx == 0 &&
+            snapBefore.phase != RailPhase.ReconnectSettling &&
+            snapBefore.phase != RailPhase.Bootstrapping
+        if (!alreadyReclaimed) {
+            val actions = CoolwalkRailCoordinator.onEvent(
+                RailEvent.ContentBoundsExpanded(
+                    expanded.targetWidthPx,
+                    expanded.targetHeightPx,
+                    expanded.railWidthPx,
+                    "content_bounds",
+                ),
+            ).second
+            CoolwalkRailCoordinator.dispatchActions(actions)
+        }
         env.mLayoutWidthDp = kotlin.math.max(env.mLayoutWidthDp, expanded.targetWidthPx)
         env.mLayoutHeightDp = kotlin.math.max(env.mLayoutHeightDp, expanded.targetHeightPx)
         env.logProjectionConfigRewriteOnce(
             "AaUiHook: content_bounds expanded $before→$rect layout=${expanded.targetWidthPx}x${expanded.targetHeightPx}",
         )
-        notifyAaUiFullBleed()
-        AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "content_bounds")
-        env.mFacetEnsureHandler.post {
-            CoolwalkFacetChrome.reclaimAllWindowGutters("content_bounds-post")
+        if (!alreadyReclaimed) {
+            notifyAaUiFullBleed()
+            if (env.mAaDisplayShownThisSession && expanded.railWidthPx > 0) {
+                AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(env, "content_bounds")
+            } else {
+                AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "content_bounds")
+            }
+            env.mFacetEnsureHandler.post {
+                CoolwalkFacetChrome.reclaimAllWindowGutters("content_bounds-post")
+            }
         }
         return rect
     }

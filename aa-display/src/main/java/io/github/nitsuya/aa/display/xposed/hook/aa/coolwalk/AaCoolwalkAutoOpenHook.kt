@@ -64,6 +64,24 @@ object AaCoolwalkAutoOpenHook {
         }
     }
 
+    /**
+     * Presentation may have been created at HU−rail before content_bounds reclaim finished.
+     * Force a CarActivity relaunch so the next [DrawingSpec] is built at full HU width.
+     */
+    fun scheduleFullBleedRelaunch(env: CoolwalkHookEnv, reason: String) {
+        if (env.startMethod == null) return
+        env.mAaDisplayShownThisSession = false
+        env.mAutoOpenArmed = true
+        env.mFacetEnsureHandler.removeCallbacksAndMessages(CoolwalkHookEnv.AUTO_OPEN_TOKEN)
+        logDebug(CoolwalkHookEnv.TAG, "AaUiHook: full-bleed relaunch ($reason)")
+        for (delayMs in longArrayOf(0L, 400L, 1500L)) {
+            env.mFacetEnsureHandler.postDelayed(
+                { tryAutoOpenAaDisplay(env, -2L) },
+                delayMs,
+            )
+        }
+    }
+
     private fun tryAutoOpenAaDisplay(env: CoolwalkHookEnv, delayMs: Long) {
         if (env.mAaDisplayShownThisSession) {
             markAaDisplayShown(env, "flag")

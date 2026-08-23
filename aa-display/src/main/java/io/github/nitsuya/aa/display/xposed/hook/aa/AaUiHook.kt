@@ -8,6 +8,7 @@ import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.AaCoolwalkCompositor
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.AaCoolwalkHuTouchHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.AaCoolwalkLayoutHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.AaCoolwalkProjectionHook
+import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkDrawingSpecWiden
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkFacetChrome
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkHookEnv
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -157,6 +158,7 @@ object AaUiHook : AaHook() {
 
     override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
         env.loadProjectionResources()
+        CoolwalkDrawingSpecWiden.installGearhead(lpparam.classLoader)
         AaCoolwalkProjectionHook.install(env)
         if (lpparam.processName == processCar) {
             AaCoolwalkLayoutHook.installRailWidthDimens(env)

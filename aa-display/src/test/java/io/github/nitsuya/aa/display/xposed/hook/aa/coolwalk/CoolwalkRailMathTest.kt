@@ -313,6 +313,22 @@ class CoolwalkRailMathTest {
     }
 
     @Test
+    fun drawing_spec_widen_after_content_bounds_reclaim() {
+        val reclaiming = RailSnapshot(
+            phase = RailPhase.Reclaiming,
+            fullHuWidthPx = 1280,
+            touchRailWidthPx = 107,
+        )
+        assertEquals(1280, CoolwalkDrawingSpecWiden.resolveTargetWidth(1173, reclaiming))
+        val settling = RailSnapshot(
+            phase = RailPhase.ReconnectSettling,
+            fullHuWidthPx = 1280,
+            touchRailWidthPx = 107,
+        )
+        assertEquals(1173, CoolwalkDrawingSpecWiden.resolveTargetWidth(1173, settling))
+    }
+
+    @Test
     fun reconnect_clears_previous_connection_hu() {
         CoolwalkRailCoordinator.onEvent(RailEvent.FullHuObserved(1280, 720, "prev-car"))
         CoolwalkRailCoordinator.onEvent(RailEvent.ReconnectStarted("projection:test"))

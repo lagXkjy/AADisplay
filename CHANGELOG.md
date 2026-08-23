@@ -6,7 +6,7 @@
 - **藏车机媒体壳图标：** 删除 `AaClusterMediaIconHideHook`（不再 hook `queryIntentServices` 过滤本包壳）。全屏投影下桌面列表本就会闪，隐藏收益低且增加 hook 面。
 
 ### Changed
-- **FacetBar 重构文档与试验代码清理：** 新增 [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)（状态机、四路回收、profile settle、坑点）；移除 `ReconnectSizingTrace`、未使用的 `:car` presentation resize 广播、`AaDisplayPresentationResize` 空桩、`CoolwalkRailMath` 死代码；同步 [EXECUTION.md](docs/EXECUTION.md) §5.4。
+- **FacetBar 重构文档与试验代码清理：** 新增 [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)（状态机、四路回收、profile settle、坑点）；移除 `ReconnectSizingTrace`、未使用的 `:car` presentation resize 广播、`CoolwalkRailMath` 死代码；`AaDisplayPresentationResize` 改为 AADisplay 进程懒加载 `DrawingSpec` hook 入口；同步 [EXECUTION.md](docs/EXECUTION.md) §5.4。
 - **仪表歌词 T2-A 外推整秒补包：** `pushPlaybackNow` 用 `ClusterLyricStore.extrapolatePosition` 当下整秒克隆 Gearhead `AaPlaybackState`，不再重放 `play_l` 过期快照（失败 fallback T1）。见 `docs/CLUSTER_LYRIC_CLOCK.md` §5。
 - **仪表歌词时钟文档：** [docs/CLUSTER_LYRIC_CLOCK.md](docs/CLUSTER_LYRIC_CLOCK.md) 更新为 **T2-A** 当前落地。
 - **分屏应用选择器加速：** launchable 列表进程内缓存 + 会话预热；图标懒加载；「最近」改用 `LastSplitStore`/occupancy 包名，不再拉完整 `recentTask` Bitmap IPC。
@@ -24,6 +24,7 @@
 - **左轨 ensure 窗口收敛：** FacetBar 回收 poll 从 8s/400ms 收为 2s/250ms；inject 成功即停；collapse/starve 只做一次全窗 reclaim，不再把 deadline 续满。晚到 chrome 仍靠 LayoutInfo / `windowAttach` 再武装。
 
 ### Fixed
+- **软重连左侧黑条（1280×720 / gresolution）：** `:projection` 已把 `content_bounds` 扩到全宽 1280，但 gearhead 仍用 content slot `DrawingSpec`（1173=1280−107）建 Presentation / 分屏 VD，左侧留下 107px 合成器空槽。补 hook `ResourcesImpl` **long** 资源 ID 版 dimen（`:projection` 重启后 rail dimen 不再回弹）；新增 `CoolwalkDrawingSpecWiden` 在 gearhead（`:car`/`:projection`）把 `DrawingSpec` 扩到已观测全宽；`content_bounds` reclaim 后若 presentation 已按 content slot 创建则 `scheduleFullBleedRelaunch`；已 reclaim 的重复 `content_bounds` 幂等跳过（只改 rect，不再叠 reclaim / AutoOpen，避免 `:car` 主线程 ANR）。
 - **左侧导航栏黑条重连复发：** FacetBar 窗口一打 tag 就停掉回收，真正占着 ~107px 的 GhostActivity 宿主从未被扫到。改为每次 ensure / attach / collapse / starve 都扫进程内全部窗口；inject 成功即停 poll，晚到 chrome 靠 LayoutInfo / `windowAttach` 再武装。
 - **左侧黑条重连后不消（content 1305 / HU 1412）：** `:car` 未把轨宽 dimen 打成 0，`GhLifecycleService` 仍发 `Rect(0,0,HU−rail)`；FacetBar 已饿成 1px，合成器留下 107px 空槽。`:car` 同样 zero dimens + VD starve/expand；`content_bounds` 把内容槽扩回已观测全宽。
 - **仪表进度双外推：** 壳 session 写入原始采样 + `positionAtElapsedMs`；Egress `getPlaybackState` 写入已外推位置 + `elapsedRealtime()`；位置不超过 duration。
@@ -39,7 +40,7 @@
 - **奥迪仪表「未知专辑」：** 壳 session 补 `DISPLAY_DESCRIPTION` + Egress 向 HU/GAL `MediaInfo` 注入 `aadisplay_cluster_np_album`（Store 有专辑名但出站 album 参数为空）。
 
 ### Verify（仪表歌词 + 重连）
-1. Soft-reconnect：`GhFacetBar` 饿死后 profile 稳定全宽；日志可见 `displayProfile relocked(settle|rail-settle)` / `starve FacetBar`；无右侧 gutter / 黑条
+1. Soft-reconnect（含 1280×720 gresolution）：`content_bounds` 扩满全宽；`DrawingSpec`/profile 稳定 1280（非 1173 content slot）；日志可见 `displayProfile relocked(settle|rail-settle)` / `starve FacetBar` / `DrawingSpec ctor widen`；无左侧 107px 黑条
 2. 冷连 AutoOpen：仍能进 AaDisplay；connected kick 后无 100ms 级刷屏重试
 3. QQ 车载/HD 横条歌词随句切换（快句不丢）；同句 hold 时 Settings 标题无每 300ms 刷、进度最多约 1s 一写；媒体列表出现壳图标可接受
 4. 方控短按仍控真实播放器（Egress 不再改写 QQ Title）
