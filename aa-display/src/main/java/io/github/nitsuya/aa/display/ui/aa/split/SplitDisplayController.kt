@@ -316,6 +316,12 @@ class SplitDisplayController(
         mWidth = w
         mHeight = h
         mDensityDpi = dpi
+        // VD resize / WM settle is async — do not let refreshPanePackagesFromAtms trim stacks
+        // while a pane is briefly empty (e.g. Luna left VD after disconnect).
+        mSuppressReclaimUntil = maxOf(
+            mSuppressReclaimUntil,
+            SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_AFTER_RESTORE_MS,
+        )
         // Soft reconnect: always resize — profile may match while a pane Surface/task is stale.
         vd.resizePanesInternal("reconnect")
         vd.applyPolicies(SplitPane.PRIMARY, "reconnect")

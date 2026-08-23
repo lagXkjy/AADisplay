@@ -217,6 +217,36 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }, ENSURE_TOKEN, 1200L)
     }
 
+    private fun isSoftReconnectReason(reason: String): Boolean {
+        return reason == "reconnect" ||
+            reason == "reconnect-late" ||
+            reason == "surfaces-ready"
+    }
+
+    /**
+     * Soft reconnect: one pane may look vacant in ATMS while the durable snapshot is still valid
+     * (common when only the left app left the VD during AA disconnect / VD resize).
+     */
+    private fun backfillVacantPanesFromSnapshot(reason: String) {
+        val snap = LastSplitStore.load(c.context.contentResolver) ?: return
+        data class PaneSnap(val pane: Int, val front: String, val stack: List<String>)
+        for (entry in listOf(
+            PaneSnap(SplitPane.PRIMARY, snap.primaryPackage, snap.primaryPackagesBottomToTop()),
+            PaneSnap(SplitPane.SECONDARY, snap.secondaryPackage, snap.secondaryPackagesBottomToTop()),
+        )) {
+            val current = c.mPanePackages[entry.pane]?.trim()?.takeIf { it.isNotEmpty() }
+            if (current != null) continue
+            val pkg = entry.front.trim().takeIf { it.isNotEmpty() } ?: continue
+            if (resolveLaunchComponent(pkg) == null) continue
+            logDebug(
+                SplitDisplayController.TAG,
+                "ensurePanes[$reason]: backfill pane=${entry.pane} from snapshot pkg=$pkg",
+            )
+            c.stacks.setStackBottomToTop(entry.pane, entry.stack)
+            c.mPanePackages[entry.pane] = pkg
+        }
+    }
+
     /**
      * Soft reconnect / surface restore: if remembered pane apps left the VDs, bring them back.
      * When both panes are vacant, fall back to last-split restore (or leave empty for picker).
@@ -228,6 +258,9 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         val settling = SystemClock.uptimeMillis() < c.mSuppressReclaimUntil
         if (!settling) {
             refreshPanePackagesFromAtms()
+        }
+        if (isSoftReconnectReason(reason)) {
+            backfillVacantPanesFromSnapshot(reason)
         }
         val primaryPkg = c.mPanePackages[SplitPane.PRIMARY]
         val secondaryPkg = c.mPanePackages[SplitPane.SECONDARY]
