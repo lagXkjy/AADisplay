@@ -99,7 +99,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             val railW = resolveRailWidthPx()
             val fullW = resolveObservedFullHuWidthPx(current.width, current.height)
             val settled = DisplayProfileSettle.settle(
-                DisplayProfileSettle.Size(fullW, current.height, current.densityDpi),
+                DisplayProfileSettle.Size(current.width, current.height, current.densityDpi),
                 railWidthPx = railW,
                 fullHuWidthPx = fullW,
             )

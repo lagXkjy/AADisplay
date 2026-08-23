@@ -31,11 +31,25 @@ object CoolwalkRailStore {
     }
 
     fun write(cr: ContentResolver, snapshot: RailSnapshot) {
-        Settings.Global.putInt(cr, SETTINGS_PHASE, snapshot.phase.code)
-        Settings.Global.putInt(cr, SETTINGS_TOUCH_RAIL_W, snapshot.touchRailWidthPx)
-        Settings.Global.putInt(cr, SETTINGS_FULL_HU_W, snapshot.fullHuWidthPx)
-        Settings.Global.putInt(cr, SETTINGS_FACET_DISPLAY_ID, snapshot.facetDisplayId)
-        Settings.Global.putLong(cr, SETTINGS_UPDATED_MS, snapshot.updatedUptimeMs)
+        try {
+            Settings.Global.putInt(cr, SETTINGS_PHASE, snapshot.phase.code)
+            Settings.Global.putInt(cr, SETTINGS_TOUCH_RAIL_W, snapshot.touchRailWidthPx)
+            Settings.Global.putInt(cr, SETTINGS_FULL_HU_W, snapshot.fullHuWidthPx)
+            Settings.Global.putInt(cr, SETTINGS_FACET_DISPLAY_ID, snapshot.facetDisplayId)
+            Settings.Global.putLong(cr, SETTINGS_UPDATED_MS, snapshot.updatedUptimeMs)
+        } catch (_: Throwable) {
+            // OEM SettingsProvider may reject unknown keys; serverSnapshot + IPC remain authoritative.
+        }
+    }
+
+    fun snapshotFromWire(wire: IntArray): RailSnapshot? {
+        if (wire.size < 4) return null
+        return RailSnapshot(
+            phase = RailPhase.fromCode(wire[0]),
+            touchRailWidthPx = wire[1],
+            fullHuWidthPx = wire[2],
+            facetDisplayId = wire[3],
+        )
     }
 
     fun read(cr: ContentResolver): RailSnapshot {
