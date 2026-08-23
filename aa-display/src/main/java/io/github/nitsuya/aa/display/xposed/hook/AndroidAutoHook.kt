@@ -61,7 +61,7 @@ object AndroidAutoHook : BaseHook() {
             AaMediaAllowlistHook,
             AaClusterLyricEgressHook,
         ).filter { i -> i.isSupportProcess(processName) }
-        if(hooks.isEmpty()) return
+        if (hooks.isEmpty()) return
 
         var onCreateApplication: XC_MethodHook.Unhook? = null
         onCreateApplication = findMethod(Instrumentation::class.java) {

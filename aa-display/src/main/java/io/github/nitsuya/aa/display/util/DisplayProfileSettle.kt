@@ -60,7 +60,9 @@ internal object DisplayProfileSettle {
     }
 
     /**
-     * Best-effort full HU width: AaDisplay presentation / large gearhead VDs / reported.
+     * Best-effort full HU width from live Displays / reported.
+     * Skip our own split VDs and the CarActivity presentation — the latter is often
+     * still HU−rail while LayoutInfo / content_bounds already know the true full HU.
      */
     fun observeFullHuWidthPx(context: Context, reportedWidth: Int, reportedHeight: Int): Int {
         var best = reportedWidth.coerceAtLeast(1)
@@ -70,6 +72,10 @@ internal object DisplayProfileSettle {
             val name = runCatching { display.name }.getOrNull() ?: continue
             if (isRailDisplayName(name)) continue
             if (name.contains("Dashboard", ignoreCase = true)) continue
+            // Split VDs are derived from settle — including them loops inflated sizes.
+            if (name.startsWith("AADisplay-")) continue
+            // Presentation often stays at content slot; do not treat it as full HU.
+            if (name.contains("AaDisplayActivity", ignoreCase = true)) continue
             val w = runCatching { display.mode.physicalWidth }.getOrNull() ?: continue
             val h = runCatching { display.mode.physicalHeight }.getOrNull() ?: continue
             if (w <= 1 || h <= 1) continue
@@ -82,7 +88,21 @@ internal object DisplayProfileSettle {
     }
 
     /**
-     * @param reported client / DrawingSpec size (may be full HU or content slot)
+     * True when [reportedW] looks like this-connection full HU minus one Coolwalk rail
+     * (e.g. 1173 vs 1280, 720 vs 800). Used so we do not inflate split VDs while the
+     * CarActivity presentation is still the content slot.
+     */
+    fun isContentSlotVsFull(reportedW: Int, fullW: Int): Boolean {
+        if (reportedW <= 0 || fullW <= 0) return false
+        val gap = fullW - reportedW
+        if (gap <= 1) return false
+        if (gap !in railPxRange(fullW)) return false
+        val maxSingle = (fullW * 0.15f).toInt().coerceAtLeast(railPxRange(fullW).first)
+        return gap <= maxSingle
+    }
+
+    /**
+     * @param reported client / presentation / DrawingSpec size (may be full HU or content slot)
      * @param railWidthPx live FacetBar strip; ≤1 means reclaimed or absent
      * @param fullHuWidthPx observed full HU width (≥ reported when presentation is full-bleed)
      */
@@ -91,7 +111,13 @@ internal object DisplayProfileSettle {
         val dpi = reported.densityDpi.coerceAtLeast(1)
         val full = fullHuWidthPx.coerceAtLeast(reported.width).coerceAtLeast(1)
         if (railWidthPx <= 1) {
-            // Rail gone / starved → full HU is the only truth (r35 gutter reclaim).
+            // FacetBar starved, but CarActivity presentation may still be HU−rail.
+            // Inflating split VDs to full HU then letterboxes inside the smaller
+            // presentation (and resizing that VD blacks the HU). Stay with reported
+            // until presentation itself is full-bleed.
+            if (isContentSlotVsFull(reported.width, full)) {
+                return Size(reported.width.coerceAtLeast(1), h, dpi)
+            }
             return Size(full, h, dpi)
         }
         if (!isPlausibleRailStrip(railWidthPx, h) && railWidthPx !in 32..160) {

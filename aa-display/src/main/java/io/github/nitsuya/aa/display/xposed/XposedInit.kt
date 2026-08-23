@@ -5,6 +5,7 @@ import com.github.kyuubiran.ezxhelper.utils.Log.logexIfThrow
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import io.github.nitsuya.aa.display.xposed.hook.AaDisplayProcessHook
 import io.github.nitsuya.aa.display.xposed.hook.AndroidAutoHook
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.hook.BaseHook
@@ -24,6 +25,7 @@ class XposedInit : IXposedHookZygoteInit, IXposedHookLoadPackage{
         when {
             packageName == "android" && lpparam.appInfo == null -> arrayOf(AndroidHook)
             packageName == "com.google.android.projection.gearhead" -> arrayOf(AndroidAutoHook)
+            packageName == "io.github.nitsuya.aa.display" -> arrayOf(AaDisplayProcessHook)
             else -> null
         }?.also {
             initHooks(lpparam, *it)

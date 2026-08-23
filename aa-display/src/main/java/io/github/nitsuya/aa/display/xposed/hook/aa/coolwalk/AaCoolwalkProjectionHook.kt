@@ -208,6 +208,8 @@ object AaCoolwalkProjectionHook {
         ).second
         CoolwalkRailCoordinator.dispatchActions(actions)
         CoolwalkFacetChrome.reclaimAllWindowGutters("reconnect:$source")
+        AaDisplayPresentationResize.clear()
+        AaCoolwalkAutoOpenHook.resetFullBleedRelaunch(env)
         AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "projection-reconnect")
     }
 
@@ -314,14 +316,22 @@ object AaCoolwalkProjectionHook {
             "AaUiHook: content_bounds expanded $before→$rect layout=${expanded.targetWidthPx}x${expanded.targetHeightPx}",
         )
         notifyAaUiFullBleed()
+        AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "content_bounds")
+        AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(env, "content_bounds")
+        env.mFacetEnsureHandler.post {
+            CoolwalkFacetChrome.reclaimAllWindowGutters("content_bounds-post")
+        }
         return rect
     }
 
     private fun notifyAaUiFullBleed() {
         try {
+            val action = AABroadcastConst.ACTION_COOLWALK_FULL_BLEED
             InitFields.appContext.sendBroadcast(
-                Intent(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED)
-                    .setPackage(InitFields.appContext.packageName),
+                Intent(action).setPackage("io.github.nitsuya.aa.display"),
+            )
+            InitFields.appContext.sendBroadcast(
+                Intent(action).setPackage("com.google.android.projection.gearhead"),
             )
         } catch (e: Throwable) {
             log(CoolwalkHookEnv.TAG, "notifyAaUiFullBleed", e)

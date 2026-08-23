@@ -67,6 +67,8 @@ class CoolwalkHookEnv {
     var mAutoOpenSessionAtMs = 0L
     @Volatile var mAaDisplayShownThisSession = false
     @Volatile var mAutoOpenArmed = false
+    /** One CarActivity relaunch after content_bounds full-bleed per connection. */
+    @Volatile var mFullBleedRelaunchDone = false
     var mAutoOpenShownReceiver: android.content.BroadcastReceiver? = null
     var mCarConnectedKickHooked = false
     var mCarConnectedListenerHooked = false
@@ -227,6 +229,11 @@ class CoolwalkHookEnv {
         const val FACET_ENSURE_WINDOW_MS = 2_000L
         const val FACET_ENSURE_POLL_MS = 250L
         val FACET_ENSURE_TOKEN = Any()
+        val AUTO_OPEN_TOKEN = Any()
+        const val AUTO_OPEN_REARM_GAP_MS = 24_000L
+        /** Delay so Coolwalk applies expanded content_bounds before CarActivity recreates. */
+        const val FULL_BLEED_RELAUNCH_DELAY_MS = 650L
+        val FULL_BLEED_RELAUNCH_TOKEN = Any()
 
         val PROJECTION_CONFIG_KEYS = setOf(
             "content_bounds", "contentBounds", "content_insets", "contentInsets",
@@ -235,7 +242,5 @@ class CoolwalkHookEnv {
         val AUTO_OPEN_DELAYS_MS = longArrayOf(
             0L, 1500L, 5000L, 12_000L, 24_000L,
         )
-        val AUTO_OPEN_TOKEN = Any()
-        const val AUTO_OPEN_REARM_GAP_MS = 24_000L
     }
 }

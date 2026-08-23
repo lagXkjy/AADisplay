@@ -26,9 +26,17 @@ object CoolwalkRailCoordinator {
         val actions = mutableListOf<RailAction>()
         when (event) {
             is RailEvent.LayoutInfo -> {
+                val picked = CoolwalkRailMath.pickConnectionFullHuWidth(
+                    next.fullHuWidthPx,
+                    next.layoutHeightPx,
+                    event.widthPx,
+                    event.heightPx,
+                    next.touchRailWidthPx,
+                )
                 next = next.copy(
                     layoutWidthPx = event.widthPx,
                     layoutHeightPx = event.heightPx,
+                    fullHuWidthPx = picked,
                     lastEvent = event.reason,
                     updatedUptimeMs = now,
                 )
@@ -48,9 +56,16 @@ object CoolwalkRailCoordinator {
                 }
             }
             is RailEvent.FullHuObserved -> {
-                if (event.widthPx > next.fullHuWidthPx) {
+                val picked = CoolwalkRailMath.pickConnectionFullHuWidth(
+                    next.fullHuWidthPx,
+                    next.layoutHeightPx,
+                    event.widthPx,
+                    event.heightPx,
+                    next.touchRailWidthPx,
+                )
+                if (picked != next.fullHuWidthPx || event.heightPx > next.layoutHeightPx) {
                     next = next.copy(
-                        fullHuWidthPx = event.widthPx,
+                        fullHuWidthPx = picked,
                         layoutHeightPx = event.heightPx.takeIf { it > 0 } ?: next.layoutHeightPx,
                         lastEvent = event.reason,
                         updatedUptimeMs = now,
@@ -67,10 +82,18 @@ object CoolwalkRailCoordinator {
                 }
             }
             is RailEvent.ContentBoundsExpanded -> {
+                val rail = if (event.railWidthPx > 1) event.railWidthPx else next.touchRailWidthPx
+                val mergedFull = CoolwalkRailMath.pickConnectionFullHuWidth(
+                    next.fullHuWidthPx,
+                    next.layoutHeightPx,
+                    event.fullWidthPx,
+                    event.fullHeightPx,
+                    rail,
+                )
                 next = next.copy(
                     effectiveRailWidthPx = 0,
-                    fullHuWidthPx = event.fullWidthPx.coerceAtLeast(next.fullHuWidthPx),
-                    layoutWidthPx = event.fullWidthPx.coerceAtLeast(next.layoutWidthPx),
+                    fullHuWidthPx = mergedFull,
+                    layoutWidthPx = mergedFull,
                     layoutHeightPx = event.fullHeightPx.coerceAtLeast(next.layoutHeightPx),
                     touchRailWidthPx = if (event.railWidthPx > 1) event.railWidthPx else next.touchRailWidthPx,
                     fullBleedStableCount = next.fullBleedStableCount + 1,
@@ -98,9 +121,10 @@ object CoolwalkRailCoordinator {
                 }
             }
             is RailEvent.ReconnectStarted -> {
-                next = next.copy(
+                // Drop previous connection's HU; the next LayoutInfo / content_bounds
+                // is the only truth for this session (cars and resolutions vary).
+                next = RailSnapshot(
                     phase = RailPhase.ReconnectSettling,
-                    fullBleedStableCount = 0,
                     lastEvent = event.reason,
                     updatedUptimeMs = now,
                 )
@@ -145,6 +169,19 @@ object CoolwalkRailCoordinator {
         return true
     }
 
+    /**
+     * Pull IPC / Settings into this process only when empty or the same head-unit.
+     * A previous car's stored width must not replace this connection's LayoutInfo.
+     */
+    private fun absorbExternalFullHu(localFull: Int, localH: Int, externalFull: Int, rail: Int): Int {
+        if (externalFull <= 0) return localFull
+        if (localFull <= 0) return externalFull
+        if (!CoolwalkRailMath.isSameHuGeometry(localFull, localH, externalFull, localH, rail)) {
+            return localFull
+        }
+        return CoolwalkRailMath.pickConnectionFullHuWidth(localFull, localH, externalFull, localH, rail)
+    }
+
     /** Merge server IPC + Settings.Global so :car can expand before :projection LayoutInfo. */
     fun syncExternalTruth(cr: ContentResolver? = null) {
         val resolver = cr ?: runCatching { InitFields.appContext.contentResolver }.getOrNull()
@@ -155,7 +192,8 @@ object CoolwalkRailCoordinator {
         var mergedPhase = snapshot.phase
         var mergedUpdated = snapshot.updatedUptimeMs
         val server = CoolwalkRailStore.serverSnapshot
-        mergedFull = maxOf(mergedFull, server.fullHuWidthPx)
+        val railForMerge = maxOf(snapshot.touchRailWidthPx, server.touchRailWidthPx, mergedTouch)
+        mergedFull = absorbExternalFullHu(mergedFull, mergedLayoutH, server.fullHuWidthPx, railForMerge)
         if (server.touchRailWidthPx > mergedTouch) mergedTouch = server.touchRailWidthPx
         if (server.layoutWidthPx > mergedLayoutW) mergedLayoutW = server.layoutWidthPx
         if (server.layoutHeightPx > mergedLayoutH) mergedLayoutH = server.layoutHeightPx
@@ -165,7 +203,7 @@ object CoolwalkRailCoordinator {
         }
         resolver?.let { r ->
             val stored = CoolwalkRailStore.read(r)
-            mergedFull = maxOf(mergedFull, stored.fullHuWidthPx)
+            mergedFull = absorbExternalFullHu(mergedFull, mergedLayoutH, stored.fullHuWidthPx, railForMerge)
             if (stored.touchRailWidthPx > mergedTouch) mergedTouch = stored.touchRailWidthPx
             if (stored.updatedUptimeMs > mergedUpdated) {
                 mergedPhase = stored.phase
@@ -174,10 +212,10 @@ object CoolwalkRailCoordinator {
         }
         val ipc = CoreManager.tryGetCoolwalkRailSnapshot()
         if (ipc != null && ipc.size >= 4) {
-            mergedFull = maxOf(mergedFull, ipc[2])
+            mergedFull = absorbExternalFullHu(mergedFull, mergedLayoutH, ipc[2], railForMerge)
             if (ipc[1] > mergedTouch) mergedTouch = ipc[1]
         }
-        if (mergedFull > snapshot.fullHuWidthPx ||
+        if (mergedFull != snapshot.fullHuWidthPx ||
             mergedTouch > snapshot.touchRailWidthPx ||
             mergedLayoutW > snapshot.layoutWidthPx ||
             mergedLayoutH > snapshot.layoutHeightPx ||
@@ -209,10 +247,24 @@ object CoolwalkRailCoordinator {
     fun observedRailDisplayId(): Int = snapshot.facetDisplayId
 
     fun rememberFullHuSize(width: Int, height: Int) {
-        if (width < 640 || height < 320 || width <= height) return
+        if (width <= 0 || height <= 0 || width <= height) return
+        // Landscape HU band — no fixed pixel floor (head units vary).
+        if (height < width * 0.25f) return
+        val knownFull = maxOf(snapshot.fullHuWidthPx, snapshot.layoutWidthPx)
+        val rail = snapshot.touchRailWidthPx
+        // Content slot (HU − rail) is not a new full HU.
+        if (knownFull > width + 2 &&
+            CoolwalkRailMath.isPlausibleRailGap(knownFull - width, knownFull, rail)
+        ) {
+            return
+        }
         if (width > snapshot.fullHuWidthPx || height > snapshot.layoutHeightPx) {
             onEvent(RailEvent.FullHuObserved(width, height, "vd-size"))
         }
+    }
+
+    fun resetForTests() {
+        snapshot = RailSnapshot()
     }
 
     fun dispatchActions(actions: List<RailAction>) {
@@ -226,20 +278,39 @@ object CoolwalkRailCoordinator {
     }
 
     fun applyServerSnapshot(server: RailSnapshot) {
+        if (server.phase == RailPhase.ReconnectSettling && server.fullHuWidthPx <= 0) {
+            snapshot = RailSnapshot(
+                phase = RailPhase.ReconnectSettling,
+                lastEvent = server.lastEvent,
+                updatedUptimeMs = server.updatedUptimeMs.coerceAtLeast(snapshot.updatedUptimeMs),
+            )
+            return
+        }
+        val rail = maxOf(snapshot.touchRailWidthPx, server.touchRailWidthPx)
+        val measuredW = server.fullHuWidthPx.takeIf { it > 0 } ?: server.layoutWidthPx
+        val measuredH = server.layoutHeightPx.takeIf { it > 0 } ?: snapshot.layoutHeightPx
+        val picked = CoolwalkRailMath.pickConnectionFullHuWidth(
+            snapshot.fullHuWidthPx,
+            snapshot.layoutHeightPx,
+            measuredW,
+            measuredH,
+            rail,
+        )
         if (server.updatedUptimeMs <= snapshot.updatedUptimeMs &&
-            server.fullHuWidthPx <= snapshot.fullHuWidthPx
+            picked == snapshot.fullHuWidthPx
         ) {
             return
         }
         snapshot = snapshot.copy(
             phase = server.phase,
             touchRailWidthPx = server.touchRailWidthPx.takeIf { it > 0 } ?: snapshot.touchRailWidthPx,
-            fullHuWidthPx = server.fullHuWidthPx.takeIf { it > 0 } ?: snapshot.fullHuWidthPx,
+            fullHuWidthPx = picked,
             layoutWidthPx = server.layoutWidthPx.takeIf { it > 0 } ?: snapshot.layoutWidthPx,
             layoutHeightPx = server.layoutHeightPx.takeIf { it > 0 } ?: snapshot.layoutHeightPx,
             facetDisplayId = server.facetDisplayId.takeIf { it != Display.INVALID_DISPLAY }
                 ?: snapshot.facetDisplayId,
             updatedUptimeMs = server.updatedUptimeMs.coerceAtLeast(snapshot.updatedUptimeMs),
+            lastEvent = server.lastEvent.ifEmpty { snapshot.lastEvent },
         )
     }
 

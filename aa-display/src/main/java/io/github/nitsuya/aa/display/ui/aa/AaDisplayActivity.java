@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.ui.aa;
 
+import android.content.res.Configuration;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.KeyEvent;
@@ -17,6 +18,9 @@ import io.github.nitsuya.aa.display.databinding.ActivityAaDisplayBinding;
 
 public class AaDisplayActivity extends CarActivity {
     private static final String TAG = "AADisplay_AaActivity";
+    /** Keep rotation/locale/etc but allow HU display-size updates after Coolwalk reconnect. */
+    private static final int IGNORE_CONFIG_EXCEPT_DISPLAY_SIZE =
+        0xFFFF & ~(0x0800 | 0x2000 | 0x0400); // screen size, smallest screen size, screen layout
 
     private ActivityAaDisplayBinding mBinding;
 
@@ -28,7 +32,7 @@ public class AaDisplayActivity extends CarActivity {
     public void onCreate(Bundle bundle) {
         super.onCreate(bundle);
         Log.d(TAG, "onCreate");
-        setIgnoreConfigChanges(0xFFFF);
+        setIgnoreConfigChanges(IGNORE_CONFIG_EXCEPT_DISPLAY_SIZE);
         this.setTheme(R.style.Theme_AADisplay);
         this.mBinding = ActivityAaDisplayBinding.inflate(getLayoutInflater());
         this.addGenericView(this.mBinding.getRoot());
@@ -48,6 +52,15 @@ public class AaDisplayActivity extends CarActivity {
     public void onStart() {
         super.onStart();
         Log.d(TAG, "onStart");
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        Log.d(TAG, "onConfigurationChanged: " + newConfig.screenWidthDp + "x" + newConfig.screenHeightDp);
+        if (mBinding != null) {
+            mBinding.getRoot().requestLayout();
+        }
     }
 
     @Override

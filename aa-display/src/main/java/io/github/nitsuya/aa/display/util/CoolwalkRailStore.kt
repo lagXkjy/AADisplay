@@ -25,6 +25,11 @@ object CoolwalkRailStore {
         serverSnapshot = snapshot
     }
 
+    fun clear(cr: ContentResolver? = null) {
+        serverSnapshot = RailSnapshot()
+        if (cr != null) write(cr, serverSnapshot)
+    }
+
     fun write(cr: ContentResolver, snapshot: RailSnapshot) {
         Settings.Global.putInt(cr, SETTINGS_PHASE, snapshot.phase.code)
         Settings.Global.putInt(cr, SETTINGS_TOUCH_RAIL_W, snapshot.touchRailWidthPx)

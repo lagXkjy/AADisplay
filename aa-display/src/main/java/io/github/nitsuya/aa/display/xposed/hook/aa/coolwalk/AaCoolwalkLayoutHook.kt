@@ -36,16 +36,6 @@ object AaCoolwalkLayoutHook {
                             RailEvent.LayoutInfo(w, h, "layoutInfo"),
                         ).second
                         CoolwalkRailCoordinator.dispatchActions(actions)
-                        val touch = CoolwalkRailCoordinator.observedRailWidthPx()
-                        if (touch > 1) {
-                            val inferredFull = w + touch
-                            if (touch in CoolwalkRailMath.railPxRange(inferredFull)) {
-                                val fullActions = CoolwalkRailCoordinator.onEvent(
-                                    RailEvent.FullHuObserved(inferredFull, h, "layoutInfo+touch"),
-                                ).second
-                                CoolwalkRailCoordinator.dispatchActions(fullActions)
-                            }
-                        }
                     }
                     AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "layoutInfo")
                     if (env.canHookFacetBar) {
@@ -86,6 +76,7 @@ object AaCoolwalkLayoutHook {
         if (args[5] is Boolean) {
             args[5] = true
         }
+        widenLayoutInfoToFullHu(env, args)
 
         if (beforeRail != true ||
             (env.resLayoutLeftResourceId != 0 && beforeLayoutId != env.resLayoutLeftResourceId)
@@ -121,6 +112,24 @@ object AaCoolwalkLayoutHook {
         } catch (e: Throwable) {
             log(CoolwalkHookEnv.TAG, "AaUiHook: force vertical rail on instance failed", e)
         }
+    }
+
+    /**
+     * After forcing vertical rail, widen the canvas to this-connection full HU once
+     * content_bounds reclaim zeroed the compositor slot. hasVerticalRail stays true.
+     */
+    private fun widenLayoutInfoToFullHu(env: CoolwalkHookEnv, args: Array<Any?>) {
+        val w = args[1] as? Int ?: return
+        if (w <= 0) return
+        CoolwalkRailCoordinator.syncExternalTruth()
+        val target = CoolwalkRailMath.targetPresentationWidthPx(CoolwalkRailCoordinator.current(), w)
+        if (target <= w) return
+        args[1] = target
+        env.mLayoutWidthDp = target
+        logDebug(
+            CoolwalkHookEnv.TAG,
+            "AaUiHook: widen LayoutInfo canvas ${w}→$target (hasVerticalRail kept)",
+        )
     }
 
     private fun resolveLayoutInfoFields(env: CoolwalkHookEnv, clazz: Class<*>) {

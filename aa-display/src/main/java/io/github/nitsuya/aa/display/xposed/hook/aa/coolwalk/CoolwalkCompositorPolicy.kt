@@ -48,17 +48,18 @@ object CoolwalkCompositorPolicy {
             }
             return VdRewriteResult(null)
         }
-        // CarActivity presentation must match host layout width — expanding VD alone
-        // letterboxes the 1173px UI inside a 1280 surface (black bars both sides).
-        if (isAaDisplayPresentationVd(name)) return VdRewriteResult(null)
+        // Never rewrite AaDisplayActivity presentation buffer size. The Car SDK
+        // allocates the encoder Surface at the original slot; changing the VD
+        // to full HU without a matching Surface produces a black screen.
+        if (isAaDisplayPresentationVd(name)) {
+            return VdRewriteResult(null)
+        }
         val fullW = resolveTargetFullWidth(width, layoutWidthPx, observedRailWidthPx)
         if (fullW <= 0 || width >= fullW) return VdRewriteResult(null)
         val missing = fullW - width
-        val range = CoolwalkRailMath.railPxRange(fullW)
-        val looksLikeContentMinusRail =
-            (observedRailWidthPx > 0 && kotlin.math.abs(missing - observedRailWidthPx) <= 2) ||
-                missing in range
-        if (!looksLikeContentMinusRail) return VdRewriteResult(null)
+        if (!CoolwalkRailMath.isPlausibleRailGap(missing, fullW, observedRailWidthPx)) {
+            return VdRewriteResult(null)
+        }
         return VdRewriteResult(VdRewrite(fullW, height))
     }
 
@@ -69,7 +70,7 @@ object CoolwalkCompositorPolicy {
 
     /**
      * Prefer current DrawingSpec width; only grow to observed full HU when the
-     * incoming width is clearly a rail-trimmed content slot (not stale 1280 on 720 reconnect).
+     * incoming width is clearly a rail-trimmed content slot.
      */
     private fun resolveTargetFullWidth(
         width: Int,
@@ -80,21 +81,18 @@ object CoolwalkCompositorPolicy {
         if (layoutWidthPx > 0) {
             if (width >= layoutWidthPx - 2) return layoutWidthPx
             val layoutMissing = layoutWidthPx - width
-            val layoutRange = CoolwalkRailMath.railPxRange(layoutWidthPx)
-            if (layoutMissing in layoutRange) {
+            if (CoolwalkRailMath.isPlausibleRailGap(layoutMissing, layoutWidthPx, observedRailWidthPx)) {
                 return if (observedFull > layoutWidthPx &&
-                    layoutWidthPx + layoutMissing >= observedFull - 2
+                    CoolwalkRailMath.isPlausibleRailGap(
+                        observedFull - width,
+                        observedFull,
+                        observedRailWidthPx,
+                    )
                 ) {
                     observedFull
                 } else {
                     layoutWidthPx
                 }
-            }
-            if (observedRailWidthPx > 0 &&
-                kotlin.math.abs(layoutMissing - observedRailWidthPx) <= 2 &&
-                observedFull > layoutWidthPx
-            ) {
-                return observedFull
             }
             return layoutWidthPx
         }

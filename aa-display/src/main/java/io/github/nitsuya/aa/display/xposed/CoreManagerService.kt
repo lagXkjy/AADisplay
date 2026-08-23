@@ -18,6 +18,7 @@ import io.github.nitsuya.aa.display.util.DisplayProfileSettle
 import io.github.nitsuya.aa.display.util.ReconnectSizingTrace
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
+import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkRailMath
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailPhase
 import io.github.nitsuya.aa.display.xposed.hook.VdImeDisplayPin
 import io.github.nitsuya.aa.display.xposed.hook.VdOrientationFill
@@ -97,11 +98,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             if (mSplitController == null) return
             if (!hasSystemContext) return
             val railW = resolveRailWidthPx()
-            val fullW = DisplayProfileSettle.observeFullHuWidthPx(
-                systemContext,
-                current.width.coerceAtLeast(1),
-                current.height,
-            ).coerceAtLeast(CoolwalkRailStore.serverSnapshot.fullHuWidthPx.coerceAtLeast(current.width))
+            val fullW = resolveObservedFullHuWidthPx(current.width, current.height)
             val settled = DisplayProfileSettle.settle(
                 DisplayProfileSettle.Size(fullW, current.height, current.densityDpi),
                 railWidthPx = railW,
@@ -129,6 +126,23 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             return liveRail
         }
 
+        private fun resolveObservedFullHuWidthPx(reportedWidth: Int, reportedHeight: Int): Int {
+            val snap = CoolwalkRailStore.serverSnapshot
+            val observed = DisplayProfileSettle.observeFullHuWidthPx(
+                systemContext,
+                reportedWidth.coerceAtLeast(1),
+                reportedHeight,
+            )
+            val measured = observed.coerceAtLeast(reportedWidth)
+            return CoolwalkRailMath.pickConnectionFullHuWidth(
+                snap.fullHuWidthPx,
+                snap.layoutHeightPx,
+                measured,
+                reportedHeight,
+                snap.touchRailWidthPx,
+            )
+        }
+
         /**
          * Single settle rule (see [DisplayProfileSettle]): live rail strip → HU−rail;
          * otherwise full HU. Replaces the old grow-immediate / shrink-confirm tug-of-war.
@@ -142,9 +156,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             val reported = sanitizeDisplayProfile(width, height, densityDpi)
             val railW = resolveRailWidthPx()
             val fullW = if (hasSystemContext) {
-                val snapFull = CoolwalkRailStore.serverSnapshot.fullHuWidthPx
-                DisplayProfileSettle.observeFullHuWidthPx(systemContext, reported.width, reported.height)
-                    .coerceAtLeast(snapFull.coerceAtLeast(reported.width))
+                resolveObservedFullHuWidthPx(reported.width, reported.height)
             } else {
                 reported.width
             }
@@ -398,6 +410,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 mSplitController = null
                 mDisplayCreateInProgress = false
                 clearDisplayProfileLock()
+                CoolwalkRailStore.clear(
+                    if (hasSystemContext) systemContext.contentResolver else null,
+                )
             }
             // Session policy is created async after the create callback; destroy before that
             // must still tear down the controller and clear the profile lock.
@@ -499,6 +514,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             updatedUptimeMs = android.os.SystemClock.uptimeMillis(),
             lastEvent = "client-report",
         )
+        val prevFull = CoolwalkRailStore.serverSnapshot.fullHuWidthPx
         CoolwalkRailStore.publishServer(snapshot)
         if (hasSystemContext) {
             CoolwalkRailStore.write(systemContext.contentResolver, snapshot)
@@ -507,6 +523,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             TAG,
             "CoolwalkRail snapshot phase=${snapshot.phase} touch=$touchRailWidthPx full=$fullHuWidthPx facet=$facetDisplayId",
         )
+        if (fullHuWidthPx > prevFull || snapshot.phase == RailPhase.FullBleed) {
+            scheduleRailSettleRetry()
+        }
     }
 
     override fun getCoolwalkRailSnapshot(): IntArray {

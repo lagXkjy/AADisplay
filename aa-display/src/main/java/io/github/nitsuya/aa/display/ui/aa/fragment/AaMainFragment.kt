@@ -1,5 +1,8 @@
 package io.github.nitsuya.aa.display.ui.aa.fragment
 
+import android.hardware.display.DisplayManager
+import android.os.Handler
+import android.os.Looper
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -160,8 +163,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 AABroadcastConst.ACTION_COOLWALK_FULL_BLEED -> {
                     baseBinding.splitContainer.post {
                         reportAaUiDisplayId()
+                        scheduleHostLayoutCatchup("broadcast")
                         requestDisplay("full-bleed")
                     }
+                }
+                AABroadcastConst.ACTION_COOLWALK_FINISH_FOR_RELAUNCH -> {
+                    Log.d(TAG, "finish for full-bleed relaunch")
+                    activity?.finish()
                 }
             }
         }
@@ -237,6 +245,14 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             }
         }
         registerControlReceivers()
+        registerHostDisplayListener()
+    }
+
+    private fun registerHostDisplayListener() {
+        if (hostDisplayListenerRegistered || !isAdded) return
+        val dm = context?.getSystemService(DisplayManager::class.java) ?: return
+        dm.registerDisplayListener(hostDisplayChangedListener, Handler(Looper.getMainLooper()))
+        hostDisplayListenerRegistered = true
     }
 
     override fun onResume() {
@@ -258,6 +274,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             baseBinding.root.removeCallbacks(settleLate)
             baseBinding.root.removeCallbacks(afterOccupancySync)
             baseBinding.root.removeCallbacks(afterSwapSettle)
+            baseBinding.splitContainer.removeCallbacks(hostLayoutCatchup)
         } catch (_: Throwable) {
         }
         try {
@@ -286,6 +303,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         if (isControlReceiverRegistered) {
             tryOrNull { context?.unregisterReceiver(broadcastReceiver) }
             isControlReceiverRegistered = false
+        }
+        if (hostDisplayListenerRegistered) {
+            tryOrNull {
+                context?.getSystemService(DisplayManager::class.java)
+                    ?.unregisterDisplayListener(hostDisplayChangedListener)
+            }
+            hostDisplayListenerRegistered = false
         }
     }
 
@@ -325,6 +349,22 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             baseBinding.splitDivider.setRatio(clamped)
         }
         syncPaneOccupancyFromService()
+    }
+
+    private var hostLayoutCatchupAttempts = 0
+    private val hostLayoutCatchup = Runnable { requestDisplay("host-layout-catchup") }
+    private var hostDisplayListenerRegistered = false
+    private val hostDisplayChangedListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayChanged(displayId: Int) {
+            val hostId = baseBinding.splitContainer.display?.displayId ?: return
+            if (displayId != hostId) return
+            baseBinding.splitContainer.post {
+                scheduleHostLayoutCatchup("display-changed")
+                requestDisplay("display-changed")
+            }
+        }
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {}
     }
 
     /** Per-pane MOVE coalesce — instance fields so [onDestroy] can cancel them. */
@@ -1056,6 +1096,70 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         tryOrNull { CoreApi.reportAaUiDisplayId(id) }
     }
 
+    /** Live HU presentation size from CarActivity VirtualDisplay (varies per head unit). */
+    private fun hostPresentationSize(): Pair<Int, Int>? {
+        val display = baseBinding.splitContainer.display
+            ?: view?.display
+            ?: context?.display
+        val mode = display?.mode
+        if (mode == null) return null
+        val w = mode.physicalWidth
+        val h = mode.physicalHeight
+        if (w <= 0 || h <= 0) return null
+        return w to h
+    }
+
+    private fun layoutTargetSize(): Pair<Int, Int> {
+        // Follow the live CarActivity presentation. Do not target a larger
+        // observed HU here — resizing that VD without a matching Surface
+        // blacks the head unit.
+        val host = hostPresentationSize()
+        val cw = baseBinding.splitContainer.width
+        val ch = baseBinding.splitContainer.height
+        val w = maxOf(host?.first ?: 0, cw)
+        val h = maxOf(host?.second ?: 0, ch)
+        return w to h
+    }
+
+    private fun layoutSizeMismatchTolerancePx(width: Int): Int =
+        (width * 0.01f).toInt().coerceIn(4, 16)
+
+    /**
+     * Wait until splitContainer matches live presentation / observed full HU metrics.
+     */
+    private fun scheduleHostLayoutCatchup(reason: String) {
+        if (!isBaseBindingInitialized() || !isAdded) return
+        val container = baseBinding.splitContainer
+        val (targetW, targetH) = layoutTargetSize()
+        if (targetW <= 0 || targetH <= 0) return
+        val tol = layoutSizeMismatchTolerancePx(targetW)
+        if (container.width >= targetW - tol && container.height >= targetH - tol) {
+            hostLayoutCatchupAttempts = 0
+            return
+        }
+        if (hostLayoutCatchupAttempts >= 20) {
+            Log.w(
+                TAG,
+                "hostLayoutCatchup giving up after $hostLayoutCatchupAttempts tries " +
+                    "container=${container.width}x${container.height} " +
+                    "target=${targetW}x${targetH} from=$reason",
+            )
+            hostLayoutCatchupAttempts = 0
+            return
+        }
+        hostLayoutCatchupAttempts++
+        container.removeCallbacks(hostLayoutCatchup)
+        container.requestLayout()
+        baseBinding.root.requestLayout()
+        container.postDelayed(hostLayoutCatchup, 50L)
+        Log.d(
+            TAG,
+            "hostLayoutCatchup#$hostLayoutCatchupAttempts " +
+                "container=${container.width}x${container.height} " +
+                "target=${targetW}x${targetH} from=$reason",
+        )
+    }
+
     private fun requestDisplay(reason: String) {
         val displayWidth = baseBinding.splitContainer.width
         val displayHeight = baseBinding.splitContainer.height
@@ -1077,6 +1181,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 }
         )
         if (displayWidth <= 0 || displayHeight <= 0) return
+        val (targetW, targetH) = layoutTargetSize()
+        val tol = layoutSizeMismatchTolerancePx(targetW.coerceAtLeast(1))
+        if (displayWidth < targetW - tol || displayHeight < targetH - tol) {
+            scheduleHostLayoutCatchup(reason)
+            return
+        }
         if (primarySurface == null || secondarySurface == null) {
             Log.d(TAG, "requestDisplay[$reason] waiting for both surfaces")
             return
@@ -1091,7 +1201,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             displayHeight == lastCreateHeight &&
             displayDpi == lastCreateDpi
         ) {
-            Log.d(TAG, "requestDisplay[$reason] skipped: profile unchanged")
+            if (displayWidth < targetW - tol || displayHeight < targetH - tol) {
+                scheduleHostLayoutCatchup(reason)
+            } else {
+                Log.d(TAG, "requestDisplay[$reason] skipped: profile unchanged")
+            }
             return
         }
         if (displayId == Display.INVALID_DISPLAY) {
@@ -1214,6 +1328,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             addAction(AABroadcastConst.ACTION_SHOW_RECENT_TASK)
             addAction(AABroadcastConst.ACTION_IME_VISIBILITY)
             addAction(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED)
+            addAction(AABroadcastConst.ACTION_COOLWALK_FINISH_FOR_RELAUNCH)
         }, Context.RECEIVER_EXPORTED)
         isControlReceiverRegistered = true
         syncImeChipFromService()

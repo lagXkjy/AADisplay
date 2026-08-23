@@ -1,0 +1,71 @@
+package io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk
+
+import android.content.ContentResolver
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import com.github.kyuubiran.ezxhelper.init.InitFields
+import com.github.kyuubiran.ezxhelper.utils.hookBefore
+import io.github.nitsuya.aa.display.util.CoolwalkRailStore
+import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
+
+/**
+ * CarActivity presentation VirtualDisplay is created in the AADisplay process.
+ *
+ * Resize after the Car SDK allocated the encoder Surface blacks the HU — only widen
+ * at [DisplayManager.createVirtualDisplay] time when rail reclaim already published
+ * this-connection full HU via [CoolwalkRailStore].
+ */
+object AaDisplayPresentationResize {
+    private const val TAG = "AAD_AaDisplayVD"
+
+    @Volatile
+    private var createHooked = false
+
+    fun hookDisplayManager() {
+        if (createHooked) return
+        createHooked = true
+        try {
+            var hooked = 0
+            for (method in DisplayManager::class.java.declaredMethods) {
+                if (method.name != "createVirtualDisplay") continue
+                val params = method.parameterTypes
+                if (params.size < 5) continue
+                if (params[0] != String::class.java) continue
+                if (params[1] != Int::class.javaPrimitiveType) continue
+                if (params[2] != Int::class.javaPrimitiveType) continue
+                method.isAccessible = true
+                method.hookBefore { param ->
+                    val name = param.args[0] as? String ?: return@hookBefore
+                    if (!isAaDisplayPresentationVd(name)) return@hookBefore
+                    val width = param.args[1] as? Int ?: return@hookBefore
+                    val target = resolveCreateWidth(width, InitFields.appContext.contentResolver)
+                    if (target > width) {
+                        param.args[1] = target
+                        log(TAG, "presentation VD create ${width}→$target ($name)")
+                    }
+                }
+                hooked++
+            }
+            logDebug(TAG, "hooked createVirtualDisplay overloads=$hooked (create-only, no resize)")
+        } catch (e: Throwable) {
+            log(TAG, "hook DisplayManager.createVirtualDisplay failed", e)
+        }
+    }
+
+    private fun isAaDisplayPresentationVd(name: String?): Boolean {
+        if (name.isNullOrEmpty()) return false
+        return name.contains("AaDisplayActivity", ignoreCase = true)
+    }
+
+    private fun resolveCreateWidth(contentWidth: Int, cr: ContentResolver?): Int {
+        val snap = cr?.let { CoolwalkRailStore.read(it) } ?: CoolwalkRailStore.serverSnapshot
+        return CoolwalkRailMath.targetPresentationWidthPx(snap, contentWidth)
+    }
+
+    fun remember(vd: VirtualDisplay?) {}
+
+    fun clear() {}
+
+    fun resizeToObservedFullBleed(env: CoolwalkHookEnv, reason: String) {}
+}
