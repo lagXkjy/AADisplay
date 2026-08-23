@@ -227,6 +227,19 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         val artRevision = ClusterArtStore.readRevision(cr)
         val progress = ClusterLyricStore.readProgress(cr)
         val durationMs = progress?.durationMs ?: 0L
+        val artFileMissing = ClusterArtStore.artUriString(artRevision) == null
+        if (title == lastTitle &&
+            subtitle == lastSubtitle &&
+            album == lastAlbum &&
+            artMediaId == lastArtMediaId &&
+            artMediaId.isEmpty() &&
+            artFileMissing &&
+            artRevision != lastArtRevision &&
+            sess.isActive
+        ) {
+            lastArtRevision = artRevision
+            return
+        }
         if (title == lastTitle &&
             subtitle == lastSubtitle &&
             album == lastAlbum &&

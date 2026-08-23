@@ -34,6 +34,10 @@ object ClusterArtStore {
     private const val JPEG_QUALITY = 85
     /** Luna / QQ may publish title before cover — avoid flashing placeholder during the gap. */
     private const val NULL_ART_CLEAR_DELAY_MS = 2_000L
+    private const val ART_MISS_FAST_INTERVAL_MS = 300L
+    private const val ART_MISS_SLOW_INTERVAL_MS = 2_000L
+    private const val ART_MISS_SLOW_AFTER = 10
+    private const val ART_MISS_GIVE_UP_AFTER = 30
 
     private const val METADATA_KEY_ALBUM_ART = "android.media.metadata.ALBUM_ART"
     private const val METADATA_KEY_ART = "android.media.metadata.ART"
@@ -77,6 +81,13 @@ object ClusterArtStore {
     @Volatile
     private var publishGen: Long = 0L
 
+    /** Immediate transition clear already done for this mediaId — do not re-clear each tick. */
+    @Volatile
+    private var transitionClearedForMediaId: String = ""
+
+    private var artMissMediaId: String = ""
+    private var artMissCount: Int = 0
+
     fun artFile(): File = File(ART_PATH)
 
     fun readRevision(resolver: ContentResolver): Long =
@@ -85,10 +96,43 @@ object ClusterArtStore {
     /** True when [mediaId] has no on-disk JPEG yet (or cache key still points elsewhere). */
     fun needsArtForMediaId(resolver: ContentResolver, mediaId: String): Boolean {
         if (mediaId.isEmpty()) return false
+        if (artMissMediaId == mediaId && artMissCount >= ART_MISS_GIVE_UP_AFTER) return false
         val cachedId = Settings.Global.getString(resolver, SETTINGS_ART_MEDIA_ID)?.trim().orEmpty()
         if (cachedId != mediaId) return true
         val file = artFile()
         return !file.exists() || file.length() <= 0L
+    }
+
+    /** Tick burst: widen retry interval after repeated misses for the same track. */
+    fun artRetryIntervalMs(mediaId: String): Long {
+        if (mediaId.isEmpty()) return ART_MISS_FAST_INTERVAL_MS
+        if (artMissMediaId != mediaId) return ART_MISS_FAST_INTERVAL_MS
+        return if (artMissCount >= ART_MISS_SLOW_AFTER) {
+            ART_MISS_SLOW_INTERVAL_MS
+        } else {
+            ART_MISS_FAST_INTERVAL_MS
+        }
+    }
+
+    fun noteArtMiss(mediaId: String) {
+        if (mediaId.isEmpty()) return
+        if (artMissMediaId != mediaId) {
+            artMissMediaId = mediaId
+            artMissCount = 1
+            return
+        }
+        artMissCount++
+    }
+
+    fun noteArtSaved(mediaId: String) {
+        if (mediaId.isEmpty()) return
+        artMissMediaId = mediaId
+        artMissCount = 0
+    }
+
+    private fun resetArtMiss() {
+        artMissMediaId = ""
+        artMissCount = 0
     }
 
     fun artUriString(revision: Long = 0L): String? {
@@ -112,7 +156,7 @@ object ClusterArtStore {
         val mediaChanged = mediaId.isNotEmpty() && (
             (cachedId.isNotEmpty() && cachedId != mediaId) ||
                 (lastWrittenMediaId.isNotEmpty() && lastWrittenMediaId != mediaId)
-            )
+            ) && transitionClearedForMediaId != mediaId
         // Session bitmaps must be copied on this thread — the live MediaMetadata
         // instance may recycle them as soon as we return to the session.
         val sessionBitmapRaw = extractSessionBitmaps(metadata)
@@ -141,11 +185,15 @@ object ClusterArtStore {
         // Same-app track change (e.g. Luna): drop stale JPEG immediately. QQ car↔HD
         // handoff keeps the 2s deferred window when the new session has no art yet.
         if (mediaChanged && sessionBitmap == null && !qqHandoff) {
-            logDebug(
-                TAG,
-                "stale art written=$lastWrittenMediaId cached=$cachedId -> $mediaId (immediate clear)",
-            )
-            clear(resolver)
+            if (transitionClearedForMediaId != mediaId) {
+                logDebug(
+                    TAG,
+                    "stale art written=$lastWrittenMediaId cached=$cachedId -> $mediaId (immediate clear)",
+                )
+                transitionClearedForMediaId = mediaId
+                lastWrittenMediaId = ""
+                clear(resolver)
+            }
         }
         val gen = ++publishGen
         artHandler.post {
@@ -163,6 +211,7 @@ object ClusterArtStore {
                         lastArtPackage = pkg
                         return@post
                     }
+                    noteArtMiss(mediaId)
                     logDebug(TAG, "no art mediaId=$mediaId (deferred clear)")
                     scheduleDeferredClear(resolver, mediaId)
                 }
@@ -181,6 +230,8 @@ object ClusterArtStore {
                 runCatching {
                     Settings.Global.putString(resolver, SETTINGS_ART_MEDIA_ID, mediaId)
                     lastWrittenMediaId = mediaId
+                    transitionClearedForMediaId = mediaId
+                    noteArtSaved(mediaId)
                     if (pkg.isNotEmpty()) lastArtPackage = pkg
                     val revision = bumpRevision(resolver)
                     logDebug(TAG, "art saved mediaId=$mediaId bytes=${file.length()} rev=$revision")
@@ -221,9 +272,14 @@ object ClusterArtStore {
         val gen = ++publishGen
         evictBitmapCache()
         lastArtPackage = ""
+        transitionClearedForMediaId = ""
+        resetArtMiss()
+        val hadArt = hasArtOnDisk(resolver)
         runCatching {
-            Settings.Global.putString(resolver, SETTINGS_ART_MEDIA_ID, "")
-            bumpRevision(resolver)
+            if (hadArt) {
+                Settings.Global.putString(resolver, SETTINGS_ART_MEDIA_ID, "")
+                bumpRevision(resolver)
+            }
         }.onFailure { e ->
             log(TAG, "clear art failed", e)
         }
@@ -232,6 +288,12 @@ object ClusterArtStore {
             artFile().delete()
             File(ART_TMP_PATH).delete()
         }
+    }
+
+    private fun hasArtOnDisk(resolver: ContentResolver): Boolean {
+        val file = artFile()
+        if (file.exists() && file.length() > 0L) return true
+        return Settings.Global.getString(resolver, SETTINGS_ART_MEDIA_ID)?.isNotBlank() == true
     }
 
     private fun encodeJpeg(bitmap: Bitmap, mediaId: String): ByteArray? {

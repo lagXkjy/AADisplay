@@ -611,7 +611,8 @@ object ClusterLyricMirror {
             return false
         }
         val now = SystemClock.elapsedRealtime()
-        if (now - lastArtRetryElapsedMs < ART_RETRY_ON_TICK_MS) return false
+        val intervalMs = ClusterArtStore.artRetryIntervalMs(mediaId)
+        if (now - lastArtRetryElapsedMs < intervalMs) return false
         lastArtRetryElapsedMs = now
         return true
     }
