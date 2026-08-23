@@ -3,8 +3,15 @@ package io.github.nitsuya.aa.display.util
 import android.content.ContentResolver
 import android.provider.Settings
 import android.view.Display
+import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkRailMath
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailPhase
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailSnapshot
+
+/** Cold-start settled HU geometry kept in system_server across soft reconnect. */
+data class SessionSettled(
+    val fullHuWidthPx: Int,
+    val touchRailWidthPx: Int,
+)
 
 /**
  * Settings.Global mirror of Coolwalk rail state. system_server is authoritative;
@@ -21,12 +28,73 @@ object CoolwalkRailStore {
     var serverSnapshot: RailSnapshot = RailSnapshot()
         private set
 
+    /** Last successful full-bleed geometry for this HU; survives [RailPhase.ReconnectSettling]. */
+    @Volatile
+    var sessionSettled: SessionSettled? = null
+        private set
+
     fun publishServer(snapshot: RailSnapshot) {
         serverSnapshot = snapshot
     }
 
+    /**
+     * Remember cold-start / full-bleed truth once gearhead reports it.
+     * Soft reconnect clears [serverSnapshot] live fields but keeps this for presentation create.
+     */
+    fun rememberFromReport(snapshot: RailSnapshot) {
+        if (snapshot.fullHuWidthPx <= 0) return
+        if (snapshot.phase == RailPhase.ReconnectSettling) return
+        val existing = sessionSettled
+        val full = snapshot.fullHuWidthPx
+        val touch = snapshot.touchRailWidthPx
+        val railForCompare = touch.coerceAtLeast(existing?.touchRailWidthPx ?: 0)
+        if (existing != null &&
+            !CoolwalkRailMath.isSameHuGeometry(
+                existing.fullHuWidthPx,
+                0,
+                full,
+                0,
+                railForCompare,
+            )
+        ) {
+            sessionSettled = SessionSettled(full, touch)
+            return
+        }
+        sessionSettled = SessionSettled(
+            fullHuWidthPx = maxOf(full, existing?.fullHuWidthPx ?: 0),
+            touchRailWidthPx = maxOf(touch, existing?.touchRailWidthPx ?: 0),
+        )
+    }
+
+    /** Merge session cache when live snapshot was cleared for reconnect. */
+    fun snapshotWithSession(live: RailSnapshot): RailSnapshot {
+        val session = sessionSettled ?: return live
+        if (live.fullHuWidthPx > 0 && live.phase != RailPhase.ReconnectSettling) return live
+        val full = maxOf(live.fullHuWidthPx, session.fullHuWidthPx)
+        val touch = maxOf(live.touchRailWidthPx, session.touchRailWidthPx)
+        return live.copy(
+            fullHuWidthPx = full,
+            touchRailWidthPx = touch,
+            fullBleedStableCount = live.fullBleedStableCount.coerceAtLeast(1),
+            phase = when (live.phase) {
+                RailPhase.ReconnectSettling, RailPhase.Bootstrapping -> RailPhase.Reclaiming
+                else -> live.phase
+            },
+        )
+    }
+
+    fun clearSession() {
+        sessionSettled = null
+    }
+
+    fun resetForTests() {
+        serverSnapshot = RailSnapshot()
+        sessionSettled = null
+    }
+
     fun clear(cr: ContentResolver? = null) {
         serverSnapshot = RailSnapshot()
+        sessionSettled = null
         if (cr != null) write(cr, serverSnapshot)
     }
 

@@ -68,7 +68,7 @@ object AaDisplayPresentationResize {
     private fun resolveRailSnapshot(cr: ContentResolver?): RailSnapshot {
         CoreManager.tryGetCoolwalkRailSnapshot()?.let { wire ->
             CoolwalkRailStore.snapshotFromWire(wire)?.let { snap ->
-                if (snap.fullHuWidthPx > 0) return snap
+                if (snap.fullHuWidthPx > 0 || snap.touchRailWidthPx > 1) return snap
             }
         }
         return when {

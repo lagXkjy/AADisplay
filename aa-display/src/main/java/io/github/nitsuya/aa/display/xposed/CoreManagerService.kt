@@ -473,6 +473,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun reportAaUiDisplayId(displayId: Int) {
         mSplitController?.setAaUiDisplayId(displayId)
+        mSessionPolicy?.onAaUiDisplayIdChanged(displayId)
     }
 
     override fun hideIme() {
@@ -502,6 +503,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             lastEvent = "client-report",
         )
         val prevFull = CoolwalkRailStore.serverSnapshot.fullHuWidthPx
+        CoolwalkRailStore.rememberFromReport(snapshot)
         CoolwalkRailStore.publishServer(snapshot)
         if (hasSystemContext) {
             CoolwalkRailStore.write(systemContext.contentResolver, snapshot)
@@ -516,7 +518,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     override fun getCoolwalkRailSnapshot(): IntArray {
-        val s = CoolwalkRailStore.serverSnapshot
+        val s = CoolwalkRailStore.snapshotWithSession(CoolwalkRailStore.serverSnapshot)
         return intArrayOf(s.phase.code, s.touchRailWidthPx, s.fullHuWidthPx, s.facetDisplayId)
     }
 

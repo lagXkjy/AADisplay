@@ -40,6 +40,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         private const val TAG = "AADisplay_AaMainFragment"
         private const val SETTLE_MID_MS = 400L
         private const val SETTLE_LATE_MS = 900L
+        /** While AA is live, catch stale TextureView / Surface pipes without tight polling. */
+        private const val SURFACE_HEALTH_INTERVAL_MS = 30_000L
     }
 
     private var displayId: Int = Display.INVALID_DISPLAY
@@ -147,6 +149,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 }
                 AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID -> {
                     reportAaUiDisplayId()
+                }
+                AABroadcastConst.ACTION_REQUEST_DISPLAY_RECOVERY -> {
+                    baseBinding.splitContainer.post {
+                        recoverPresentationPipeline("broadcast")
+                    }
                 }
                 AABroadcastConst.ACTION_SHOW_RECENT_TASK -> {
                     // Locked-phone peel: system_server cannot inject into occluded presentation.
@@ -263,10 +270,17 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             }
             // Soft-reconnect sizing is owned by CoreManagerService DisplayProfileSettle.
             requestDisplay("resume")
+            scheduleSurfaceHealthCheck()
         }
     }
 
+    override fun onPause() {
+        stopSurfaceHealthCheck()
+        super.onPause()
+    }
+
     override fun onDestroy() {
+        stopSurfaceHealthCheck()
         try {
             baseBinding.root.removeCallbacks(settleImmediate)
             baseBinding.root.removeCallbacks(settleMid)
@@ -1095,6 +1109,52 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         tryOrNull { CoreApi.reportAaUiDisplayId(id) }
     }
 
+    /**
+     * Rebind pane surfaces after presentation DOZE / ColorFade or a stale Surface pipe.
+     * Does not run after [onDestroy] — health callbacks are removed first.
+     */
+    private fun recoverPresentationPipeline(reason: String) {
+        if (!isAdded || view == null) return
+        Log.d(TAG, "recoverPresentationPipeline[$reason]")
+        reportAaUiDisplayId()
+        val primaryBad = primarySurface?.isValid != true
+        val secondaryBad = secondarySurface?.isValid != true
+        if (primaryBad || secondaryBad) {
+            clearDisplaySurfaces("recovery-$reason")
+            if (baseBinding.splitContainer.width > 0 && baseBinding.splitContainer.height > 0) {
+                requestDisplay("recovery-$reason")
+            }
+            return
+        }
+        primarySurface?.let { CoreApi.setPaneSurface(SplitPane.PRIMARY, it) }
+        secondarySurface?.let { CoreApi.setPaneSurface(SplitPane.SECONDARY, it) }
+        if (displayId == Display.INVALID_DISPLAY) {
+            requestDisplay("recovery-$reason")
+        }
+    }
+
+    private val surfaceHealthRunnable = Runnable {
+        if (!isAdded || view == null) return@Runnable
+        val needsRecovery =
+            displayId != Display.INVALID_DISPLAY &&
+                (primarySurface?.isValid != true || secondarySurface?.isValid != true)
+        if (needsRecovery) {
+            recoverPresentationPipeline("surface-health")
+        }
+        scheduleSurfaceHealthCheck()
+    }
+
+    private fun scheduleSurfaceHealthCheck() {
+        if (!isAdded || view == null) return
+        baseBinding.root.removeCallbacks(surfaceHealthRunnable)
+        baseBinding.root.postDelayed(surfaceHealthRunnable, SURFACE_HEALTH_INTERVAL_MS)
+    }
+
+    private fun stopSurfaceHealthCheck() {
+        if (!isBaseBindingInitialized()) return
+        baseBinding.root.removeCallbacks(surfaceHealthRunnable)
+    }
+
     /** Live HU presentation size from CarActivity VirtualDisplay (varies per head unit). */
     private fun hostPresentationSize(): Pair<Int, Int>? {
         val display = baseBinding.splitContainer.display
@@ -1313,6 +1373,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             addAction(AABroadcastConst.ACTION_OPEN_SPLIT_PICKER)
             addAction(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED)
             addAction(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID)
+            addAction(AABroadcastConst.ACTION_REQUEST_DISPLAY_RECOVERY)
             addAction(AABroadcastConst.ACTION_SHOW_RECENT_TASK)
             addAction(AABroadcastConst.ACTION_IME_VISIBILITY)
             addAction(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED)

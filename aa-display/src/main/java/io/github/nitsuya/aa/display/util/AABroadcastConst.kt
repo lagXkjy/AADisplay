@@ -33,6 +33,11 @@ interface AABroadcastConst {
          */
         const val ACTION_REQUEST_AA_UI_DISPLAY_ID = "aa.display.action.REQUEST_AA_UI_DISPLAY_ID"
         /**
+         * system_server → AA: presentation may be OFF / ColorFade / surface pipe stale;
+         * UI should re-report id, rebind pane surfaces, and nudge [requestDisplay].
+         */
+        const val ACTION_REQUEST_DISPLAY_RECOVERY = "aa.display.action.REQUEST_DISPLAY_RECOVERY"
+        /**
          * system_server → AA: open Recent (locked-phone peel long-press cannot hit
          * [SplitDividerView] while keyguard occludes the presentation).
          */

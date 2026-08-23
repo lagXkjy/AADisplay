@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import io.github.nitsuya.aa.display.util.AABroadcastConst
 import android.os.PowerManager
 import android.os.SystemClock
 import android.os.SystemProperties
@@ -25,19 +26,19 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * AA display session policy: Delay Destroy (180s) and keep-awake for OWN_DISPLAY_GROUP VDs.
+ * AA display session policy: Delay Destroy (180s) and keep-awake for split pane VDs plus the
+ * CarActivity presentation display id reported by the AA UI process.
  * Phone overlay UI was removed; this class no longer hosts any WindowManager views.
  *
  * **Hard rule: AA virtual panes must not stay black (ColorFade / OFF).** Prefer a rare
  * phone-panel wake over blank car screens.
  *
  * Keep-awake strategy (Samsung-first):
- * - Hold display-scoped [SCREEN_BRIGHT_WAKE_LOCK] on each AA VD for the whole session,
- *   including Delay Destroy (release only when VDs are actually torn down).
- * - Drive [IPowerManager.userActivity] only with the displayId overload.
- * - While the phone is off, or a pane is OFF/DOZE, or on resume / soft-reconnect /
- *   SCREEN_OFF: short display-scoped [ACQUIRE_CAUSES_WAKEUP] pulse (Monitor alone
- *   cannot exit ColorFade).
+ * - Hold display-scoped [SCREEN_BRIGHT_WAKE_LOCK] Monitor on pane VDs + presentation.
+ * - Pane VDs (OWN_DISPLAY_GROUP): [userActivity] + [ACQUIRE_CAUSES_WAKEUP] pulse when needed.
+ * - Presentation VD: **Monitor only** — no WAKEUP pulse and no userActivity (often shares
+ *   displayGroup 0 with the phone panel; pulsing can light the main screen on some OEMs).
+ *   Black presentation is recovered via UI surface rebind broadcast instead.
  */
 class DisplaySessionPolicy(
     private val mContext: Context,
@@ -72,6 +73,8 @@ class DisplaySessionPolicy(
         private const val WAKE_PULSE_MS = 3_000L
         /** Seconds to keep dual VD after AA disconnect before destroy. */
         private const val DELAY_DESTROY_SEC = 180
+        /** Min gap between UI presentation recovery nudges (battery). */
+        private const val PRESENTATION_RECOVERY_MIN_INTERVAL_MS = 45_000L
         /** MIUI/HyperOS: toggle Secure synergy_mode on phone screen on/off. */
         private val isMiui = SystemProperties.get("ro.miui.ui.version.name").isNotBlank()
     }
@@ -85,12 +88,10 @@ class DisplaySessionPolicy(
     private var iPowerManagerService: Any? = null
     private var iPowerManagerUserActivity: Method? = null
     private var mLoggedMissingDisplayUserActivity = false
+    private var mLastPresentationRecoveryAt = 0L
 
-    /**
-     * Both split VDs use OWN_DISPLAY_GROUP, so each has an independent power group.
-     * Keeping only the primary awake leaves the secondary black while audio continues.
-     */
-    private fun aaVirtualDisplayIds(): IntArray {
+    /** Split pane VDs (OWN_DISPLAY_GROUP). */
+    private fun aaPaneDisplayIds(): IntArray {
         val primary = displayAdapter.primaryDisplayId
         val secondary = displayAdapter.secondaryDisplayId
         return when {
@@ -98,6 +99,26 @@ class DisplaySessionPolicy(
             secondary == Display.INVALID_DISPLAY -> intArrayOf(primary)
             primary == Display.INVALID_DISPLAY -> intArrayOf(secondary)
             else -> intArrayOf(primary, secondary)
+        }
+    }
+
+    /** CarActivity presentation id from AA UI; INVALID when AA disconnected. */
+    private fun aaPresentationDisplayId(): Int {
+        val id = displayAdapter.mAaUiDisplayId
+        return if (id != Display.INVALID_DISPLAY && id != Display.DEFAULT_DISPLAY) id else Display.INVALID_DISPLAY
+    }
+
+    /**
+     * Pane VDs plus presentation (when reported). Both must stay awake while AA is live;
+     * presentation is dropped as soon as the UI clears its id on disconnect.
+     */
+    private fun aaKeepAwakeDisplayIds(): IntArray {
+        val panes = aaPaneDisplayIds()
+        val presentation = aaPresentationDisplayId()
+        return if (presentation == Display.INVALID_DISPLAY) {
+            panes
+        } else {
+            panes + presentation
         }
     }
 
@@ -141,6 +162,7 @@ class DisplaySessionPolicy(
                 Intent.ACTION_SCREEN_OFF -> {
                     // Critical Samsung path: DreamManager may doze OWN_DISPLAY_GROUP with the phone.
                     keepVirtualDisplayAwake("phone-SCREEN_OFF", forceWake = true)
+                    maybeRecoverPresentation("phone-SCREEN_OFF", phoneOff = true)
                     startScreenOffReassertBurst()
                 }
                 Intent.ACTION_SCREEN_ON -> {
@@ -187,7 +209,7 @@ class DisplaySessionPolicy(
         }
 
         fun acquireMonitor() {
-            val ids = aaVirtualDisplayIds()
+            val ids = aaKeepAwakeDisplayIds()
             if (ids.isEmpty()) return
             val active = ids.toSet()
             pruneStaleLocks(active)
@@ -299,9 +321,10 @@ class DisplaySessionPolicy(
             while (isActive) {
                 delay(keepAwakeIntervalMs())
                 val phoneOff = !isPhoneInteractive()
-                val anyVdOff = aaVirtualDisplayIds().any { isVirtualDisplayPoweredOff(it) }
-                // phoneOff → pulse inside keepVirtualDisplayAwake (never-black hard rule).
-                keepVirtualDisplayAwake("heartbeat", forceWake = phoneOff || anyVdOff)
+                val anyPaneOff = aaPaneDisplayIds().any { isVirtualDisplayPoweredOff(it) }
+                // phoneOff → pulse panes inside keepVirtualDisplayAwake (never-black hard rule).
+                keepVirtualDisplayAwake("heartbeat", forceWake = phoneOff || anyPaneOff)
+                maybeRecoverPresentation("heartbeat", phoneOff)
             }
         }
     }
@@ -337,15 +360,16 @@ class DisplaySessionPolicy(
     }
 
     /**
-     * Keep / restore power for both AA virtual display groups.
+     * Keep / restore power for pane VDs (full) and presentation (Monitor-only).
      * Hard rule: panes must not stay ColorFade/OFF — pulse whenever the phone is off,
      * a pane is OFF/DOZE, or on resume / soft-reconnect / SCREEN_OFF / init.
      */
     fun keepVirtualDisplayAwake(reason: String, forceWake: Boolean = false) {
-        val displayIds = aaVirtualDisplayIds()
-        if (displayIds.isEmpty()) return
+        val paneIds = aaPaneDisplayIds()
+        if (paneIds.isEmpty() && aaPresentationDisplayId() == Display.INVALID_DISPLAY) return
         try {
             interactiveMonitor.acquireMonitor()
+            if (paneIds.isEmpty()) return
             val phoneOff = !isPhoneInteractive()
             val event = if (forceWake || phoneOff) {
                 USER_ACTIVITY_EVENT_TOUCH
@@ -356,8 +380,8 @@ class DisplaySessionPolicy(
                 reason == "soft-reconnect" ||
                 reason == "init" ||
                 reason.startsWith("phone-SCREEN_OFF")
-            for (displayId in displayIds) {
-                // VD never-black: pulse while phone is off even if getState() still says ON
+            for (displayId in paneIds) {
+                // Pane never-black: pulse while phone is off even if getState() still says ON
                 // (Samsung can ColorFade before state flips).
                 if (sessionPulse || phoneOff || isVirtualDisplayPoweredOff(displayId)) {
                     interactiveMonitor.pulseWake(displayId)
@@ -369,7 +393,60 @@ class DisplaySessionPolicy(
         }
     }
 
-    /** Throttled keep-awake for AA touch / key forwarding. */
+    /** Sync presentation keep-awake when AA UI reports or clears its presentation id. */
+    fun onAaUiDisplayIdChanged(displayId: Int) {
+        if (displayId == Display.INVALID_DISPLAY || displayId == Display.DEFAULT_DISPLAY) {
+            mLastPresentationRecoveryAt = 0L
+            if (aaPaneDisplayIds().isEmpty()) {
+                return
+            }
+            try {
+                interactiveMonitor.acquireMonitor()
+            } catch (e: Throwable) {
+                log(TAG, "onAaUiDisplayIdChanged prune failed:", e)
+            }
+            return
+        }
+        try {
+            // Presentation: Monitor-only — avoid WAKEUP / userActivity on displayGroup 0.
+            interactiveMonitor.acquireMonitor()
+        } catch (e: Throwable) {
+            log(TAG, "onAaUiDisplayIdChanged monitor failed:", e)
+        }
+    }
+
+    /**
+     * Ask the AA UI to rebind TextureView surfaces when presentation may be black while
+     * pane VDs are still live (phone off / presentation DOZE / ColorFade).
+     */
+    private fun maybeRecoverPresentation(reason: String, phoneOff: Boolean) {
+        val presentationId = aaPresentationDisplayId()
+        if (presentationId == Display.INVALID_DISPLAY) return
+        if (aaPaneDisplayIds().isEmpty()) return
+        val presentationOff = isVirtualDisplayPoweredOff(presentationId)
+        if (!phoneOff && !presentationOff) return
+        val now = SystemClock.uptimeMillis()
+        if (now - mLastPresentationRecoveryAt < PRESENTATION_RECOVERY_MIN_INTERVAL_MS) return
+        mLastPresentationRecoveryAt = now
+        log(TAG, "maybeRecoverPresentation[$reason] id=$presentationId phoneOff=$phoneOff off=$presentationOff")
+        sendPresentationRecoveryBroadcast()
+    }
+
+    private fun sendPresentationRecoveryBroadcast() {
+        try {
+            mContext.sendBroadcast(
+                Intent(AABroadcastConst.ACTION_REQUEST_DISPLAY_RECOVERY)
+                    .setPackage(BuildConfig.APPLICATION_ID),
+            )
+        } catch (e: Throwable) {
+            log(TAG, "sendPresentationRecoveryBroadcast failed:", e)
+        }
+    }
+
+    private fun resetPresentationRecoveryState() {
+        mLastPresentationRecoveryAt = 0L
+    }
+
     fun onVirtualDisplayUserInteraction() {
         val now = SystemClock.uptimeMillis()
         if (now - mLastTouchKeepAwakeAt < TOUCH_KEEP_AWAKE_MIN_INTERVAL_MS) return
@@ -439,6 +516,7 @@ class DisplaySessionPolicy(
     }
 
     suspend fun onDestroyPromptly() {
+        resetPresentationRecoveryState()
         restorePhoneDisplayPower()
         interactiveMonitor.release()
         mDestroyJob?.cancelAndJoin()
@@ -447,6 +525,7 @@ class DisplaySessionPolicy(
     suspend fun onDestroy(onDestroySucceed: () -> Unit) {
         // Keep Monitor + heartbeat through Delay Destroy so soft reconnect does not
         // inherit Samsung ColorFade-black panes. Release only when VDs are torn down.
+        resetPresentationRecoveryState()
         mDestroyJob?.cancelAndJoin()
         startDelayDestroy(onDestroySucceed)
     }
@@ -455,6 +534,7 @@ class DisplaySessionPolicy(
     private fun startDelayDestroy(onDestroySucceed: () -> Unit) {
         mDestroyJob = CoroutineScope(Dispatchers.Main).launch {
             delay(DELAY_DESTROY_SEC * 1000L)
+            resetPresentationRecoveryState()
             restorePhoneDisplayPower()
             interactiveMonitor.release()
             onDestroySucceed()
