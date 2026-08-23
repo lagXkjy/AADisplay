@@ -294,6 +294,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             mSplitController?.apply {
                 // Soft reconnect: always cancel Delay Destroy and rebind surfaces/policies.
                 mSessionPolicy?.onResume()
+                ClusterLyricMirror.onAaConnected()
                 setPaneSurface(SplitPane.PRIMARY, primarySurface)
                 setPaneSurface(SplitPane.SECONDARY, secondarySurface)
                 // Always kick resize/policies/ensure after surface rebind (null→live).
@@ -327,6 +328,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                         secondarySurface,
                     ) { displayId ->
                         listener.onAvailableDisplay(displayId, true)
+                        ClusterLyricMirror.onAaConnected()
                         // Session policy (delay-destroy / keep-awake) after first frame callback.
                         runMain {
                             if (mSplitController !== controller) return@runMain

@@ -98,16 +98,27 @@ object ClusterArtStore {
         packageName: String = "",
     ) {
         if (mediaId.isEmpty()) return
-        cancelPendingClear()
         val pkg = packageName.trim()
+        val cachedId = Settings.Global.getString(resolver, SETTINGS_ART_MEDIA_ID)?.trim().orEmpty()
+        // Session bitmaps must be copied on this thread — the live MediaMetadata
+        // instance may recycle them as soon as we return to the session.
+        val sessionBitmap = extractSessionBitmaps(metadata)
+        val qqHandoff =
+            pkg.isNotEmpty() &&
+                lastArtPackage.isNotEmpty() &&
+                lastArtPackage != pkg &&
+                LyricLineExtractor.sameCoverSource(lastArtPackage, pkg)
         val sourceChanged =
             pkg.isNotEmpty() &&
                 lastArtPackage.isNotEmpty() &&
                 !LyricLineExtractor.sameCoverSource(lastArtPackage, pkg)
+        // Same-app track change (e.g. Luna): drop stale JPEG immediately. QQ car↔HD
+        // handoff keeps the 2s deferred window when the new session has no art yet.
+        if (cachedId.isNotEmpty() && cachedId != mediaId && sessionBitmap == null && !qqHandoff) {
+            logDebug(TAG, "stale art $cachedId -> $mediaId (immediate clear)")
+            clear(resolver)
+        }
         val gen = ++publishGen
-        // Session bitmaps must be copied on this thread — the live MediaMetadata
-        // instance may recycle them as soon as we return to the session.
-        val sessionBitmap = extractSessionBitmaps(metadata)
         artHandler.post {
             if (gen != publishGen) {
                 sessionBitmap?.recycle()
@@ -148,6 +159,7 @@ object ClusterArtStore {
             if (gen != publishGen) return@post
             handler.post {
                 if (gen != publishGen) return@post
+                cancelPendingClear()
                 runCatching {
                     Settings.Global.putString(resolver, SETTINGS_ART_MEDIA_ID, mediaId)
                     if (pkg.isNotEmpty()) lastArtPackage = pkg
@@ -263,6 +275,11 @@ object ClusterArtStore {
     }
 
     private fun scheduleDeferredClear(resolver: ContentResolver, mediaId: String) {
+        // Tick retries call publishFromMetadata every ~500ms; do not reset the 2s timer.
+        if (pendingClearMediaId == mediaId && pendingClearRunnable != null) {
+            return
+        }
+        cancelPendingClear()
         pendingClearMediaId = mediaId
         val runnable = Runnable {
             pendingClearRunnable = null

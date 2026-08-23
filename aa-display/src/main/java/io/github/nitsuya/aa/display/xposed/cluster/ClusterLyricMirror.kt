@@ -38,7 +38,12 @@ object ClusterLyricMirror {
     /** Re-scan other playing sessions from LRC ticks at most this often. */
     private const val TICK_SWITCH_INTERVAL_MS = 1_000L
     /** LRC ticks skip art by default; retry when the track still has no JPEG (long intro / static title). */
-    private const val ART_RETRY_ON_TICK_MS = 1_500L
+    private const val ART_RETRY_ON_TICK_MS = 500L
+    /**
+     * After AA connect, QQ + Luna may both report PLAYING briefly — lock the first pick so
+     * title/lyric/progress cannot flap between sessions during gearhead bind.
+     */
+    private const val CONNECT_PLAYER_LOCK_MS = 20_000L
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -73,6 +78,10 @@ object ClusterLyricMirror {
     private var pendingAlbum: String = ""
     private var pendingMediaId: String = ""
     private var pendingMetadata: android.media.MediaMetadata? = null
+    @Volatile
+    private var connectLockPackage: String? = null
+    @Volatile
+    private var connectLockUntilElapsedMs = 0L
 
     private val sessionsChangedListener =
         MediaSessionManager.OnActiveSessionsChangedListener { sessions ->
@@ -167,6 +176,25 @@ object ClusterLyricMirror {
         Idle,
         Tracking,
         TrackSwitching,
+    }
+
+    /** AA display session resumed (first connect or soft reconnect). */
+    fun onAaConnected() {
+        if (!started) return
+        handler.post {
+            clearConnectLockIfExpired()
+            val sessions = sessionManager?.getActiveSessionsSafe()
+            val preferredPlaying = countPreferredPlaying(sessions)
+            if (preferredPlaying >= 2) {
+                val winner = pickControllerUnlocked(sessions)
+                if (winner != null) {
+                    armConnectLock(winner.packageName, "aa-connect-race($preferredPlaying)")
+                }
+            } else {
+                releaseConnectLock("single-active")
+            }
+            onSessionsChanged(sessions)
+        }
     }
 
     fun start(context: Context) {
@@ -266,7 +294,7 @@ object ClusterLyricMirror {
         refreshFromBound("bind")
     }
 
-    private fun pickController(sessions: List<MediaController>?): MediaController? {
+    private fun filterSessions(sessions: List<MediaController>?): List<MediaController>? {
         if (sessions.isNullOrEmpty()) return null
         val selfPkg = BuildConfig.APPLICATION_ID
         val filtered = sessions.filter { c ->
@@ -279,7 +307,18 @@ object ClusterLyricMirror {
             if (mediaId?.startsWith(ClusterLyricMediaService.MEDIA_ID_PREFIX) == true) return@filter false
             true
         }
-        if (filtered.isEmpty()) return null
+        return filtered.ifEmpty { null }
+    }
+
+    private fun pickController(sessions: List<MediaController>?): MediaController? {
+        clearConnectLockIfExpired()
+        val locked = pickLockedController(sessions)
+        if (locked != null) return locked
+        return pickControllerUnlocked(sessions)
+    }
+
+    private fun pickControllerUnlocked(sessions: List<MediaController>?): MediaController? {
+        val filtered = filterSessions(sessions) ?: return null
 
         fun isPlaying(c: MediaController): Boolean =
             isPlayingState(c.playbackState?.state ?: PlaybackState.STATE_NONE)
@@ -308,6 +347,51 @@ object ClusterLyricMirror {
 
         return filtered.filter { isActive(it) }.maxByOrNull { freshness(it) }
             ?: filtered.firstOrNull()
+    }
+
+    private fun pickLockedController(sessions: List<MediaController>?): MediaController? {
+        if (!isConnectLockActive()) return null
+        val lockPkg = connectLockPackage ?: return null
+        val locked = filterSessions(sessions)?.firstOrNull { it.packageName == lockPkg } ?: run {
+            releaseConnectLock("missing")
+            return null
+        }
+        val state = locked.playbackState?.state ?: PlaybackState.STATE_NONE
+        if (isIdlePlayback(state)) {
+            releaseConnectLock("idle")
+            return null
+        }
+        return locked
+    }
+
+    private fun countPreferredPlaying(sessions: List<MediaController>?): Int {
+        val filtered = filterSessions(sessions) ?: return 0
+        return filtered.count { c ->
+            LyricLineExtractor.isPreferredPackage(c.packageName) &&
+                isPlayingState(c.playbackState?.state ?: PlaybackState.STATE_NONE)
+        }
+    }
+
+    private fun armConnectLock(packageName: String, reason: String) {
+        connectLockPackage = packageName
+        connectLockUntilElapsedMs = SystemClock.elapsedRealtime() + CONNECT_PLAYER_LOCK_MS
+        log(TAG, "connect lock pkg=$packageName reason=$reason ms=$CONNECT_PLAYER_LOCK_MS")
+    }
+
+    private fun releaseConnectLock(reason: String) {
+        if (connectLockPackage == null && connectLockUntilElapsedMs == 0L) return
+        logDebug(TAG, "connect lock release reason=$reason pkg=$connectLockPackage")
+        connectLockPackage = null
+        connectLockUntilElapsedMs = 0L
+    }
+
+    private fun isConnectLockActive(): Boolean =
+        connectLockUntilElapsedMs > 0L && SystemClock.elapsedRealtime() < connectLockUntilElapsedMs
+
+    private fun clearConnectLockIfExpired() {
+        if (connectLockUntilElapsedMs > 0L && !isConnectLockActive()) {
+            releaseConnectLock("expired")
+        }
     }
 
     private fun refreshFromBound(reason: String) {
@@ -598,6 +682,7 @@ object ClusterLyricMirror {
      * preferred-package PLAYING ghost left behind after switching to e.g. Luna.
      */
     private fun maybeSwitchToPlayingSession(reason: String): Boolean {
+        if (isConnectLockActive() && connectLockPackage != null) return false
         if (reason == "tick") {
             val now = SystemClock.elapsedRealtime()
             if (now - lastTickSwitchElapsedMs < TICK_SWITCH_INTERVAL_MS) return false
@@ -630,6 +715,10 @@ object ClusterLyricMirror {
      * callbacks cannot flap QQ ghost PLAYING vs Luna.
      */
     private fun shouldKeepBoundPlaying(pick: MediaController): Boolean {
+        if (isConnectLockActive()) {
+            val lockPkg = connectLockPackage ?: boundPackage
+            if (lockPkg != null && pick.packageName != lockPkg) return true
+        }
         val bound = boundController ?: return false
         if (pick.sessionToken == bound.sessionToken) return false
         val pickPlaying = isPlayingState(pick.playbackState?.state ?: PlaybackState.STATE_NONE)

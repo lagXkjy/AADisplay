@@ -32,7 +32,9 @@ import java.lang.reflect.Method
  * (and other real players) keep their own Title for non-cluster UI / steering.
  *
  * StatusBar [setTitle] is updated in-place (no layout switch). HU metadata push
- * injects album when Gearhead would send an empty third line.
+ * injects lyric line and album. Same-track lyric-only lines open a short HU
+ * PlaybackStatus window: at most one natural packet, then [pushPlaybackNow] if
+ * none arrived after MediaInfo (T1 — no GAL hooks).
  */
 object AaClusterLyricEgressHook : AaHook() {
     override val tagName: String = "AAD_AaClusterLyricEgressHook"
@@ -41,6 +43,9 @@ object AaClusterLyricEgressHook : AaHook() {
     private const val READ_CACHE_TTL_MS = 200L
     private const val CACHE_SET_TITLE = "hook.AaClusterLyricEgressHook.set_title"
     private const val CACHE_META_P = "hook.AaClusterLyricEgressHook.meta_p"
+    private const val CACHE_PLAY_Q = "hook.AaClusterLyricEgressHook.play_q"
+    private const val CACHE_PLAY_L = "hook.AaClusterLyricEgressHook.play_l"
+    private const val LYRIC_ONLY_PLAYBACK_SUPPRESS_MS = 500L
     private const val PLAYBACK_EXTRAS_MEDIA_ID =
         "androidx.media.PlaybackStateCompat.Extras.KEY_MEDIA_ID"
     private const val STATUS_BAR_VIEW =
@@ -93,20 +98,36 @@ object AaClusterLyricEgressHook : AaHook() {
 
     private var setTitleMethod: Method? = null
     private var metadataPushMethod: Method? = null
+    private var playbackPushMethod: Method? = null
+    private var playbackCacheMethod: Method? = null
+    private var lastPlaybackState: Any? = null
+    private var lastPlaybackPkg: String? = null
+    private var lastHuArtist: String? = null
+    private var lastHuAlbum: String? = null
+    private var lastHuDuration: Long = -1L
+    private var lastHuArtLen: Int = -1
+    private val reenteringPlayback = ThreadLocal.withInitial { false }
+    @Volatile
+    private var pendingLyricOnlyUntilElapsedMs = 0L
+    @Volatile
+    private var lyricOnlyPlaybackSent = false
 
     override fun applyCache(
         cache: DexKitMethodCache.Session,
         lpparam: XC_LoadPackage.LoadPackageParam,
     ): Boolean {
-        if (!applyOptionalMethod(cache, lpparam, CACHE_SET_TITLE) { setTitleMethod = it } ||
-            !applyOptionalMethod(cache, lpparam, CACHE_META_P) { metadataPushMethod = it }
+        if (!applyRequiredMethod(cache, lpparam, CACHE_SET_TITLE) { setTitleMethod = it } ||
+            !applyRequiredMethod(cache, lpparam, CACHE_META_P) { metadataPushMethod = it } ||
+            !applyRequiredMethod(cache, lpparam, CACHE_PLAY_Q) { playbackPushMethod = it } ||
+            !applyRequiredMethod(cache, lpparam, CACHE_PLAY_L) { playbackCacheMethod = it }
         ) {
             return false
         }
         logDebug(
             tagName,
             "gearhead methods setTitle=${setTitleMethod != null} " +
-                "metaP=${metadataPushMethod != null} (cache)",
+                "metaP=${metadataPushMethod != null} playQ=${playbackPushMethod != null} " +
+                "playL=${playbackCacheMethod != null} (cache)",
         )
         return true
     }
@@ -117,6 +138,8 @@ object AaClusterLyricEgressHook : AaHook() {
     ) {
         cache.putRef(CACHE_SET_TITLE, setTitleMethod)
         cache.putRef(CACHE_META_P, metadataPushMethod)
+        cache.putRef(CACHE_PLAY_Q, playbackPushMethod)
+        cache.putRef(CACHE_PLAY_L, playbackCacheMethod)
     }
 
     override fun loadDexClass(bridge: DexKitBridge, lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -132,10 +155,26 @@ object AaClusterLyricEgressHook : AaHook() {
                 method.parameterTypes[0] == String::class.java &&
                 method.parameterTypes[3] == ByteArray::class.java
         }
+        playbackPushMethod = findUniqueMethod(bridge, cl, "Error updating playback status.") { method ->
+            method.returnType == Void.TYPE && method.parameterTypes.size == 2
+        }
+        playbackCacheMethod = findUniqueMethod(bridge, cl, "playbackstate cannot be null") { method ->
+            method.returnType == Void.TYPE && method.parameterTypes.size == 2
+        }
+        if (setTitleMethod == null || metadataPushMethod == null ||
+            playbackPushMethod == null || playbackCacheMethod == null
+        ) {
+            throw IllegalStateException(
+                "DexKit egress incomplete setTitle=${setTitleMethod != null} " +
+                    "metaP=${metadataPushMethod != null} playQ=${playbackPushMethod != null} " +
+                    "playL=${playbackCacheMethod != null}",
+            )
+        }
         logDebug(
             tagName,
             "gearhead methods setTitle=${setTitleMethod != null} " +
-                "metaP=${metadataPushMethod != null} (live)",
+                "metaP=${metadataPushMethod != null} playQ=${playbackPushMethod != null} " +
+                "playL=${playbackCacheMethod != null} (live)",
         )
     }
 
@@ -400,19 +439,28 @@ object AaClusterLyricEgressHook : AaHook() {
         }.getOrDefault(false)
     }
 
-    private fun applyOptionalMethod(
+    /**
+     * Resolve a required DexKit target from cache. Missing key, cached null ("-"), or
+     * classloader resolve failure drops the entry and returns false so [loadDexClass]
+     * rescans and [saveCache] rewrites coordinates.
+     */
+    private fun applyRequiredMethod(
         cache: DexKitMethodCache.Session,
         lpparam: XC_LoadPackage.LoadPackageParam,
         key: String,
-        setter: (Method?) -> Unit,
+        setter: (Method) -> Unit,
     ): Boolean {
         if (!cache.hasKey(key)) return false
-        val ref = cache.getRef(key)
-        if (ref == null) {
-            setter(null)
-            return true
+        val ref = cache.getRef(key) ?: run {
+            cache.putString(key, null)
+            logDebug(tagName, "cache miss $key (null ref), drop for rescan")
+            return false
         }
-        val method = cache.resolve(lpparam.classLoader, ref) ?: return false
+        val method = cache.resolve(lpparam.classLoader, ref) ?: run {
+            cache.putString(key, null)
+            logDebug(tagName, "cache stale $key, drop for rescan")
+            return false
+        }
         setter(method)
         return true
     }
@@ -449,6 +497,11 @@ object AaClusterLyricEgressHook : AaHook() {
         return found.values.first().also { it.isAccessible = true }
     }
 
+    private fun isLyricOnlyPlaybackWindow(): Boolean {
+        val until = pendingLyricOnlyUntilElapsedMs
+        return until > 0L && SystemClock.elapsedRealtime() < until
+    }
+
     private fun hookGearheadStatusBarAndHu() {
         setTitleMethod?.let { method ->
             try {
@@ -466,23 +519,106 @@ object AaClusterLyricEgressHook : AaHook() {
                 log(tagName, "hook setTitle failed", e)
             }
         }
+        playbackCacheMethod?.let { method ->
+            try {
+                XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        lastPlaybackState = param.args[0]
+                        lastPlaybackPkg = param.args[1] as? String
+                    }
+                })
+                logDebug(tagName, "hooked playback cache ${method.declaringClass.name}#${method.name}")
+            } catch (e: Throwable) {
+                log(tagName, "hook playback cache failed", e)
+            }
+        }
+        playbackPushMethod?.let { method ->
+            try {
+                XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        if (!isLyricOnlyPlaybackWindow()) return
+                        if (lyricOnlyPlaybackSent) {
+                            param.result = null
+                            logDebug(tagName, "drop duplicate HU playback")
+                            return
+                        }
+                        lyricOnlyPlaybackSent = true
+                    }
+                })
+                logDebug(tagName, "hooked HU playback push ${method.declaringClass.name}#${method.name}")
+            } catch (e: Throwable) {
+                log(tagName, "hook playback push failed", e)
+            }
+        }
         metadataPushMethod?.let { method ->
             try {
                 XposedBridge.hookMethod(method, object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val song = param.args[0] as? String
                         val artist = param.args[1] as? String
-                        val fresh = clusterFreshForHu(song, artist) ?: return
+                        val album = param.args[2] as? String
+                        val artLen = (param.args[3] as? ByteArray)?.size ?: 0
+                        val duration = (param.args[4] as? Number)?.toLong() ?: -1L
+                        val fresh = clusterFreshForHu(song, artist)
+                        if (fresh == null) {
+                            pendingLyricOnlyUntilElapsedMs = 0L
+                            return
+                        }
+                        val artUnchanged =
+                            artLen == lastHuArtLen ||
+                                (artLen == 0 && lastHuArtLen <= 0)
+                        val lyricOnly =
+                            lastHuArtist == artist &&
+                                lastHuAlbum == album &&
+                                lastHuDuration == duration &&
+                                lastHuDuration >= 0L &&
+                                artUnchanged
+                        lyricOnlyPlaybackSent = false
+                        pendingLyricOnlyUntilElapsedMs = if (lyricOnly) {
+                            logDebug(tagName, "HU metadata lyric-only window")
+                            SystemClock.elapsedRealtime() + LYRIC_ONLY_PLAYBACK_SUPPRESS_MS
+                        } else {
+                            0L
+                        }
+                        lastHuArtist = artist
+                        lastHuAlbum = album
+                        lastHuDuration = duration
+                        lastHuArtLen = artLen
                         // setTitle is swallowed in-place; Gearhead may keep the previous
                         // song on this push. Always write the current lyric line.
                         param.args[0] = fresh.title
                         injectShellAlbumArg(param, fresh)
+                    }
+
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        if (!isLyricOnlyPlaybackWindow()) return
+                        if (lyricOnlyPlaybackSent) return
+                        val song = param.args[0] as? String
+                        val artist = param.args[1] as? String
+                        if (clusterFreshForHu(song, artist) == null) return
+                        pushPlaybackNow(param.thisObject)
                     }
                 })
                 log(tagName, "hooked HU metadata push ${method.declaringClass.name}#${method.name}")
             } catch (e: Throwable) {
                 log(tagName, "hook metadata push failed", e)
             }
+        }
+    }
+
+    private fun pushPlaybackNow(monitor: Any) {
+        if (reenteringPlayback.get() == true) return
+        val q = playbackPushMethod ?: return
+        val state = lastPlaybackState ?: return
+        val pkg = lastPlaybackPkg ?: return
+        reenteringPlayback.set(true)
+        try {
+            q.invoke(monitor, state, pkg)
+            logDebug(tagName, "pushPlaybackNow")
+        } catch (e: Throwable) {
+            logDebug(tagName, "pushPlaybackNow failed: ${e.message}")
+        } finally {
+            reenteringPlayback.set(false)
         }
     }
 

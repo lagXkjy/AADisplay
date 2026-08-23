@@ -20,7 +20,7 @@ import java.util.Properties
 object DexKitMethodCache {
     private const val TAG = "AAD_DexKitCache"
     /** Bump when descriptor encoding or required keys change. */
-    const val SCHEMA = 1
+    const val SCHEMA = 2
 
     private const val FILE_PREFIX = "aadisplay_dexkit_"
     private const val K_SCHEMA = "fp.schema"
