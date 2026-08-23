@@ -31,7 +31,6 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitAppPickerController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.LastSplitStore
-import io.github.nitsuya.aa.display.util.ReconnectSizingTrace
 import io.github.nitsuya.aa.display.util.rewriteMotionEvent
 import io.github.nitsuya.aa.display.xposed.IVirtualDisplayCreatedListener
 import io.github.duzhaokun123.template.utils.runMain
@@ -1164,21 +1163,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         val displayWidth = baseBinding.splitContainer.width
         val displayHeight = baseBinding.splitContainer.height
         val displayDpi = resolveHostDensityDpi()
-        val trace = ReconnectSizingTrace.ENABLED
-        val hostDisplay = if (trace) {
-            baseBinding.splitContainer.display ?: view?.display ?: context?.display
-        } else null
-        val hostMode = hostDisplay?.mode
         Log.d(
             TAG,
             "requestDisplay[$reason]: ${displayWidth}x$displayHeight,$displayDpi " +
-                "requested=$isDisplayCreateRequested display=$displayId " +
-                if (trace) {
-                    "hostDisplay=${hostDisplay?.displayId ?: Display.INVALID_DISPLAY} " +
-                        "hostMode=${hostMode?.physicalWidth ?: 0}x${hostMode?.physicalHeight ?: 0}"
-                } else {
-                    ""
-                }
+                "requested=$isDisplayCreateRequested display=$displayId",
         )
         if (displayWidth <= 0 || displayHeight <= 0) return
         val (targetW, targetH) = layoutTargetSize()

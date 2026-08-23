@@ -2,7 +2,6 @@ package io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk
 
 import android.content.ContentResolver
 import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
 import com.github.kyuubiran.ezxhelper.init.InitFields
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import io.github.nitsuya.aa.display.util.CoolwalkRailStore
@@ -59,13 +58,10 @@ object AaDisplayPresentationResize {
     }
 
     private fun resolveCreateWidth(contentWidth: Int, cr: ContentResolver?): Int {
-        val snap = cr?.let { CoolwalkRailStore.read(it) } ?: CoolwalkRailStore.serverSnapshot
+        val snap = when {
+            cr != null -> CoolwalkRailStore.read(cr)
+            else -> CoolwalkRailStore.serverSnapshot
+        }
         return CoolwalkRailMath.targetPresentationWidthPx(snap, contentWidth)
     }
-
-    fun remember(vd: VirtualDisplay?) {}
-
-    fun clear() {}
-
-    fun resizeToObservedFullBleed(env: CoolwalkHookEnv, reason: String) {}
 }

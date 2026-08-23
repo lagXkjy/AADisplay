@@ -15,7 +15,6 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
 import io.github.nitsuya.aa.display.util.CoolwalkRailStore
 import io.github.nitsuya.aa.display.util.DisplayProfileSettle
-import io.github.nitsuya.aa.display.util.ReconnectSizingTrace
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkRailMath
@@ -211,12 +210,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                         "${candidate.width}*${candidate.height} " +
                         "reported=${reported.width} rail=$railW full=$fullW"
                 )
-            } else if (ReconnectSizingTrace.ENABLED) {
-                logDebug(
-                    TAG,
-                    "displayProfile keep: ${current.width}*${current.height} " +
-                        "reported=${reported.width} rail=$railW full=$fullW"
-                )
             }
             // Rail / starve often lands after the first soft-reconnect create; one retry.
             scheduleRailSettleRetry()
@@ -298,14 +291,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 densityDpi = densityDpi,
                 newSession = mSplitController == null
             )
-            if (ReconnectSizingTrace.ENABLED) {
-                logDebug(
-                    TAG,
-                    "onCreateSplitDisplay resolved profile: incoming=${width}x${height},${densityDpi} " +
-                        "resolved=${profile.width}x${profile.height},${profile.densityDpi} " +
-                        "existing=${mSplitController != null}"
-                )
-            }
             mSplitController?.apply {
                 // Soft reconnect: always cancel Delay Destroy and rebind surfaces/policies.
                 mSessionPolicy?.onResume()

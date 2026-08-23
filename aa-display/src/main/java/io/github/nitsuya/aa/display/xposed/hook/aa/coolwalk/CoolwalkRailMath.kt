@@ -286,11 +286,6 @@ object CoolwalkRailMath {
         return full
     }
 
-    fun shouldExpandPresentationCreate(snapshot: RailSnapshot, contentWidth: Int): Boolean {
-        val target = targetPresentationWidthPx(snapshot, contentWidth)
-        return target > contentWidth && target > 0
-    }
-
     fun railHitWidthPx(snapshot: RailSnapshot): Int {
         val fullW = layoutWidthPx(snapshot)
         val observed = snapshot.touchRailWidthPx
@@ -302,20 +297,5 @@ object CoolwalkRailMath {
         }
         if (observed in 8..240) return observed
         return 48
-    }
-
-    fun settleProfileWidth(
-        reportedWidth: Int,
-        reportedHeight: Int,
-        railWidthPx: Int,
-        fullHuWidthPx: Int,
-    ): Int {
-        val full = fullHuWidthPx.coerceAtLeast(reportedWidth).coerceAtLeast(1)
-        val h = reportedHeight.coerceAtLeast(1)
-        if (railWidthPx <= 1) return full
-        if (h < railWidthPx * 2 && railWidthPx !in 32..160) return full
-        val contentW = full - railWidthPx
-        if (contentW < full / 2 || contentW < 200) return full
-        return contentW
     }
 }

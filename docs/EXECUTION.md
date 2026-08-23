@@ -139,11 +139,16 @@ DexKit 查询 **不要** 写 `searchPackages = listOf("")`（2.0.7 会只搜无�
 
 1. 把 Coolwalk 左侧 rail 相关 dimen **置 0**，让内容区拿满 HU 宽。
 2. `LayoutInfo` 强制 `hasVerticalRail=true`，避免 800×480 掉回底栏。
-3. 改 FacetBar：藏 launcher/dashboard 图标，把内容区让给 `AaDisplayActivity`。
+3. `CoolwalkFacetChrome`：折叠 facet 列、全窗扫 gutter；`GhFacetBar` VD **饿成 1×H**（见 [COOLWALK_FACETBAR.md](COOLWALK_FACETBAR.md)）。
 4. `rewriteVirtualDisplayArgs`：名为 `Dashboard` 的 VD **饿成 1×1**（空媒体卡）。
-5. Auto Open：武装后立刻 + 分档重试调用 `CarSystemUiControllerService` 静态 `start(Intent)`（组件为本模块 `AaActivityService`）；另在 SysUi **car-connected** 回调上踢一次（对齐 Coolwalk 排队 flush）。收到 `ACTION_AA_DISPLAY_SHOWN` 才停重试。
+5. `content_bounds` 扩满 → 广播 `ACTION_COOLWALK_FULL_BLEED` → `AaMainFragment.requestDisplay`。
+6. Auto Open：武装后立刻 + 分档重试调用 `CarSystemUiControllerService` 静态 `start(Intent)`；`car-connected` 再踢一次；收到 `ACTION_AA_DISPLAY_SHOWN` 才停。
 
-**`:car`（HU 输入 / content_bounds）**
+**AADisplay 进程（非 gearhead）**
+
+- `AaDisplayProcessHook` → `AaDisplayPresentationResize`：仅在 **createVirtualDisplay** 时按 `CoolwalkRailStore` 加宽 CarActivity presentation（禁止 gearhead 侧 resize，会黑屏）。
+
+**`:car`（HU 输入 / content_bounds 镜像）**
 
 1. 改写 projection `content_bounds`，不要再给左侧留 rail 矩形。
 2. Hook HU touch dispatch：落在原 rail 带的触摸 **偷走**，经 `CoreManager` 注入。
@@ -220,14 +225,17 @@ VD flags（`SplitVdLifecycle.vdFlags`）——**不要加 `VIRTUAL_DISPLAY_FLAG_
 分屏时 **VD 缓冲 = 窗格 TextureView 尺寸**（HU × ratio − 分隔条）。全屏时两 VD 都是满 HU 缓冲，AA UI 只显示一块、底下那块继续渲染。  
 不要改回「两窗都满幅再 crop」——半窗会变成全屏布局的中心切片 + 黑边。
 
-### 5.4 Display profile lock
+### 5.4 Display profile lock（FacetBar / 重连分辨率）
 
-`CoreManagerService.resolveDisplayProfile`：
+`CoreManagerService.resolveDisplayProfile` + `DisplayProfileSettle`（**单一 settle 规则**，已取代 grow/shrink 双梯）：
 
-- 新会话：锁定本次 `w×h,dpi`。
-- 软重连：同方向下 **允许只增不减**（收回 rail 后变大）；缩小/抖动保持旧锁，避免闪烁。
-- 方向变了才 relock。
-- 真正 `onDestroyDisplay` 走完才 `clearDisplayProfileLock`。
+- **live FacetBar VD 条带 > 1px** → settle 到 `fullHU − rail`（content 槽）。
+- **条带 ≤ 1（已 starve）** → 若 reported 仍是 content slot 则暂保持 reported；否则 full HU。
+- **不要用 `touchRailWidthPx` 做 profile**（仅 `:car` 触控 steal）；live 条带来自 system_server 扫 `DisplayManager`。
+- 软重连首次 create 后 **450ms `rail-settle` 重试**；`reportCoolwalkRailSnapshot` 在 full 变大或 `FullBleed` 时也会触发。
+- 新会话：锁定 settle 结果；方向变了才 relock；真正 `onDestroyDisplay` 走完才 `clearDisplayProfileLock`。
+
+坑点与模块地图：**[COOLWALK_FACETBAR.md](COOLWALK_FACETBAR.md)**（黑条、gutter、presentation 黑屏、跨车污染等）。
 
 ---
 
@@ -467,7 +475,8 @@ flowchart TB
 | 开机 / 作用域 / 进哪个进程 | `XposedInit.kt`、`AndroidHook.kt`、`AndroidAutoHook.kt` |
 | Binder 拿不到 / 未激活 | `BridgeService.kt`、`CoreManager.kt`、`CoreApi.kt`、`MainActivity.kt` |
 | 车机没自动打开本模块 | `AaUiHook` Auto Open、`AaActivityService`、`AaSignatureHook` |
-| 双窗创建 / 闪烁 / 尺寸 | `AaMainFragment.requestDisplay`、`CoreManagerService` profile lock、`SplitVdLifecycle` |
+| 双窗创建 / 闪烁 / 尺寸 | `AaMainFragment.requestDisplay`、`CoreManagerService` profile lock、`DisplayProfileSettle`、`SplitVdLifecycle` |
+| FacetBar / 左轨黑条 / 重连 800/720 | [COOLWALK_FACETBAR.md](COOLWALK_FACETBAR.md)、`CoolwalkFacetChrome`、`CoolwalkRailCoordinator` |
 | 断线黑屏 / 亮手机 / 180s | `DisplaySessionPolicy.kt` |
 | 分屏比例 / 全屏 peel | `SplitDividerView`、`AaMainFragment.setupDivider`、`setSplitFullscreen` |
 | 触控穿窗 / peel 点不动 / 锁屏 peel | `AaUiHook.hookHuTouchDispatchRedirect`、`touchAaDisplay`、`SplitLockedPeelController` |

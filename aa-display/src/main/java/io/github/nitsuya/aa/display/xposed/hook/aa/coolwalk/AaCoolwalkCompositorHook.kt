@@ -1,53 +1,19 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk
 
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import com.github.kyuubiran.ezxhelper.init.InitFields
 import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import com.github.kyuubiran.ezxhelper.utils.loadClass
-import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import kotlin.math.abs
 
 object AaCoolwalkCompositorHook {
 
-    private var carResizeReceiverRegistered = false
-    @Volatile
-    private var carResizeEnv: CoolwalkHookEnv? = null
-    private val carFullBleedReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != AABroadcastConst.ACTION_COOLWALK_FULL_BLEED) return
-            val env = carResizeEnv ?: return
-            CoolwalkRailCoordinator.syncExternalTruth(InitFields.appContext.contentResolver)
-            AaDisplayPresentationResize.resizeToObservedFullBleed(env, "full-bleed-broadcast")
-        }
-    }
-
     fun install(env: CoolwalkHookEnv) {
         hookVirtualDisplaySizing(env)
-    }
-
-    fun installCarPresentationResize(env: CoolwalkHookEnv) {
-        carResizeEnv = env
-        if (carResizeReceiverRegistered) return
-        try {
-            InitFields.appContext.registerReceiver(
-                carFullBleedReceiver,
-                IntentFilter(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED),
-                Context.RECEIVER_EXPORTED,
-            )
-            carResizeReceiverRegistered = true
-            logDebug(CoolwalkHookEnv.TAG, "AaUiHook: registered car presentation resize receiver")
-        } catch (e: Throwable) {
-            log(CoolwalkHookEnv.TAG, "AaUiHook: register car presentation resize receiver failed", e)
-        }
     }
 
     private fun hookVirtualDisplaySizing(env: CoolwalkHookEnv) {
@@ -64,11 +30,9 @@ object AaCoolwalkCompositorHook {
                 method.hookBefore { param ->
                     applyRewrite(env, param, nameIndex = 0, widthIndex = 1, heightIndex = 2)
                 }
-                method.hookAfter { param ->
+                method.                hookAfter { param ->
                     val name = param.args[0] as? String
-                    val vd = param.result as? VirtualDisplay
-                    rememberRailVirtualDisplay(name, vd)
-                    rememberAaDisplayPresentation(name, vd)
+                    rememberRailVirtualDisplay(name, param.result as? VirtualDisplay)
                 }
                 hooked++
             }
@@ -125,7 +89,6 @@ object AaCoolwalkCompositorHook {
                 val name = runCatching { vd.display?.name }.getOrNull()
                 applyRewrite(env, param, name = name, widthIndex = 0, heightIndex = 1)
                 rememberRailVirtualDisplay(name, vd)
-                rememberAaDisplayPresentation(name, vd)
             }
         } catch (e: Throwable) {
             log(CoolwalkHookEnv.TAG, "AaUiHook: hook VirtualDisplay.resize failed", e)
@@ -191,23 +154,6 @@ object AaCoolwalkCompositorHook {
         CoolwalkRailCoordinator.rememberFullHuSize(width, height)
         if (rewrite.width != width) param.args[widthIndex] = rewrite.width
         if (rewrite.height != height) param.args[heightIndex] = rewrite.height
-        if (isAaDisplayPresentationVd(resolvedName)) {
-            log(
-                CoolwalkHookEnv.TAG,
-                "AaUiHook: rewrite AaDisplay presentation ${width}x$height → " +
-                    "${rewrite.width}x${rewrite.height}",
-            )
-        }
-    }
-
-    private fun isAaDisplayPresentationVd(name: String?): Boolean {
-        if (name.isNullOrEmpty()) return false
-        return name.contains("AaDisplayActivity", ignoreCase = true)
-    }
-
-    private fun rememberAaDisplayPresentation(name: String?, vd: VirtualDisplay?) {
-        if (!isAaDisplayPresentationVd(name)) return
-        AaDisplayPresentationResize.remember(vd)
     }
 
     private fun rememberRailVirtualDisplay(name: String?, vd: VirtualDisplay?) {

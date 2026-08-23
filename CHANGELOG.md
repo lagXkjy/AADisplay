@@ -6,6 +6,7 @@
 - **藏车机媒体壳图标：** 删除 `AaClusterMediaIconHideHook`（不再 hook `queryIntentServices` 过滤本包壳）。全屏投影下桌面列表本就会闪，隐藏收益低且增加 hook 面。
 
 ### Changed
+- **FacetBar 重构文档与试验代码清理：** 新增 [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)（状态机、四路回收、profile settle、坑点）；移除 `ReconnectSizingTrace`、未使用的 `:car` presentation resize 广播、`AaDisplayPresentationResize` 空桩、`CoolwalkRailMath` 死代码；同步 [EXECUTION.md](docs/EXECUTION.md) §5.4。
 - **仪表歌词 0:00 试验层清理：** 移除已证伪的 GAL skip、playback DexKit 解析、Mirror 方案 C 整秒延迟、壳 lyric-only pre-progress；Egress 仅保留 metadata 注入、`setTitle` 原地、HU album 补全。
 - **仪表歌词时钟试验备忘：** [docs/CLUSTER_LYRIC_CLOCK.md](docs/CLUSTER_LYRIC_CLOCK.md) 含 **v5～v11 真机矩阵**（2026-08-23 奥迪）：歌词须 HU song；v8/v10 Title+进度 OK 仍闪 0:00；v11 HU 歌词+GAL 曲名仍闪，已回滚。回滚后补回 HU `song`=当前句（不改 GAL），避免 `setTitle` 原地拦截后横条停在旧句。
 - **分屏应用选择器加速：** launchable 列表进程内缓存 + 会话预热；图标懒加载；「最近」改用 `LastSplitStore`/occupancy 包名，不再拉完整 `recentTask` Bitmap IPC。

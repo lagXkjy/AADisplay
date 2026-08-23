@@ -232,7 +232,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 | Xposed 入口 / 包路由 | `xposed/XposedInit.kt` |
 | 系统 VirtualDisplay / Binder 桥 | `xposed/hook/AndroidHook.kt`、`CoreManagerService.kt` |
 | VD DPI pin / 竖屏 letterbox 铺满 / Presentation 拦截 / IME 落屏 | `xposed/hook/VdDensityPin.kt`、`VdOrientationFill.kt`、`PanePresentationGuard.kt`、`VdImeDisplayPin.kt` |
-| 重连分辨率结算（HU vs 内容区） | `util/DisplayProfileSettle.kt` + `CoreManagerService.resolveDisplayProfile`；`AaUiHook` starve `GhFacetBar` |
+| 重连分辨率结算（HU vs 内容区） | [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)、`util/DisplayProfileSettle.kt` + `CoreManagerService.resolveDisplayProfile`；`AaUiHook` starve `GhFacetBar` |
 | 仪表横条歌词（AA Title） | `xposed/cluster/ClusterLyricMirror.kt`、`LyricLineExtractor.kt`；`service/ClusterLyricMediaService.kt`（`:cluster`）；gearhead `AaMediaAllowlistHook` / `AaClusterLyricEgressHook` |
 | **仪表歌词换句 / 0:00 / 跳秒（试验备忘）** | [docs/CLUSTER_LYRIC_CLOCK.md](docs/CLUSTER_LYRIC_CLOCK.md) |
 | AA 钩子总控 | `xposed/hook/AndroidAutoHook.kt` |

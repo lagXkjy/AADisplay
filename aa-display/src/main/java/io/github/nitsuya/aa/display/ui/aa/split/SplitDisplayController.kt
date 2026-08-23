@@ -21,7 +21,6 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.PmCaches
-import io.github.nitsuya.aa.display.util.ReconnectSizingTrace
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -316,14 +315,6 @@ class SplitDisplayController(
         mWidth = w
         mHeight = h
         mDensityDpi = dpi
-        if (ReconnectSizingTrace.ENABLED) {
-            logDebug(
-                TAG,
-                "onReconnected profile=${mWidth}x${mHeight},${mDensityDpi} " +
-                    "changed=$profileChanged " +
-                    "surfaces=${mPrimarySurface != null}/${mSecondarySurface != null}"
-            )
-        }
         // Identical soft-reconnect profile: skip expensive VD resize; still re-assert policies.
         if (profileChanged) {
             vd.resizePanesInternal("reconnect")

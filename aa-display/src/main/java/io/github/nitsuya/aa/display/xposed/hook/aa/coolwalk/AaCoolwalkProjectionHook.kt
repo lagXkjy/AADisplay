@@ -208,7 +208,6 @@ object AaCoolwalkProjectionHook {
         ).second
         CoolwalkRailCoordinator.dispatchActions(actions)
         CoolwalkFacetChrome.reclaimAllWindowGutters("reconnect:$source")
-        AaDisplayPresentationResize.clear()
         AaCoolwalkAutoOpenHook.resetFullBleedRelaunch(env)
         AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "projection-reconnect")
     }
