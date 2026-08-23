@@ -7,8 +7,8 @@
 
 ### Changed
 - **FacetBar 重构文档与试验代码清理：** 新增 [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)（状态机、四路回收、profile settle、坑点）；移除 `ReconnectSizingTrace`、未使用的 `:car` presentation resize 广播、`AaDisplayPresentationResize` 空桩、`CoolwalkRailMath` 死代码；同步 [EXECUTION.md](docs/EXECUTION.md) §5.4。
-- **仪表歌词 0:00 试验层清理：** 移除已证伪的 GAL skip、playback DexKit 解析、Mirror 方案 C 整秒延迟、壳 lyric-only pre-progress；Egress 仅保留 metadata 注入、`setTitle` 原地、HU album 补全。
-- **仪表歌词时钟试验备忘：** [docs/CLUSTER_LYRIC_CLOCK.md](docs/CLUSTER_LYRIC_CLOCK.md) 含 **v5～v11 真机矩阵**（2026-08-23 奥迪）：歌词须 HU song；v8/v10 Title+进度 OK 仍闪 0:00；v11 HU 歌词+GAL 曲名仍闪，已回滚。回滚后补回 HU `song`=当前句（不改 GAL），避免 `setTitle` 原地拦截后横条停在旧句。
+- **仪表歌词 T2-A 外推整秒补包：** `pushPlaybackNow` 用 `ClusterLyricStore.extrapolatePosition` 当下整秒克隆 Gearhead `AaPlaybackState`，不再重放 `play_l` 过期快照（失败 fallback T1）。见 `docs/CLUSTER_LYRIC_CLOCK.md` §5。
+- **仪表歌词时钟文档：** [docs/CLUSTER_LYRIC_CLOCK.md](docs/CLUSTER_LYRIC_CLOCK.md) 更新为 **T2-A** 当前落地。
 - **分屏应用选择器加速：** launchable 列表进程内缓存 + 会话预热；图标懒加载；「最近」改用 `LastSplitStore`/occupancy 包名，不再拉完整 `recentTask` Bitmap IPC。
 - **热路径减负（歌词 + 触控）：** 同句歌词跳过 Settings.Global 三写（靠 5s `touch` keepalive）；LRC 按 mediaId+blob 缓存解析，300ms tick 只二分取句；`:cluster` 不再观察 `updated_ms`；`injectInputEvent` 缓存 `InputEvent.setDisplayId` Method。
 - **r11-T→r12 审计收敛：** 去掉试验叠层——重连缩窗仅服务端 `shrink-auto`（删客户端 900/1700ms `lastCreate` bust）；soft-reconnect 同 profile 跳过 VD resize；AutoOpen 梯子收为 `0/1.5/5/12/24s` 且 `REARM_GAP≥末档`，保留 car-connected kick；`AaClusterLyricEgressHook` 仅改写 `aadisplay.cluster:` 壳 MEDIA_ID；歌词 `warmStart` 不再每句触发；Allowlist unknown-sources pref 仅在 pkg-bool 未命中时回退。
@@ -27,7 +27,7 @@
 - **左侧导航栏黑条重连复发：** FacetBar 窗口一打 tag 就停掉回收，真正占着 ~107px 的 GhostActivity 宿主从未被扫到。改为每次 ensure / attach / collapse / starve 都扫进程内全部窗口；inject 成功即停 poll，晚到 chrome 靠 LayoutInfo / `windowAttach` 再武装。
 - **左侧黑条重连后不消（content 1305 / HU 1412）：** `:car` 未把轨宽 dimen 打成 0，`GhLifecycleService` 仍发 `Rect(0,0,HU−rail)`；FacetBar 已饿成 1px，合成器留下 107px 空槽。`:car` 同样 zero dimens + VD starve/expand；`content_bounds` 把内容槽扩回已观测全宽。
 - **仪表进度双外推：** 壳 session 写入原始采样 + `positionAtElapsedMs`；Egress `getPlaybackState` 写入已外推位置 + `elapsedRealtime()`；位置不超过 duration。
-- **仪表换句闪 0:00（已知限制）：** 奥迪 HU `song` 变即重置显示；Title/进度正常，无代码层修复。详见 `docs/CLUSTER_LYRIC_CLOCK.md` §5 矩阵。
+- **仪表换句时间反复（T2-A）：** `pushPlaybackNow` 改为 Store 外推整秒克隆 `AaPlaybackState`，消除 T1 快照 push 导致的 `0:29→0:30→0:29` 回退（窗前 natural 包若仍打架见 T2-B）。
 - **封面 recycled bitmap：** Egress 解码缓存只丢引用不 `recycle`；session 封面一律 `ARGB_8888` copy。
 - **歌词 MSM 空启动卡死：** `MediaSessionManager` 为空时 `started=false` 并 2s/10s 重试（上限 8）。
 - **快句歌词被 200ms 节流丢掉：** 间隔内记下最新一句，到期 flush。
@@ -44,7 +44,7 @@
 3. QQ 车载/HD 横条歌词随句切换（快句不丢）；同句 hold 时 Settings 标题无每 300ms 刷、进度最多约 1s 一写；媒体列表出现壳图标可接受
 4. 方控短按仍控真实播放器（Egress 不再改写 QQ Title）
 5. QQ 与汽水同时后台：只跟正在播的源；切到汽水未出封面时不残留 QQ 封面；QQ 车载↔HD 同曲仍可晚到封面；暂停 120s 清空不会误清刚切过去的源
-5b. AA 顶栏与奥迪仪表歌词随句刷新；换句不闪 0:00、剩余时间不倒跳 1 秒；真切歌才重置
+5b. AA 顶栏与奥迪仪表歌词随句刷新；换句不闪 0:00；无 `0:29→0:30→0:29→0:32` 式时间反复；真切歌才重置
 6. 分屏栈切换 / Recent 置顶 / 触控滑动无明显变慢
 7. 左轨触控仍能注入 AaDisplay（starve 后 hit 带宽用观测轨宽）
 

@@ -104,7 +104,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 ### LSPosed scope
 
 见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`。改 scope 会影响模块生效范围，勿随意删改。
-仪表横条歌词：QQ 音乐车载（`com.tencent.qqmusiccar` → `METADATA_KEY_LYRIC`）+ QQ 音乐 HD（`com.tencent.qqmusicpad` → 同字段）+ 汽水（`com.luna.music`）；`ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title 出站。换句仍改 TITLE；`AaClusterLyricEgressHook` 读壳 metadata 注入歌词/封面、HU 出站补 album、`setTitle` 原地改字（AA 顶栏）；同曲换句不 `scheduleProgressReassert`（防跳秒）。MEDIA_ID 按曲稳定（不含 artRevision）；换句仍可能闪 0:00（车机固件，见 `docs/CLUSTER_LYRIC_CLOCK.md`）。`AaMediaAllowlistHook` 免开未知来源。LSPosed scope 仅 `android` + `gearhead`。
+仪表横条歌词：QQ 音乐车载（`com.tencent.qqmusiccar` → `METADATA_KEY_LYRIC`）+ QQ 音乐 HD（`com.tencent.qqmusicpad` → 同字段）+ 汽水（`com.luna.music`）；`ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title 出站。换句仍改 TITLE；`AaClusterLyricEgressHook` 读壳 metadata 注入歌词/封面、HU 出站补 album、`setTitle` 原地改字（AA 顶栏）；同曲换句不 `scheduleProgressReassert`；Egress T2-A：`play_q`/`play_l` 500ms 窗 + `pushPlaybackNow`（Store 外推整秒，不 hook GAL）。MEDIA_ID 按曲稳定（不含 artRevision）；真机不闪 0:00（见 `docs/CLUSTER_LYRIC_CLOCK.md`）。`AaMediaAllowlistHook` 免开未知来源。LSPosed scope 仅 `android` + `gearhead`。
 
 ## 4. 构建与验证
 

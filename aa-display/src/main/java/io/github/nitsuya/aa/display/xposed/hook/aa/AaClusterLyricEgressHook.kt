@@ -1,10 +1,12 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa
 
+import android.content.ContentResolver
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.PlaybackState
 import android.os.Bundle
 import android.os.SystemClock
+import android.support.v4.media.session.PlaybackStateCompat
 import android.view.View
 import android.widget.TextView
 import com.github.kyuubiran.ezxhelper.init.InitFields
@@ -22,6 +24,7 @@ import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType
+import java.lang.reflect.Field
 import java.lang.reflect.Method
 
 /**
@@ -34,7 +37,7 @@ import java.lang.reflect.Method
  * StatusBar [setTitle] is updated in-place (no layout switch). HU metadata push
  * injects lyric line and album. Same-track lyric-only lines open a short HU
  * PlaybackStatus window: at most one natural packet, then [pushPlaybackNow] if
- * none arrived after MediaInfo (T1 — no GAL hooks).
+ * none arrived after MediaInfo (T2-A: push uses Store extrapolated whole seconds).
  */
 object AaClusterLyricEgressHook : AaHook() {
     override val tagName: String = "AAD_AaClusterLyricEgressHook"
@@ -46,6 +49,8 @@ object AaClusterLyricEgressHook : AaHook() {
     private const val CACHE_PLAY_Q = "hook.AaClusterLyricEgressHook.play_q"
     private const val CACHE_PLAY_L = "hook.AaClusterLyricEgressHook.play_l"
     private const val LYRIC_ONLY_PLAYBACK_SUPPRESS_MS = 500L
+    /** Gearhead [AaPlaybackState] parent wrapper field holding [PlaybackStateCompat]. */
+    private const val GEARHEAD_STATE_WRAPPER_FIELD = "b"
     private const val PLAYBACK_EXTRAS_MEDIA_ID =
         "androidx.media.PlaybackStateCompat.Extras.KEY_MEDIA_ID"
     private const val STATUS_BAR_VIEW =
@@ -111,6 +116,13 @@ object AaClusterLyricEgressHook : AaHook() {
     private var pendingLyricOnlyUntilElapsedMs = 0L
     @Volatile
     private var lyricOnlyPlaybackSent = false
+    @Volatile
+    private var cachedWrapperField: Field? = null
+
+    private data class PushPlaybackBuild(
+        val state: Any,
+        val storeSec: Long,
+    )
 
     override fun applyCache(
         cache: DexKitMethodCache.Session,
@@ -406,6 +418,54 @@ object AaClusterLyricEgressHook : AaHook() {
         return progress
     }
 
+    /** Push path bypasses the 200ms progress cache for a fresh extrapolation. */
+    private fun readProgressFresh(cr: ContentResolver): ClusterLyricStore.Progress? =
+        ClusterLyricStore.readProgress(cr)
+
+    private fun alignWholeSecondMs(positionMs: Long): Long =
+        (positionMs.coerceAtLeast(0L) / 1000L) * 1000L
+
+    private fun unwrapPlaybackCompat(aaState: Any): PlaybackStateCompat? = runCatching {
+        val field = cachedWrapperField ?: run {
+            val parent = aaState.javaClass.superclass ?: return@runCatching null
+            parent.getDeclaredField(GEARHEAD_STATE_WRAPPER_FIELD).also {
+                it.isAccessible = true
+                cachedWrapperField = it
+            }
+        }
+        field.get(aaState) as? PlaybackStateCompat
+    }.getOrNull()
+
+    private fun mapCompatPlaybackState(playbackState: Int): Int = when (playbackState) {
+        PlaybackState.STATE_PLAYING -> PlaybackStateCompat.STATE_PLAYING
+        PlaybackState.STATE_PAUSED -> PlaybackStateCompat.STATE_PAUSED
+        PlaybackState.STATE_BUFFERING -> PlaybackStateCompat.STATE_BUFFERING
+        PlaybackState.STATE_STOPPED -> PlaybackStateCompat.STATE_STOPPED
+        else -> PlaybackStateCompat.STATE_PLAYING
+    }
+
+    /**
+     * Clone the cached Gearhead [AaPlaybackState] with Store-extrapolated position
+     * (whole seconds) instead of replaying a stale [lastPlaybackState] snapshot.
+     */
+    private fun buildAaPlaybackStateForPush(template: Any): PushPlaybackBuild? = runCatching {
+        val cr = InitFields.appContext.contentResolver
+        val progress = readProgressFresh(cr) ?: return@runCatching null
+        val compat = unwrapPlaybackCompat(template) ?: return@runCatching null
+        val positionMs = alignWholeSecondMs(ClusterLyricStore.extrapolatePosition(progress))
+        val patchedCompat = PlaybackStateCompat.Builder(compat)
+            .setState(
+                mapCompatPlaybackState(progress.playbackState),
+                positionMs,
+                progress.playbackSpeed,
+                SystemClock.elapsedRealtime(),
+            )
+            .build()
+        val ctor = template.javaClass.getConstructor(compat.javaClass)
+        val aaState = ctor.newInstance(patchedCompat)
+        PushPlaybackBuild(aaState, positionMs / 1000L)
+    }.getOrNull()
+
     /** Only our invisible shell session — never rewrite QQ / Spotify titles. */
     private fun isClusterShellMetadata(metadata: Any?): Boolean {
         if (metadata == null) return false
@@ -609,12 +669,21 @@ object AaClusterLyricEgressHook : AaHook() {
     private fun pushPlaybackNow(monitor: Any) {
         if (reenteringPlayback.get() == true) return
         val q = playbackPushMethod ?: return
-        val state = lastPlaybackState ?: return
+        val template = lastPlaybackState ?: return
         val pkg = lastPlaybackPkg ?: return
+        val built = buildAaPlaybackStateForPush(template)
+        val state = built?.state ?: template
         reenteringPlayback.set(true)
         try {
             q.invoke(monitor, state, pkg)
-            logDebug(tagName, "pushPlaybackNow")
+            if (built != null) {
+                logDebug(
+                    tagName,
+                    "pushPlaybackNow storeSec=${built.storeSec} fallback=${state === template}",
+                )
+            } else {
+                logDebug(tagName, "pushPlaybackNow fallback=true")
+            }
         } catch (e: Throwable) {
             logDebug(tagName, "pushPlaybackNow failed: ${e.message}")
         } finally {
