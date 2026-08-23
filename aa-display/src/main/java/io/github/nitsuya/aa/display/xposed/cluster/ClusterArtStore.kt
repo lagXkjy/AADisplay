@@ -66,6 +66,13 @@ object ClusterArtStore {
     @Volatile
     private var lastArtPackage: String = ""
 
+    /**
+     * mediaId of the last JPEG successfully written. Survives [clear] so a track change
+     * that clears Settings before Luna drops the previous cover still rejects stale art.
+     */
+    @Volatile
+    private var lastWrittenMediaId: String = ""
+
     /** Bumped to drop in-flight encode/write after a newer publish or [clear]. */
     @Volatile
     private var publishGen: Long = 0L
@@ -96,13 +103,19 @@ object ClusterArtStore {
         metadata: MediaMetadata?,
         mediaId: String,
         packageName: String = "",
+        /** Tick burst after track change — re-encode even when JPEG size matches. */
+        forceRescan: Boolean = false,
     ) {
         if (mediaId.isEmpty()) return
         val pkg = packageName.trim()
         val cachedId = Settings.Global.getString(resolver, SETTINGS_ART_MEDIA_ID)?.trim().orEmpty()
+        val mediaChanged = mediaId.isNotEmpty() && (
+            (cachedId.isNotEmpty() && cachedId != mediaId) ||
+                (lastWrittenMediaId.isNotEmpty() && lastWrittenMediaId != mediaId)
+            )
         // Session bitmaps must be copied on this thread — the live MediaMetadata
         // instance may recycle them as soon as we return to the session.
-        val sessionBitmap = extractSessionBitmaps(metadata)
+        val sessionBitmapRaw = extractSessionBitmaps(metadata)
         val qqHandoff =
             pkg.isNotEmpty() &&
                 lastArtPackage.isNotEmpty() &&
@@ -112,10 +125,26 @@ object ClusterArtStore {
             pkg.isNotEmpty() &&
                 lastArtPackage.isNotEmpty() &&
                 !LyricLineExtractor.sameCoverSource(lastArtPackage, pkg)
+        // Title often updates before art; on track change the session bitmap is usually
+        // still the previous cover — writing it under the new mediaId blocks tick retries.
+        val sessionBitmap =
+            if (mediaChanged && sessionBitmapRaw != null && !qqHandoff) {
+                logDebug(
+                    TAG,
+                    "ignore stale session bitmap written=$lastWrittenMediaId cached=$cachedId -> $mediaId",
+                )
+                sessionBitmapRaw.recycle()
+                null
+            } else {
+                sessionBitmapRaw
+            }
         // Same-app track change (e.g. Luna): drop stale JPEG immediately. QQ car↔HD
         // handoff keeps the 2s deferred window when the new session has no art yet.
-        if (cachedId.isNotEmpty() && cachedId != mediaId && sessionBitmap == null && !qqHandoff) {
-            logDebug(TAG, "stale art $cachedId -> $mediaId (immediate clear)")
+        if (mediaChanged && sessionBitmap == null && !qqHandoff) {
+            logDebug(
+                TAG,
+                "stale art written=$lastWrittenMediaId cached=$cachedId -> $mediaId (immediate clear)",
+            )
             clear(resolver)
         }
         val gen = ++publishGen
@@ -143,17 +172,6 @@ object ClusterArtStore {
             if (jpegBytes == null || jpegBytes.isEmpty()) return@post
             if (gen != publishGen) return@post
             val file = artFile()
-            if (file.exists() && file.length() == jpegBytes.size.toLong()) {
-                val cachedId = Settings.Global.getString(resolver, SETTINGS_ART_MEDIA_ID)?.trim().orEmpty()
-                if (cachedId == mediaId) {
-                    handler.post {
-                        if (gen != publishGen) return@post
-                        if (pkg.isNotEmpty()) lastArtPackage = pkg
-                    }
-                    logDebug(TAG, "art unchanged mediaId=$mediaId")
-                    return@post
-                }
-            }
             val wrote = atomicWriteJpeg(jpegBytes)
             if (!wrote) return@post
             if (gen != publishGen) return@post
@@ -162,6 +180,7 @@ object ClusterArtStore {
                 cancelPendingClear()
                 runCatching {
                     Settings.Global.putString(resolver, SETTINGS_ART_MEDIA_ID, mediaId)
+                    lastWrittenMediaId = mediaId
                     if (pkg.isNotEmpty()) lastArtPackage = pkg
                     val revision = bumpRevision(resolver)
                     logDebug(TAG, "art saved mediaId=$mediaId bytes=${file.length()} rev=$revision")

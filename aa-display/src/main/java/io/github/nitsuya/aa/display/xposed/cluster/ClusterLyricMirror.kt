@@ -37,8 +37,10 @@ object ClusterLyricMirror {
     private const val START_RETRY_MAX = 8
     /** Re-scan other playing sessions from LRC ticks at most this often. */
     private const val TICK_SWITCH_INTERVAL_MS = 1_000L
-    /** LRC ticks skip art by default; retry when the track still has no JPEG (long intro / static title). */
-    private const val ART_RETRY_ON_TICK_MS = 500L
+  /** LRC ticks skip art by default; retry when the track still has no JPEG (long intro / static title). */
+    private const val ART_RETRY_ON_TICK_MS = 300L
+    /** After track change, poll cover independently of lyric line updates (long intro). */
+    private const val ART_BURST_AFTER_TRACK_MS = 60_000L
     /**
      * After AA connect, QQ + Luna may both report PLAYING briefly — lock the first pick so
      * title/lyric/progress cannot flap between sessions during gearhead bind.
@@ -73,6 +75,7 @@ object ClusterLyricMirror {
     private var startRetryCount = 0
     private var lastTickSwitchElapsedMs: Long = 0L
     private var lastArtRetryElapsedMs: Long = 0L
+    private var artBurstUntilElapsedMs: Long = 0L
     private var pendingTitle: String? = null
     private var pendingArtist: String = ""
     private var pendingAlbum: String = ""
@@ -423,6 +426,7 @@ object ClusterLyricMirror {
         if (trackChanged) {
             phase = Phase.TrackSwitching
             lastArtRetryElapsedMs = 0L
+            artBurstUntilElapsedMs = SystemClock.elapsedRealtime() + ART_BURST_AFTER_TRACK_MS
             handler.removeCallbacks(trackSwitchSettle)
             handler.postDelayed(trackSwitchSettle, TRACK_SWITCH_DEBOUNCE_MS)
             // Never leave the previous lyric on the ticker while switching.
@@ -543,7 +547,11 @@ object ClusterLyricMirror {
         metadata: android.media.MediaMetadata? = null,
     ) {
         if (shouldAttemptArtPublish(reason, mediaId)) {
-            publishArtIfNeeded(metadata, mediaId)
+            val ctx = appContext
+            val forceRescan = ctx != null &&
+                isArtBurstActive() &&
+                ClusterArtStore.needsArtForMediaId(ctx.contentResolver, mediaId)
+            publishArtIfNeeded(metadata, mediaId, forceRescan = forceRescan)
         }
         val now = SystemClock.elapsedRealtime()
         if (!force) {
@@ -588,22 +596,34 @@ object ClusterLyricMirror {
 
     /**
      * LRC position ticks skip art by default (avoid 300ms metadata.getBitmap spam).
-     * When the current track still has no cached JPEG, retry on tick at [ART_RETRY_ON_TICK_MS].
+     * After track change, [ART_BURST_AFTER_TRACK_MS] keeps polling cover even when
+     * the lyric line is static (long intro). Also retry when JPEG is still missing.
      */
     private fun shouldAttemptArtPublish(reason: String, mediaId: String): Boolean {
         if (!reason.endsWith("-tick")) return true
         val ctx = appContext ?: return false
-        if (!ClusterArtStore.needsArtForMediaId(ctx.contentResolver, mediaId)) return false
+        val burst = isArtBurstActive()
+        if (burst && !ClusterArtStore.needsArtForMediaId(ctx.contentResolver, mediaId)) {
+            artBurstUntilElapsedMs = 0L
+            return false
+        }
+        if (!burst && !ClusterArtStore.needsArtForMediaId(ctx.contentResolver, mediaId)) {
+            return false
+        }
         val now = SystemClock.elapsedRealtime()
         if (now - lastArtRetryElapsedMs < ART_RETRY_ON_TICK_MS) return false
         lastArtRetryElapsedMs = now
         return true
     }
 
+    private fun isArtBurstActive(): Boolean =
+        artBurstUntilElapsedMs > 0L && SystemClock.elapsedRealtime() < artBurstUntilElapsedMs
+
     /** Luna often publishes [METADATA_KEY_ART] after the track title; retry on metadata/state/switch. */
     private fun publishArtIfNeeded(
         metadata: android.media.MediaMetadata?,
         mediaId: String,
+        forceRescan: Boolean = false,
     ) {
         if (metadata == null || mediaId.isEmpty()) return
         val ctx = appContext ?: return
@@ -612,6 +632,7 @@ object ClusterLyricMirror {
             metadata,
             mediaId,
             boundPackage.orEmpty(),
+            forceRescan = forceRescan,
         )
     }
 
@@ -639,6 +660,7 @@ object ClusterLyricMirror {
     private fun clearOutput(reason: String) {
         phase = Phase.Idle
         lastArtRetryElapsedMs = 0L
+        artBurstUntilElapsedMs = 0L
         trackingMediaId = ""
         lastSongTitle = ""
         lastArtist = ""
