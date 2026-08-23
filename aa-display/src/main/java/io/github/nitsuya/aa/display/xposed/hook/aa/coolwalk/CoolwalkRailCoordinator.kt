@@ -278,17 +278,19 @@ object CoolwalkRailCoordinator {
     }
 
     fun applyServerSnapshot(server: RailSnapshot) {
-        if (server.phase == RailPhase.ReconnectSettling && server.fullHuWidthPx <= 0) {
+        val effective = resolveServerSnapshot(server)
+        if (effective.phase == RailPhase.ReconnectSettling && effective.fullHuWidthPx <= 0) {
             snapshot = RailSnapshot(
                 phase = RailPhase.ReconnectSettling,
-                lastEvent = server.lastEvent,
-                updatedUptimeMs = server.updatedUptimeMs.coerceAtLeast(snapshot.updatedUptimeMs),
+                lastEvent = effective.lastEvent,
+                updatedUptimeMs = effective.updatedUptimeMs.coerceAtLeast(snapshot.updatedUptimeMs),
             )
             return
         }
-        val rail = maxOf(snapshot.touchRailWidthPx, server.touchRailWidthPx)
-        val measuredW = server.fullHuWidthPx.takeIf { it > 0 } ?: server.layoutWidthPx
-        val measuredH = server.layoutHeightPx.takeIf { it > 0 } ?: snapshot.layoutHeightPx
+        val serverResolved = effective
+        val rail = maxOf(snapshot.touchRailWidthPx, serverResolved.touchRailWidthPx)
+        val measuredW = serverResolved.fullHuWidthPx.takeIf { it > 0 } ?: serverResolved.layoutWidthPx
+        val measuredH = serverResolved.layoutHeightPx.takeIf { it > 0 } ?: snapshot.layoutHeightPx
         val picked = CoolwalkRailMath.pickConnectionFullHuWidth(
             snapshot.fullHuWidthPx,
             snapshot.layoutHeightPx,
@@ -296,23 +298,47 @@ object CoolwalkRailCoordinator {
             measuredH,
             rail,
         )
-        if (server.updatedUptimeMs <= snapshot.updatedUptimeMs &&
+        if (serverResolved.updatedUptimeMs <= snapshot.updatedUptimeMs &&
             picked == snapshot.fullHuWidthPx
         ) {
             return
         }
         snapshot = snapshot.copy(
-            phase = server.phase,
-            touchRailWidthPx = server.touchRailWidthPx.takeIf { it > 0 } ?: snapshot.touchRailWidthPx,
+            phase = serverResolved.phase,
+            touchRailWidthPx = serverResolved.touchRailWidthPx.takeIf { it > 0 } ?: snapshot.touchRailWidthPx,
             fullHuWidthPx = picked,
-            layoutWidthPx = server.layoutWidthPx.takeIf { it > 0 } ?: snapshot.layoutWidthPx,
-            layoutHeightPx = server.layoutHeightPx.takeIf { it > 0 } ?: snapshot.layoutHeightPx,
-            facetDisplayId = server.facetDisplayId.takeIf { it != Display.INVALID_DISPLAY }
+            layoutWidthPx = serverResolved.layoutWidthPx.takeIf { it > 0 } ?: snapshot.layoutWidthPx,
+            layoutHeightPx = serverResolved.layoutHeightPx.takeIf { it > 0 } ?: snapshot.layoutHeightPx,
+            facetDisplayId = serverResolved.facetDisplayId.takeIf { it != Display.INVALID_DISPLAY }
                 ?: snapshot.facetDisplayId,
-            updatedUptimeMs = server.updatedUptimeMs.coerceAtLeast(snapshot.updatedUptimeMs),
-            lastEvent = server.lastEvent.ifEmpty { snapshot.lastEvent },
+            fullBleedStableCount = maxOf(
+                snapshot.fullBleedStableCount,
+                serverResolved.fullBleedStableCount,
+            ),
+            updatedUptimeMs = serverResolved.updatedUptimeMs.coerceAtLeast(snapshot.updatedUptimeMs),
+            lastEvent = serverResolved.lastEvent.ifEmpty { snapshot.lastEvent },
         )
+        if (serverResolved.phase == RailPhase.Reclaiming &&
+            serverResolved.fullHuWidthPx > 0 &&
+            server.phase == RailPhase.ReconnectSettling
+        ) {
+            dispatchActions(listOf(RailAction.ReclaimAllGutters("session-reconnect")))
+        }
     }
 
-    fun serverSnapshotForSettle(): RailSnapshot = CoolwalkRailStore.serverSnapshot
+    fun serverSnapshotForSettle(): RailSnapshot = CoolwalkRailStore.effectiveSnapshot()
+
+    /** system_server may publish ReconnectSettling with cleared HU; IPC carries session merge. */
+    private fun resolveServerSnapshot(server: RailSnapshot): RailSnapshot {
+        if (server.phase != RailPhase.ReconnectSettling || server.fullHuWidthPx > 0) {
+            return server
+        }
+        val ipc = CoreManager.tryGetCoolwalkRailSnapshot()
+        if (ipc != null && ipc.size >= 4) {
+            CoolwalkRailStore.snapshotFromWire(ipc)?.let { merged ->
+                if (merged.fullHuWidthPx > 0) return merged
+            }
+        }
+        return server
+    }
 }

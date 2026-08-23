@@ -58,6 +58,8 @@ class SplitDisplayController(
         internal const val MAX_RESTORE_VERIFY_ATTEMPTS = 3
         /** Token for post-fullscreen focus restore kicks (cancel on destroy / re-enter). */
         internal val FULLSCREEN_FOCUS_TOKEN = Any()
+        /** Token for post-reconnect task fill / layout nudge kicks. */
+        internal val RECONNECT_FILL_TOKEN = Any()
     }
 
     internal val vd = SplitVdLifecycle(this)
@@ -311,19 +313,46 @@ class SplitDisplayController(
         val w = width.coerceAtLeast(1)
         val h = height.coerceAtLeast(1)
         val dpi = densityDpi.coerceAtLeast(1)
-        val profileChanged = mWidth != w || mHeight != h || mDensityDpi != dpi
         mWidth = w
         mHeight = h
         mDensityDpi = dpi
-        // Identical soft-reconnect profile: skip expensive VD resize; still re-assert policies.
-        if (profileChanged) {
-            vd.resizePanesInternal("reconnect")
-        }
+        // Soft reconnect: always resize — profile may match while a pane Surface/task is stale.
+        vd.resizePanesInternal("reconnect")
         vd.applyPolicies(SplitPane.PRIMARY, "reconnect")
         vd.applyPolicies(SplitPane.SECONDARY, "reconnect")
         ime.start()
-        launch.scheduleEnsurePanePackages("reconnect")
+        scheduleEnsureTasksFillAfterReconnect()
+        launch.scheduleReconnectEnsurePasses()
         SplitPresentationGuard.scheduleEvictForeignPresentations(this, "reconnect")
+    }
+
+    private fun scheduleEnsureTasksFillAfterReconnect() {
+        mHandler.removeCallbacksAndMessages(RECONNECT_FILL_TOKEN)
+        val now = SystemClock.uptimeMillis()
+        // ExtraDisplayController / WM reorder asynchronously after surface rebind.
+        for (delay in longArrayOf(0L, 400L)) {
+            mHandler.postAtTime(
+                { ensureTasksFillBothPanes("reconnect") },
+                RECONNECT_FILL_TOKEN,
+                now + delay,
+            )
+        }
+    }
+
+    private fun ensureTasksFillBothPanes(reason: String) {
+        val sizes = vd.computePaneSizes()
+        val primaryDisplay = primaryDisplayId
+        val secondaryDisplay = secondaryDisplayId
+        if (primaryDisplay != Display.INVALID_DISPLAY) {
+            ownership.ensureTasksFillDisplay(
+                primaryDisplay, sizes.primaryW, sizes.primaryH, reason
+            )
+        }
+        if (secondaryDisplay != Display.INVALID_DISPLAY) {
+            ownership.ensureTasksFillDisplay(
+                secondaryDisplay, sizes.secondaryW, sizes.secondaryH, reason
+            )
+        }
     }
 
     fun setPaneSurface(pane: Int, surface: Surface?) {
@@ -570,6 +599,7 @@ class SplitDisplayController(
         mHandler.removeCallbacksAndMessages(launch.ENSURE_TOKEN)
         mHandler.removeCallbacksAndMessages(launch.VERIFY_RESTORE_TOKEN)
         mHandler.removeCallbacksAndMessages(FULLSCREEN_FOCUS_TOKEN)
+        mHandler.removeCallbacksAndMessages(RECONNECT_FILL_TOKEN)
         tryOrNull { Instances.iActivityTaskManager.unregisterTaskStackListener(mTaskStackListener) }
 
         val protectedPackages = linkedSetOf(BuildConfig.APPLICATION_ID)

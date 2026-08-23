@@ -71,9 +71,10 @@ object AaDisplayPresentationResize {
                 if (snap.fullHuWidthPx > 0 || snap.touchRailWidthPx > 1) return snap
             }
         }
-        return when {
+        val live = when {
             cr != null -> CoolwalkRailStore.read(cr)
             else -> CoolwalkRailStore.serverSnapshot
         }
+        return CoolwalkRailStore.snapshotWithSession(live)
     }
 }

@@ -42,6 +42,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         private const val SETTLE_LATE_MS = 900L
         /** While AA is live, catch stale TextureView / Surface pipes without tight polling. */
         private const val SURFACE_HEALTH_INTERVAL_MS = 30_000L
+        /** Debounce VD resize → TextureView size without requestDisplay feedback loop. */
+        private const val PANE_SURFACE_REBIND_MS = 80L
     }
 
     private var displayId: Int = Display.INVALID_DISPLAY
@@ -349,6 +351,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private val settleImmediate = Runnable { runConnectSettleStep(0) }
     private val settleMid = Runnable { runConnectSettleStep(1) }
     private val settleLate = Runnable { runConnectSettleStep(2) }
+    private val primaryPaneSurfaceRebind = Runnable { rebindPaneSurface(SplitPane.PRIMARY) }
+    private val secondaryPaneSurfaceRebind = Runnable { rebindPaneSurface(SplitPane.SECONDARY) }
     private val afterOccupancySync = Runnable { syncPaneOccupancyFromService() }
     private val afterSwapSettle = Runnable {
         if (!isAdded || view == null || dividerDragging) return@Runnable
@@ -907,6 +911,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
                 Log.d(TAG, "pane=$pane surface available ${width}x$height")
+                surface.setDefaultBufferSize(width.coerceAtLeast(1), height.coerceAtLeast(1))
                 val s = Surface(surface)
                 onSurface(s)
                 // Presentation displayId can bind after first layout on some OEMs — re-report
@@ -921,6 +926,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
                 // Do NOT requestDisplay here: weight/ratio changes resize TextureViews and would
                 // reconnect/resize VDs in a feedback loop (visible as constant jitter).
+                surface.setDefaultBufferSize(width.coerceAtLeast(1), height.coerceAtLeast(1))
+                schedulePaneSurfaceRebind(pane)
             }
 
             override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
@@ -1056,13 +1063,49 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         when (step) {
             0 -> {
                 syncPaneOccupancyFromService()
-                if (settleExpectCreate) applyRemoteRatioOnce()
+                if (settleExpectCreate) {
+                    applyRemoteRatioOnce()
+                } else {
+                    applyRemoteRatioOnce()
+                    recoverPresentationPipeline("connect-settle")
+                }
             }
             1 -> {
-                if (settleExpectCreate) applyRemoteRatioOnce()
+                if (settleExpectCreate) {
+                    applyRemoteRatioOnce()
+                } else {
+                    applyRemoteRatioOnce()
+                }
                 syncPaneOccupancyFromService()
             }
-            else -> syncPaneOccupancyFromService()
+            else -> {
+                syncPaneOccupancyFromService()
+                if (!settleExpectCreate) {
+                    applyRemoteRatioOnce()
+                    recoverPresentationPipeline("connect-settle-late")
+                    rebindPaneSurface(SplitPane.PRIMARY)
+                    rebindPaneSurface(SplitPane.SECONDARY)
+                }
+            }
+        }
+    }
+
+    private fun schedulePaneSurfaceRebind(pane: Int) {
+        if (!isAdded || view == null || dividerDragging) return
+        val runnable =
+            if (pane == SplitPane.PRIMARY) primaryPaneSurfaceRebind else secondaryPaneSurfaceRebind
+        val root = baseBinding.root
+        root.removeCallbacks(runnable)
+        root.postDelayed(runnable, PANE_SURFACE_REBIND_MS)
+    }
+
+    private fun rebindPaneSurface(pane: Int) {
+        if (!isAdded || view == null || dividerDragging || displayId == Display.INVALID_DISPLAY) {
+            return
+        }
+        val surface = if (pane == SplitPane.PRIMARY) primarySurface else secondarySurface
+        if (surface?.isValid == true) {
+            CoreApi.setPaneSurface(pane, surface)
         }
     }
 

@@ -66,6 +66,9 @@ object CoolwalkRailStore {
         )
     }
 
+    /** Live server snapshot merged with [sessionSettled] when reconnect cleared live HU fields. */
+    fun effectiveSnapshot(): RailSnapshot = snapshotWithSession(serverSnapshot)
+
     /** Merge session cache when live snapshot was cleared for reconnect. */
     fun snapshotWithSession(live: RailSnapshot): RailSnapshot {
         val session = sessionSettled ?: return live

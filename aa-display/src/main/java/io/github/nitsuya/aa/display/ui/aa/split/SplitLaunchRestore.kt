@@ -208,6 +208,15 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }, ENSURE_TOKEN, SplitDisplayController.ENSURE_PANES_DELAY_MS)
     }
 
+    /** Soft reconnect: early + late ensure — WM/ExtraDisplayController settle asynchronously. */
+    fun scheduleReconnectEnsurePasses() {
+        scheduleEnsurePanePackages("reconnect")
+        c.mHandler.postDelayed({
+            if (c.mIsDestroying) return@postDelayed
+            ensurePanePackages("reconnect-late")
+        }, ENSURE_TOKEN, 1200L)
+    }
+
     /**
      * Soft reconnect / surface restore: if remembered pane apps left the VDs, bring them back.
      * When both panes are vacant, fall back to last-split restore (or leave empty for picker).
@@ -238,8 +247,19 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             }
             if (stackPkgs.isEmpty()) continue
             val displayId = c.input.displayIdFor(pane) ?: continue
+            val stackFront = c.mPanePackages[pane]?.trim()?.takeIf { it.isNotEmpty() }
+                ?: stackPkgs.lastOrNull()
             for (pkg in stackPkgs) {
-                if (c.ownership.hasPackageOnDisplay(pkg, displayId)) continue
+                val isFront = pkg == stackFront
+                if (c.ownership.shouldSkipRelaunchOnDisplay(pkg, displayId, reason, isFront)) {
+                    continue
+                }
+                if (c.ownership.hasPackageOnDisplay(pkg, displayId)) {
+                    logDebug(
+                        SplitDisplayController.TAG,
+                        "ensurePanes[$reason]: stale $pkg on pane=$pane front=$isFront → relaunch",
+                    )
+                }
                 logDebug(SplitDisplayController.TAG, "ensurePanes[$reason]: relaunch $pkg on pane=$pane")
                 if (c.startActivityOnPane(pkg, 0, pane)) {
                     relaunched = true

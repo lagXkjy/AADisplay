@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Binder
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import android.os.PowerManager
 import android.os.SystemClock
@@ -213,21 +214,26 @@ class DisplaySessionPolicy(
             if (ids.isEmpty()) return
             val active = ids.toSet()
             pruneStaleLocks(active)
-            for (displayId in ids) {
-                try {
-                    val lock = monitorLocks.getOrPut(displayId) {
-                        newDisplayWakeLock(
-                            SCREEN_BRIGHT_WAKE_LOCK,
-                            "Monitor",
-                            displayId
-                        )
+            val identity = Binder.clearCallingIdentity()
+            try {
+                for (displayId in ids) {
+                    try {
+                        val lock = monitorLocks.getOrPut(displayId) {
+                            newDisplayWakeLock(
+                                SCREEN_BRIGHT_WAKE_LOCK,
+                                "Monitor",
+                                displayId
+                            )
+                        }
+                        if (!lock.isHeld) {
+                            lock.acquire()
+                        }
+                    } catch (e: Throwable) {
+                        log(TAG, "VD Monitor acquire failed display=$displayId:", e)
                     }
-                    if (!lock.isHeld) {
-                        lock.acquire()
-                    }
-                } catch (e: Throwable) {
-                    log(TAG, "VD Monitor acquire failed display=$displayId:", e)
                 }
+            } finally {
+                Binder.restoreCallingIdentity(identity)
             }
         }
 
@@ -236,6 +242,7 @@ class DisplaySessionPolicy(
          * Timed acquire only — long-held WAKEUP can leak to the phone panel on some OEMs.
          */
         fun pulseWake(displayId: Int) {
+            val identity = Binder.clearCallingIdentity()
             try {
                 val lock = wakePulseLocks.getOrPut(displayId) {
                     newDisplayWakeLock(
@@ -249,6 +256,8 @@ class DisplaySessionPolicy(
                 }
             } catch (e: Throwable) {
                 log(TAG, "VD wakePulse failed display=$displayId:", e)
+            } finally {
+                Binder.restoreCallingIdentity(identity)
             }
         }
 

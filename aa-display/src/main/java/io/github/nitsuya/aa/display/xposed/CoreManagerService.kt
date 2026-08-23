@@ -116,7 +116,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
         private fun resolveRailWidthPx(): Int {
             if (!hasSystemContext) return 0
-            val snap = CoolwalkRailStore.serverSnapshot
+            val snap = CoolwalkRailStore.effectiveSnapshot()
             if (snap.phase == RailPhase.FullBleed) return 0
             val liveRail = DisplayProfileSettle.observeLiveRailWidthPx(systemContext)
             // Starved / absent compositor strip → full HU. Never use touchRailWidthPx here
@@ -126,7 +126,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         }
 
         private fun resolveObservedFullHuWidthPx(reportedWidth: Int, reportedHeight: Int): Int {
-            val snap = CoolwalkRailStore.serverSnapshot
+            val snap = CoolwalkRailStore.effectiveSnapshot()
             val observed = DisplayProfileSettle.observeFullHuWidthPx(
                 systemContext,
                 reportedWidth.coerceAtLeast(1),
@@ -504,7 +504,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         )
         val prevFull = CoolwalkRailStore.serverSnapshot.fullHuWidthPx
         CoolwalkRailStore.rememberFromReport(snapshot)
-        CoolwalkRailStore.publishServer(snapshot)
+        val published = if (snapshot.phase == RailPhase.ReconnectSettling && snapshot.fullHuWidthPx <= 0) {
+            CoolwalkRailStore.snapshotWithSession(snapshot)
+        } else {
+            snapshot
+        }
+        CoolwalkRailStore.publishServer(published)
         if (hasSystemContext) {
             CoolwalkRailStore.write(systemContext.contentResolver, snapshot)
         }
@@ -518,7 +523,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     override fun getCoolwalkRailSnapshot(): IntArray {
-        val s = CoolwalkRailStore.snapshotWithSession(CoolwalkRailStore.serverSnapshot)
+        val s = CoolwalkRailStore.effectiveSnapshot()
         return intArrayOf(s.phase.code, s.touchRailWidthPx, s.fullHuWidthPx, s.facetDisplayId)
     }
 

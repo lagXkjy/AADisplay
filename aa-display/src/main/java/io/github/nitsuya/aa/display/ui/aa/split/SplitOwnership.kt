@@ -33,6 +33,13 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         private const val RESIZE_MODE_SYSTEM = 0
         /** ActivityTaskManager.RESIZE_MODE_SYSTEM | RESIZE_MODE_FORCED */
         private const val RESIZE_MODE_SYSTEM_FORCED = 2
+        private val STALE_FRONT_ACTIVITY_MARKERS = listOf(
+            "AppStarter",
+            "Splash",
+            "Welcome",
+            "Loading",
+            "Launcher",
+        )
     }
     /**
      * Marshal ownership-sensitive work onto [SplitDisplayController.mHandler] so Binder/IO callers
@@ -126,6 +133,51 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     fun hasPackageOnDisplay(packageName: String, displayId: Int): Boolean {
         if (displayId == Display.INVALID_DISPLAY) return false
         return findPackageTaskOnDisplay(packageName, displayId) != null
+    }
+
+    /** True when [packageName] owns the visible front root on [displayId]. */
+    fun isPackageFrontVisibleOnDisplay(packageName: String, displayId: Int): Boolean {
+        if (displayId == Display.INVALID_DISPLAY) return false
+        val front = frontRootTaskOnDisplay(displayId) ?: return false
+        if (!isRootTaskVisible(front)) return false
+        return front.topActivity?.packageName == packageName
+    }
+
+    /**
+     * Soft reconnect: WM may keep a launcher/splash on the VD while the Surface pipe is stale
+     * (e.g. QQ Music Car stuck on AppStarterActivity after VD resize).
+     */
+    fun isPackageFrontStaleOnReconnect(packageName: String, displayId: Int): Boolean {
+        if (displayId == Display.INVALID_DISPLAY) return false
+        val front = frontRootTaskOnDisplay(displayId) ?: return false
+        if (front.topActivity?.packageName != packageName) return false
+        val simple = front.topActivity?.className?.substringAfterLast('.').orEmpty()
+        if (simple.isEmpty()) return false
+        return STALE_FRONT_ACTIVITY_MARKERS.any { simple.contains(it, ignoreCase = true) }
+    }
+
+    /**
+     * @return true when [ensurePanePackages] should skip relaunching [packageName] on [displayId].
+     */
+    fun shouldSkipRelaunchOnDisplay(
+        packageName: String,
+        displayId: Int,
+        reason: String,
+        isStackFront: Boolean,
+    ): Boolean {
+        if (!hasPackageOnDisplay(packageName, displayId)) return false
+        if (!isPackageFrontVisibleOnDisplay(packageName, displayId)) return false
+        if (isSoftReconnectEnsureReason(reason)) {
+            if (isStackFront) return false
+            if (isPackageFrontStaleOnReconnect(packageName, displayId)) return false
+        }
+        return true
+    }
+
+    private fun isSoftReconnectEnsureReason(reason: String): Boolean {
+        return reason == "reconnect" ||
+            reason == "reconnect-late" ||
+            reason == "surfaces-ready"
     }
 
     fun findPackageTaskOnDisplay(

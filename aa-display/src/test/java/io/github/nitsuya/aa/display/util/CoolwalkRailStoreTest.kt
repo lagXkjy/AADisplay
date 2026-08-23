@@ -80,6 +80,19 @@ class CoolwalkRailStoreTest {
     }
 
     @Test
+    fun effective_snapshot_matches_session_merge() {
+        CoolwalkRailStore.rememberFromReport(
+            RailSnapshot(phase = RailPhase.FullBleed, touchRailWidthPx = 107, fullHuWidthPx = 1280),
+        )
+        CoolwalkRailStore.publishServer(
+            RailSnapshot(phase = RailPhase.ReconnectSettling, touchRailWidthPx = 0, fullHuWidthPx = 0),
+        )
+        val merged = CoolwalkRailStore.effectiveSnapshot()
+        assertEquals(1280, merged.fullHuWidthPx)
+        assertEquals(RailPhase.Reclaiming, merged.phase)
+    }
+
+    @Test
     fun clear_session_wipes_cache() {
         CoolwalkRailStore.rememberFromReport(
             RailSnapshot(phase = RailPhase.FullBleed, touchRailWidthPx = 107, fullHuWidthPx = 1280),
