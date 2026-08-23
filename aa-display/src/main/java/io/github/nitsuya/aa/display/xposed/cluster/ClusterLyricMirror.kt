@@ -37,6 +37,8 @@ object ClusterLyricMirror {
     private const val START_RETRY_MAX = 8
     /** Re-scan other playing sessions from LRC ticks at most this often. */
     private const val TICK_SWITCH_INTERVAL_MS = 1_000L
+    /** LRC ticks skip art by default; retry when the track still has no JPEG (long intro / static title). */
+    private const val ART_RETRY_ON_TICK_MS = 1_500L
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -65,6 +67,7 @@ object ClusterLyricMirror {
     private var warmStartPending = true
     private var startRetryCount = 0
     private var lastTickSwitchElapsedMs: Long = 0L
+    private var lastArtRetryElapsedMs: Long = 0L
     private var pendingTitle: String? = null
     private var pendingArtist: String = ""
     private var pendingAlbum: String = ""
@@ -335,6 +338,7 @@ object ClusterLyricMirror {
 
         if (trackChanged) {
             phase = Phase.TrackSwitching
+            lastArtRetryElapsedMs = 0L
             handler.removeCallbacks(trackSwitchSettle)
             handler.postDelayed(trackSwitchSettle, TRACK_SWITCH_DEBOUNCE_MS)
             // Never leave the previous lyric on the ticker while switching.
@@ -454,7 +458,7 @@ object ClusterLyricMirror {
         reason: String,
         metadata: android.media.MediaMetadata? = null,
     ) {
-        if (shouldAttemptArtPublish(reason)) {
+        if (shouldAttemptArtPublish(reason, mediaId)) {
             publishArtIfNeeded(metadata, mediaId)
         }
         val now = SystemClock.elapsedRealtime()
@@ -467,14 +471,15 @@ object ClusterLyricMirror {
                 return
             }
             val wait = TITLE_MIN_INTERVAL_MS - (now - lastPushElapsedMs)
-            if (wait > 0L) {
+            val delayMs = if (wait > 0L) wait else 0L
+            if (delayMs > 0L) {
                 pendingTitle = title
                 pendingArtist = panelArtist
                 pendingAlbum = album
                 pendingMediaId = mediaId
                 pendingMetadata = metadata
                 handler.removeCallbacks(pendingFlush)
-                handler.postDelayed(pendingFlush, wait)
+                handler.postDelayed(pendingFlush, delayMs)
                 return
             }
         }
@@ -497,8 +502,19 @@ object ClusterLyricMirror {
         )
     }
 
-    /** LRC position ticks cannot change cover — skip extract to avoid 300ms metadata.getBitmap spam. */
-    private fun shouldAttemptArtPublish(reason: String): Boolean = !reason.endsWith("-tick")
+    /**
+     * LRC position ticks skip art by default (avoid 300ms metadata.getBitmap spam).
+     * When the current track still has no cached JPEG, retry on tick at [ART_RETRY_ON_TICK_MS].
+     */
+    private fun shouldAttemptArtPublish(reason: String, mediaId: String): Boolean {
+        if (!reason.endsWith("-tick")) return true
+        val ctx = appContext ?: return false
+        if (!ClusterArtStore.needsArtForMediaId(ctx.contentResolver, mediaId)) return false
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastArtRetryElapsedMs < ART_RETRY_ON_TICK_MS) return false
+        lastArtRetryElapsedMs = now
+        return true
+    }
 
     /** Luna often publishes [METADATA_KEY_ART] after the track title; retry on metadata/state/switch. */
     private fun publishArtIfNeeded(
@@ -538,6 +554,7 @@ object ClusterLyricMirror {
 
     private fun clearOutput(reason: String) {
         phase = Phase.Idle
+        lastArtRetryElapsedMs = 0L
         trackingMediaId = ""
         lastSongTitle = ""
         lastArtist = ""

@@ -104,7 +104,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 ### LSPosed scope
 
 见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`。改 scope 会影响模块生效范围，勿随意删改。
-仪表横条歌词：QQ 音乐车载（`com.tencent.qqmusiccar` → `METADATA_KEY_LYRIC`）+ QQ 音乐 HD（`com.tencent.qqmusicpad` → 同字段）+ 汽水（`com.luna.music`）；`ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title 出站。换句仍改 TITLE；`AaClusterLyricEgressHook` 拦截 Gearhead `setTitle` 原地改字（避免 StatusBar 切换动画），同曲换句 GAL MediaInfo 去掉 duration/封面（不当新歌）；壳不重推进度，Egress 丢掉重复 PlaybackStatus、不改写整秒。MEDIA_ID 按曲稳定（不含 artRevision）；进度只出位置 + duration；`AaMediaAllowlistHook` 免开未知来源。LSPosed scope 仅 `android` + `gearhead`。
+仪表横条歌词：QQ 音乐车载（`com.tencent.qqmusiccar` → `METADATA_KEY_LYRIC`）+ QQ 音乐 HD（`com.tencent.qqmusicpad` → 同字段）+ 汽水（`com.luna.music`）；`ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title 出站。换句仍改 TITLE；`AaClusterLyricEgressHook` 读壳 metadata 注入歌词/封面、HU 出站补 album、`setTitle` 原地改字（AA 顶栏）；同曲换句不 `scheduleProgressReassert`（防跳秒）。MEDIA_ID 按曲稳定（不含 artRevision）；换句仍可能闪 0:00（车机固件，见 `docs/CLUSTER_LYRIC_CLOCK.md`）。`AaMediaAllowlistHook` 免开未知来源。LSPosed scope 仅 `android` + `gearhead`。
 
 ## 4. 构建与验证
 
@@ -234,6 +234,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 | VD DPI pin / 竖屏 letterbox 铺满 / Presentation 拦截 / IME 落屏 | `xposed/hook/VdDensityPin.kt`、`VdOrientationFill.kt`、`PanePresentationGuard.kt`、`VdImeDisplayPin.kt` |
 | 重连分辨率结算（HU vs 内容区） | `util/DisplayProfileSettle.kt` + `CoreManagerService.resolveDisplayProfile`；`AaUiHook` starve `GhFacetBar` |
 | 仪表横条歌词（AA Title） | `xposed/cluster/ClusterLyricMirror.kt`、`LyricLineExtractor.kt`；`service/ClusterLyricMediaService.kt`（`:cluster`）；gearhead `AaMediaAllowlistHook` / `AaClusterLyricEgressHook` |
+| **仪表歌词换句 / 0:00 / 跳秒（试验备忘）** | [docs/CLUSTER_LYRIC_CLOCK.md](docs/CLUSTER_LYRIC_CLOCK.md) |
 | AA 钩子总控 | `xposed/hook/AndroidAutoHook.kt` |
 | 车机画面与触控 | `ui/aa/AaDisplayActivity*.java/kt`、`AaMainFragment.kt` |
 | 显示会话策略（Delay Destroy / keep-awake） | `ui/window/DisplaySessionPolicy.kt` |

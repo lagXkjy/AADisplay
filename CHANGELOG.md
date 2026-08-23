@@ -6,7 +6,8 @@
 - **藏车机媒体壳图标：** 删除 `AaClusterMediaIconHideHook`（不再 hook `queryIntentServices` 过滤本包壳）。全屏投影下桌面列表本就会闪，隐藏收益低且增加 hook 面。
 
 ### Changed
-- **流畅度缓存与减负：** 轨盗 `ProjectionTouchEvent` / `CarDisplayId` 反射布局缓存 + ThreadLocal 指针缓冲；`LastSplitStore` 同快照跳写与进程内读缓存；`PmResolveCache` / `PmIconCache`（launch component、picker 图标、Recent icon/label）+ 包广播失效；`ClusterLyricStore.readFresh` 合并 Settings 读。
+- **仪表歌词 0:00 试验层清理：** 移除已证伪的 GAL skip、playback DexKit 解析、Mirror 方案 C 整秒延迟、壳 lyric-only pre-progress；Egress 仅保留 metadata 注入、`setTitle` 原地、HU album 补全。
+- **仪表歌词时钟试验备忘：** [docs/CLUSTER_LYRIC_CLOCK.md](docs/CLUSTER_LYRIC_CLOCK.md) 含 **v5～v10 真机矩阵**（2026-08-23 奥迪）：歌词须 HU song；v8/v10 Title+进度 OK 仍闪 0:00；事后 push / 方案 C 无效。
 - **分屏应用选择器加速：** launchable 列表进程内缓存 + 会话预热；图标懒加载；「最近」改用 `LastSplitStore`/occupancy 包名，不再拉完整 `recentTask` Bitmap IPC。
 - **热路径减负（歌词 + 触控）：** 同句歌词跳过 Settings.Global 三写（靠 5s `touch` keepalive）；LRC 按 mediaId+blob 缓存解析，300ms tick 只二分取句；`:cluster` 不再观察 `updated_ms`；`injectInputEvent` 缓存 `InputEvent.setDisplayId` Method。
 - **r11-T→r12 审计收敛：** 去掉试验叠层——重连缩窗仅服务端 `shrink-auto`（删客户端 900/1700ms `lastCreate` bust）；soft-reconnect 同 profile 跳过 VD resize；AutoOpen 梯子收为 `0/1.5/5/12/24s` 且 `REARM_GAP≥末档`，保留 car-connected kick；`AaClusterLyricEgressHook` 仅改写 `aadisplay.cluster:` 壳 MEDIA_ID；歌词 `warmStart` 不再每句触发；Allowlist unknown-sources pref 仅在 pkg-bool 未命中时回退。
@@ -23,14 +24,16 @@
 ### Fixed
 - **左侧导航栏黑条重连复发：** FacetBar 窗口一打 tag 就停掉 8s 回收轮询，真正占着 ~107px 的 GhostActivity 宿主从未被扫到。改为对进程内全部窗口持续回收到连接窗口结束。
 - **仪表进度双外推：** 壳 session 写入原始采样 + `positionAtElapsedMs`；Egress `getPlaybackState` 写入已外推位置 + `elapsedRealtime()`；位置不超过 duration。
-- **仪表进度随歌词重置：** 歌词仍走 TITLE。换句发去掉 duration/封面的 MediaInfo（不当新歌）；壳不重推 PlaybackState；Egress 丢掉重复 PlaybackStatus、不改写整秒，避免剩余时间先退 1s 再进 2s。真切歌才带时长。
+- **仪表换句闪 0:00（已知限制）：** 奥迪 HU `song` 变即重置显示；Title/进度正常，无代码层修复。详见 `docs/CLUSTER_LYRIC_CLOCK.md` §5 矩阵。
 - **封面 recycled bitmap：** Egress 解码缓存只丢引用不 `recycle`；session 封面一律 `ARGB_8888` copy。
 - **歌词 MSM 空启动卡死：** `MediaSessionManager` 为空时 `started=false` 并 2s/10s 重试（上限 8）。
 - **快句歌词被 200ms 节流丢掉：** 间隔内记下最新一句，到期 flush。
 - **QQ / 汽水同时后台抢 Now Playing：** 双方都报 PLAYING 时，`onSessionsChanged` 与 tick 共用 1.5s freshness 死区，避免会话列表抖动闪烁；`unbind` 取消上一源的 120s `pausedClear`；跨源（QQ↔汽水）无封面时立刻丢掉旧 JPEG，同包仍保留 2s 晚到封面窗口。
+- **长前奏封面切换慢：** LRC tick 在曲目尚无 JPEG 时每 1.5s 节流重试拉图（歌名不变 / 前奏滚词也能出封面）；`:cluster` 封面 revision 变化时不再走 lyric-only，确保 HU 收到带封面的完整 MediaInfo。
 - **断开重连分辨率 800/720 反复错位：** 具名 `GhFacetBar` VD 饿成 `1×H`（触控仍用观测轨宽），与 `content_bounds` 扩满共用全宽真值；服务端按 rail 观测结算 profile。
 - **方控长按对调：** 长按上一曲/快退开 Recent；长按下一曲/快进换分屏；去掉长按播放/暂停。
 - **仪表横条歌名兜底过期：** 播放中定期 touch `aadisplay_cluster_np_updated_ms`。
+- **奥迪仪表「未知专辑」：** 壳 session 补 `DISPLAY_DESCRIPTION` + Egress 向 HU/GAL `MediaInfo` 注入 `aadisplay_cluster_np_album`（Store 有专辑名但出站 album 参数为空）。
 
 ### Verify（仪表歌词 + 重连）
 1. Soft-reconnect：`GhFacetBar` 饿死后 profile 稳定全宽；日志可见 `displayProfile relocked(settle|rail-settle)` / `starve FacetBar`；无右侧 gutter / 黑条

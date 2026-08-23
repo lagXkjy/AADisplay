@@ -75,6 +75,15 @@ object ClusterArtStore {
     fun readRevision(resolver: ContentResolver): Long =
         Settings.Global.getString(resolver, SETTINGS_ART_REVISION)?.toLongOrNull() ?: 0L
 
+    /** True when [mediaId] has no on-disk JPEG yet (or cache key still points elsewhere). */
+    fun needsArtForMediaId(resolver: ContentResolver, mediaId: String): Boolean {
+        if (mediaId.isEmpty()) return false
+        val cachedId = Settings.Global.getString(resolver, SETTINGS_ART_MEDIA_ID)?.trim().orEmpty()
+        if (cachedId != mediaId) return true
+        val file = artFile()
+        return !file.exists() || file.length() <= 0L
+    }
+
     fun artUriString(revision: Long = 0L): String? {
         val f = artFile()
         if (!f.exists() || f.length() <= 0L) return null

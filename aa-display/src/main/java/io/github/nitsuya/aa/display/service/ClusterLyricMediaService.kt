@@ -39,6 +39,9 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         private const val GEARHEAD = "com.google.android.projection.gearhead"
         /** Re-push position after Title metadata so the HU clock can recover. */
         private val PROGRESS_REASSERT_MS = longArrayOf(40L, 80L, 160L, 320L)
+        /** [MediaMetadata.getDescription] prefers this over [METADATA_KEY_ALBUM] for the 3rd line. */
+        private const val METADATA_KEY_DISPLAY_DESCRIPTION =
+            "android.media.metadata.DISPLAY_DESCRIPTION"
         private const val CLUSTER_ACTIONS =
             PlaybackStateCompat.ACTION_PLAY or
                 PlaybackStateCompat.ACTION_PAUSE or
@@ -215,7 +218,9 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             return
         }
         val subtitle = fresh.subtitle
-        val album = fresh.album
+        val album = fresh.album.ifEmpty {
+            Settings.Global.getString(cr, ClusterLyricStore.SETTINGS_ALBUM)?.trim().orEmpty()
+        }
         val artMediaId = Settings.Global.getString(cr, ClusterArtStore.SETTINGS_ART_MEDIA_ID)
             ?.trim()
             .orEmpty()
@@ -235,12 +240,13 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         val shellMediaId = MEDIA_ID_PREFIX + artMediaId.ifEmpty {
             (album.ifEmpty { subtitle }).hashCode().toUInt().toString(16)
         }
+        val artChanged = artMediaId != lastArtMediaId || artRevision != lastArtRevision
         val lyricOnly = sess.isActive &&
             lastDurationMs >= 0L &&
             durationMs == lastDurationMs &&
             subtitle == lastSubtitle &&
             album == lastAlbum &&
-            artMediaId == lastArtMediaId &&
+            !artChanged &&
             shellMediaId == lastShellMediaId &&
             title != lastTitle
         lastTitle = title
@@ -259,6 +265,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             .putString(MediaMetadataCompat.METADATA_KEY_MEDIA_ID, shellMediaId)
         if (album.isNotEmpty()) {
             builder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album)
+            builder.putString(METADATA_KEY_DISPLAY_DESCRIPTION, album)
         }
         if (durationMs > 0L) {
             builder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durationMs)
