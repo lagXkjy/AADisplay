@@ -148,9 +148,9 @@ class CoolwalkRailMathTest {
     }
 
     @Test
-    fun resolve_layout_canvas_widens_stale_shrink_not_rail_gap() {
+    fun resolve_layout_canvas_widens_stale_shrink_not_rail_gap_after_reclaim() {
         val snap = RailSnapshot(
-            phase = RailPhase.ReconnectSettling,
+            phase = RailPhase.Reclaiming,
             fullHuWidthPx = 800,
             layoutWidthPx = 600,
             layoutHeightPx = 480,
@@ -160,8 +160,20 @@ class CoolwalkRailMathTest {
     }
 
     @Test
-    fun resolve_layout_canvas_widens_stale_shrink_even_with_live_rail() {
+    fun resolve_layout_canvas_defers_stale_shrink_during_reconnect_settling() {
         val snap = RailSnapshot(
+            phase = RailPhase.ReconnectSettling,
+            fullHuWidthPx = 800,
+            layoutWidthPx = 600,
+            layoutHeightPx = 480,
+            touchRailWidthPx = 107,
+        )
+        assertEquals(600, CoolwalkRailMath.resolveLayoutCanvasTargetPx(snap, 600, 480))
+    }
+
+    @Test
+    fun resolve_layout_canvas_defers_stale_shrink_961_until_reclaiming() {
+        val settling = RailSnapshot(
             phase = RailPhase.ReconnectSettling,
             fullHuWidthPx = 1280,
             layoutWidthPx = 961,
@@ -169,7 +181,9 @@ class CoolwalkRailMathTest {
             touchRailWidthPx = 107,
             effectiveRailWidthPx = 107,
         )
-        assertEquals(1280, CoolwalkRailMath.resolveLayoutCanvasTargetPx(snap, 961, 720))
+        assertEquals(961, CoolwalkRailMath.resolveLayoutCanvasTargetPx(settling, 961, 720))
+        val reclaiming = settling.copy(phase = RailPhase.Reclaiming)
+        assertEquals(1280, CoolwalkRailMath.resolveLayoutCanvasTargetPx(reclaiming, 961, 720))
     }
 
     @Test

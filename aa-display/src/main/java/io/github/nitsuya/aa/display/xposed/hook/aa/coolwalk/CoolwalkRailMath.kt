@@ -291,7 +291,10 @@ object CoolwalkRailMath {
         if (w <= 0 || full <= w + 2) return w.coerceAtLeast(1)
         val gap = full - w
         // Stale LayoutInfo shrink on the same HU height — not a rail-trimmed content slot.
+        // Defer during ReconnectSettling: widening LayoutInfo ctor before content_bounds
+        // crashes :projection (ViewTreeLifecycleOwner) and leaves a compositor black bar.
         if (gap > 2 &&
+            snapshot.phase != RailPhase.ReconnectSettling &&
             abs(sessionH - heightPx) <= 8 &&
             !isPlausibleRailGap(gap, full, snapshot.touchRailWidthPx) &&
             isStaleLayoutInfoWidthGap(gap, full)
