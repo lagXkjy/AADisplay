@@ -6,6 +6,8 @@ interface AABroadcastConst {
         const val ACTION_OPEN_SPLIT_PICKER = "aa.display.action.OPEN_SPLIT_PICKER"
         /** AA CarActivity resumed — cancel pending Auto Open retries in gearhead. */
         const val ACTION_AA_DISPLAY_SHOWN = "aa.display.action.AA_DISPLAY_SHOWN"
+        /** gearhead → AA: content_bounds expanded to full HU; re-measure and recreate VDs. */
+        const val ACTION_COOLWALK_FULL_BLEED = "aa.display.action.COOLWALK_FULL_BLEED"
         /** system_server → AA: pane occupancy changed (restore, launch, close). */
         const val ACTION_SPLIT_STATE_CHANGED = "aa.display.action.SPLIT_STATE_CHANGED"
         const val EXTRA_ACTION = "aa.display.extra.ACTION"

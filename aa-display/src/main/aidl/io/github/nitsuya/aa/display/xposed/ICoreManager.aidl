@@ -85,4 +85,15 @@ interface ICoreManager {
      * -1 when hidden; PRIMARY(0) / SECONDARY(1) when an IME window is showing on that pane.
      */
     int getImePane();
+
+    /**
+     * gearhead :projection / :car report Coolwalk rail snapshot for display-profile settle.
+     * [phase] is [RailPhase.code]. Appended at end for Stub ordinals.
+     */
+    oneway void reportCoolwalkRailSnapshot(int phase, int touchRailWidthPx, int fullHuWidthPx, int facetDisplayId);
+
+    /**
+     * Returns int[4]: phase, touchRailWidthPx, fullHuWidthPx, facetDisplayId.
+     */
+    int[] getCoolwalkRailSnapshot();
 }

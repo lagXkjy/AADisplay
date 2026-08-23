@@ -157,6 +157,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     )
                     applyImeChip(SplitPane.isValid(pane), pane)
                 }
+                AABroadcastConst.ACTION_COOLWALK_FULL_BLEED -> {
+                    baseBinding.splitContainer.post {
+                        reportAaUiDisplayId()
+                        requestDisplay("full-bleed")
+                    }
+                }
             }
         }
     }
@@ -230,6 +236,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 requestDisplay("layout")
             }
         }
+        registerControlReceivers()
     }
 
     override fun onResume() {
@@ -1206,6 +1213,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             addAction(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID)
             addAction(AABroadcastConst.ACTION_SHOW_RECENT_TASK)
             addAction(AABroadcastConst.ACTION_IME_VISIBILITY)
+            addAction(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED)
         }, Context.RECEIVER_EXPORTED)
         isControlReceiverRegistered = true
         syncImeChipFromService()

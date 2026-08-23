@@ -13,10 +13,12 @@ import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
+import io.github.nitsuya.aa.display.util.CoolwalkRailStore
 import io.github.nitsuya.aa.display.util.DisplayProfileSettle
 import io.github.nitsuya.aa.display.util.ReconnectSizingTrace
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
+import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailPhase
 import io.github.nitsuya.aa.display.xposed.hook.VdImeDisplayPin
 import io.github.nitsuya.aa.display.xposed.hook.VdOrientationFill
 import io.github.nitsuya.aa.display.xposed.util.Instances
@@ -94,12 +96,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             val current = mLockedDisplayProfile ?: return
             if (mSplitController == null) return
             if (!hasSystemContext) return
-            val railW = DisplayProfileSettle.observeLiveRailWidthPx(systemContext)
+            val railW = resolveRailWidthPx()
             val fullW = DisplayProfileSettle.observeFullHuWidthPx(
                 systemContext,
                 current.width.coerceAtLeast(1),
                 current.height,
-            )
+            ).coerceAtLeast(CoolwalkRailStore.serverSnapshot.fullHuWidthPx.coerceAtLeast(current.width))
             val settled = DisplayProfileSettle.settle(
                 DisplayProfileSettle.Size(fullW, current.height, current.densityDpi),
                 railWidthPx = railW,
@@ -116,6 +118,17 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             mSplitController?.onReconnected(next.width, next.height, next.densityDpi)
         }
 
+        private fun resolveRailWidthPx(): Int {
+            if (!hasSystemContext) return 0
+            val snap = CoolwalkRailStore.serverSnapshot
+            if (snap.phase == RailPhase.FullBleed) return 0
+            val liveRail = DisplayProfileSettle.observeLiveRailWidthPx(systemContext)
+            // Starved / absent compositor strip → full HU. Never use touchRailWidthPx here
+            // (that width is for :car steal hit-test only; using it locked profile at HU−rail).
+            if (liveRail <= 1) return 0
+            return liveRail
+        }
+
         /**
          * Single settle rule (see [DisplayProfileSettle]): live rail strip → HU−rail;
          * otherwise full HU. Replaces the old grow-immediate / shrink-confirm tug-of-war.
@@ -127,13 +140,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             newSession: Boolean
         ): DisplayProfile {
             val reported = sanitizeDisplayProfile(width, height, densityDpi)
-            val railW = if (hasSystemContext) {
-                DisplayProfileSettle.observeLiveRailWidthPx(systemContext)
-            } else {
-                0
-            }
+            val railW = resolveRailWidthPx()
             val fullW = if (hasSystemContext) {
+                val snapFull = CoolwalkRailStore.serverSnapshot.fullHuWidthPx
                 DisplayProfileSettle.observeFullHuWidthPx(systemContext, reported.width, reported.height)
+                    .coerceAtLeast(snapFull.coerceAtLeast(reported.width))
             } else {
                 reported.width
             }
@@ -471,6 +482,36 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun getImePane(): Int {
         return mSplitController?.getImePane() ?: SplitPane.FULLSCREEN_NONE
+    }
+
+    override fun reportCoolwalkRailSnapshot(
+        phase: Int,
+        touchRailWidthPx: Int,
+        fullHuWidthPx: Int,
+        facetDisplayId: Int,
+    ) {
+        val snapshot = io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailSnapshot(
+            phase = RailPhase.fromCode(phase),
+            effectiveRailWidthPx = 0,
+            touchRailWidthPx = touchRailWidthPx,
+            fullHuWidthPx = fullHuWidthPx,
+            facetDisplayId = facetDisplayId,
+            updatedUptimeMs = android.os.SystemClock.uptimeMillis(),
+            lastEvent = "client-report",
+        )
+        CoolwalkRailStore.publishServer(snapshot)
+        if (hasSystemContext) {
+            CoolwalkRailStore.write(systemContext.contentResolver, snapshot)
+        }
+        logDebug(
+            TAG,
+            "CoolwalkRail snapshot phase=${snapshot.phase} touch=$touchRailWidthPx full=$fullHuWidthPx facet=$facetDisplayId",
+        )
+    }
+
+    override fun getCoolwalkRailSnapshot(): IntArray {
+        val s = CoolwalkRailStore.serverSnapshot
+        return intArrayOf(s.phase.code, s.touchRailWidthPx, s.fullHuWidthPx, s.facetDisplayId)
     }
 
     override fun getRecentTask(): RecentTask {

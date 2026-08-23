@@ -24,6 +24,7 @@
 
 ### Fixed
 - **左侧导航栏黑条重连复发：** FacetBar 窗口一打 tag 就停掉回收，真正占着 ~107px 的 GhostActivity 宿主从未被扫到。改为每次 ensure / attach / collapse / starve 都扫进程内全部窗口；inject 成功即停 poll，晚到 chrome 靠 LayoutInfo / `windowAttach` 再武装。
+- **左侧黑条重连后不消（content 1305 / HU 1412）：** `:car` 未把轨宽 dimen 打成 0，`GhLifecycleService` 仍发 `Rect(0,0,HU−rail)`；FacetBar 已饿成 1px，合成器留下 107px 空槽。`:car` 同样 zero dimens + VD starve/expand；`content_bounds` 把内容槽扩回已观测全宽。
 - **仪表进度双外推：** 壳 session 写入原始采样 + `positionAtElapsedMs`；Egress `getPlaybackState` 写入已外推位置 + `elapsedRealtime()`；位置不超过 duration。
 - **仪表换句闪 0:00（已知限制）：** 奥迪 HU `song` 变即重置显示；Title/进度正常，无代码层修复。详见 `docs/CLUSTER_LYRIC_CLOCK.md` §5 矩阵。
 - **封面 recycled bitmap：** Egress 解码缓存只丢引用不 `recycle`；session 封面一律 `ARGB_8888` copy。

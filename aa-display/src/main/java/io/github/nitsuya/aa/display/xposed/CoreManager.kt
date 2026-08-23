@@ -163,6 +163,53 @@ object CoreManager : ICoreManager, DeathRecipient {
         return getService()?.imePane ?: SplitPane.FULLSCREEN_NONE
     }
 
+    override fun reportCoolwalkRailSnapshot(
+        phase: Int,
+        touchRailWidthPx: Int,
+        fullHuWidthPx: Int,
+        facetDisplayId: Int,
+    ) {
+        try {
+            getService()?.reportCoolwalkRailSnapshot(phase, touchRailWidthPx, fullHuWidthPx, facetDisplayId)
+        } catch (e: Throwable) {
+            Log.e(TAG, "reportCoolwalkRailSnapshot failed", e)
+        }
+    }
+
+    override fun getCoolwalkRailSnapshot(): IntArray {
+        return try {
+            getService()?.coolwalkRailSnapshot ?: intArrayOf(0, 0, 0, -1)
+        } catch (e: Throwable) {
+            Log.e(TAG, "getCoolwalkRailSnapshot failed", e)
+            intArrayOf(0, 0, 0, -1)
+        }
+    }
+
+    fun tryReportCoolwalkRailSnapshot(snapshot: io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailSnapshot): Boolean {
+        val svc = getService() ?: return false
+        return try {
+            svc.reportCoolwalkRailSnapshot(
+                snapshot.phase.code,
+                snapshot.touchRailWidthPx,
+                snapshot.fullHuWidthPx,
+                snapshot.facetDisplayId,
+            )
+            true
+        } catch (e: Throwable) {
+            Log.e(TAG, "reportCoolwalkRailSnapshot failed", e)
+            false
+        }
+    }
+
+    fun tryGetCoolwalkRailSnapshot(): IntArray? {
+        return try {
+            getService()?.coolwalkRailSnapshot
+        } catch (e: Throwable) {
+            Log.e(TAG, "getCoolwalkRailSnapshot failed", e)
+            null
+        }
+    }
+
     /** @return false when binder missing or the remote call throws (caller must not swallow HU events).
      *  touchPane is oneway — success means the parcel was queued, not that inject finished. */
     fun tryTouchPane(pane: Int, motionEvent: MotionEvent): Boolean {
