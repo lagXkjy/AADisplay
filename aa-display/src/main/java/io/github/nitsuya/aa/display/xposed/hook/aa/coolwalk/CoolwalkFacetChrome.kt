@@ -84,9 +84,9 @@ object CoolwalkFacetChrome {
         }
     }
 
-    fun scheduleEnsureFacetBar(env: CoolwalkHookEnv, reason: String) {
+    fun scheduleEnsureFacetBar(env: CoolwalkHookEnv, reason: String, rearm: Boolean = false) {
         val now = SystemClock.uptimeMillis()
-        if (now >= env.mFacetEnsureDeadlineMs) {
+        if (rearm || now >= env.mFacetEnsureDeadlineMs) {
             env.mFacetEnsureDeadlineMs = now + CoolwalkHookEnv.FACET_ENSURE_WINDOW_MS
         }
         env.mFacetEnsureHandler.removeCallbacksAndMessages(CoolwalkHookEnv.FACET_ENSURE_TOKEN)

@@ -15,10 +15,94 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
 object CoolwalkRailCoordinator {
     const val TAG = "AAD_CoolwalkRail"
 
+    /** Debounce window-scans / VD starve on rapid projection config republication. */
+    private const val RECONNECT_RECLAIM_DEBOUNCE_MS = 500L
+
+    /** Gap since last projection config → treat as soft reconnect (gearhead survives). */
+    private const val PROJECTION_SESSION_GAP_MS = 8_000L
+
     @Volatile
     private var snapshot = RailSnapshot()
 
+    /** Unset sentinel — distinct from a real uptime of 0 right after first config. */
+    private const val UNSET_PROJECTION_MS = -1L
+
+    @Volatile
+    private var lastProjectionConfigUptimeMs = UNSET_PROJECTION_MS
+
+    @Volatile
+    private var lastReconnectReclaimUptimeMs = -1L
+
+    data class ProjectionSessionResult(
+        val reconnectStarted: Boolean,
+        val shouldReclaim: Boolean,
+    )
+
     fun current(): RailSnapshot = snapshot
+
+    /**
+     * Projection config republication (soft reconnect). Separates state reset from reclaim:
+     * reclaim must still run when [RailPhase.RailPresent] — the common case when FacetBar
+     * never left and [ReconnectStarted] would otherwise be skipped.
+     */
+    fun onProjectionConfigSignal(reason: String, syncExternal: Boolean = true): ProjectionSessionResult {
+        if (syncExternal) {
+            runCatching { syncExternalTruth() }
+        }
+        val now = SystemClock.uptimeMillis()
+        val sessionGap = when {
+            lastProjectionConfigUptimeMs == UNSET_PROJECTION_MS -> Long.MAX_VALUE
+            else -> (now - lastProjectionConfigUptimeMs).coerceAtLeast(0L)
+        }
+        lastProjectionConfigUptimeMs = now
+        val reconnectStarted = maybeBeginReconnectIfNeeded(reason, sessionGap)
+        val shouldReclaim = shouldRunReconnectReclaim(sessionGap, reconnectStarted)
+        val reclaim = shouldReclaim && (
+            lastReconnectReclaimUptimeMs < 0L ||
+                now - lastReconnectReclaimUptimeMs >= RECONNECT_RECLAIM_DEBOUNCE_MS
+            )
+        if (reclaim) {
+            lastReconnectReclaimUptimeMs = now
+            logDebug(TAG, "reconnect reclaim armed [$reason] phase=${snapshot.phase} gap=$sessionGap")
+        }
+        return ProjectionSessionResult(reconnectStarted, reclaim)
+    }
+
+    /**
+     * Gearhead survives AA disconnect; the next connection's LayoutInfo often runs before
+     * content_bounds. Clear prior-session reclaim state once per reconnect.
+     *
+     * @return true when [RailEvent.ReconnectStarted] was dispatched
+     */
+    fun maybeBeginReconnectIfNeeded(
+        reason: String,
+        sessionGapMs: Long = Long.MAX_VALUE,
+    ): Boolean {
+        val snap = snapshot
+        if (snap.fullHuWidthPx <= 0 && snap.phase == RailPhase.Bootstrapping) return false
+        if (snap.phase == RailPhase.ReconnectSettling) return false
+        // Mid-reclaim on this connection — do not wipe live content_bounds progress.
+        if (snap.phase == RailPhase.Reclaiming && snap.fullBleedStableCount > 0) return false
+        // Same-session rail republication — not a reconnect reset.
+        if (snap.phase == RailPhase.RailPresent && sessionGapMs <= PROJECTION_SESSION_GAP_MS) return false
+        val actions = onEvent(RailEvent.ReconnectStarted(reason)).second
+        runCatching { dispatchActions(actions) }
+        return true
+    }
+
+    private fun shouldRunReconnectReclaim(sessionGapMs: Long, reconnectStarted: Boolean): Boolean {
+        if (reconnectStarted) return true
+        val snap = snapshot
+        if (snap.fullHuWidthPx <= 0 && snap.phase == RailPhase.Bootstrapping) return false
+        return when (snap.phase) {
+            RailPhase.RailPresent,
+            RailPhase.ReconnectSettling,
+            RailPhase.Reclaiming,
+            -> true
+            RailPhase.FullBleed -> sessionGapMs > PROJECTION_SESSION_GAP_MS
+            RailPhase.Bootstrapping -> false
+        }
+    }
 
     fun onEvent(event: RailEvent): Pair<RailSnapshot, List<RailAction>> {
         val now = SystemClock.uptimeMillis()
@@ -189,26 +273,16 @@ object CoolwalkRailCoordinator {
         var mergedTouch = snapshot.touchRailWidthPx
         var mergedLayoutW = snapshot.layoutWidthPx
         var mergedLayoutH = snapshot.layoutHeightPx
-        var mergedPhase = snapshot.phase
-        var mergedUpdated = snapshot.updatedUptimeMs
-        val server = CoolwalkRailStore.serverSnapshot
-        val railForMerge = maxOf(snapshot.touchRailWidthPx, server.touchRailWidthPx, mergedTouch)
+        val server = CoolwalkRailStore.sanitizeCrossBoot(CoolwalkRailStore.serverSnapshot)
+        val railForMerge = maxOf(snapshot.touchRailWidthPx, server.touchRailWidthPx)
         mergedFull = absorbExternalFullHu(mergedFull, mergedLayoutH, server.fullHuWidthPx, railForMerge)
         if (server.touchRailWidthPx > mergedTouch) mergedTouch = server.touchRailWidthPx
         if (server.layoutWidthPx > mergedLayoutW) mergedLayoutW = server.layoutWidthPx
         if (server.layoutHeightPx > mergedLayoutH) mergedLayoutH = server.layoutHeightPx
-        if (server.updatedUptimeMs > mergedUpdated) {
-            mergedPhase = server.phase
-            mergedUpdated = server.updatedUptimeMs
-        }
         resolver?.let { r ->
             val stored = CoolwalkRailStore.read(r)
             mergedFull = absorbExternalFullHu(mergedFull, mergedLayoutH, stored.fullHuWidthPx, railForMerge)
             if (stored.touchRailWidthPx > mergedTouch) mergedTouch = stored.touchRailWidthPx
-            if (stored.updatedUptimeMs > mergedUpdated) {
-                mergedPhase = stored.phase
-                mergedUpdated = stored.updatedUptimeMs
-            }
         }
         val ipc = CoreManager.tryGetCoolwalkRailSnapshot()
         if (ipc != null && ipc.size >= 4) {
@@ -218,21 +292,24 @@ object CoolwalkRailCoordinator {
         if (mergedFull != snapshot.fullHuWidthPx ||
             mergedTouch > snapshot.touchRailWidthPx ||
             mergedLayoutW > snapshot.layoutWidthPx ||
-            mergedLayoutH > snapshot.layoutHeightPx ||
-            mergedUpdated > snapshot.updatedUptimeMs
+            mergedLayoutH > snapshot.layoutHeightPx
         ) {
             snapshot = snapshot.copy(
                 fullHuWidthPx = mergedFull,
                 touchRailWidthPx = mergedTouch,
                 layoutWidthPx = mergedLayoutW,
                 layoutHeightPx = mergedLayoutH,
-                phase = mergedPhase,
-                updatedUptimeMs = mergedUpdated,
             )
         }
     }
 
-    fun bestObservedFullHuWidthPx(): Int = snapshot.fullHuWidthPx
+    /** Local coordinator state merged with system_server session cache (IPC). */
+    fun effectiveSnapshot(): RailSnapshot {
+        syncExternalTruth()
+        return snapshot
+    }
+
+    fun bestObservedFullHuWidthPx(): Int = effectiveSnapshot().fullHuWidthPx
 
     fun railHitWidthPx(): Int = CoolwalkRailMath.railHitWidthPx(snapshot)
 
@@ -265,6 +342,16 @@ object CoolwalkRailCoordinator {
 
     fun resetForTests() {
         snapshot = RailSnapshot()
+        lastProjectionConfigUptimeMs = UNSET_PROJECTION_MS
+        lastReconnectReclaimUptimeMs = -1L
+    }
+
+    internal fun setLastProjectionConfigUptimeForTests(uptimeMs: Long) {
+        lastProjectionConfigUptimeMs = uptimeMs
+    }
+
+    internal fun resetReconnectReclaimDebounceForTests() {
+        lastReconnectReclaimUptimeMs = -1L
     }
 
     fun dispatchActions(actions: List<RailAction>) {

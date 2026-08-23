@@ -47,6 +47,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     private var displayId: Int = Display.INVALID_DISPLAY
+    /** Set when pane TextureViews tear down (AA disconnect); forces surface rebind on resume. */
+    private var needsPresentationRebind = false
     private var repairDownTimePrimary = Long.MIN_VALUE
     private var repairDownTimeSecondary = Long.MIN_VALUE
     private var isDisplayCreateRequested = false
@@ -175,10 +177,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                         requestDisplay("full-bleed")
                     }
                 }
-                AABroadcastConst.ACTION_COOLWALK_FINISH_FOR_RELAUNCH -> {
-                    Log.d(TAG, "finish for full-bleed relaunch")
-                    activity?.finish()
-                }
             }
         }
     }
@@ -272,6 +270,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             }
             // Soft-reconnect sizing is owned by CoreManagerService DisplayProfileSettle.
             requestDisplay("resume")
+            maybeRecoverAfterSurfaceTeardown("resume")
             scheduleSurfaceHealthCheck()
         }
     }
@@ -932,6 +931,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
 
             override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
                 Log.d(TAG, "pane=$pane surface destroyed")
+                needsPresentationRebind = true
                 CoreApi.setPaneSurface(pane, null)
                 onSurface(null)
                 return true
@@ -1173,7 +1173,17 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         secondarySurface?.let { CoreApi.setPaneSurface(SplitPane.SECONDARY, it) }
         if (displayId == Display.INVALID_DISPLAY) {
             requestDisplay("recovery-$reason")
+        } else {
+            needsPresentationRebind = false
         }
+    }
+
+    /** After AA disconnect, TextureViews are new but VD profile may be unchanged — rebind surfaces. */
+    private fun maybeRecoverAfterSurfaceTeardown(reason: String) {
+        if (!needsPresentationRebind) return
+        if (displayId == Display.INVALID_DISPLAY) return
+        if (primarySurface?.isValid != true || secondarySurface?.isValid != true) return
+        recoverPresentationPipeline(reason)
     }
 
     private val surfaceHealthRunnable = Runnable {
@@ -1294,6 +1304,14 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         ) {
             if (displayWidth < targetW - tol || displayHeight < targetH - tol) {
                 scheduleHostLayoutCatchup(reason)
+            } else if (needsPresentationRebind) {
+                Log.d(TAG, "requestDisplay[$reason] soft-reconnect after surface teardown")
+                lastCreateWidth = 0
+                lastCreateHeight = 0
+                lastCreateDpi = 0
+                isDisplayCreateRequested = false
+                needsPresentationRebind = false
+                requestDisplay(reason)
             } else {
                 Log.d(TAG, "requestDisplay[$reason] skipped: profile unchanged")
             }
@@ -1323,6 +1341,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
 
     private fun clearDisplaySurfaces(reason: String) {
         Log.d(TAG, "clearDisplaySurfaces[$reason]")
+        needsPresentationRebind = true
         CoreApi.setPaneSurface(SplitPane.PRIMARY, null)
         CoreApi.setPaneSurface(SplitPane.SECONDARY, null)
         primarySurface?.release()
@@ -1420,7 +1439,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             addAction(AABroadcastConst.ACTION_SHOW_RECENT_TASK)
             addAction(AABroadcastConst.ACTION_IME_VISIBILITY)
             addAction(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED)
-            addAction(AABroadcastConst.ACTION_COOLWALK_FINISH_FOR_RELAUNCH)
         }, Context.RECEIVER_EXPORTED)
         isControlReceiverRegistered = true
         syncImeChipFromService()

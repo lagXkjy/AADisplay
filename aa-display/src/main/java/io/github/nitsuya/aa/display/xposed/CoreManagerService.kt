@@ -15,6 +15,7 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
 import io.github.nitsuya.aa.display.util.CoolwalkRailStore
 import io.github.nitsuya.aa.display.util.DisplayProfileSettle
+import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkRailMath
@@ -116,13 +117,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
         private fun resolveRailWidthPx(): Int {
             if (!hasSystemContext) return 0
-            val snap = CoolwalkRailStore.effectiveSnapshot()
-            if (snap.phase == RailPhase.FullBleed) return 0
             val liveRail = DisplayProfileSettle.observeLiveRailWidthPx(systemContext)
-            // Starved / absent compositor strip → full HU. Never use touchRailWidthPx here
-            // (that width is for :car steal hit-test only; using it locked profile at HU−rail).
-            if (liveRail <= 1) return 0
-            return liveRail
+            // Compositor FacetBar strip is the only profile input — never touchRailWidthPx
+            // or cached FullBleed phase (stale after reconnect blacks the left gutter).
+            return if (liveRail <= 1) 0 else liveRail
         }
 
         private fun resolveObservedFullHuWidthPx(reportedWidth: Int, reportedHeight: Int): Int {
@@ -525,6 +523,22 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     override fun getCoolwalkRailSnapshot(): IntArray {
         val s = CoolwalkRailStore.effectiveSnapshot()
         return intArrayOf(s.phase.code, s.touchRailWidthPx, s.fullHuWidthPx, s.facetDisplayId)
+    }
+
+    override fun notifyCoolwalkFullBleed() {
+        mSessionPolicy?.sendCoolwalkFullBleedBroadcast()
+            ?: sendAaDisplayBroadcastFromSystem(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED)
+    }
+
+    private fun sendAaDisplayBroadcastFromSystem(action: String) {
+        if (!hasSystemContext) return
+        try {
+            systemContext.sendBroadcast(
+                android.content.Intent(action).setPackage(BuildConfig.APPLICATION_ID),
+            )
+        } catch (e: Throwable) {
+            log(TAG, "sendAaDisplayBroadcastFromSystem failed action=$action", e)
+        }
     }
 
     override fun getRecentTask(): RecentTask {

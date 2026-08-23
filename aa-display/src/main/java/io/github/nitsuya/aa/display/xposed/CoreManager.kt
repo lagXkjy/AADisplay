@@ -185,6 +185,14 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
+    override fun notifyCoolwalkFullBleed() {
+        try {
+            getService()?.notifyCoolwalkFullBleed()
+        } catch (e: Throwable) {
+            Log.e(TAG, "notifyCoolwalkFullBleed failed", e)
+        }
+    }
+
     fun tryReportCoolwalkRailSnapshot(snapshot: io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailSnapshot): Boolean {
         val svc = getService() ?: return false
         return try {
@@ -207,6 +215,17 @@ object CoreManager : ICoreManager, DeathRecipient {
         } catch (e: Throwable) {
             Log.e(TAG, "getCoolwalkRailSnapshot failed", e)
             null
+        }
+    }
+
+    fun tryNotifyCoolwalkFullBleed(): Boolean {
+        val svc = getService() ?: return false
+        return try {
+            svc.notifyCoolwalkFullBleed()
+            true
+        } catch (e: Throwable) {
+            Log.e(TAG, "notifyCoolwalkFullBleed failed", e)
+            false
         }
     }
 

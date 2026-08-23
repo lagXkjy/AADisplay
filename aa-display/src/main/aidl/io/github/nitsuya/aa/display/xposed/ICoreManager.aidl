@@ -96,4 +96,10 @@ interface ICoreManager {
      * Returns int[4]: phase, touchRailWidthPx, fullHuWidthPx, facetDisplayId.
      */
     int[] getCoolwalkRailSnapshot();
+
+    /**
+     * system_server → AADisplay: gearhead cannot reliably deliver package-targeted
+     * broadcasts on Android 13+; relay through system uid like [ACTION_REQUEST_DISPLAY_RECOVERY].
+     */
+    oneway void notifyCoolwalkFullBleed();
 }

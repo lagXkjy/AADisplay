@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk
 
+import io.github.nitsuya.aa.display.util.CoolwalkRailStore
 import io.github.nitsuya.aa.display.util.DisplayProfileSettle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -271,10 +272,81 @@ class CoolwalkRailMathTest {
     }
 
     @Test
+    fun target_presentation_width_reconnect_with_session_full_hu() {
+        val snap = RailSnapshot(
+            phase = RailPhase.ReconnectSettling,
+            fullHuWidthPx = 1280,
+            touchRailWidthPx = 107,
+        )
+        assertEquals(1173, CoolwalkRailMath.targetPresentationWidthPx(snap, 1173))
+    }
+
+    @Test
+    fun layout_widen_waits_until_this_connection_content_bounds() {
+        repeat(3) {
+            CoolwalkRailCoordinator.onEvent(
+                RailEvent.ContentBoundsExpanded(1280, 720, 107, "prev-session"),
+            )
+        }
+        assertEquals(1280, CoolwalkRailMath.targetPresentationWidthPx(CoolwalkRailCoordinator.current(), 1173))
+        CoolwalkRailCoordinator.onEvent(RailEvent.ReconnectStarted("layoutInfo:test"))
+        assertEquals(1173, CoolwalkRailMath.targetPresentationWidthPx(CoolwalkRailCoordinator.current(), 1173))
+        CoolwalkRailCoordinator.onEvent(
+            RailEvent.ContentBoundsExpanded(1280, 720, 107, "this-session"),
+        )
+        assertEquals(1280, CoolwalkRailMath.targetPresentationWidthPx(CoolwalkRailCoordinator.current(), 1173))
+    }
+
+    @Test
+    fun target_presentation_width_ignores_cross_boot_stale_full_bleed() {
+        val stale = CoolwalkRailStore.sanitizeCrossBoot(
+            RailSnapshot(
+                phase = RailPhase.FullBleed,
+                fullHuWidthPx = 1280,
+                touchRailWidthPx = 107,
+                fullBleedStableCount = 3,
+                updatedUptimeMs = 9_999_999L,
+            ),
+            nowUptimeMs = 60_000L,
+        )
+        assertEquals(1173, CoolwalkRailMath.targetPresentationWidthPx(stale, 1173))
+    }
+
+    @Test
     fun reconnect_clears_previous_connection_hu() {
         CoolwalkRailCoordinator.onEvent(RailEvent.FullHuObserved(1280, 720, "prev-car"))
         CoolwalkRailCoordinator.onEvent(RailEvent.ReconnectStarted("projection:test"))
         assertEquals(0, CoolwalkRailCoordinator.current().fullHuWidthPx)
         assertEquals(0, CoolwalkRailCoordinator.current().layoutHeightPx)
+    }
+
+    @Test
+    fun projection_signal_reclaims_when_rail_present_without_reconnect_started() {
+        CoolwalkRailCoordinator.onEvent(RailEvent.RailWidthObserved(80, "pillar_width"))
+        val now = maxOf(android.os.SystemClock.uptimeMillis(), 10_000L)
+        CoolwalkRailCoordinator.setLastProjectionConfigUptimeForTests(now - 500L)
+        val signal = CoolwalkRailCoordinator.onProjectionConfigSignal("projection:test", syncExternal = false)
+        assertEquals(false, signal.reconnectStarted)
+        assertEquals(true, signal.shouldReclaim)
+        assertEquals(RailPhase.RailPresent, CoolwalkRailCoordinator.current().phase)
+        val rapid = CoolwalkRailCoordinator.onProjectionConfigSignal("projection:test", syncExternal = false)
+        assertEquals(false, rapid.reconnectStarted)
+        assertEquals(false, rapid.shouldReclaim)
+    }
+
+    @Test
+    fun projection_signal_starts_reconnect_after_session_gap() {
+        CoolwalkRailCoordinator.onEvent(RailEvent.RailWidthObserved(80, "pillar_width"))
+        val t = maxOf(android.os.SystemClock.uptimeMillis(), 10_000L)
+        CoolwalkRailCoordinator.setLastProjectionConfigUptimeForTests(t - 500L)
+        CoolwalkRailCoordinator.onProjectionConfigSignal("projection:first", syncExternal = false)
+        CoolwalkRailCoordinator.setLastProjectionConfigUptimeForTests(
+            android.os.SystemClock.uptimeMillis() - 9_000L,
+        )
+        CoolwalkRailCoordinator.resetReconnectReclaimDebounceForTests()
+        val afterGap = CoolwalkRailCoordinator.onProjectionConfigSignal("projection:gap", syncExternal = false)
+        assertEquals(true, afterGap.reconnectStarted)
+        assertEquals(true, afterGap.shouldReclaim)
+        assertEquals(RailPhase.ReconnectSettling, CoolwalkRailCoordinator.current().phase)
     }
 }

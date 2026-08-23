@@ -8,8 +8,6 @@ interface AABroadcastConst {
         const val ACTION_AA_DISPLAY_SHOWN = "aa.display.action.AA_DISPLAY_SHOWN"
         /** gearhead → AA: content_bounds expanded to full HU; re-measure and recreate VDs. */
         const val ACTION_COOLWALK_FULL_BLEED = "aa.display.action.COOLWALK_FULL_BLEED"
-        /** gearhead → AA: tear down CarActivity before full-bleed relaunch (fresh presentation VD). */
-        const val ACTION_COOLWALK_FINISH_FOR_RELAUNCH = "aa.display.action.COOLWALK_FINISH_FOR_RELAUNCH"
         /** system_server → AA: pane occupancy changed (restore, launch, close). */
         const val ACTION_SPLIT_STATE_CHANGED = "aa.display.action.SPLIT_STATE_CHANGED"
         const val EXTRA_ACTION = "aa.display.extra.ACTION"

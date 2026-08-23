@@ -2,18 +2,75 @@ package io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk
 
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import com.github.kyuubiran.ezxhelper.init.InitFields
 import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import com.github.kyuubiran.ezxhelper.utils.loadClass
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
+import java.lang.ref.WeakReference
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 
 object AaCoolwalkCompositorHook {
 
+    private val railVdByDisplayId = ConcurrentHashMap<Int, WeakReference<VirtualDisplay>>()
+
     fun install(env: CoolwalkHookEnv) {
         hookVirtualDisplaySizing(env)
+        env.mFacetEnsureHandler.post { starveSurvivingFacetBarVds(env, "install") }
+    }
+
+    /**
+     * Soft reconnect may reuse an 80px GhFacetBar VD without create/resize — starve any
+     * surviving compositor strip we already hold a [VirtualDisplay] for.
+     */
+    fun starveSurvivingFacetBarVds(env: CoolwalkHookEnv, reason: String) {
+        val dm = runCatching {
+            InitFields.appContext.getSystemService(DisplayManager::class.java)
+        }.getOrNull() ?: return
+        var starved = 0
+        for (display in dm.displays) {
+            if (!AaCoolwalkHuTouchHook.isTrustedRailDisplayId(display.displayId)) continue
+            if (!CoolwalkRailMath.isRailVirtualDisplayName(display.name)) continue
+            val width = runCatching { display.mode.physicalWidth }.getOrDefault(0)
+            val height = runCatching { display.mode.physicalHeight }.getOrDefault(0)
+            if (width <= 1 || height <= 0) continue
+            val vd = railVdByDisplayId[display.displayId]?.get()
+            if (vd == null) {
+                logDebug(
+                    CoolwalkHookEnv.TAG,
+                    "AaUiHook: surviving FacetBar VD id=${display.displayId} name=${display.name} " +
+                        "${width}x$height no VirtualDisplay ref [$reason]",
+                )
+                continue
+            }
+            val densityDpi = runCatching {
+                val metrics = android.util.DisplayMetrics()
+                display.getRealMetrics(metrics)
+                metrics.densityDpi
+            }.getOrDefault(160)
+            runCatching { vd.resize(1, height, densityDpi) }
+                .onSuccess {
+                    starved++
+                    logDebug(
+                        CoolwalkHookEnv.TAG,
+                        "AaUiHook: starve surviving FacetBar VD id=${display.displayId} " +
+                            "name=${display.name} ${width}x$height → 1x$height [$reason]",
+                    )
+                    env.mFacetEnsureHandler.post {
+                        val actions = CoolwalkRailCoordinator.onEvent(
+                            RailEvent.GutterReclaim("starve-surviving"),
+                        ).second
+                        CoolwalkRailCoordinator.dispatchActions(actions)
+                    }
+                }
+                .onFailure { e ->
+                    log(CoolwalkHookEnv.TAG, "AaUiHook: starve surviving FacetBar VD failed [$reason]", e)
+                }
+        }
+        if (starved == 0) return
     }
 
     private fun hookVirtualDisplaySizing(env: CoolwalkHookEnv) {
@@ -160,6 +217,7 @@ object AaCoolwalkCompositorHook {
         if (vd == null || !CoolwalkRailMath.isRailVirtualDisplayName(name)) return
         val display = vd.display ?: return
         if (!AaCoolwalkHuTouchHook.isTrustedRailDisplayId(display.displayId)) return
+        railVdByDisplayId[display.displayId] = WeakReference(vd)
         val width = display.mode.physicalWidth
         val actions = mutableListOf<RailAction>()
         if (width > 1) {

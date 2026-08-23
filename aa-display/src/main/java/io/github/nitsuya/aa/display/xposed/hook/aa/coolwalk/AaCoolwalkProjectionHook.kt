@@ -10,6 +10,7 @@ import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import com.github.kyuubiran.ezxhelper.utils.loadClass
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.xposed.CoreManager
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
@@ -198,17 +199,20 @@ object AaCoolwalkProjectionHook {
     }
 
     private fun markProjectionReconnectIfNeeded(env: CoolwalkHookEnv, source: String) {
-        CoolwalkRailCoordinator.syncExternalTruth(InitFields.appContext.contentResolver)
-        val snap = CoolwalkRailCoordinator.current()
-        // First cold connect: no prior HU truth — LayoutInfo / facet collapse own reclaim.
-        if (snap.fullHuWidthPx <= 0 && snap.phase == RailPhase.Bootstrapping) return
-        if (snap.phase == RailPhase.ReconnectSettling) return
-        val actions = CoolwalkRailCoordinator.onEvent(
-            RailEvent.ReconnectStarted("projection:$source"),
-        ).second
-        CoolwalkRailCoordinator.dispatchActions(actions)
-        CoolwalkFacetChrome.reclaimAllWindowGutters("reconnect:$source")
-        AaCoolwalkAutoOpenHook.resetFullBleedRelaunch(env)
+        val session = CoolwalkRailCoordinator.onProjectionConfigSignal("projection:$source")
+        if (!session.shouldReclaim) return
+        val reason = "reconnect:$source"
+        CoolwalkFacetChrome.reclaimAllWindowGutters(reason)
+        if (env.canHookFacetBar) {
+            CoolwalkFacetChrome.scheduleEnsureFacetBar(env, reason, rearm = true)
+        }
+        AaCoolwalkCompositorHook.starveSurvivingFacetBarVds(env, reason)
+        for (delayMs in longArrayOf(250L, 1_000L)) {
+            env.mFacetEnsureHandler.postDelayed(
+                { AaCoolwalkCompositorHook.starveSurvivingFacetBarVds(env, "$reason+${delayMs}ms") },
+                delayMs,
+            )
+        }
         AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "projection-reconnect")
     }
 
@@ -316,7 +320,6 @@ object AaCoolwalkProjectionHook {
         )
         notifyAaUiFullBleed()
         AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "content_bounds")
-        AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(env, "content_bounds")
         env.mFacetEnsureHandler.post {
             CoolwalkFacetChrome.reclaimAllWindowGutters("content_bounds-post")
         }
@@ -324,6 +327,7 @@ object AaCoolwalkProjectionHook {
     }
 
     private fun notifyAaUiFullBleed() {
+        if (CoreManager.tryNotifyCoolwalkFullBleed()) return
         try {
             val action = AABroadcastConst.ACTION_COOLWALK_FULL_BLEED
             InitFields.appContext.sendBroadcast(

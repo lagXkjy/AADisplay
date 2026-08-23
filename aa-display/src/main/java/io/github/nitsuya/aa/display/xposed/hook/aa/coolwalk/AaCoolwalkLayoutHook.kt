@@ -121,7 +121,7 @@ object AaCoolwalkLayoutHook {
     private fun widenLayoutInfoToFullHu(env: CoolwalkHookEnv, args: Array<Any?>) {
         val w = args[1] as? Int ?: return
         if (w <= 0) return
-        CoolwalkRailCoordinator.syncExternalTruth()
+        CoolwalkRailCoordinator.maybeBeginReconnectIfNeeded("layoutInfo:pre-widen")
         val target = CoolwalkRailMath.targetPresentationWidthPx(CoolwalkRailCoordinator.current(), w)
         if (target <= w) return
         args[1] = target

@@ -1,6 +1,7 @@
 package io.github.nitsuya.aa.display.util
 
 import android.content.ContentResolver
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Display
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkRailMath
@@ -38,6 +39,28 @@ object CoolwalkRailStore {
     }
 
     /**
+     * [updatedUptimeMs] is [SystemClock.uptimeMillis] and resets on reboot while
+     * Settings.Global survives — a larger stored value is always from a prior boot.
+     * Keep HU geometry hints but drop reclaim phase so LayoutInfo is not widened
+     * before this session's FacetBar starve / content_bounds run.
+     */
+    fun isCrossBootStale(updatedUptimeMs: Long, nowUptimeMs: Long = SystemClock.uptimeMillis()): Boolean {
+        return updatedUptimeMs > nowUptimeMs
+    }
+
+    fun sanitizeCrossBoot(
+        snapshot: RailSnapshot,
+        nowUptimeMs: Long = SystemClock.uptimeMillis(),
+    ): RailSnapshot {
+        if (!isCrossBootStale(snapshot.updatedUptimeMs, nowUptimeMs)) return snapshot
+        return snapshot.copy(
+            phase = RailPhase.Bootstrapping,
+            fullBleedStableCount = 0,
+            updatedUptimeMs = 0L,
+        )
+    }
+
+    /**
      * Remember cold-start / full-bleed truth once gearhead reports it.
      * Soft reconnect clears [serverSnapshot] live fields but keeps this for presentation create.
      */
@@ -69,7 +92,7 @@ object CoolwalkRailStore {
     /** Live server snapshot merged with [sessionSettled] when reconnect cleared live HU fields. */
     fun effectiveSnapshot(): RailSnapshot = snapshotWithSession(serverSnapshot)
 
-    /** Merge session cache when live snapshot was cleared for reconnect. */
+    /** Merge session cache when live snapshot was cleared for reconnect. Geometry only — reclaim proof stays live. */
     fun snapshotWithSession(live: RailSnapshot): RailSnapshot {
         val session = sessionSettled ?: return live
         if (live.fullHuWidthPx > 0 && live.phase != RailPhase.ReconnectSettling) return live
@@ -78,11 +101,6 @@ object CoolwalkRailStore {
         return live.copy(
             fullHuWidthPx = full,
             touchRailWidthPx = touch,
-            fullBleedStableCount = live.fullBleedStableCount.coerceAtLeast(1),
-            phase = when (live.phase) {
-                RailPhase.ReconnectSettling, RailPhase.Bootstrapping -> RailPhase.Reclaiming
-                else -> live.phase
-            },
         )
     }
 
@@ -124,13 +142,21 @@ object CoolwalkRailStore {
     }
 
     fun read(cr: ContentResolver): RailSnapshot {
-        return RailSnapshot(
-            phase = RailPhase.fromCode(Settings.Global.getInt(cr, SETTINGS_PHASE, RailPhase.Bootstrapping.code)),
-            effectiveRailWidthPx = 0,
-            touchRailWidthPx = Settings.Global.getInt(cr, SETTINGS_TOUCH_RAIL_W, 0),
-            fullHuWidthPx = Settings.Global.getInt(cr, SETTINGS_FULL_HU_W, 0),
-            facetDisplayId = Settings.Global.getInt(cr, SETTINGS_FACET_DISPLAY_ID, Display.INVALID_DISPLAY),
-            updatedUptimeMs = Settings.Global.getLong(cr, SETTINGS_UPDATED_MS, 0L),
+        return sanitizeCrossBoot(
+            RailSnapshot(
+                phase = RailPhase.fromCode(
+                    Settings.Global.getInt(cr, SETTINGS_PHASE, RailPhase.Bootstrapping.code),
+                ),
+                effectiveRailWidthPx = 0,
+                touchRailWidthPx = Settings.Global.getInt(cr, SETTINGS_TOUCH_RAIL_W, 0),
+                fullHuWidthPx = Settings.Global.getInt(cr, SETTINGS_FULL_HU_W, 0),
+                facetDisplayId = Settings.Global.getInt(
+                    cr,
+                    SETTINGS_FACET_DISPLAY_ID,
+                    Display.INVALID_DISPLAY,
+                ),
+                updatedUptimeMs = Settings.Global.getLong(cr, SETTINGS_UPDATED_MS, 0L),
+            ),
         )
     }
 }

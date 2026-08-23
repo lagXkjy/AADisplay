@@ -49,8 +49,8 @@ class CoolwalkRailStoreTest {
         val merged = CoolwalkRailStore.snapshotWithSession(CoolwalkRailStore.serverSnapshot)
         assertEquals(1280, merged.fullHuWidthPx)
         assertEquals(107, merged.touchRailWidthPx)
-        assertEquals(RailPhase.Reclaiming, merged.phase)
-        assertEquals(1, merged.fullBleedStableCount)
+        assertEquals(RailPhase.ReconnectSettling, merged.phase)
+        assertEquals(0, merged.fullBleedStableCount)
     }
 
     @Test
@@ -89,7 +89,7 @@ class CoolwalkRailStoreTest {
         )
         val merged = CoolwalkRailStore.effectiveSnapshot()
         assertEquals(1280, merged.fullHuWidthPx)
-        assertEquals(RailPhase.Reclaiming, merged.phase)
+        assertEquals(RailPhase.ReconnectSettling, merged.phase)
     }
 
     @Test
@@ -99,5 +99,34 @@ class CoolwalkRailStoreTest {
         )
         CoolwalkRailStore.clearSession()
         assertNull(CoolwalkRailStore.sessionSettled)
+    }
+
+    @Test
+    fun sanitize_cross_boot_drops_stale_full_bleed_phase() {
+        val stale = RailSnapshot(
+            phase = RailPhase.FullBleed,
+            touchRailWidthPx = 107,
+            fullHuWidthPx = 1280,
+            fullBleedStableCount = 3,
+            updatedUptimeMs = 9_999_999L,
+        )
+        val fresh = CoolwalkRailStore.sanitizeCrossBoot(stale, nowUptimeMs = 60_000L)
+        assertEquals(RailPhase.Bootstrapping, fresh.phase)
+        assertEquals(0, fresh.fullBleedStableCount)
+        assertEquals(0L, fresh.updatedUptimeMs)
+        assertEquals(1280, fresh.fullHuWidthPx)
+        assertEquals(107, fresh.touchRailWidthPx)
+    }
+
+    @Test
+    fun sanitize_cross_boot_keeps_same_boot_snapshot() {
+        val live = RailSnapshot(
+            phase = RailPhase.FullBleed,
+            touchRailWidthPx = 107,
+            fullHuWidthPx = 1280,
+            fullBleedStableCount = 3,
+            updatedUptimeMs = 50_000L,
+        )
+        assertEquals(live, CoolwalkRailStore.sanitizeCrossBoot(live, nowUptimeMs = 60_000L))
     }
 }

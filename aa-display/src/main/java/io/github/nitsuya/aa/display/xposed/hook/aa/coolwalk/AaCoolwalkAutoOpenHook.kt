@@ -212,48 +212,4 @@ object AaCoolwalkAutoOpenHook {
         env.mFacetEnsureHandler.removeCallbacksAndMessages(CoolwalkHookEnv.AUTO_OPEN_TOKEN)
         logDebug(CoolwalkHookEnv.TAG, "AaUiHook: AutoOpen stop retries ($reason)")
     }
-
-    /**
-     * After content_bounds expands to this-connection full HU, CarActivity may already
-     * be running on the rail-trimmed presentation Surface. Resizing that VD blacks the
-     * HU — instead re-invoke SysUi start so Coolwalk creates a new presentation at full width.
-     * Once per connection.
-     */
-    fun scheduleFullBleedRelaunch(env: CoolwalkHookEnv, reason: String) {
-        if (env.mFullBleedRelaunchDone) return
-        if (env.startMethod == null) {
-            log(CoolwalkHookEnv.TAG, "AaUiHook: full-bleed relaunch skip ($reason): startMethod null")
-            return
-        }
-        env.mFullBleedRelaunchDone = true
-        env.mFacetEnsureHandler.removeCallbacksAndMessages(CoolwalkHookEnv.FULL_BLEED_RELAUNCH_TOKEN)
-        val delay = CoolwalkHookEnv.FULL_BLEED_RELAUNCH_DELAY_MS
-        logDebug(CoolwalkHookEnv.TAG, "AaUiHook: schedule full-bleed relaunch ($reason) in ${delay}ms")
-        requestFinishForRelaunch()
-        env.mFacetEnsureHandler.postAtTime(
-            {
-                env.mAaDisplayShownThisSession = false
-                env.mAutoOpenArmed = true
-                tryAutoOpenAaDisplay(env, -2L)
-            },
-            CoolwalkHookEnv.FULL_BLEED_RELAUNCH_TOKEN,
-            android.os.SystemClock.uptimeMillis() + delay,
-        )
-    }
-
-    private fun requestFinishForRelaunch() {
-        try {
-            InitFields.appContext.sendBroadcast(
-                android.content.Intent(AABroadcastConst.ACTION_COOLWALK_FINISH_FOR_RELAUNCH)
-                    .setPackage(BuildConfig.APPLICATION_ID),
-            )
-        } catch (e: Throwable) {
-            log(CoolwalkHookEnv.TAG, "AaUiHook: finish-for-relaunch broadcast failed", e)
-        }
-    }
-
-    fun resetFullBleedRelaunch(env: CoolwalkHookEnv) {
-        env.mFullBleedRelaunchDone = false
-        env.mFacetEnsureHandler.removeCallbacksAndMessages(CoolwalkHookEnv.FULL_BLEED_RELAUNCH_TOKEN)
-    }
 }

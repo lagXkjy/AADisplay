@@ -278,9 +278,8 @@ object CoolwalkRailMath {
         val full = snapshot.fullHuWidthPx
         if (w <= 0 || full <= w + 2) return w.coerceAtLeast(1)
         if (snapshot.effectiveRailWidthPx > 1) return w
-        val reclaimed = snapshot.fullBleedStableCount > 0 ||
-            snapshot.phase == RailPhase.FullBleed ||
-            (snapshot.phase == RailPhase.Reclaiming && full > w + 8)
+        val reclaimed = snapshot.fullBleedStableCount > 0 &&
+            snapshot.phase != RailPhase.ReconnectSettling
         if (!reclaimed) return w
         if (!isPlausibleRailGap(full - w, full, snapshot.touchRailWidthPx)) return w
         return full

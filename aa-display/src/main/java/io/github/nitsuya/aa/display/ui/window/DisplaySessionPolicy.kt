@@ -442,13 +442,20 @@ class DisplaySessionPolicy(
     }
 
     private fun sendPresentationRecoveryBroadcast() {
+        sendAaDisplayBroadcast(AABroadcastConst.ACTION_REQUEST_DISPLAY_RECOVERY, "recovery")
+    }
+
+    fun sendCoolwalkFullBleedBroadcast() {
+        sendAaDisplayBroadcast(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED, "full-bleed")
+    }
+
+    private fun sendAaDisplayBroadcast(action: String, label: String) {
         try {
             mContext.sendBroadcast(
-                Intent(AABroadcastConst.ACTION_REQUEST_DISPLAY_RECOVERY)
-                    .setPackage(BuildConfig.APPLICATION_ID),
+                Intent(action).setPackage(BuildConfig.APPLICATION_ID),
             )
         } catch (e: Throwable) {
-            log(TAG, "sendPresentationRecoveryBroadcast failed:", e)
+            log(TAG, "sendAaDisplayBroadcast[$label] failed:", e)
         }
     }
 
