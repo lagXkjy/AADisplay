@@ -1,6 +1,7 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk
 
 import android.graphics.Rect
+import io.github.nitsuya.aa.display.util.DisplayProfileSettle
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -332,6 +333,20 @@ object CoolwalkRailMath {
         if (abs(formB - observedFull) <= tolerancePx) return observedFull
         if (left > 0 && abs(target + left - observedFull) <= tolerancePx) return observedFull
         return target
+    }
+
+    /**
+     * True when expanded content_bounds widened a rail-inset or content-slot rect to full HU
+     * (e.g. Rect(107,0-1280,720) slotW=1173 → target 1280).
+     */
+    fun needsPresentationWidenAfterExpand(before: Rect, targetWidthPx: Int): Boolean {
+        return needsPresentationWidenForSlotWidth(before.right - before.left, targetWidthPx)
+    }
+
+    internal fun needsPresentationWidenForSlotWidth(slotWidthPx: Int, targetWidthPx: Int): Boolean {
+        val slotW = slotWidthPx.coerceAtLeast(0)
+        return targetWidthPx > slotW + 2 &&
+            DisplayProfileSettle.isContentSlotVsFull(slotW, targetWidthPx)
     }
 
     fun applyExpandedContentBounds(

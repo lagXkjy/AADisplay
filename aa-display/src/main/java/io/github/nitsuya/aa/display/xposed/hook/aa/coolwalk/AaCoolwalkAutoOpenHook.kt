@@ -25,7 +25,11 @@ object AaCoolwalkAutoOpenHook {
         hookCarSystemUiConnectedKick(env)
     }
 
-    fun scheduleAutoOpenIfNeeded(env: CoolwalkHookEnv, reason: String = "unknown") {
+    fun scheduleAutoOpenIfNeeded(
+        env: CoolwalkHookEnv,
+        reason: String = "unknown",
+        bypassRearmGap: Boolean = false,
+    ) {
         if (env.startMethod == null) {
             log(CoolwalkHookEnv.TAG, "AaUiHook: AutoOpen skip ($reason): startMethod null")
             return
@@ -42,10 +46,18 @@ object AaCoolwalkAutoOpenHook {
             return
         }
         val now = SystemClock.uptimeMillis()
-        if (env.mAutoOpenSessionAtMs != 0L &&
+        if (!bypassRearmGap &&
+            env.mAutoOpenSessionAtMs != 0L &&
             now - env.mAutoOpenSessionAtMs < CoolwalkHookEnv.AUTO_OPEN_REARM_GAP_MS
         ) {
+            logDebug(
+                CoolwalkHookEnv.TAG,
+                "H12|AutoOpen skip rearm gap ($reason) elapsed=${now - env.mAutoOpenSessionAtMs}ms",
+            )
             return
+        }
+        if (bypassRearmGap) {
+            logDebug(CoolwalkHookEnv.TAG, "H12|arm AutoOpen bypassRearm ($reason)")
         }
         env.mAutoOpenSessionAtMs = now
         env.mAaDisplayShownThisSession = false

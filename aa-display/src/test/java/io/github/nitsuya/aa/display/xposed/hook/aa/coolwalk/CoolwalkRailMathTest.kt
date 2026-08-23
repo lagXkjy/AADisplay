@@ -455,6 +455,12 @@ class CoolwalkRailMathTest {
     }
 
     @Test
+    fun needs_presentation_widen_for_rail_inset_content_bounds() {
+        assertTrue(CoolwalkRailMath.needsPresentationWidenForSlotWidth(1173, 1280))
+        assertFalse(CoolwalkRailMath.needsPresentationWidenForSlotWidth(1280, 1280))
+    }
+
+    @Test
     fun reconnect_clears_previous_connection_hu() {
         CoolwalkRailCoordinator.onEvent(RailEvent.FullHuObserved(1280, 720, "prev-car"))
         CoolwalkRailCoordinator.onEvent(RailEvent.ReconnectStarted("projection:test"))

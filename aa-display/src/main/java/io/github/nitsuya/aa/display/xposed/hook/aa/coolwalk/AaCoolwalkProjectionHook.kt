@@ -314,9 +314,17 @@ object AaCoolwalkProjectionHook {
         CoolwalkRailCoordinator.rememberFullHuSize(expanded.targetWidthPx, expanded.targetHeightPx)
         val incomingAlreadyFullBleed = before.left <= 0 &&
             abs(before.width() - expanded.targetWidthPx) <= 2
-        val needsPresentationWiden = before.left <= 0 &&
-            expanded.targetWidthPx > before.width() + 2 &&
-            DisplayProfileSettle.isContentSlotVsFull(before.width(), expanded.targetWidthPx)
+        val needsPresentationWiden = CoolwalkRailMath.needsPresentationWidenAfterExpand(
+            before,
+            expanded.targetWidthPx,
+        )
+        if (needsPresentationWiden) {
+            logDebug(
+                CoolwalkHookEnv.TAG,
+                "H11|needsPresentationWiden slot=${before.right - before.left} target=${expanded.targetWidthPx} " +
+                    "before=$before",
+            )
+        }
         val coordinatorReclaimed = snapBefore.fullHuWidthPx == expanded.targetWidthPx &&
             snapBefore.effectiveRailWidthPx == 0 &&
             snapBefore.phase != RailPhase.ReconnectSettling &&
@@ -346,7 +354,11 @@ object AaCoolwalkProjectionHook {
             if (env.mAaDisplayShownThisSession && expanded.railWidthPx > 0) {
                 AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(env, "content_bounds")
             } else {
-                AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "content_bounds")
+                AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(
+                    env,
+                    "content_bounds",
+                    bypassRearmGap = needsPresentationWiden || expanded.railWidthPx > 0,
+                )
             }
             env.mFacetEnsureHandler.post {
                 CoolwalkFacetChrome.reclaimAllWindowGutters("content_bounds-post")
