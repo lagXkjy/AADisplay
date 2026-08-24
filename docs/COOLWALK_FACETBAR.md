@@ -1,6 +1,6 @@
 # COOLWALK_FACETBAR.md — FacetBar / 左轨回收与重连分辨率
 
-Coolwalk 左侧 **FacetBar**（`GhFacetBar` VirtualDisplay + launcher/dashboard 图标列）与 **重连分辨率结算** 的架构说明与坑点备忘。  
+Coolwalk 左侧 **FacetBar**（`GhFacetBar` VirtualDisplay + launcher/dashboard 图标列）与 **重连分辨率结算** 的架构说明。  
 运行时总链路见 [EXECUTION.md](EXECUTION.md)；仓库地图见 [AGENTS.md](../AGENTS.md)。
 
 ---
@@ -12,12 +12,22 @@ Android Auto Coolwalk 在 HU 左侧保留一条 **竖向导航轨**（FacetBar�
 | 层 | AA 原生表现 | AADisplay 目标 |
 |----|-------------|----------------|
 | **Compositor** | 具名 `GhFacetBar` VirtualDisplay，宽约 80–107px | **饿成 1×H**，合成器不再占槽 |
+| **Compositor 窗几何** | `{blX=rail, trX=fullHU}`，slot 宽 = full − rail | `blX→0`，`trX→fullHU` |
 | **Layout** | `content_bounds` = `Rect(rail,0,HU−rail,H)` | 扩成 `Rect(0,0,fullHU,H)` |
 | **View** | `gh_coolwalk_*facet*` 图标列 | GONE + 0 宽，兄弟内容 MATCH_PARENT |
-| **Profile** | 分屏 VD 按 **720**（800−80）创建 | 回收后按 **800** 全宽 settle |
-| **触控** | `x < rail` 命中 FacetBar VD | 偷到 PRIMARY 窗 / peel / AA UI |
+| **Profile** | 分屏 VD 按 content slot 创建（如 720、1828） | 回收后按 **full HU** settle（800、1920…） |
+| **Presentation** | `DrawingSpec` 宽 = content slot | 加宽到 full HU |
+| **触控** | `x < rail` 命中 FacetBar VD | 偷渡到 pane / peel / AA UI（坐标需减 compositor inset） |
 
-四条链路不同步时会出现：**左侧黑条**、**右侧 gutter**、**触控落在死 VD**、**软重连 800/720 来回跳**。
+各层不同步时会出现：**左侧黑条**、**右侧 gutter**、**全屏 peel 条点不动**、**软重连 content/full 来回跳**。
+
+典型数值（均为运行时观测，**无硬编码分辨率表**）：
+
+| HU 示例 | full HU | 轨宽（观测） | content slot | 黑条成因 |
+|---------|---------|--------------|--------------|----------|
+| 800×480 | 800 | ~80 | 720 | blX=80 未归零 / profile 锁 720 |
+| 1280×720 | 1280 | ~107 | 1173 | DrawingSpec 仍 1173 |
+| 1920×1080 | 1920 | ~92–107 | 1828 | blX=92 + inject 未减 inset |
 
 ---
 
@@ -31,7 +41,8 @@ gearhead :projection                          gearhead :car
 ├─ CoolwalkFacetChrome          视图折叠         ├─ AaCoolwalkCompositorHook   VD starve/expand
 ├─ AaCoolwalkLayoutHook         LayoutInfo       ├─ CoolwalkFacetChrome        视图折叠
 ├─ AaCoolwalkProjectionHook     content_bounds   ├─ AaCoolwalkHuTouchHook      HU 触控偷渡
-├─ AaCoolwalkCompositorHook       VD policy        └─ AaCoolwalkProjectionHook   content_bounds 镜像
+├─ AaCoolwalkCompositorHook     VD policy        ├─ CoolwalkProjectionBoundsHook  blX 归零
+├─ CoolwalkProjectionBoundsHook blX 扩展         └─ AaCoolwalkProjectionHook   content_bounds 镜像
 └─ CoolwalkRailCoordinator ◄── RailEvent ──► (IPC) system_server
                                               ├─ CoolwalkRailStore (Settings.Global 镜像)
                                               └─ DisplayProfileSettle → profile lock
@@ -39,6 +50,8 @@ gearhead :projection                          gearhead :car
 io.github.nitsuya.aa.display (AADisplay 进程)
 └─ AaDisplayProcessHook → CoolwalkDrawingSpecWiden  (DrawingSpec / presentation 加宽)
 ```
+
+**单一状态源：** gearhead 内所有 FacetBar 相关 hook 只经 `CoolwalkRailCoordinator.onEvent` 读写 `RailSnapshot`，再 `NotifyServer` 到 system_server。不要在各模块私藏 HU 宽度。
 
 ### 2.2 典型冷连时序
 
@@ -50,371 +63,411 @@ sequenceDiagram
     participant SS as system_server
     participant AAD as AADisplay 进程
 
-    AA->>AA: LayoutInfo 构造 → force vertical rail + 记 HU 尺寸
+    AA->>AA: LayoutInfo → fullHu + contentSlot
     AA->>Coord: RailEvent.LayoutInfo
-    Coord->>SS: reportCoolwalkRailSnapshot (NotifyServer)
-    Car->>Car: createVirtualDisplay("GhFacetBar", 80×H)
-    Car->>Car: CompositorPolicy: 80×H → 1×H
-    Car->>Coord: FacetBarVdCreate + GutterReclaim
-    AA->>AA: GhFacetBar.onWindowSurfaceAvailable → SurfaceHook 钳 1px
-    AA->>AA: LayoutInflater facet layout → collapseFacetChrome
-    AA->>AA: content_bounds Rect(rail,0,W,H) → Rect(0,0,full,H)
-    AA->>Coord: ContentBoundsExpanded → phase Reclaiming/FullBleed
     Coord->>SS: reportCoolwalkRailSnapshot
-    SS->>SS: DisplayProfileSettle.settle → 800 全宽
-    SS->>AAD: ACTION_COOLWALK_FULL_BLEED
-    AAD->>AAD: DrawingSpec 1173→1280（仅 Reclaiming/FullBleed）
-    AAD->>SS: onCreateSplitDisplay(800×H)
-    Car->>Car: x<rail 触控 → touchPrimaryPane
+    Car->>Car: createVirtualDisplay("GhFacetBar", rail×H)
+    Car->>Car: CompositorPolicy: rail×H → 1×H
+    Car->>Coord: FacetBarVdCreate(touchRail) + GutterReclaim
+    AA->>AA: SurfaceHook 钳 1px + collapse facet
+    AA->>AA: content_bounds 扩到 full HU
+    AA->>Coord: ContentBoundsExpanded → Reclaiming/FullBleed
+    AA->>AA: ProjectionBounds blX→0, trX→full
+    Coord->>SS: reportCoolwalkRailSnapshot
+    SS->>SS: DisplayProfileSettle → full HU
+    AAD->>AAD: DrawingSpec contentSlot→fullHu
+    AAD->>SS: onCreateSplitDisplay(full×H)
+    Car->>Car: rail 触控 → inject(x − inset)
 ```
 
-### 2.3 软重连补充
+### 2.3 软重连
 
 gearhead 进程常存活，AA 断连再连时：
 
-1. `AaCoolwalkProjectionHook` 检测 projection config  republication → `onProjectionConfigSignal`。
-2. 若距上次 config > 8s 或 phase 需重置 → `RailEvent.ReconnectStarted`（清空上一车 HU 真值）。
-3. 无论是否 reset，**reclaim 仍要跑**：`reclaimAllWindowGutters` + `scheduleEnsureFacetBar` + `starveSurvivingFacetBarVds`（250ms / 1s 重试）。
-4. `CoolwalkRailStore.markReconnectEpoch` + `SETTINGS_RECONNECT_UPTIME_MS` 供各进程识别近期重连，避免 content_bounds 幂等跳过。
+1. `AaCoolwalkProjectionHook` 检测 projection config republication → `onProjectionConfigSignal`。
+2. 距上次 config > 8s 或 phase 需重置 → `RailEvent.ReconnectStarted`（清空上一车 HU / contentSlot）。
+3. **无论是否 reset，reclaim 仍要跑：** `reclaimAllWindowGutters` + `scheduleEnsureFacetBar` + `starveSurvivingFacetBarVds`（250ms / 1s 重试）。
+4. `CoolwalkRailStore.markReconnectEpoch` + `SETTINGS_RECONNECT_UPTIME_MS` 供 content_bounds 幂等判断。
 
 ---
 
-## 3. Hook 入口（`AaUiHook`）
+## 3. 分辨率适配模型（`CoolwalkRailMath`）
+
+**原则：** 不适配「800 / 1280 / 1920」表格，只适配 **三条运行时观测** + **FacetBar 物理 UI 常数**。
+
+### 3.1 三条观测（`RailSnapshot`）
+
+| 字段 | 来源 | 用途 |
+|------|------|------|
+| `fullHuWidthPx` | LayoutInfo canvas、VirtualDevice、`ContentBoundsExpanded` | 真 HU 宽；DrawingSpec 加宽目标；profile settle |
+| `contentSlotWidthPx` | LayoutInfo 窄宽、`rememberContentSlotWidth` | **reclaim 后仍保留**；算 compositor inset；不随 `layoutWidthPx` 晋升而丢失 |
+| `touchRailWidthPx` | `FacetBarVdCreate` / VD 观测 | **仅** HU 触控 hit 带宽；**禁止**用于 profile |
+
+辅助字段：
+
+| 字段 | 说明 |
+|------|------|
+| `layoutWidthPx` | 最近一次 LayoutInfo 宽；`ContentBoundsExpanded` 后可能升为 fullHu |
+| `effectiveRailWidthPx` | 目标恒 0（内容/profile 无轨） |
+| `facetDisplayId` | 具名 FacetBar VD 的 displayId（触控 CarDisplayId 匹配） |
+
+`contentSlotWidthPx` 生命周期：
+
+- `LayoutInfo`：`rememberContentSlotWidth(width, fullHu, previous)` — 当 `width < fullHu` 时记下 content slot。
+- `ContentBoundsExpanded`：`layoutWidthPx` 升为 fullHu，**`contentSlotWidthPx` 不变**（inset 仍可用）。
+- `FullBleed` 稳定（`fullBleedStableCount ≥ 3`）：`contentSlotWidthPx → 0`（inset 不再需要）。
+- `ReconnectStarted`：整表 `RailSnapshot` 重置。
+
+### 3.2 物理常数（非分辨率特调）
+
+定义于 `CoolwalkRailMath`：
+
+| 常数 | 值 | 含义 |
+|------|-----|------|
+| `absoluteFacetRailBand()` | 32..160 px | Coolwalk 竖轨物理宽度带（各 HU 同一套 chrome） |
+| `RAIL_MEASUREMENT_JITTER_PX` | 20 px（或与 touchRail/5 取大） | VD 上报轨宽 vs compositor `blX` 允许偏差（如 107 vs 92） |
+| 单轨上限 | `min(15% × fullHu, 160)` | 拒绝双轨缺口（720+80+80→880）误判为 full HU |
+
+**禁止**用 `fullHu × 5%` 作轨宽下限（1920 HU 会得到 96px，真实 92px 轨会被拒 → 整条回收链断）。
+
+### 3.3 核心判定（统一入口）
+
+```text
+gap = fullHuWidthPx − reportedOrSlotWidth
+
+isPlausibleRailGap(gap, fullHu, touchRail):
+  gap ∈ 32..160
+  且（|gap − touchRail| ≤ jitter  或  gap ≤ min(15%×fullHu, 160)）
+
+isContentSlotVsFull(reportedW, fullW, touchRail):
+  isPlausibleRailGap(fullW − reportedW, fullW, touchRail)
+
+compositorLeftInsetPx(snapshot):
+  若 FullBleed 已稳定 → 0
+  否则 inset = fullHu − contentSlotWidthPx（fallback: layoutWidthPx 若仍窄于 full）
+  仅当 isPlausibleRailGap(inset, fullHu, touchRail) 时返回 inset
+```
+
+`DisplayProfileSettle.isContentSlotVsFull` **委托** `CoolwalkRailMath`（带 `CoolwalkRailStore.serverSnapshot.touchRailWidthPx`），避免 system_server 与 gearhead 两套规则。
+
+### 3.4 几何合并（换车 / 软重连）
+
+`pickConnectionFullHuWidth` + `isSameHuGeometry`：同一连接内 full 与 content slot 可互相推断；**不同 HU 高度或非同轨 sibling 宽度** 拒绝合并，防换车污染。
+
+`ReconnectStarted` 清空 `fullHu` / `contentSlot`，下一连接的 LayoutInfo 为唯一真值。
+
+---
+
+## 4. Hook 入口（`AaUiHook`）
 
 **注册：** `AndroidAutoHook` → `AaUiHook`（`:projection` + `:car`）。  
-**DexKit 解析：** `content_bounds` 方法、`onWindowSurfaceAvailable`（facet surface）、HU touch dispatch、`LayoutInfo` 类（仅 `:projection`）。
+**DexKit：** `content_bounds`、`onWindowSurfaceAvailable`、HU touch dispatch、`LayoutInfo`（`:projection`）、`{blX=` compositor bounds 类。
 
-### 3.1 两进程安装清单
+### 4.1 两进程安装清单
 
 | 模块 | `:projection` | `:car` | 说明 |
 |------|:-------------:|:------:|------|
 | `CoolwalkDrawingSpecWiden.installGearhead` | ✓ | ✓ | gearhead 内 DrawingSpec 构造加宽 |
-| `CoolwalkProjectionBoundsHook` | ✓ | ✓ | compositor `{blX}` 左轨 inset → 0 |
+| `CoolwalkProjectionBoundsHook` | ✓ | ✓ | compositor `{blX}` 左轨 inset → 0，`trX` 扩到 full |
 | `CoolwalkFacetBarSurfaceHook` | ✓ | ✓ | `GhFacetBar.onWindowSurfaceAvailable` 宽→1 |
 | `AaCoolwalkProjectionHook` | ✓ | ✓ | `content_bounds` / `pillar_width` / `content_insets` |
 | `AaCoolwalkLayoutHook`（LayoutInfo） | ✓ | — | 强制 vertical rail、canvas 加宽 |
 | `AaCoolwalkLayoutHook`（rail dimen） | — | ✓ | `Resources.getDimension*` → 0 |
 | `AaCoolwalkCompositorHook` | ✓ | ✓ | VD create/resize 改写 |
 | `CoolwalkFacetChrome` | ✓* | ✓* | 视图折叠；*需 `canHookFacetBar` |
-| `AaCoolwalkHuTouchHook` | — | ✓ | HU 触控偷渡 |
+| `AaCoolwalkHuTouchHook` | — | ✓ | HU 触控偷渡 + compositor inset |
 | `AaCoolwalkAutoOpenHook` | ✓ | — | facet/content_bounds 后自动开 AADisplay |
 
-**AADisplay 进程（非 gearhead）：** `AaDisplayProcessHook` → `AaDisplayPresentationResize.hookDisplayManager()` → `CoolwalkDrawingSpecWiden.installAaDisplayLazy()`。  
-**禁止**在 gearhead 侧 resize `AaDisplayActivity` presentation VD（会黑屏）；presentation 缓冲只在 AADisplay 进程 create 时加宽。
+**AADisplay 进程：** `AaDisplayProcessHook` → `CoolwalkDrawingSpecWiden.installAaDisplayLazy()`。  
+**禁止**在 gearhead resize `AaDisplayActivity` presentation VD（Car SDK Surface 在 AADisplay 进程分配，gearhead 侧改尺寸会黑屏）。
 
-### 3.2 `canHookFacetBar` 前置条件
+### 4.2 `canHookFacetBar`
 
-`CoolwalkHookEnv.loadProjectionResources()` 解析 gearhead 资源 id：
-
-- facet layout：`gh_coolwalk_vertical_facet_bar`、`gh_coolwalk_facet_bar`（及 `_rhd` 变体）
-- 内容特征 id：`status_bar`、`launcher_and_dashboard_icon_container`、`launcher_and_dashboard_icon`
-- canonical rail host：`sys_ui_layout_canonical_vertical_rail_lhd` / `_rhd`
-
-任一缺失则跳过 `CoolwalkFacetChrome`（VD / content_bounds 路径仍生效）。
+`CoolwalkHookEnv.loadProjectionResources()` 解析 facet layout id、launcher 图标特征 id、canonical rail host。任一缺失则跳过 `CoolwalkFacetChrome`（VD / content_bounds / blX 路径仍生效）。
 
 ---
 
-## 4. 模块地图
+## 5. 模块地图
 
 | 类 | 路径 | 职责 |
 |----|------|------|
-| `CoolwalkRailCoordinator` | `xposed/hook/aa/coolwalk/` | gearhead 内 **单一状态机**；`onEvent` → `RailSnapshot` + `RailAction` |
+| `CoolwalkRailCoordinator` | `xposed/hook/aa/coolwalk/` | gearhead **单一状态机**；`onEvent` → `RailSnapshot` + `RailAction` |
 | `CoolwalkRailTypes` | 同上 | `RailPhase`、`RailSnapshot`、`RailEvent`、`RailAction` |
-| `CoolwalkRailMath` | 同上 | 纯几何（轨宽区间、content_bounds 展开、HU 宽度合并）— **可 JVM 单测** |
-| `CoolwalkCompositorPolicy` | 同上 | VD create/resize 改写：FacetBar→1×H、内容 VD 扩满、Dashboard→1×1 |
-| `AaCoolwalkCompositorHook` | 同上 | hook `DisplayManager.createVirtualDisplay` / `VirtualDisplay.resize` |
-| `CoolwalkFacetBarSurfaceHook` | 同上 | `:projection` 侧 **早于** VD starve 的 surface 宽钳制 |
-| `CoolwalkProjectionBoundsHook` | 同上 | compositor `{blX=…}` 窗几何：单轨 inset → `blX=0` |
-| `CoolwalkFacetChrome` | 同上 | inflate / windowAttach / ensure poll：折叠 facet 列、回收 gutter |
-| `AaCoolwalkProjectionHook` | 同上 | 改写 projection `content_bounds` 等；软重连 reclaim 编排 |
+| `CoolwalkRailMath` | 同上 | **纯几何**：content slot 判定、inset、content_bounds 展开、HU 合并 |
+| `CoolwalkCompositorPolicy` | 同上 | VD：FacetBar→1×H、内容 VD 扩满、Dashboard→1×1 |
+| `AaCoolwalkCompositorHook` | 同上 | hook `createVirtualDisplay` / `VirtualDisplay.resize` |
+| `CoolwalkFacetBarSurfaceHook` | 同上 | `:projection` 侧 surface 宽钳制（早于 VD starve） |
+| `CoolwalkProjectionBoundsHook` | 同上 | compositor `{blX,trX}` → full-bleed 窗几何 |
+| `CoolwalkFacetChrome` | 同上 | inflate / windowAttach / ensure：折叠 facet、gutter reclaim |
+| `AaCoolwalkProjectionHook` | 同上 | `content_bounds` 改写；软重连 reclaim 编排 |
 | `AaCoolwalkLayoutHook` | 同上 | LayoutInfo 强制 vertical rail；`:car` rail dimen 归零 |
 | `AaCoolwalkHuTouchHook` | 同上 | `:car` HU touch steal → `ICoreManager.touch*` |
-| `CoolwalkDrawingSpecWiden` | 同上 | `DrawingSpec` 从 content slot 加宽到 full HU |
-| `CoolwalkHookEnv` | 同上 | 共享可变状态、资源 id、ensure 定时器 |
-| `CoolwalkRailStore` | `util/` | `Settings.Global` + `serverSnapshot`（跨进程真值镜像） |
-| `DisplayProfileSettle` | `util/` | system_server：**单一 settle 规则** |
+| `CoolwalkDrawingSpecWiden` | 同上 | `DrawingSpec` content slot → full HU |
+| `CoolwalkHookEnv` | 同上 | 共享状态、资源 id、ensure 定时器 |
+| `CoolwalkRailStore` | `util/` | Settings.Global + `serverSnapshot` |
+| `DisplayProfileSettle` | `util/` | system_server **单一 settle**（几何委托 `CoolwalkRailMath`） |
 | `CoreManagerService` | `xposed/` | `resolveDisplayProfile`、`reportCoolwalkRailSnapshot`、450ms rail-settle 重试 |
 
 ---
 
-## 5. 五条回收路径（必须都打通）
+## 6. 六条回收路径（必须都打通）
 
-### 5.1 View — `CoolwalkFacetChrome`
+### 6.1 View — `CoolwalkFacetChrome`
 
-历史命名 **inject** 实际行为是 **collapse**（折叠 facet 列，不是注入 AADisplay 按钮）。
+实际行为是 **collapse**（折叠 facet 列，不是注入 AADisplay 按钮）。
 
-1. **`LayoutInflater.inflate`**  
-   - 命中 facet layout id，或 **status_bar + launcher 图标** 内容特征 → `collapseFacetChromeInPlace`（GONE、width=0、展开兄弟 MATCH_PARENT）。  
-   - 命中 canonical rail host → `tryInjectIntoFacetColumn` 或 `scheduleEnsureFacetBar`。
+1. **`LayoutInflater.inflate`** — facet layout / 内容特征 → `collapseFacetChromeInPlace`；canonical rail host → ensure。
+2. **`WindowManagerGlobal.addView`** — Before：FacetBar 窗口宽钳 1；After：`suppressFacetBarPresentationRoot`、`reclaimLeftGutter`。
+3. **ensure 窗口** — `FACET_ENSURE_WINDOW_MS=2000`，`POLL=250ms`；inject 成功即停 poll；`reclaimAllWindowGutters` 扫**全部**窗口根。
+4. **触发 ensure：** LayoutInfo、软重连 reclaim、windowAttach、rail host inflate。
 
-2. **`WindowManagerGlobal.addView`**  
-   - **Before：** 具名 FacetBar 窗口 `attrs.width` 钳为 1。  
-   - **After：** `suppressFacetBarPresentationRoot`（Presentation 根隐藏）、`reclaimLeftGutter`、晚到 chrome 再 ensure。
+### 6.2 Compositor VD — `AaCoolwalkCompositorHook` + `CoolwalkCompositorPolicy`
 
-3. **ensure 窗口**  
-   - `FACET_ENSURE_WINDOW_MS = 2000`，`FACET_ENSURE_POLL_MS = 250`。  
-   - inject 成功即停 poll；不再把 deadline 续满（避免占 ~107px 的 GhostActivity 宿主永远扫不到）。  
-   - `reclaimAllWindowGutters`：starve/collapse/reconnect 时扫 **进程内全部窗口根**。
+- 具名 FacetBar / GhFacet / VerticalRail / EdgeColumn：**create → 1×H**，`FacetBarVdCreate` 记 `touchRailWidthPx`。
+- 无名瘦长 VD（≤120px 且高≥3W）：同样 1×H。
+- 内容 VD 缺口像单轨：`expand` 到 `fullHuWidthPx`。
+- `Dashboard` → 1×1。
+- **禁止**改写 `AaDisplayActivity` presentation VD。
+- 软重连：`starveSurvivingFacetBarVds` 对宽>1 的存活 FacetBar 调 `resize(1,H)`。
 
-4. **触发 ensure 的入口**  
-   - `AaCoolwalkLayoutHook`（LayoutInfo 后）  
-   - `AaCoolwalkProjectionHook`（软重连 reclaim）  
-   - `windowAttach`、rail host inflate
+### 6.3 Surface — `CoolwalkFacetBarSurfaceHook`
 
-### 5.2 Compositor — `AaCoolwalkCompositorHook` + `CoolwalkCompositorPolicy`
+`:projection` 里 `onWindowSurfaceAvailable` 可能在 `:car` starve **之前**执行 → 合成器仍记 ~80–107px 槽。`clampSurfaceArgs` 宽→1 + `GutterReclaim`。
 
-- 具名 FacetBar / GhFacet / VerticalRail / EdgeColumn：**create 时 `W×H → 1×H`**，并发 `FacetBarVdCreate` 记 `touchRailWidthPx`（**仅触控**，不给 profile）。
-- 无名瘦长 VD（≤120px 且高≥3W）：同样饿成 1×H。
-- 内容 VD 宽度 < layout 全宽且缺口像 **单条轨**：扩到 `fullHuWidthPx`。
-- `Dashboard` VD：**1×1**（空媒体卡）。
-- **禁止**改写名为 `AaDisplayActivity` 的 presentation VD。
-- **软重连：** `starveSurvivingFacetBarVds` 对仍存活且宽>1 的 FacetBar VD 调 `VirtualDisplay.resize(1,H)`。
+### 6.4 Projection 配置 — `AaCoolwalkProjectionHook`
 
-### 5.3 Surface（:projection 抢先）— `CoolwalkFacetBarSurfaceHook`
+- Hook `content_bounds` / `content_insets` / `pillar_width` → 0。
+- `computeExpandedContentBounds` 三种形态（Form A/B/C，见 `CoolwalkRailMath`）。
+- 扩满 → `ContentBoundsExpanded`；稳定 3 次 → `FullBleed`。
+- `ACTION_COOLWALK_FULL_BLEED` / `notifyCoolwalkFullBleed`。
 
-`:projection` 里 `GhFacetBar.onWindowSurfaceAvailable` 可能在 `:car` starve VD **之前**执行，合成器仍会按 ~80–107px 记槽。
+### 6.5 Compositor 窗几何 — `CoolwalkProjectionBoundsHook`
 
-- DexKit 命中 `onWindowSurfaceAvailable width:` / `dimensions:` 方法。  
-- `clampSurfaceArgs`：具名或瘦长几何的宽参数 → 1，并 post `GutterReclaim` + `reclaimAllWindowGutters`。
+Content Surface 宽 = `trX − blX`。FacetBar 饿死后 AA 仍可能 `blX=rail`（如 blX=92, trX=1920, slot=1828）→ **左侧黑条**。
 
-### 5.4 Projection 配置 — `AaCoolwalkProjectionHook`
+- Hook bounds 构造：`blX→0`；若 `isContentSlotVsFull(trX, fullHint)` 则 `trX→fullHint`。
+- 真重连（`ReconnectSettling` 且 `fullHu≤0`）不扩，防串车。
 
-- Hook `content_bounds` / `content_insets` / `pillar_width` → 0（多路径：DexKit 方法、Bundle/ArrayMap/Intent、Rect 构造/set 备份）。
-- `computeExpandedContentBounds` 三种形态：
-  - **Form A:** `Rect(rail,0,fullW,H)`
-  - **Form B:** `Rect(rail,0,contentRight,H)` 且 `contentRight+rail` = 真全宽
-  - **Form C:** `Rect(0,0,contentW,H)` 且已知 `fullHu` − `contentW` 为单轨缺口
-- 扩满后 `RailEvent.ContentBoundsExpanded`；连续稳定 `FULL_BLEED_STABLE_THRESHOLD=3` 次 → `RailPhase.FullBleed`。
-- 广播 `ACTION_COOLWALK_FULL_BLEED` → `AaMainFragment.requestDisplay`（或 system_server `notifyCoolwalkFullBleed`）。
+### 6.6 Layout / Dimen — `AaCoolwalkLayoutHook`
 
-### 5.5 Compositor 几何 blX — `CoolwalkProjectionBoundsHook`
+- **:projection** — LayoutInfo 强制 vertical rail；`widenLayoutInfoToFullHu`；`RailEvent.LayoutInfo` + ensure。
+- **:car** — rail width dimen → 0，防 `GhLifecycleService` 仍发 HU−rail 的 bounds。
 
-Content Surface 常按 `{blX, trX}` 的 `trX − blX` 分配。FacetBar 饿死后 AA 仍可能 `blX=rail`（如 107→1280 ⇒ slot 1173）→ 左侧黑条。
+### 6.7 Profile — `DisplayProfileSettle` + `CoreManagerService`
 
-- DexKit 命中 `{blX=` toString 的 bounds 类，hook 构造把疑似单轨 `blX → 0`。  
-- **真重连**（`ReconnectSettling` 且 `fullHuWidthPx ≤ 0`）不扩，防串车。  
-- 与 `content_bounds` / DrawingSpec 互补：扩 bounds 配置 + 扩 compositor 窗几何。
-
-### 5.6 Layout / Dimen — `AaCoolwalkLayoutHook`
-
-**:projection**
-
-- `LayoutInfo` 构造：强制 `hasVerticalRail=true`、canonical vertical rail layout id。  
-- `widenLayoutInfoToFullHu`：回收后把 canvas 从 content slot 扩到 full HU（`hasVerticalRail` 保持 true，避免掉回底栏）。  
-- 构造后 `RailEvent.LayoutInfo` + `scheduleEnsureFacetBar`。
-
-**:car**
-
-- `Resources` / `ResourcesImpl` 的 `getDimension*`：rail width dimen id → 0。  
-- 防止 `GhLifecycleService` 仍按 HU−rail 发 `content_bounds`。
-
-### 5.7 Profile — `DisplayProfileSettle` + `CoreManagerService`
-
-**单一规则**（`DisplayProfileSettle.settle`）：
-
-```
-live FacetBar VD 条带宽度 > 1  →  settle 到 fullHU − rail
-条带 ≤ 1（已 starve）          →  若 reported 仍是 content slot 且 reclaim 未证明，暂保持 reported；
-                                 否则 settle 到 fullHU
+```text
+live FacetBar VD 条带 > 1     →  settle 到 fullHU − liveRail
+条带 ≤ 1（已 starve）         →  若 reported 仍是 content slot 且 reclaim 未证明 → 保持 reported
+                              否则 → fullHU
 ```
 
-- **live rail** 来自 `DisplayManager` 扫具名 FacetBar VD 的 `physicalWidth`（system_server 可见私有 VD）。
-- **不要用 `touchRailWidthPx` 做 profile**（那是 `:car` 触控 steal 带宽）。
-- 软重连首次 create 后 **450ms `rail-settle` 重试**（`RAIL_SETTLE_RETRY_MS`）。
-- `reportCoolwalkRailSnapshot` 在 full 变大或 `FullBleed` 时也会 `scheduleRailSettleRetry`。
+- **live rail** = `DisplayManager` 扫具名 FacetBar VD 的 `physicalWidth`（**不用** `touchRailWidthPx`）。
+- 软重连后 **450ms `rail-settle` 重试**（`RAIL_SETTLE_RETRY_MS`）。
 
-### 5.8 Presentation 加宽 — `CoolwalkDrawingSpecWiden`
+### 6.8 Presentation — `CoolwalkDrawingSpecWiden`
 
-Car SDK 在 AADisplay 进程按 **content 槽**分配 encoder Surface。回收后需把 `DrawingSpec` 从 720/1173 扩到 800/1280：
-
-- gearhead：构造 / `CREATOR.createFromParcel` hook。  
-- AADisplay：`ClassLoader.loadClass(DrawingSpec)` 懒 hook。  
-- `isContentSlotVsFull` 且已知 `fullHu` 时加宽：`Reclaiming` / `FullBleed`，以及 **`ReconnectSettling` 且 fullHu>0**（IPC 滞后或误降级残留）。  
-- **真重连**清空 fullHu 后不加宽。starve + content_bounds 的 presentation relaunch 共用 `AaCoolwalkAutoOpenHook` **2s debounce**。
+- gearhead：DrawingSpec ctor + `CREATOR.createFromParcel`。
+- AADisplay：`ClassLoader.loadClass` 懒 hook；IPC/Settings 合并 snapshot。
+- `isContentSlotVsFull(width, fullHu, touchRail)` 且 phase 允许 → 加宽到 fullHu。
+- `ReconnectSettling` 且已知 fullHu 仍可加宽（与 blX / LayoutInfo 门闩对齐）。
+- 与 `AaCoolwalkAutoOpenHook` 共用 **2s debounce** 避免 relaunch 风暴。
 
 ---
 
-## 6. 状态机（RailPhase）
+## 7. 状态机（`RailPhase`）
 
 | Phase | 含义 |
 |-------|------|
 | `Bootstrapping` | 冷连，尚无 LayoutInfo |
-| `RailPresent` | 观测到活轨宽（VD 或 dimen） |
-| `Reclaiming` | 正在 collapse / starve / 扩 content_bounds |
-| `FullBleed` | `content_bounds` 连续稳定全宽（阈值 3） |
-| `ReconnectSettling` | 软重连后丢弃上一车的 HU 真值，等新 LayoutInfo |
+| `RailPresent` | 观测到活轨宽（VD / dimen） |
+| `Reclaiming` | collapse / starve / 扩 content_bounds 进行中 |
+| `FullBleed` | content_bounds 连续稳定全宽（阈值 3） |
+| `ReconnectSettling` | 软重连；清空上一车 HU / contentSlot |
 
-**软重连：** `RailEvent.ReconnectStarted` 清空 `fullHuWidthPx` / layout，避免上一台车的 1280 污染本次 800。
+**`RailWidthObserved` 不降级 FullBleed/Reclaiming** — 只更新 `touchRail`；真软重连只走 `ReconnectStarted`。
 
-**`RailWidthObserved` 不降级 FullBleed/Reclaiming：** 只更新 `touchRailWidthPx`（与 `FacetBarVdCreate` 一致）。瞬时瘦长 VD / starve 前观测不得清 `fullBleedStableCount`、不得打成 `ReconnectSettling`。真软重连只走 `ReconnectStarted` / projection session gap。
+### 7.1 RailEvent → 典型触发源
 
-### 6.1 RailEvent 触发源对照
-
-| RailEvent | 典型触发源 |
-|-----------|------------|
-| `LayoutInfo` | `AaCoolwalkLayoutHook` LayoutInfo 构造后 |
-| `RailWidthObserved` | VD 观测、dimen 归零、瘦长 VD 发现（FullBleed/Reclaiming 下不改 phase） |
-| `FullHuObserved` | `AaCoolwalkCompositorHook.rememberFullHuSize` |
-| `FacetDisplayId` | FacetBar VD create / `:car` DisplayManager 扫描 |
-| `ContentBoundsExpanded` | `AaCoolwalkProjectionHook.applyExpandedContentBounds` |
-| `FacetBarVdCreate` | `CoolwalkCompositorPolicy` 具名 FacetBar create |
-| `ReconnectStarted` | `onProjectionConfigSignal` / `maybeBeginReconnectIfNeeded` |
+| RailEvent | 触发源 |
+|-----------|--------|
+| `LayoutInfo` | `AaCoolwalkLayoutHook` 构造后 |
+| `RailWidthObserved` | VD 扫描、dimen、瘦长 VD |
+| `FullHuObserved` | `rememberFullHuSize` |
+| `FacetDisplayId` | FacetBar create / DisplayManager 扫描 |
+| `ContentBoundsExpanded` | `applyExpandedContentBounds` |
+| `FacetBarVdCreate` | `CoolwalkCompositorPolicy` |
+| `ReconnectStarted` | projection config gap / `maybeBeginReconnectIfNeeded` |
 | `GutterReclaim` | collapse、starve、surface-clamp、windowAttach |
 
-### 6.2 RailAction 副作用
+### 7.2 RailAction
 
 | RailAction | 执行 |
 |------------|------|
-| `NotifyServer` | `CoreManager.tryReportCoolwalkRailSnapshot` → system_server |
+| `NotifyServer` | `CoreManager.tryReportCoolwalkRailSnapshot` |
 | `ReclaimAllGutters` | `CoolwalkFacetChrome.reclaimAllWindowGutters` |
 
-Left gutter reclaim runs directly in `CoolwalkFacetChrome.reclaimLeftGutter` / `scheduleReclaimLeftGutter` on window attach and rail layout inflate — not via `RailAction`.
+`reclaimLeftGutter` 在 windowAttach / inflate 时直接调用，不经 `RailAction`。
 
 ---
 
-## 7. 跨进程 IPC 与状态同步
+## 8. 跨进程 IPC
 
-### 7.1 IPC 契约（`ICoreManager`）
+### 8.1 `ICoreManager`（wire 仍为 4×int）
 
-| 方法 | 方向 | 用途 |
+| 方法 | 方向 | 字段 |
 |------|------|------|
-| `reportCoolwalkRailSnapshot(phase, touchRail, fullHu, facetId)` | gearhead → system_server | 发布 rail 快照；写 `CoolwalkRailStore` + Settings.Global |
-| `getCoolwalkRailSnapshot()` | 任意 → system_server | 返回 `int[4]` 同上字段 |
-| `getCoolwalkReconnectEpochMs()` | 任意 → system_server | 软重连 epoch（uptime） |
-| `notifyCoolwalkFullBleed()` | system_server → AADisplay | `ACTION_COOLWALK_FULL_BLEED` 广播 |
+| `reportCoolwalkRailSnapshot(phase, touchRail, fullHu, facetId)` | gearhead → SS | 见下表 |
+| `getCoolwalkRailSnapshot()` | 任意 → SS | `int[4]` |
+| `getCoolwalkReconnectEpochMs()` | 任意 → SS | 软重连 epoch |
+| `notifyCoolwalkFullBleed()` | SS → AADisplay | 广播 |
 
-### 7.2 Settings.Global 键（勿改 key 名）
+`contentSlotWidthPx` **仅 gearhead 进程内** `RailSnapshot` 字段，不跨 IPC（inset 在 `:car` 本地算）。
+
+### 8.2 Settings.Global 键（勿改 key 名）
 
 | Key | 含义 |
 |-----|------|
 | `aadisplay_cw_rail_phase` | `RailPhase.code` |
 | `aadisplay_cw_rail_touch_w` | `touchRailWidthPx` |
 | `aadisplay_cw_rail_full_w` | `fullHuWidthPx` |
-| `aadisplay_cw_rail_facet_id` | FacetBar `displayId` |
-| `aadisplay_cw_session_full_w` / `_touch_w` | 冷连 full-bleed 会话缓存（软重连不清） |
+| `aadisplay_cw_rail_facet_id` | FacetBar displayId |
+| `aadisplay_cw_session_full_w` / `_touch_w` | 冷连 full-bleed 会话缓存 |
 | `aadisplay_cw_reconnect_uptime_ms` | 软重连 epoch |
 
-### 7.3 真值合并规则（`CoolwalkRailCoordinator.syncExternalTruth`）
+### 8.3 真值合并（`syncExternalTruth`）
 
-1. 读 `CoolwalkRailStore.serverSnapshot`（跨 boot 消毒 `sanitizeCrossBoot`）。  
-2. 读 Settings.Global（`CoolwalkRailStore.read`）。  
-3. 读 `CoreManager.tryGetCoolwalkRailSnapshot()`；若对端 `ReconnectSettling` 则本地也 reset phase。  
-4. `absorbExternalFullHu`：**不同 HU 几何不合并**，防止换车污染。  
-5. `:car` 启动时 `AaCoolwalkHuTouchHook.syncServerRailSnapshot` 拉 server 快照。
+1. `CoolwalkRailStore.serverSnapshot`（`sanitizeCrossBoot`）。  
+2. Settings.Global。  
+3. IPC snapshot；对端 `ReconnectSettling` 时本地对齐 reset（除非本地已在 Reclaiming/FullBleed 且 `fullHu>0`）。  
+4. `absorbExternalFullHu` — 不同 HU 几何不合并。  
+5. `:car` 启动时 `AaCoolwalkHuTouchHook.syncServerRailSnapshot`。
 
 ---
 
-## 8. 触控与轨宽分离
+## 9. 触控（`:car` `AaCoolwalkHuTouchHook`）
 
-| 字段 | 用途 |
-|------|------|
-| `touchRailWidthPx` | `:car` HU touch steal 的 x 带宽度（`railHitWidthPx`） |
-| FacetBar VD `physicalWidth` | profile settle 的 **compositor 条带** |
-| `effectiveRailWidthPx` | 设计上恒 0（内容/profile 目标无轨） |
+### 9.1 轨宽 vs profile（再次强调）
 
-`:car` `AaCoolwalkHuTouchHook` 在 `CarActivityManagerService` HU touch dispatch 处偷 `x < railHitWidth` 的触控：
+| 量 | 用途 |
+|----|------|
+| `touchRailWidthPx` | HU 上 `x < railHitWidth` 偷渡带；`railHitWidthPx()` 可 fallback 8% full |
+| FacetBar VD `physicalWidth` | **仅** profile settle |
+| `compositorLeftInsetPx` | HU 坐标 → presentation/pane 坐标（**非** hit 带） |
 
-| 条件 | IPC 落点 |
-|------|----------|
+### 9.2 偷渡流程
+
+1. Hook `CarActivityManagerService` HU touch dispatch。  
+2. `x < railHitWidth`（或命中 FacetBar `CarDisplayId`）→ steal。  
+3. `rewriteMotionEvent(..., xOffset = compositorLeftInsetPx)` — **HU x 减 inset** 再 inject。  
+4. 路由：
+
+| 条件 | IPC |
+|------|-----|
 | 应用选择器（`ACTION_AA_UI_RAIL_CONSUME`） | `touchAaDisplay` |
-| 全屏 + peel 命中带 | `touchAaDisplay` |
-| 其余左侧 rail 带 | `touchPrimaryPane` |
+| 全屏 + peel 命中带（`SplitPane.peelHitContains`） | `touchAaDisplay` |
+| 全屏 + 非 peel | `touchPane(fullscreenPane)` |
+| 分屏 | `touchPrimaryPane` |
 
-时间戳必须用 **uptime**（`rewriteMotionEvent`）。MOVE 走 Choreographer 帧合并，避免 Binder 风暴。
+5. MOVE 帧合并（Choreographer）；时间戳用 **uptime**。  
+6. 手机锁屏时 presentation 可能被 keyguard 挡：`SplitLockedPeelController` 在 system_server 侧直接处理 peel 语义，不依赖 presentation hit-test。
 
-**轨宽发现：** 优先具名 FacetBar VD；否则绝对窄条 ≤120px；**禁止** `DEFAULT_DISPLAY`；`CarDisplayId` 白名单 accessor。
+### 9.3 坐标系为何必须减 inset
 
----
-
-## 9. 关键坑点（改代码前必读）
-
-### 9.1 打 tag 就停 poll → 左侧黑条复发
-
-早期实现：facet 宿主一 `tag = injected` 就停止 ensure / 全窗 reclaim。  
-真正占 107px 的 **GhostActivity 窗口** 可能从未 inflate facet layout，只有瘦长宿主。  
-**现规则：** ensure / attach / collapse / starve 都扫全部 `WindowManagerGlobal` 根；inject 成功停 poll；晚到 chrome 靠 LayoutInfo / `windowAttach` 再武装。
-
-### 9.2 在 gearhead resize CarActivity presentation → 黑屏
-
-Car SDK 在 **AADisplay 进程** 按 content 槽分配 encoder Surface。  
-在 gearhead 把同名 VD 改成 full HU 但 Surface 仍是 720 宽 → HU 全黑。  
-**对策：** `CoolwalkCompositorPolicy` 对 `AaDisplayActivity` VD **不改写**；  
-`CoolwalkDrawingSpecWiden` 仅在 AADisplay / gearhead DrawingSpec 构造加宽。
-
-### 9.3 FacetBar 已 1px 但 `content_bounds` 仍 HU−rail
-
-`:car` 若未 zero rail dimen，`GhLifecycleService` 仍发 `Rect(0,0,HU−rail)`，合成器留空槽。  
-**对策：** `:car` 同样 zero dimens + VD starve；`:projection` 扩 `content_bounds`。
-
-### 9.4 `touchRailWidthPx` 误用于 profile
-
-会把 profile 锁在 720 即使 compositor 条带已消失 → 右侧 gutter。  
-**对策：** `resolveRailWidthPx()` 只看 live VD；`FullBleed` phase 直接 0。
-
-### 9.5 reported 已是 content slot 时盲目扩到 full HU
-
-FacetBar 已 starve，但 CarActivity presentation 可能仍是 HU−rail。  
-此时把 **分屏 VD** settle 到 full HU → 内容 letterbox 在较小 presentation 里，或 resize 该 VD 黑屏。  
-**对策：** `DisplayProfileSettle.isContentSlotVsFull` + `coolwalkReclaimProven` — gap 在轨宽区间内则 **保持 reported**，直到 server 证明 full-bleed。
-
-### 9.6 跨车 HU 真值污染
-
-上一连接 1280×720 写入 Settings / IPC，换 800×480 车机后仍用 1280 扩 VD。  
-**对策：** `ReconnectStarted` 清空；`pickConnectionFullHuWidth` / `isSameHuGeometry` 拒绝不同几何；`absorbExternalFullHu` 不同 HU 不合并。
-
-### 9.7 双轨缺口误当 full HU（720+80+80）
-
-双轨缺口（如 720→880）不是真 HU 变宽。  
-**对策：** `isPlausibleRailGap` 限制单轨；`pickConnectionFullHuWidth` / `isSameHuGeometry` 在 `extra ≤ 3×rail` 时拒绝 +rail 膨胀。
-
-### 9.8 瘦长主屏误当 FacetBar（r6 回归类）
-
-竖屏手机 1080×2340 被当 rail VD，`CarDisplayId` 反射扫到 `describeContents()==0` → 整屏触控被 steal。  
-**对策：** 禁止 `DEFAULT_DISPLAY`；优先具名 FacetBar；无 LayoutInfo 时仅绝对窄条 ≤120px；`CarDisplayId` 白名单 accessor。
-
-### 9.9 ensure 窗口过长 → 性能 / 逻辑干扰
-
-8s poll 且每次 collapse 续 deadline 会长时间扫窗。  
-**现参：** `FACET_ENSURE_WINDOW_MS = 2000`，`FACET_ENSURE_POLL_MS = 250`。
-
-### 9.10 DexKit `content_bounds` / LayoutInfo 未命中
-
-AA 17.x 布局 id 变化 → facet 按钮消失、回收不触发。  
-**对策：** 多 layout id + 内容特征检测；DexKit 缓存 key 见 `AaUiHook`；失败看 `AAD_*` 日志。
-
-### 9.11 `:projection` surface 与 `:car` VD 竞态
-
-FacetBar surface 可能在 VD starve 前登记 ~107px 槽。  
-**对策：** `CoolwalkFacetBarSurfaceHook` 与 compositor starve **双保险**。
-
-### 9.12 `RailWidthObserved` 误降级 FullBleed → DrawingSpec hold
-
-早期实现：FullBleed 后再观测到轨宽（>1）会打成 `ReconnectSettling` 并清 `fullBleedStableCount`，而 `fullHu` 仍保留 → DrawingSpec / LayoutInfo 门闩 hold content slot，blX 却可能已扩 → 合成器全宽、编码仍窄。  
-**对策：** `FullBleed` / `Reclaiming` 下 `RailWidthObserved` 只更新 `touchRail`；真重连只走 `ReconnectStarted`。DrawingSpec / canvas 在 settling 且 **已知 fullHu** 时仍可加宽 content slot。
+compositor 把 presentation 排在 `blX=rail`（HU 上 x≈92 才是 presentation 的 x=0）。偷渡若仍 inject `x=92`，全屏 **peel 条**（贴 presentation 左缘）会 miss。  
+`inset = fullHu − contentSlotWidthPx`（观测推导，非分辨率表）。
 
 ---
 
-## 10. 日志与验证
+## 10. 关键坑点
 
-| 日志标签 | 看什么 |
-|----------|--------|
-| `AAD_CoolwalkRail` | `phase=`、`full=`、`touchRail=`、`event=` |
-| `AADisplay_CoreManagerService` | `displayProfile locked/relocked(settle|rail-settle)`、`CoolwalkRail snapshot` |
-| `AADisplay_AaUiHook` | `starve FacetBar`、`content_bounds expanded`、`collapse facet rail` |
-| `AAD_AaDisplayVD` | `DrawingSpec widen` / `presentation VD create`（AADisplay 进程） |
+### 10.1 打 tag 就停 poll → 左侧黑条复发
 
-**软重连回归：**
+GhostActivity 瘦长宿主可能从未 inflate facet layout。**现规则：** 每次 ensure/attach/collapse/starve 扫全部窗口根。
 
-1. `GhFacetBar` 饿死后 profile 稳定全宽；无右侧 gutter / 左侧黑条。
-2. 左轨触控仍可注入（starve 后 hit 宽用观测轨宽，非 1px）。
-3. 换分辨率车机（如 800 vs 1280）冷连各 settle 一次，不串车。
+### 10.2 gearhead resize presentation VD → 黑屏
+
+只改 `CoolwalkDrawingSpecWiden`（AADisplay / gearhead DrawingSpec），不改 gearhead 上同名 VD 尺寸。
+
+### 10.3 FacetBar 1px 但 content_bounds 仍 HU−rail
+
+`:car` 必须 zero rail dimen + VD starve；`:projection` 扩 content_bounds + blX。
+
+### 10.4 touchRail 误用于 profile
+
+→ 右侧 gutter。profile 只看 live FacetBar VD 条带宽。
+
+### 10.5 reclaim 未证明时盲目 settle 到 full
+
+presentation 仍 content slot 时，分屏 VD 扩 full → letterbox/黑屏。`coolwalkReclaimProven` + `isContentSlotVsFull` 门闩。
+
+### 10.6 跨车 HU 污染
+
+`ReconnectStarted` + `isSameHuGeometry` 拒绝合并。
+
+### 10.7 双轨缺口（720+80+80）
+
+`isPlausibleRailGap` 的 15% / 160px 上限。
+
+### 10.8 瘦长主屏误当 FacetBar
+
+禁止 `DEFAULT_DISPLAY`；优先具名 FacetBar；CarDisplayId 白名单 accessor。
+
+### 10.9 比例轨宽阈值（1920×1080 类）
+
+**勿**用 `fullHu×5%` 作单轨下限。宽 HU 上 92px 真实轨会被拒 → content_bounds / DrawingSpec / blX / profile 全断。用 `absoluteFacetRailBand()` 32..160。
+
+### 10.10 layoutWidthPx 晋升后丢失 content slot
+
+`ContentBoundsExpanded` 把 `layoutWidthPx` 升为 fullHu 后，须靠 **`contentSlotWidthPx`** 继续算 inset，直到 FullBleed 稳定清零。
+
+### 10.11 HU 坐标未减 inset → 全屏 peel 失效
+
+表现：log 有 `HU rail → touchAaDisplay x≈92` 但 peel 无反应。应见 `injectX≈0 inset≈92`。
+
+### 10.12 DexKit 未命中
+
+多 layout id + 内容特征；查 `AAD_*` 与 DexKit 缓存。
+
+### 10.13 surface 与 VD 竞态
+
+`CoolwalkFacetBarSurfaceHook` + compositor starve 双保险。
+
+### 10.14 RailWidthObserved 误降级 FullBleed
+
+FullBleed/Reclaiming 下只更新 touchRail；DrawingSpec 在 settling+已知 fullHu 时仍可加宽。
 
 ---
 
-## 11. 改动约束
+## 11. 日志与验证
 
-- **勿改** `CoolwalkRailStore` Settings key、`ICoreManager.reportCoolwalkRailSnapshot` 签名。
-- **勿在 gearhead** resize `AaDisplayActivity` presentation VD。
-- profile 逻辑集中在 `DisplayProfileSettle` + `CoreManagerService.resolveDisplayProfile`；不要在客户端再叠 grow/shrink 梯。
-- 新轨宽启发式优先放进 `CoolwalkRailMath` 并补单测。
-- FacetBar 相关新钩子放 `xposed/hook/aa/coolwalk/`，经 `CoolwalkRailCoordinator.onEvent` 上报，不要各模块私藏 HU 宽度。
+| 标签 | 关注字段 |
+|------|----------|
+| `AAD_CoolwalkRail` | `phase=`、`full=`、`touchRail=`、`event=`（本地 snapshot 含 contentSlot，可 debugger 看） |
+| `AADisplay_CoreManagerService` | `displayProfile locked/relocked(settle\|rail-settle)`、`CoolwalkRail snapshot` |
+| `AADisplay_AaUiHook` | `starve FacetBar`、`content_bounds expanded`、`expand projection bounds blX`、`collapse facet rail` |
+| `AAD_AaDisplayVD` | `DrawingSpec ctor widen` / `instance widen` |
+| `AAD_AaUiHook`（:car） | `HU rail → touchAaDisplay\|touchPane` **`injectX=` `inset=` `peel=`** |
+
+**adb 示例：**
+
+```bash
+adb logcat -s AAD_CoolwalkRail AADisplay_CoreManagerService AADisplay_AaUiHook AAD_AaDisplayVD
+```
+
+**换分辨率回归清单：**
+
+1. GhFacetBar 1×H 后 profile = full HU；无左黑条 / 右 gutter。  
+2. 分屏左轨触控正常；全屏 peel 条可拖出分屏。  
+3. 800×480、1280×720、1920×1080 各冷连一次；软重连不串上一车 geometry。  
+4. log 可见 `DrawingSpec … → fullHu`（非 content slot 卡住）。
+
+---
+
+## 12. 改动约束
+
+- **勿改** Settings key、`reportCoolwalkRailSnapshot` 四元组 wire 格式（`contentSlot` 若需 IPC 须另开字段，当前 intentionally 本地）。  
+- **勿在 gearhead** resize `AaDisplayActivity` VD。  
+- profile 只在 `DisplayProfileSettle` + `CoreManagerService.resolveDisplayProfile`。  
+- **新几何规则只进 `CoolwalkRailMath`**；`DisplayProfileSettle` 委托，不复制 `railPxRange`。  
+- 新 FacetBar hook 经 `CoolwalkRailCoordinator.onEvent` 上报。  
+- 分辨率相关 bug：先查 **fullHu / contentSlot / touchRail / inset** 四条观测是否到位，再加分辨率分支。
