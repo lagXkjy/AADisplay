@@ -35,11 +35,11 @@ import kotlinx.coroutines.launch
  * phone-panel wake over blank car screens.
  *
  * Keep-awake strategy (Samsung-first):
- * - Hold display-scoped [SCREEN_BRIGHT_WAKE_LOCK] Monitor on pane VDs + presentation.
- * - Pane VDs (OWN_DISPLAY_GROUP): [userActivity] + [ACQUIRE_CAUSES_WAKEUP] pulse when needed.
- * - Presentation VD: **Monitor only** — no WAKEUP pulse and no userActivity (often shares
- *   displayGroup 0 with the phone panel; pulsing can light the main screen on some OEMs).
- *   Black presentation is recovered via UI surface rebind broadcast instead.
+ * - Hold display-scoped [SCREEN_BRIGHT_WAKE_LOCK] Monitor on pane VDs only (OWN_DISPLAY_GROUP).
+ * - Pane VDs: [userActivity] + [ACQUIRE_CAUSES_WAKEUP] pulse when needed.
+ * - Presentation VD: **no wake lock / userActivity / WAKEUP pulse** — it often shares
+ *   displayGroup 0 with the phone panel; even Monitor on that id prevents auto screen-off
+ *   on Android 15+. Black presentation is recovered via UI surface rebind broadcast.
  */
 class DisplaySessionPolicy(
     private val mContext: Context,
@@ -107,20 +107,6 @@ class DisplaySessionPolicy(
     private fun aaPresentationDisplayId(): Int {
         val id = displayAdapter.mAaUiDisplayId
         return if (id != Display.INVALID_DISPLAY && id != Display.DEFAULT_DISPLAY) id else Display.INVALID_DISPLAY
-    }
-
-    /**
-     * Pane VDs plus presentation (when reported). Both must stay awake while AA is live;
-     * presentation is dropped as soon as the UI clears its id on disconnect.
-     */
-    private fun aaKeepAwakeDisplayIds(): IntArray {
-        val panes = aaPaneDisplayIds()
-        val presentation = aaPresentationDisplayId()
-        return if (presentation == Display.INVALID_DISPLAY) {
-            panes
-        } else {
-            panes + presentation
-        }
     }
 
     private fun isVirtualDisplayPoweredOff(displayId: Int): Boolean {
@@ -210,10 +196,11 @@ class DisplaySessionPolicy(
         }
 
         fun acquireMonitor() {
-            val ids = aaKeepAwakeDisplayIds()
-            if (ids.isEmpty()) return
+            val ids = aaPaneDisplayIds()
             val active = ids.toSet()
+            // Drop any presentation Monitor from older builds — shares displayGroup 0 with phone.
             pruneStaleLocks(active)
+            if (ids.isEmpty()) return
             val identity = Binder.clearCallingIdentity()
             try {
                 for (displayId in ids) {
@@ -402,25 +389,16 @@ class DisplaySessionPolicy(
         }
     }
 
-    /** Sync presentation keep-awake when AA UI reports or clears its presentation id. */
+    /** Drop stale presentation Monitor locks when AA UI reports or clears its presentation id. */
     fun onAaUiDisplayIdChanged(displayId: Int) {
         if (displayId == Display.INVALID_DISPLAY || displayId == Display.DEFAULT_DISPLAY) {
             mLastPresentationRecoveryAt = 0L
-            if (aaPaneDisplayIds().isEmpty()) {
-                return
-            }
-            try {
-                interactiveMonitor.acquireMonitor()
-            } catch (e: Throwable) {
-                log(TAG, "onAaUiDisplayIdChanged prune failed:", e)
-            }
-            return
         }
         try {
-            // Presentation: Monitor-only — avoid WAKEUP / userActivity on displayGroup 0.
+            // Re-prune only — presentation must not hold SCREEN_BRIGHT on displayGroup 0.
             interactiveMonitor.acquireMonitor()
         } catch (e: Throwable) {
-            log(TAG, "onAaUiDisplayIdChanged monitor failed:", e)
+            log(TAG, "onAaUiDisplayIdChanged prune failed:", e)
         }
     }
 
