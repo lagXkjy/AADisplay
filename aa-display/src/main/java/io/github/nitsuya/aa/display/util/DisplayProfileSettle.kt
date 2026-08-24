@@ -135,6 +135,10 @@ internal object DisplayProfileSettle {
         if (snap.phase == RailPhase.FullBleed || snap.phase == RailPhase.Reclaiming) {
             return snap.fullHuWidthPx >= fullHuWidthPx - 2
         }
+        // Session alone must not prove reclaim while this connection is still settling.
+        if (snap.phase == RailPhase.ReconnectSettling && snap.fullBleedStableCount == 0) {
+            return false
+        }
         val sessionFull = CoolwalkRailStore.resolvedSession()?.fullHuWidthPx ?: 0
         return sessionFull >= fullHuWidthPx - 2 && snap.fullHuWidthPx >= fullHuWidthPx - 2
     }

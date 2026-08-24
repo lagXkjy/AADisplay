@@ -307,13 +307,18 @@ object CoolwalkRailMath {
             RailPhase.Reclaiming,
             RailPhase.FullBleed,
             -> return full
+            // True reconnect clears fullHu; known full + rail-shaped gap → widen (aligned
+            // with DrawingSpec / blX gates).
             RailPhase.ReconnectSettling -> {
-                if (snapshot.fullBleedStableCount > 0) return full
+                if (isPlausibleRailGap(full - w, full, snapshot.touchRailWidthPx) ||
+                    snapshot.fullBleedStableCount > 0
+                ) {
+                    return full
+                }
             }
             else -> Unit
         }
         if (snapshot.fullBleedStableCount > 0 &&
-            snapshot.phase != RailPhase.ReconnectSettling &&
             isPlausibleRailGap(full - w, full, snapshot.touchRailWidthPx)
         ) {
             return full

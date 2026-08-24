@@ -137,7 +137,7 @@ object CoolwalkDrawingSpecWiden {
         val target = resolveWidth(w, h)
         if (target <= w) return
         widthField.setInt(spec, target)
-        logDebug(TAG, "H13|DrawingSpec instance widen [$source] ${w}x$h → ${target}x$h")
+        logDebug(TAG, "DrawingSpec instance widen [$source] ${w}x$h → ${target}x$h")
     }
 
     private fun resolveWidthHeightFields(clazz: Class<*>): Pair<java.lang.reflect.Field, java.lang.reflect.Field>? {
@@ -156,26 +156,76 @@ object CoolwalkDrawingSpecWiden {
     }
 
     private fun resolveTargetWidthAaDisplay(width: Int, height: Int): Int {
-        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return width
-        val snap = CoolwalkRailStore.snapshotWithSession(CoolwalkRailStore.read(cr), cr)
+        // Samsung / OEM Settings.Global may reject our keys (reads stay 0). Prefer IPC.
+        val ipc = runCatching {
+            io.github.nitsuya.aa.display.xposed.CoreManager.tryGetCoolwalkRailSnapshot()
+        }.getOrNull()?.let { CoolwalkRailStore.snapshotFromWire(it) }
+        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull()
+        val fromSettings = cr?.let {
+            CoolwalkRailStore.snapshotWithSession(CoolwalkRailStore.read(it), it)
+        }
+        val snap = mergeAaDisplayWidenSnapshot(ipc, fromSettings, width)
         return resolveTargetWidth(width, snap)
     }
 
     /**
-     * Only after this session's content_bounds reclaim (Reclaiming / FullBleed).
-     * Do not widen on ReconnectSettling — compositor rail may still be live.
+     * When Settings.Global is empty but system_server has full HU (Samsung), still widen
+     * once the gap looks like a content slot — treat as Reclaiming for [resolveTargetWidth].
+     */
+    internal fun mergeAaDisplayWidenSnapshot(
+        ipc: RailSnapshot?,
+        fromSettings: RailSnapshot?,
+        contentWidth: Int,
+    ): RailSnapshot {
+        val base = when {
+            ipc != null && ipc.fullHuWidthPx > 0 -> ipc
+            fromSettings != null && fromSettings.fullHuWidthPx > 0 -> fromSettings
+            ipc != null -> ipc
+            fromSettings != null -> fromSettings
+            else -> return RailSnapshot()
+        }
+        val other = if (base === ipc) fromSettings else ipc
+        val reclaimPhase = sequenceOf(base.phase, other?.phase).firstOrNull {
+            it == RailPhase.Reclaiming || it == RailPhase.FullBleed
+        }
+        val stable = maxOf(base.fullBleedStableCount, other?.fullBleedStableCount ?: 0)
+        val full = maxOf(base.fullHuWidthPx, other?.fullHuWidthPx ?: 0)
+        val needsWiden = full > 0 && DisplayProfileSettle.isContentSlotVsFull(contentWidth, full)
+        val phase = when {
+            reclaimPhase != null -> reclaimPhase
+            needsWiden && (stable > 0 || base.touchRailWidthPx > 1 || (other?.touchRailWidthPx ?: 0) > 1) ->
+                RailPhase.Reclaiming
+            needsWiden && full > contentWidth -> RailPhase.Reclaiming
+            else -> base.phase
+        }
+        return base.copy(
+            phase = phase,
+            fullHuWidthPx = full,
+            touchRailWidthPx = maxOf(base.touchRailWidthPx, other?.touchRailWidthPx ?: 0),
+            fullBleedStableCount = maxOf(stable, if (phase == RailPhase.Reclaiming || phase == RailPhase.FullBleed) 1 else 0),
+        )
+    }
+
+    /**
+     * Widen content-slot widths after reclaim. [RailPhase.ReconnectSettling] with
+     * [RailSnapshot.fullHuWidthPx] cleared (true soft reconnect) does not widen;
+     * settling with a known full HU still widens (aligned with LayoutInfo / blX).
      */
     internal fun resolveTargetWidth(width: Int, snap: RailSnapshot): Int {
         val full = snap.fullHuWidthPx
-        if (full <= 0 || width <= 0) return width
+        if (full <= 0 || width <= 0) {
+            return width
+        }
         if (!DisplayProfileSettle.isContentSlotVsFull(width, full)) return width
-        return when (snap.phase) {
+        val target = when (snap.phase) {
             RailPhase.FullBleed,
             RailPhase.Reclaiming,
             -> full
-            // content_bounds may have fired while IPC still says ReconnectSettling.
-            RailPhase.ReconnectSettling -> if (snap.fullBleedStableCount >= 1) full else width
+            // True reconnect clears fullHu; if fullHu is known, treat as reclaim-in-progress
+            // (false FullBleed demotion or bounds expanded while IPC still settling).
+            RailPhase.ReconnectSettling -> full
             else -> width
         }
+        return target
     }
 }

@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.view.Display
 import com.github.kyuubiran.ezxhelper.init.InitFields
 import io.github.nitsuya.aa.display.util.CoolwalkRailStore
+import io.github.nitsuya.aa.display.util.DisplayProfileSettle
 import io.github.nitsuya.aa.display.xposed.CoreManager
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
@@ -89,6 +90,8 @@ object CoolwalkRailCoordinator {
         }
         // Same-session rail republication — not a reconnect reset.
         if (snap.phase == RailPhase.RailPresent && sessionGapMs <= PROJECTION_SESSION_GAP_MS) return false
+        // Stable full-bleed + rapid config republication — reclaim only, do not wipe HU truth.
+        if (snap.phase == RailPhase.FullBleed && sessionGapMs <= PROJECTION_SESSION_GAP_MS) return false
         val actions = onEvent(RailEvent.ReconnectStarted(reason)).second
         runCatching { dispatchActions(actions) }
         return true
@@ -141,10 +144,19 @@ object CoolwalkRailCoordinator {
             }
             is RailEvent.RailWidthObserved -> {
                 if (event.widthPx > 1) {
+                    // Align with FacetBarVdCreate: starve / thin-VD observe must not wipe
+                    // FullBleed or Reclaiming (that demoted DrawingSpec to hold content slot).
+                    // True soft reconnect only via ReconnectStarted / projection session gap.
+                    val phase = when (next.phase) {
+                        RailPhase.FullBleed,
+                        RailPhase.Reclaiming,
+                        -> next.phase
+                        RailPhase.ReconnectSettling -> RailPhase.ReconnectSettling
+                        else -> RailPhase.RailPresent
+                    }
                     next = next.copy(
                         touchRailWidthPx = event.widthPx,
-                        phase = if (next.phase == RailPhase.FullBleed) RailPhase.ReconnectSettling else RailPhase.RailPresent,
-                        fullBleedStableCount = 0,
+                        phase = phase,
                         lastEvent = event.reason,
                         updatedUptimeMs = now,
                     )
@@ -301,14 +313,19 @@ object CoolwalkRailCoordinator {
     internal fun resolveAnchorFullHuWidth(localFull: Int, localH: Int, railPx: Int): Int {
         val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull()
         var anchor = localFull.coerceAtLeast(0)
-        CoolwalkRailStore.resolvedSession(cr)?.fullHuWidthPx?.takeIf { it > 0 }?.let { sessionFull ->
-            anchor = CoolwalkRailMath.pickConnectionFullHuWidth(
-                anchor,
-                localH,
-                sessionFull,
-                localH,
-                maxOf(railPx, CoolwalkRailStore.resolvedSession(cr)?.touchRailWidthPx ?: 0),
-            )
+        val deferSession = snapshot.phase == RailPhase.ReconnectSettling &&
+            snapshot.fullBleedStableCount == 0 &&
+            snapshot.fullHuWidthPx <= 0
+        if (!deferSession) {
+            CoolwalkRailStore.resolvedSession(cr)?.fullHuWidthPx?.takeIf { it > 0 }?.let { sessionFull ->
+                anchor = CoolwalkRailMath.pickConnectionFullHuWidth(
+                    anchor,
+                    localH,
+                    sessionFull,
+                    localH,
+                    maxOf(railPx, CoolwalkRailStore.resolvedSession(cr)?.touchRailWidthPx ?: 0),
+                )
+            }
         }
         CoreManager.tryGetCoolwalkRailSnapshot()?.getOrNull(2)?.takeIf { it > 0 }?.let { ipcFull ->
             anchor = CoolwalkRailMath.pickConnectionFullHuWidth(anchor, localH, ipcFull, localH, railPx)
@@ -351,8 +368,43 @@ object CoolwalkRailCoordinator {
                 )
                 lastReconnectReclaimUptimeMs = SystemClock.uptimeMillis()
             }
-            mergedFull = absorbExternalFullHu(mergedFull, mergedLayoutH, ipc[2], railForMerge)
-            if (ipc[1] > mergedTouch) mergedTouch = ipc[1]
+            val ipcFull = ipc[2]
+            val ipcTouch = ipc[1]
+            // :car may already FullBleed on a new HU while this process still holds the
+            // previous car's FullBleed. absorbExternalFullHu keeps local on mismatch —
+            // when live VirtualDevice matches IPC, replace (incl. shrinking touchRail).
+            val live = observeLiveVirtualDeviceHuSize()
+            if (ipcFull > 0 && live != null &&
+                kotlin.math.abs(live.first - ipcFull) <= 2 &&
+                snapshot.fullHuWidthPx > 0 &&
+                snapshot.layoutHeightPx > 0 &&
+                !CoolwalkRailMath.isSameHuGeometry(
+                    snapshot.fullHuWidthPx,
+                    snapshot.layoutHeightPx,
+                    live.first,
+                    live.second,
+                    maxOf(snapshot.touchRailWidthPx, ipcTouch),
+                )
+            ) {
+                snapshot = snapshot.copy(
+                    phase = when (ipcPhase) {
+                        RailPhase.Bootstrapping -> RailPhase.Reclaiming
+                        else -> ipcPhase
+                    },
+                    fullHuWidthPx = ipcFull,
+                    touchRailWidthPx = ipcTouch.takeIf { it > 0 } ?: 0,
+                    layoutWidthPx = live.first,
+                    layoutHeightPx = live.second,
+                    facetDisplayId = ipc[3].takeIf { it != Display.INVALID_DISPLAY }
+                        ?: snapshot.facetDisplayId,
+                    fullBleedStableCount = maxOf(snapshot.fullBleedStableCount, 1),
+                    lastEvent = "ipc-live-hu-replace",
+                    updatedUptimeMs = SystemClock.uptimeMillis(),
+                )
+                return
+            }
+            mergedFull = absorbExternalFullHu(mergedFull, mergedLayoutH, ipcFull, railForMerge)
+            if (ipcTouch > mergedTouch) mergedTouch = ipcTouch
         }
         if (mergedFull != snapshot.fullHuWidthPx ||
             mergedTouch > snapshot.touchRailWidthPx ||
@@ -366,6 +418,36 @@ object CoolwalkRailCoordinator {
                 layoutHeightPx = mergedLayoutH,
             )
         }
+    }
+
+    /**
+     * Primary landscape VirtualDevice size (HU), or null. Skips FacetBar / Dashboard /
+     * AADisplay split VDs and the phone DEFAULT_DISPLAY.
+     */
+    internal fun observeLiveVirtualDeviceHuSize(): Pair<Int, Int>? {
+        val ctx = runCatching { InitFields.appContext }.getOrNull() ?: return null
+        val dm = ctx.getSystemService(android.hardware.display.DisplayManager::class.java) ?: return null
+        var bestW = 0
+        var bestH = 0
+        for (display in dm.displays) {
+            if (display.displayId == Display.DEFAULT_DISPLAY) continue
+            val name = runCatching { display.name }.getOrNull() ?: continue
+            if (DisplayProfileSettle.isRailDisplayName(name)) continue
+            if (name.contains("Dashboard", ignoreCase = true)) continue
+            if (name.startsWith("AADisplay-")) continue
+            if (name.contains("AaDisplayActivity", ignoreCase = true)) continue
+            // Coolwalk template / car-app VDs are content slots, not the HU.
+            if (name.contains("TemplateCar", ignoreCase = true)) continue
+            if (name.contains("CarAppService", ignoreCase = true)) continue
+            val w = runCatching { display.mode.physicalWidth }.getOrNull() ?: continue
+            val h = runCatching { display.mode.physicalHeight }.getOrNull() ?: continue
+            if (w <= h || w <= 1 || h <= 1) continue
+            if (w > bestW) {
+                bestW = w
+                bestH = h
+            }
+        }
+        return if (bestW > 0 && bestH > 0) bestW to bestH else null
     }
 
     /** Local coordinator state merged with system_server session cache (IPC). */
@@ -412,6 +494,8 @@ object CoolwalkRailCoordinator {
         ) {
             return
         }
+        // Grow-only. Cross-HU replacement belongs in syncExternalTruth (ipc-live-hu-replace)
+        // / explicit ReconnectStarted — never thrash ReconnectStarted from Template vs HU VDs.
         if (width > snapshot.fullHuWidthPx || height > snapshot.layoutHeightPx) {
             onEvent(RailEvent.FullHuObserved(width, height, "vd-size"))
         }

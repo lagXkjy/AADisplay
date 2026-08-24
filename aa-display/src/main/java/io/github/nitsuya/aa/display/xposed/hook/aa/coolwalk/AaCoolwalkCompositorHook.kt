@@ -187,6 +187,8 @@ object AaCoolwalkCompositorHook {
                     RailEvent.GutterReclaim("starve-facet"),
                 ).second
                 CoolwalkRailCoordinator.dispatchActions(actions)
+                // Presentation relaunch is owned by content_bounds-widen / blX expand — avoid
+                // racing starve debounce against the widen chain (audit §3).
             }
         }
         if (!CoolwalkRailMath.isRailVirtualDisplayName(resolvedName) &&

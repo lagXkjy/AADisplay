@@ -15,6 +15,8 @@ class CoolwalkRailMathTest {
     @Before
     fun resetCoordinator() {
         CoolwalkRailCoordinator.resetForTests()
+        CoolwalkRailStore.resetForTests()
+        AaCoolwalkAutoOpenHook.resetFullBleedRelaunchDebounceForTests()
     }
 
     @Test
@@ -216,12 +218,42 @@ class CoolwalkRailMathTest {
             )
         }
         assertEquals(RailPhase.FullBleed, CoolwalkRailCoordinator.current().phase)
-        val t = maxOf(android.os.SystemClock.uptimeMillis(), 10_000L)
-        CoolwalkRailCoordinator.setLastProjectionConfigUptimeForTests(t - 10_000L)
+        val now = android.os.SystemClock.uptimeMillis()
+        CoolwalkRailCoordinator.setLastProjectionConfigUptimeForTests(now - 10_000L)
         CoolwalkRailCoordinator.resetReconnectReclaimDebounceForTests()
         val signal = CoolwalkRailCoordinator.onProjectionConfigSignal("long-gap", syncExternal = false)
         assertEquals(true, signal.reconnectStarted)
         assertEquals(RailPhase.ReconnectSettling, CoolwalkRailCoordinator.current().phase)
+    }
+
+    @Test
+    fun full_bleed_short_gap_does_not_reset_reconnect_state() {
+        repeat(3) {
+            CoolwalkRailCoordinator.onEvent(
+                RailEvent.ContentBoundsExpanded(800, 480, 107, "stable"),
+            )
+        }
+        assertEquals(RailPhase.FullBleed, CoolwalkRailCoordinator.current().phase)
+        val stable = CoolwalkRailCoordinator.current().fullBleedStableCount
+        val now = android.os.SystemClock.uptimeMillis()
+        CoolwalkRailCoordinator.setLastProjectionConfigUptimeForTests(now - 500L)
+        CoolwalkRailCoordinator.resetReconnectReclaimDebounceForTests()
+        val signal = CoolwalkRailCoordinator.onProjectionConfigSignal("short-gap", syncExternal = false)
+        assertEquals(false, signal.reconnectStarted)
+        assertEquals(RailPhase.FullBleed, CoolwalkRailCoordinator.current().phase)
+        assertEquals(stable, CoolwalkRailCoordinator.current().fullBleedStableCount)
+    }
+
+    @Test
+    fun resolve_anchor_defers_session_during_reconnect_settling() {
+        CoolwalkRailStore.rememberFromReport(
+            RailSnapshot(phase = RailPhase.FullBleed, touchRailWidthPx = 107, fullHuWidthPx = 1280),
+        )
+        CoolwalkRailCoordinator.onEvent(RailEvent.ReconnectStarted("test"))
+        assertEquals(
+            1173,
+            CoolwalkRailCoordinator.resolveAnchorFullHuWidth(1173, 720, 107),
+        )
     }
 
     @Test
@@ -404,7 +436,10 @@ class CoolwalkRailMathTest {
             fullHuWidthPx = 1280,
             touchRailWidthPx = 107,
         )
-        assertEquals(1173, CoolwalkRailMath.targetPresentationWidthPx(snap, 1173))
+        // Known full HU + content-slot gap → widen (aligned with DrawingSpec).
+        assertEquals(1280, CoolwalkRailMath.targetPresentationWidthPx(snap, 1173))
+        val cleared = snap.copy(fullHuWidthPx = 0)
+        assertEquals(1173, CoolwalkRailMath.targetPresentationWidthPx(cleared, 1173))
     }
 
     @Test
@@ -439,6 +474,45 @@ class CoolwalkRailMathTest {
     }
 
     @Test
+    fun resolve_layout_canvas_widens_rail_slot_during_reconnect_settling_with_known_full() {
+        val snap = RailSnapshot(
+            phase = RailPhase.ReconnectSettling,
+            fullHuWidthPx = 1280,
+            layoutWidthPx = 1173,
+            layoutHeightPx = 720,
+            touchRailWidthPx = 107,
+        )
+        assertEquals(1280, CoolwalkRailMath.resolveLayoutCanvasTargetPx(snap, 1173, 720))
+    }
+
+    @Test
+    fun rail_width_observed_keeps_full_bleed_phase_and_stable() {
+        repeat(3) {
+            CoolwalkRailCoordinator.onEvent(
+                RailEvent.ContentBoundsExpanded(800, 480, 80, "stable"),
+            )
+        }
+        assertEquals(RailPhase.FullBleed, CoolwalkRailCoordinator.current().phase)
+        val stable = CoolwalkRailCoordinator.current().fullBleedStableCount
+        CoolwalkRailCoordinator.onEvent(RailEvent.RailWidthObserved(80, "thin-vd"))
+        val snap = CoolwalkRailCoordinator.current()
+        assertEquals(RailPhase.FullBleed, snap.phase)
+        assertEquals(stable, snap.fullBleedStableCount)
+        assertEquals(80, snap.touchRailWidthPx)
+    }
+
+    @Test
+    fun rail_width_observed_keeps_reclaiming_phase() {
+        CoolwalkRailCoordinator.onEvent(
+            RailEvent.ContentBoundsExpanded(800, 480, 80, "once"),
+        )
+        assertEquals(RailPhase.Reclaiming, CoolwalkRailCoordinator.current().phase)
+        CoolwalkRailCoordinator.onEvent(RailEvent.RailWidthObserved(80, "vd-observe"))
+        assertEquals(RailPhase.Reclaiming, CoolwalkRailCoordinator.current().phase)
+        assertEquals(80, CoolwalkRailCoordinator.current().touchRailWidthPx)
+    }
+
+    @Test
     fun drawing_spec_widen_after_content_bounds_reclaim() {
         val reclaiming = RailSnapshot(
             phase = RailPhase.Reclaiming,
@@ -446,14 +520,41 @@ class CoolwalkRailMathTest {
             touchRailWidthPx = 107,
         )
         assertEquals(1280, CoolwalkDrawingSpecWiden.resolveTargetWidth(1173, reclaiming))
+        // Known full HU during settling (false demotion / IPC lag) still widens.
         val settling = RailSnapshot(
             phase = RailPhase.ReconnectSettling,
             fullHuWidthPx = 1280,
             touchRailWidthPx = 107,
         )
-        assertEquals(1173, CoolwalkDrawingSpecWiden.resolveTargetWidth(1173, settling))
-        val settlingAfterBounds = settling.copy(fullBleedStableCount = 1)
-        assertEquals(1280, CoolwalkDrawingSpecWiden.resolveTargetWidth(1173, settlingAfterBounds))
+        assertEquals(1280, CoolwalkDrawingSpecWiden.resolveTargetWidth(1173, settling))
+        // True soft reconnect cleared full HU — do not widen.
+        val settlingEmpty = RailSnapshot(
+            phase = RailPhase.ReconnectSettling,
+            fullHuWidthPx = 0,
+            touchRailWidthPx = 107,
+        )
+        assertEquals(1173, CoolwalkDrawingSpecWiden.resolveTargetWidth(1173, settlingEmpty))
+    }
+
+    @Test
+    fun aadisplay_widen_uses_ipc_when_settings_empty() {
+        val ipc = RailSnapshot(
+            phase = RailPhase.Bootstrapping,
+            fullHuWidthPx = 1280,
+            touchRailWidthPx = 107,
+        )
+        val merged = CoolwalkDrawingSpecWiden.mergeAaDisplayWidenSnapshot(ipc, null, 1173)
+        assertEquals(RailPhase.Reclaiming, merged.phase)
+        assertEquals(1280, CoolwalkDrawingSpecWiden.resolveTargetWidth(1173, merged))
+    }
+
+    @Test
+    fun projection_bounds_expands_rail_left_inset() {
+        CoolwalkRailCoordinator.onEvent(RailEvent.FullHuObserved(1280, 720, "test"))
+        CoolwalkRailCoordinator.onEvent(RailEvent.ContentBoundsExpanded(1280, 720, 107, "test"))
+        assertTrue(CoolwalkProjectionBoundsHook.shouldExpandLeftInset(107, 0, 1280, 720))
+        assertFalse(CoolwalkProjectionBoundsHook.shouldExpandLeftInset(0, 0, 1280, 720))
+        assertFalse(CoolwalkProjectionBoundsHook.shouldExpandLeftInset(400, 0, 1280, 720))
     }
 
     @Test

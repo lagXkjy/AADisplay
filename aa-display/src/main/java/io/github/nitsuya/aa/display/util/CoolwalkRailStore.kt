@@ -146,10 +146,26 @@ object CoolwalkRailStore {
     /** Live server snapshot merged with [sessionSettled] when reconnect cleared live HU fields. */
     fun effectiveSnapshot(cr: ContentResolver? = null): RailSnapshot = snapshotWithSession(serverSnapshot, cr)
 
-    /** Merge session cache when live snapshot was cleared for reconnect. Geometry only — reclaim proof stays live. */
+    /**
+     * Merge session cache when live snapshot was cleared for reconnect.
+     * During [RailPhase.ReconnectSettling] with no live full HU and no stable
+     * content_bounds on this connection, do not inject session — widen / profile must
+     * wait for this session's reclaim (see layout_widen_waits / §9.5).
+     */
     fun snapshotWithSession(live: RailSnapshot, cr: ContentResolver? = null): RailSnapshot {
         val session = resolvedSession(cr) ?: return live
         if (live.fullHuWidthPx <= 0 || live.phase == RailPhase.ReconnectSettling) {
+            if (live.fullHuWidthPx <= 0 &&
+                live.phase == RailPhase.ReconnectSettling &&
+                live.fullBleedStableCount == 0
+            ) {
+                val touchOnly = maxOf(live.touchRailWidthPx, session.touchRailWidthPx)
+                return if (touchOnly == live.touchRailWidthPx) {
+                    live
+                } else {
+                    live.copy(touchRailWidthPx = touchOnly)
+                }
+            }
             val full = maxOf(live.fullHuWidthPx, session.fullHuWidthPx)
             val touch = maxOf(live.touchRailWidthPx, session.touchRailWidthPx)
             return if (full == live.fullHuWidthPx && touch == live.touchRailWidthPx) {

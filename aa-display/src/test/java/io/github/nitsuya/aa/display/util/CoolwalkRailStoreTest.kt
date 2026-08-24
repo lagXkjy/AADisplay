@@ -39,7 +39,7 @@ class CoolwalkRailStoreTest {
     }
 
     @Test
-    fun snapshot_with_session_fills_reconnect_gap() {
+    fun snapshot_with_session_defers_until_content_bounds_on_reconnect() {
         CoolwalkRailStore.rememberFromReport(
             RailSnapshot(phase = RailPhase.FullBleed, touchRailWidthPx = 107, fullHuWidthPx = 1280),
         )
@@ -47,10 +47,27 @@ class CoolwalkRailStoreTest {
             RailSnapshot(phase = RailPhase.ReconnectSettling, touchRailWidthPx = 0, fullHuWidthPx = 0),
         )
         val merged = CoolwalkRailStore.snapshotWithSession(CoolwalkRailStore.serverSnapshot)
-        assertEquals(1280, merged.fullHuWidthPx)
+        assertEquals(0, merged.fullHuWidthPx)
         assertEquals(107, merged.touchRailWidthPx)
         assertEquals(RailPhase.ReconnectSettling, merged.phase)
         assertEquals(0, merged.fullBleedStableCount)
+    }
+
+    @Test
+    fun snapshot_with_session_fills_after_reconnect_content_bounds() {
+        CoolwalkRailStore.rememberFromReport(
+            RailSnapshot(phase = RailPhase.FullBleed, touchRailWidthPx = 107, fullHuWidthPx = 1280),
+        )
+        CoolwalkRailStore.publishServer(
+            RailSnapshot(
+                phase = RailPhase.ReconnectSettling,
+                touchRailWidthPx = 107,
+                fullHuWidthPx = 1280,
+                fullBleedStableCount = 1,
+            ),
+        )
+        val merged = CoolwalkRailStore.snapshotWithSession(CoolwalkRailStore.serverSnapshot)
+        assertEquals(1280, merged.fullHuWidthPx)
     }
 
     @Test
@@ -112,7 +129,7 @@ class CoolwalkRailStoreTest {
     }
 
     @Test
-    fun effective_snapshot_matches_session_merge() {
+    fun effective_snapshot_defers_session_on_reconnect_until_content_bounds() {
         CoolwalkRailStore.rememberFromReport(
             RailSnapshot(phase = RailPhase.FullBleed, touchRailWidthPx = 107, fullHuWidthPx = 1280),
         )
@@ -120,7 +137,8 @@ class CoolwalkRailStoreTest {
             RailSnapshot(phase = RailPhase.ReconnectSettling, touchRailWidthPx = 0, fullHuWidthPx = 0),
         )
         val merged = CoolwalkRailStore.effectiveSnapshot()
-        assertEquals(1280, merged.fullHuWidthPx)
+        assertEquals(0, merged.fullHuWidthPx)
+        assertEquals(107, merged.touchRailWidthPx)
         assertEquals(RailPhase.ReconnectSettling, merged.phase)
     }
 

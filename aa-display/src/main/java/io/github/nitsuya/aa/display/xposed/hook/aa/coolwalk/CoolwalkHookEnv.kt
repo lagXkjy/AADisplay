@@ -31,6 +31,8 @@ class CoolwalkHookEnv {
     var contentBoundsMethods: List<Method> = emptyList()
     var facetBarSurfaceMethods: List<Method> = emptyList()
     var huTouchDispatchMethod: Method? = null
+    /** Coolwalk compositor window bounds class (`{blX=` toString); may be null if DexKit miss. */
+    var projectionBoundsClassName: String? = null
 
     @Volatile var mRailHostDownTime = 0L
     @Volatile var mHuRailGesture = false

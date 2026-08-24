@@ -26,6 +26,11 @@ import java.util.concurrent.ConcurrentHashMap
 
 object AaCoolwalkHuTouchHook {
 
+    private const val ENSURE_RAIL_MIN_INTERVAL_MS = 750L
+
+    @Volatile
+    private var lastEnsureRailUptimeMs = 0L
+
     private val carDisplayIdAccessorNames = setOf(
         "getDisplayId", "displayId", "getId", "id", "getAndroidDisplayId", "androidDisplayId",
     )
@@ -155,7 +160,13 @@ object AaCoolwalkHuTouchHook {
             else -> projectionTouchEventToMotionEvent(env, raw)
         } ?: return
         try {
-            ensureRailObservationFromDisplays(env)
+            // Heavy display/IPC sync is not needed on every MOVE — only DOWN / interval.
+            val nowEnsure = SystemClock.uptimeMillis()
+            val shouldEnsure = motion.actionMasked == MotionEvent.ACTION_DOWN ||
+                nowEnsure - lastEnsureRailUptimeMs >= ENSURE_RAIL_MIN_INTERVAL_MS
+            if (shouldEnsure) {
+                ensureRailObservationFromDisplays(env)
+            }
             val railTarget = isRailTargetCarDisplay(env, param.args[0])
             val rail = CoolwalkRailCoordinator.railHitWidthPx()
             val action = motion.actionMasked
@@ -298,12 +309,20 @@ object AaCoolwalkHuTouchHook {
     }
 
     private fun isPeelHandleHitBand(env: CoolwalkHookEnv, motion: MotionEvent): Boolean {
-        return SplitPane.peelHitContains(
-            motion.getX(0),
-            motion.getY(0),
-            env.layoutWidthPx(),
-            env.layoutHeightPx(),
-        )
+        val x = motion.getX(0)
+        val y = motion.getY(0)
+        val layoutW = env.layoutWidthPx()
+        val layoutH = env.layoutHeightPx()
+        if (SplitPane.peelHitContains(x, y, layoutW, layoutH)) return true
+        // Soft reconnect: this process may still hold previous HU layout (e.g. 720H)
+        // while touches are on a shorter car (480H) — peel center then misses.
+        val live = CoolwalkRailCoordinator.observeLiveVirtualDeviceHuSize() ?: return false
+        if (kotlin.math.abs(live.first - layoutW) <= 8 &&
+            kotlin.math.abs(live.second - layoutH) <= 8
+        ) {
+            return false
+        }
+        return SplitPane.peelHitContains(x, y, live.first, live.second)
     }
 
     private fun clearUntrustedRailObservation(env: CoolwalkHookEnv) {
@@ -325,6 +344,7 @@ object AaCoolwalkHuTouchHook {
     }
 
     fun ensureRailObservationFromDisplays(env: CoolwalkHookEnv) {
+        lastEnsureRailUptimeMs = SystemClock.uptimeMillis()
         CoolwalkRailCoordinator.syncExternalTruth()
         clearUntrustedRailObservation(env)
         if (isTrustedRailDisplayId(CoolwalkRailCoordinator.observedRailDisplayId())) return

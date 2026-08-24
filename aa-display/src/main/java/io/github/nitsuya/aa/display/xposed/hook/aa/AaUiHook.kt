@@ -12,6 +12,7 @@ import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkDrawingSpecW
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkFacetBarSurfaceHook
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkFacetChrome
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkHookEnv
+import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkProjectionBoundsHook
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.luckypray.dexkit.DexKitBridge
@@ -25,6 +26,7 @@ object AaUiHook : AaHook() {
     private const val CACHE_FACET_SURFACE = "hook.AaUiHook.facet_surface"
     private const val CACHE_HU_TOUCH = "hook.AaUiHook.hu_touch"
     private const val CACHE_LAYOUT_INFO = "hook.AaUiHook.layout_info_class"
+    private const val CACHE_PROJECTION_BOUNDS = "hook.AaUiHook.projection_bounds_class"
 
     private val env = CoolwalkHookEnv()
 
@@ -58,6 +60,9 @@ object AaUiHook : AaHook() {
                 " (cache)",
         )
         env.startMethod = env.resolveCarStartActivityMethod()
+        env.projectionBoundsClassName = cache.getString(CACHE_PROJECTION_BOUNDS)
+        // New key: miss once so DexKit finds `{blX=` compositor bounds class.
+        if (env.projectionBoundsClassName.isNullOrEmpty()) return false
         if (lpparam.processName == processCar) {
             env.loadProjectionResources()
             return true
@@ -87,6 +92,7 @@ object AaUiHook : AaHook() {
         if (lpparam.processName != processCar && env.layoutInfoConstructors.isNotEmpty()) {
             cache.putString(CACHE_LAYOUT_INFO, env.layoutInfoConstructors[0].declaringClass.name)
         }
+        env.projectionBoundsClassName?.let { cache.putString(CACHE_PROJECTION_BOUNDS, it) }
     }
 
     override fun loadDexClass(bridge: DexKitBridge, lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -159,6 +165,21 @@ object AaUiHook : AaHook() {
             emptyList()
         }
 
+        env.projectionBoundsClassName = try {
+            val classes = bridge.findClass {
+                matcher { usingStrings("{blX=") }
+            }
+            classes.mapNotNull { runCatching { it.name }.getOrNull() }
+                .firstOrNull()
+                .also { name ->
+                    log(tagName, "AaUiHook: projection bounds class=${name ?: "null"}")
+                }
+        } catch (e: Throwable) {
+            log(tagName, "AaUiHook: DexKit projection bounds class failed", e)
+            null
+        }
+        CoolwalkProjectionBoundsHook.rememberClassName(env.projectionBoundsClassName)
+
         env.startMethod = env.resolveCarStartActivityMethod()
 
         if (lpparam.processName == processCar) {
@@ -188,6 +209,10 @@ object AaUiHook : AaHook() {
     override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
         env.loadProjectionResources()
         CoolwalkDrawingSpecWiden.installGearhead(lpparam.classLoader)
+        CoolwalkProjectionBoundsHook.install(
+            lpparam.classLoader,
+            env.projectionBoundsClassName ?: CoolwalkProjectionBoundsHook.cachedClassName(),
+        )
         CoolwalkFacetBarSurfaceHook.install(env)
         AaCoolwalkProjectionHook.install(env)
         if (lpparam.processName == processCar) {

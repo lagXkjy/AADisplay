@@ -19,6 +19,12 @@ import java.lang.reflect.Modifier
 
 object AaCoolwalkAutoOpenHook {
 
+    /** Shared debounce for starve + content_bounds + slot relaunch paths. */
+    private const val FULL_BLEED_RELAUNCH_DEBOUNCE_MS = 2_000L
+
+    @Volatile
+    private var lastFullBleedRelaunchScheduleUptimeMs = -1L
+
     fun install(env: CoolwalkHookEnv, lpparam: XC_LoadPackage.LoadPackageParam) {
         logDebug(CoolwalkHookEnv.TAG, "AaUiHook: AutoOpen always-on startMethod=${env.startMethod?.name}")
         registerAutoOpenShownReceiver(env)
@@ -52,12 +58,12 @@ object AaCoolwalkAutoOpenHook {
         ) {
             logDebug(
                 CoolwalkHookEnv.TAG,
-                "H12|AutoOpen skip rearm gap ($reason) elapsed=${now - env.mAutoOpenSessionAtMs}ms",
+                "AaUiHook: AutoOpen skip rearm gap ($reason) elapsed=${now - env.mAutoOpenSessionAtMs}ms",
             )
             return
         }
         if (bypassRearmGap) {
-            logDebug(CoolwalkHookEnv.TAG, "H12|arm AutoOpen bypassRearm ($reason)")
+            logDebug(CoolwalkHookEnv.TAG, "AaUiHook: arm AutoOpen bypassRearm ($reason)")
         }
         env.mAutoOpenSessionAtMs = now
         env.mAaDisplayShownThisSession = false
@@ -90,17 +96,44 @@ object AaCoolwalkAutoOpenHook {
             scheduleAutoOpenIfNeeded(env, reason, bypassRearmGap = true)
             return
         }
+        val now = SystemClock.uptimeMillis()
+        // Starve + content_bounds often fire together — keep the first delay chain.
+        if (lastFullBleedRelaunchScheduleUptimeMs >= 0L &&
+            now - lastFullBleedRelaunchScheduleUptimeMs < FULL_BLEED_RELAUNCH_DEBOUNCE_MS
+        ) {
+            logDebug(
+                CoolwalkHookEnv.TAG,
+                "AaUiHook: full-bleed relaunch debounced ($reason) " +
+                    "elapsed=${now - lastFullBleedRelaunchScheduleUptimeMs}ms",
+            )
+            return
+        }
+        lastFullBleedRelaunchScheduleUptimeMs = now
         env.mAaDisplayShownThisSession = false
         env.mAutoOpenArmed = true
         env.mFacetEnsureHandler.removeCallbacksAndMessages(CoolwalkHookEnv.FULL_BLEED_RELAUNCH_TOKEN)
         logDebug(CoolwalkHookEnv.TAG, "AaUiHook: full-bleed relaunch ($reason)")
-        for (delayMs in longArrayOf(0L, 400L, 1500L)) {
+        // Widen / starve paths need time for compositor blX expand before Surface alloc.
+        val delays = if (reason.contains("widen", ignoreCase = true) ||
+            reason.contains("starve", ignoreCase = true) ||
+            reason.contains("slot", ignoreCase = true)
+        ) {
+            longArrayOf(400L, 1200L, 2500L)
+        } else {
+            longArrayOf(0L, 400L, 1500L)
+        }
+        for (delayMs in delays) {
             env.mFacetEnsureHandler.postAtTime(
                 { tryAutoOpenAaDisplay(env, -2L) },
                 CoolwalkHookEnv.FULL_BLEED_RELAUNCH_TOKEN,
-                android.os.SystemClock.uptimeMillis() + delayMs,
+                now + delayMs,
             )
         }
+    }
+
+    /** Test hook: clear relaunch debounce so unit tests stay isolated. */
+    internal fun resetFullBleedRelaunchDebounceForTests() {
+        lastFullBleedRelaunchScheduleUptimeMs = -1L
     }
 
     private fun tryAutoOpenAaDisplay(env: CoolwalkHookEnv, delayMs: Long) {

@@ -18,11 +18,6 @@ import kotlin.math.abs
 
 object AaCoolwalkProjectionHook {
 
-    @Volatile
-    private var lastSlotRelaunchUptimeMs = -1L
-
-    private const val SLOT_RELAUNCH_DEBOUNCE_MS = 2_000L
-
     fun install(env: CoolwalkHookEnv) {
         CoolwalkRailCoordinator.syncExternalTruth()
         hookContentBounds(env)
@@ -321,7 +316,7 @@ object AaCoolwalkProjectionHook {
         if (needsPresentationWiden) {
             logDebug(
                 CoolwalkHookEnv.TAG,
-                "H11|needsPresentationWiden slot=${before.right - before.left} target=${expanded.targetWidthPx} " +
+                "AaUiHook: needsPresentationWiden slot=${before.right - before.left} target=${expanded.targetWidthPx} " +
                     "before=$before",
             )
         }
@@ -354,7 +349,7 @@ object AaCoolwalkProjectionHook {
             if (needsPresentationWiden) {
                 log(
                     CoolwalkHookEnv.TAG,
-                    "AAD_FacetDbg|H11|force relaunch slot=${before.width()}→${expanded.targetWidthPx}",
+                    "AaUiHook: force relaunch slot=${before.width()}→${expanded.targetWidthPx}",
                 )
                 AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(env, "content_bounds-widen", force = true)
             } else if (env.mAaDisplayShownThisSession && expanded.railWidthPx > 0) {
@@ -370,20 +365,14 @@ object AaCoolwalkProjectionHook {
                 CoolwalkFacetChrome.reclaimAllWindowGutters("content_bounds-post")
             }
         } else if (needsPresentationWiden) {
-            val now = android.os.SystemClock.uptimeMillis()
-            if (lastSlotRelaunchUptimeMs < 0L ||
-                now - lastSlotRelaunchUptimeMs >= SLOT_RELAUNCH_DEBOUNCE_MS
-            ) {
-                lastSlotRelaunchUptimeMs = now
-                notifyAaUiFullBleed()
-                AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(
-                    env,
-                    "content_bounds-slot",
-                    force = true,
-                )
-                env.mFacetEnsureHandler.post {
-                    CoolwalkFacetChrome.reclaimAllWindowGutters("content_bounds-slot")
-                }
+            notifyAaUiFullBleed()
+            AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(
+                env,
+                "content_bounds-slot",
+                force = true,
+            )
+            env.mFacetEnsureHandler.post {
+                CoolwalkFacetChrome.reclaimAllWindowGutters("content_bounds-slot")
             }
         }
         return rect

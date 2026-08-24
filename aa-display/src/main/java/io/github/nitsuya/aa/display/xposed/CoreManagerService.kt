@@ -522,11 +522,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         val prevFull = CoolwalkRailStore.serverSnapshot.fullHuWidthPx
         val cr = if (hasSystemContext) systemContext.contentResolver else null
         CoolwalkRailStore.rememberFromReport(snapshot, cr)
-        val published = if (snapshot.phase == RailPhase.ReconnectSettling && snapshot.fullHuWidthPx <= 0) {
-            CoolwalkRailStore.snapshotWithSession(snapshot, cr)
-        } else {
-            snapshot
-        }
+        // Publish live client report only; session merge on read respects reconnect defer gate.
+        val published = snapshot
         CoolwalkRailStore.publishServer(published)
         if (hasSystemContext) {
             CoolwalkRailStore.write(systemContext.contentResolver, published)
@@ -578,6 +575,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runIO { noteUserInteraction() }
     }
 }
+
+
+
+
 
 
 
