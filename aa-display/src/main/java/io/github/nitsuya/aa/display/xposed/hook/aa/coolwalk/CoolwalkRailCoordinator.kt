@@ -245,8 +245,6 @@ object CoolwalkRailCoordinator {
                 )
                 if (shouldReclaimAllGutters(next, event.reason)) {
                     actions += RailAction.ReclaimAllGutters(event.reason)
-                } else if (event.reason.contains("windowAttach", ignoreCase = true)) {
-                    actions += RailAction.ReclaimLeftGutter(event.reason)
                 }
             }
         }
@@ -501,26 +499,11 @@ object CoolwalkRailCoordinator {
         }
     }
 
-    fun resetForTests() {
-        snapshot = RailSnapshot()
-        lastProjectionConfigUptimeMs = UNSET_PROJECTION_MS
-        lastReconnectReclaimUptimeMs = -1L
-    }
-
-    internal fun setLastProjectionConfigUptimeForTests(uptimeMs: Long) {
-        lastProjectionConfigUptimeMs = uptimeMs
-    }
-
-    internal fun resetReconnectReclaimDebounceForTests() {
-        lastReconnectReclaimUptimeMs = -1L
-    }
-
     fun dispatchActions(actions: List<RailAction>) {
         for (action in actions) {
             when (action) {
                 is RailAction.NotifyServer -> CoreManager.tryReportCoolwalkRailSnapshot(action.snapshot)
                 is RailAction.ReclaimAllGutters -> CoolwalkFacetChrome.reclaimAllWindowGutters(action.reason)
-                is RailAction.ReclaimLeftGutter -> { /* per-root via window attach callback */ }
             }
         }
     }
@@ -572,11 +555,6 @@ object CoolwalkRailCoordinator {
         ) {
             dispatchActions(listOf(RailAction.ReclaimAllGutters("session-reconnect")))
         }
-    }
-
-    fun serverSnapshotForSettle(): RailSnapshot {
-        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull()
-        return CoolwalkRailStore.effectiveSnapshot(cr)
     }
 
     /** system_server may publish ReconnectSettling with cleared HU; IPC carries session merge. */

@@ -199,15 +199,6 @@ object CoolwalkRailStore {
         RailPhase.Reclaiming,
     )
 
-    fun clearSession() {
-        sessionSettled = null
-    }
-
-    fun resetForTests() {
-        serverSnapshot = RailSnapshot()
-        sessionSettled = null
-    }
-
     fun clear(cr: ContentResolver? = null) {
         serverSnapshot = RailSnapshot()
         sessionSettled = null

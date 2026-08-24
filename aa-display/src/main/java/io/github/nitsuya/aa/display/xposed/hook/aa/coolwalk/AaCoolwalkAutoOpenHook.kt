@@ -131,11 +131,6 @@ object AaCoolwalkAutoOpenHook {
         }
     }
 
-    /** Test hook: clear relaunch debounce so unit tests stay isolated. */
-    internal fun resetFullBleedRelaunchDebounceForTests() {
-        lastFullBleedRelaunchScheduleUptimeMs = -1L
-    }
-
     private fun tryAutoOpenAaDisplay(env: CoolwalkHookEnv, delayMs: Long) {
         if (env.mAaDisplayShownThisSession) {
             markAaDisplayShown(env, "flag")

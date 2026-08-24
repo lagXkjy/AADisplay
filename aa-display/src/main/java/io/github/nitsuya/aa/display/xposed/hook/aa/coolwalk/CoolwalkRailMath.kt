@@ -4,10 +4,9 @@ import android.graphics.Rect
 import io.github.nitsuya.aa.display.util.DisplayProfileSettle
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 
-/** Pure rail geometry — JVM-testable, no Android framework deps beyond Rect. */
+/** Pure rail geometry — no Android framework deps beyond Rect. */
 object CoolwalkRailMath {
 
     const val FULL_BLEED_STABLE_THRESHOLD = 3
@@ -49,27 +48,6 @@ object CoolwalkRailMath {
     internal fun isStaleLayoutInfoWidthGap(gap: Int, anchorFull: Int): Boolean {
         if (gap <= 2 || anchorFull <= 0) return false
         return gap <= (anchorFull * 0.30f).roundToInt()
-    }
-
-    /**
-     * Prefer a smaller HU width when the larger one is the smaller plus 1–3 rail strips
-     * (runaway +rail inflation). Otherwise keep the max (real HU grew **in this session**).
-     * Do not use this across connections — different cars are not +rail siblings.
-     */
-    fun mergeFullHuWidth(a: Int, b: Int, railWidthPx: Int): Int {
-        val x = a.coerceAtLeast(0)
-        val y = b.coerceAtLeast(0)
-        if (x <= 0) return y
-        if (y <= 0) return x
-        val hi = max(x, y)
-        val lo = min(x, y)
-        if (hi == lo) return hi
-        val rail = railWidthPx
-        if (rail > 1) {
-            val extra = hi - lo
-            if (extra <= rail * 3 + 2 && extra % rail <= 2) return lo
-        }
-        return hi
     }
 
     /**
@@ -370,25 +348,6 @@ object CoolwalkRailMath {
         ) ?: return null
         rect.set(0, 0, expanded.targetWidthPx, expanded.targetHeightPx)
         return expanded
-    }
-
-    fun computeZeroedContentInsets(
-        rect: Rect,
-        layoutWidthPx: Int,
-    ): Int? {
-        val range = railPxRange(layoutWidthPx.takeIf { it > 0 } ?: rect.left.coerceAtLeast(rect.right) * 10)
-        if (rect.left in range) return rect.left
-        if (rect.right in range) return rect.right
-        return null
-    }
-
-    /**
-     * Target CarActivity / presentation width for this connection.
-     * Keeps [hasVerticalRail]=true for facet chrome; only widens the canvas when
-     * content_bounds reclaim already zeroed the compositor rail slot.
-     */
-    fun targetPresentationWidthPx(snapshot: RailSnapshot, contentWidth: Int): Int {
-        return resolveLayoutCanvasTargetPx(snapshot, contentWidth, snapshot.layoutHeightPx)
     }
 
     fun railHitWidthPx(snapshot: RailSnapshot): Int {

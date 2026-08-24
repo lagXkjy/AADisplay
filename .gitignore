@@ -21,3 +21,6 @@ jadx-*.zip
 /tools/jadx/
 /tools/jadx-home/
 /tools/jadx-out/
+# Local reverse-engineering / agent scratch (do not ship)
+.tmp/
+.cursor/debug-*.log

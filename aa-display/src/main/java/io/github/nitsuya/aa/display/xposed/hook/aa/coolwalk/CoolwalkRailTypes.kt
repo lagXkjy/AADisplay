@@ -60,5 +60,4 @@ sealed class RailEvent {
 sealed class RailAction {
     data class NotifyServer(val snapshot: RailSnapshot) : RailAction()
     data class ReclaimAllGutters(val reason: String) : RailAction()
-    data class ReclaimLeftGutter(val reason: String) : RailAction()
 }

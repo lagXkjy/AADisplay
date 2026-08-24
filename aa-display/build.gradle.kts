@@ -61,7 +61,7 @@ android {
             }
         }
         getByName("debug") {
-            // Keep debug artifacts unminified to avoid AGP warnings and speed up test builds.
+            // Keep debug artifacts unminified to avoid AGP warnings and speed up local builds.
             isMinifyEnabled = false
             isShrinkResources = false
             if (System.getenv("KEY_ANDROID") != null) {
@@ -98,10 +98,6 @@ android {
         abortOnError = false
     }
 
-    testOptions {
-        unitTests.isReturnDefaultValues = true
-    }
-
     androidResources.additionalParameters += mutableListOf("--allow-reserved-package-id", "--package-id", "0x64")
 
     namespace = "io.github.nitsuya.aa.display"
@@ -130,6 +126,4 @@ dependencies {
     implementation("com.github.kyuubiran:EzXHelper:1.0.3")
     implementation("org.luckypray:dexkit:2.0.7")
     implementation(files("./libs/aauto.aar"))
-
-    testImplementation("junit:junit:4.13.2")
 }

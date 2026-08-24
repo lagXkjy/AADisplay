@@ -267,7 +267,8 @@ Car SDK 在 AADisplay 进程按 **content 槽**分配 encoder Surface。回收�
 |------------|------|
 | `NotifyServer` | `CoreManager.tryReportCoolwalkRailSnapshot` → system_server |
 | `ReclaimAllGutters` | `CoolwalkFacetChrome.reclaimAllWindowGutters` |
-| `ReclaimLeftGutter` | 由 windowAttach 单根 `reclaimLeftGutter` 处理 |
+
+Left gutter reclaim runs directly in `CoolwalkFacetChrome.reclaimLeftGutter` / `scheduleReclaimLeftGutter` on window attach and rail layout inflate — not via `RailAction`.
 
 ---
 
@@ -361,10 +362,10 @@ FacetBar 已 starve，但 CarActivity presentation 可能仍是 HU−rail。
 上一连接 1280×720 写入 Settings / IPC，换 800×480 车机后仍用 1280 扩 VD。  
 **对策：** `ReconnectStarted` 清空；`pickConnectionFullHuWidth` / `isSameHuGeometry` 拒绝不同几何；`absorbExternalFullHu` 不同 HU 不合并。
 
-### 9.7 `mergeFullHuWidth` 误把 720+80+80 当 full
+### 9.7 双轨缺口误当 full HU（720+80+80）
 
 双轨缺口（如 720→880）不是真 HU 变宽。  
-**对策：** `isPlausibleRailGap` 限制单轨；`mergeFullHuWidth` 在 `extra ≤ 3×rail` 时取较小值。
+**对策：** `isPlausibleRailGap` 限制单轨；`pickConnectionFullHuWidth` / `isSameHuGeometry` 在 `extra ≤ 3×rail` 时拒绝 +rail 膨胀。
 
 ### 9.8 瘦长主屏误当 FacetBar（r6 回归类）
 
@@ -407,8 +408,6 @@ FacetBar surface 可能在 VD starve 前登记 ~107px 槽。
 1. `GhFacetBar` 饿死后 profile 稳定全宽；无右侧 gutter / 左侧黑条。
 2. 左轨触控仍可注入（starve 后 hit 宽用观测轨宽，非 1px）。
 3. 换分辨率车机（如 800 vs 1280）冷连各 settle 一次，不串车。
-
-**单测：** `CoolwalkRailMathTest`、`CoolwalkCompositorPolicyTest`、`CoolwalkFacetBarSurfaceHookTest`（`./gradlew :aa-display:testDebugUnitTest`）。
 
 ---
 
