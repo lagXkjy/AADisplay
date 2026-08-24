@@ -104,7 +104,7 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
 
     fun applyPolicies(pane: Int, reason: String) {
         val displayId = c.input.displayIdFor(pane) ?: return
-        val imePolicy = 0 // DISPLAY_IME_POLICY_LOCAL
+        val imePolicy = 2 // DISPLAY_IME_POLICY_HIDE: use phone-side input bridge
         try {
             // Resize hot path: IME/decor are sticky after first apply; re-calling WMS on every
             // ratio settle adds system_server work without changing behavior.

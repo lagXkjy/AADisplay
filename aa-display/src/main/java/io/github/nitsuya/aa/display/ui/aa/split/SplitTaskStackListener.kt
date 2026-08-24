@@ -107,6 +107,15 @@ internal class SplitTaskStackListener(
         }
     }
 
+    /**
+     * One UI 8.5 runtime ITaskStackListener adds this callback even though the compile
+     * stub used by this project does not declare it.  Keep the exact JVM signature to
+     * avoid AbstractMethodError/system_server soft reboot when a recent task is removed.
+     */
+    fun onRecentTaskRemoved(taskId: Int) {
+        onTaskRemoved(taskId)
+    }
+
     override fun onRecentTaskListUpdated() {}
     override fun onRecentTaskRemovedForAddTask(taskId: Int) {}
     override fun onRecentTaskListFrozenChanged(frozen: Boolean) {}

@@ -75,4 +75,10 @@ interface ICoreManager {
      * Appended at end for Stub ordinals.
      */
     oneway void reportAaUiDisplayId(int displayId);
+
+    /** Phone-side text bridge: send Unicode text into the currently focused AAD pane. */
+    void commitTextToFocusedPane(String text);
+
+    /** Manual car-side fallback: open the phone input bridge for PRIMARY/SECONDARY pane. */
+    void launchPhoneInputBridge(int pane);
 }

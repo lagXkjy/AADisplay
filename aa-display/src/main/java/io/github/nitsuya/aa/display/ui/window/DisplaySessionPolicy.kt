@@ -435,15 +435,26 @@ class DisplaySessionPolicy(
     }
 
     suspend fun onDestroyPromptly() {
-        restorePhoneDisplayPower()
-        interactiveMonitor.release()
         mDestroyJob?.cancelAndJoin()
+        // Samsung Screen Curtain owns display 0. Do not wake the phone panel while AA
+        // is tearing down, otherwise its power/overlay transition can race AAD cleanup.
+        if (!RomUtil.isSamsungAndroid16Plus()) {
+            restorePhoneDisplayPower()
+        }
+        interactiveMonitor.release()
     }
 
     suspend fun onDestroy(onDestroySucceed: () -> Unit) {
-        // Keep Monitor + heartbeat through Delay Destroy so soft reconnect does not
-        // inherit Samsung ColorFade-black panes. Release only when VDs are torn down.
         mDestroyJob?.cancelAndJoin()
+        if (RomUtil.isSamsungAndroid16Plus()) {
+            // One UI 8.5: once AA has destroyed its surfaces, stop all VD wake heartbeats
+            // immediately and release the VDs. Do not leave the old 180 s session alive
+            // under Samsung Screen Curtain.
+            interactiveMonitor.release()
+            onDestroySucceed()
+            return
+        }
+        // Preserve upstream delayed soft-reconnect behavior on other ROMs.
         startDelayDestroy(onDestroySucceed)
     }
 

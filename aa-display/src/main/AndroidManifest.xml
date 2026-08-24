@@ -32,6 +32,14 @@
             android:resource="@xml/automotive_app_desc" />
 
         <activity
+            android:name=".ui.main.PhoneInputActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:noHistory="true"
+            android:theme="@style/Theme.AADisplay" />
+
+        <activity
             android:name=".ui.main.MainActivity"
             android:exported="true">
             <intent-filter>

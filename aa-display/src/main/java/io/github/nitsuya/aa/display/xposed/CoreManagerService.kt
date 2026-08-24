@@ -1,8 +1,11 @@
 package io.github.nitsuya.aa.display.xposed
 
 import android.annotation.SuppressLint
+import android.app.ActivityOptions
 import android.content.Context
+import android.content.Intent
 import android.content.ContextParams
+import android.os.SystemClock
 import android.view.Display
 import android.view.MotionEvent
 import android.view.Surface
@@ -45,6 +48,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         private var mSessionPolicy: DisplaySessionPolicy? = null
         private var mSplitController: SplitDisplayController? = null
         private var mDisplayCreateInProgress = false
+        private var mDestroyDisplayRequested = false
+        private var mLastPaneTouchAt = 0L
+        private var mLastPaneTouchPane = SplitPane.PRIMARY
+        private var mLastPhoneInputLaunchAt = 0L
 
         private data class DisplayProfile(
             val width: Int,
@@ -184,6 +191,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 newSession = mSplitController == null
             )
             mSplitController?.apply {
+                mDestroyDisplayRequested = false
                 // Soft reconnect: always cancel Delay Destroy and rebind surfaces/policies.
                 mSessionPolicy?.onResume()
                 setPaneSurface(SplitPane.PRIMARY, primarySurface)
@@ -279,17 +287,116 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runIO { mSplitController?.swapPanes() }
     }
 
+    /**
+     * Stable phone-side input bridge.  We do not move/bind the real IME onto an AAD VD.
+     * Auto mode is called from IMMS startInput after a recent pane touch; manual mode is
+     * used by the car-side keyboard button.
+     */
+    fun maybeLaunchPhoneInputBridge(
+        editorPackage: String? = null,
+        reason: String = "startInput",
+        force: Boolean = false,
+        paneHint: Int? = null,
+    ) {
+        val controller = mSplitController ?: return
+        if (mDestroyDisplayRequested) return
+        if (editorPackage == BuildConfig.APPLICATION_ID) return
+
+        val now = SystemClock.uptimeMillis()
+        if (!force && now - mLastPaneTouchAt > 4_000L) return
+        if (now - mLastPhoneInputLaunchAt < 1_200L) return
+
+        val normalizedEditor = editorPackage?.trim()?.takeIf { it.isNotEmpty() }
+        val packageMatchedPane = normalizedEditor?.let { pkg ->
+            when (pkg) {
+                controller.mPanePackages[SplitPane.PRIMARY] -> SplitPane.PRIMARY
+                controller.mPanePackages[SplitPane.SECONDARY] -> SplitPane.SECONDARY
+                else -> null
+            }
+        }
+        val pane = when {
+            paneHint != null && SplitPane.isValid(paneHint) -> paneHint
+            packageMatchedPane != null -> packageMatchedPane
+            SplitPane.isValid(mLastPaneTouchPane) -> mLastPaneTouchPane
+            else -> controller.mFocusedPane
+        }
+
+        if (!force && normalizedEditor != null) {
+            val panePkg = controller.mPanePackages[pane]?.trim().orEmpty()
+            if (panePkg.isNotEmpty() && panePkg != normalizedEditor) {
+                logDebug(TAG, "phone input bridge skip editor=$normalizedEditor pane=$pane pkg=$panePkg")
+                return
+            }
+        }
+
+        mLastPhoneInputLaunchAt = now
+        controller.setFocusedPane(pane)
+        runMain {
+            try {
+                val intent = Intent().apply {
+                    setClassName(
+                        BuildConfig.APPLICATION_ID,
+                        "${BuildConfig.APPLICATION_ID}.ui.main.PhoneInputActivity"
+                    )
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_NO_ANIMATION
+                    )
+                    putExtra("pane", pane)
+                    putExtra("reason", reason)
+                    normalizedEditor?.let { putExtra("editorPackage", it) }
+                }
+                val options = ActivityOptions.makeBasic().apply {
+                    setLaunchDisplayId(Display.DEFAULT_DISPLAY)
+                }
+                systemContext.startActivity(intent, options.toBundle())
+                log(TAG, "phone input bridge launched pane=$pane reason=$reason")
+            } catch (e: Throwable) {
+                log(TAG, "phone input bridge launch failed reason=$reason", e)
+                mLastPhoneInputLaunchAt = 0L
+            }
+        }
+    }
+
+    override fun launchPhoneInputBridge(pane: Int) {
+        maybeLaunchPhoneInputBridge(
+            editorPackage = null,
+            reason = "car-button",
+            force = true,
+            paneHint = pane,
+        )
+    }
+
     override fun onDestroyDisplay() {
         runMain {
-            val finishTeardown = {
-                mSplitController?.onDestroy()
-                mSessionPolicy = null
-                mSplitController = null
-                mDisplayCreateInProgress = false
-                clearDisplayProfileLock()
+            if (mDestroyDisplayRequested) {
+                log(TAG, "onDestroyDisplay skipped: destroy already requested")
+                return@runMain
             }
-            // Session policy is created async after the create callback; destroy before that
-            // must still tear down the controller and clear the profile lock.
+            mDestroyDisplayRequested = true
+            val targetController = mSplitController
+            val finishTeardown: () -> Unit = {
+                if (mSplitController !== targetController) {
+                    log(TAG, "onDestroyDisplay ignored: controller changed before teardown")
+                } else {
+                    try {
+                        targetController?.onDestroy()
+                    } catch (e: Throwable) {
+                        log(TAG, "controller onDestroy failed", e)
+                    } finally {
+                        mSessionPolicy = null
+                        mSplitController = null
+                        mDisplayCreateInProgress = false
+                        mDestroyDisplayRequested = false
+                        mLastPaneTouchAt = 0L
+                        mLastPhoneInputLaunchAt = 0L
+                        clearDisplayProfileLock()
+                    }
+                }
+                Unit
+            }
             val policy = mSessionPolicy
             if (policy != null) {
                 policy.onDestroy(finishTeardown)
@@ -339,6 +446,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     override fun touchPane(pane: Int, event: MotionEvent) {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             noteUserInteractionAsync()
+            mLastPaneTouchAt = SystemClock.uptimeMillis()
+            mLastPaneTouchPane = pane
             mSplitController?.setFocusedPane(pane)
         }
         mSplitController?.onTouchPane(pane, event)
@@ -360,6 +469,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun reportAaUiDisplayId(displayId: Int) {
         mSplitController?.setAaUiDisplayId(displayId)
+    }
+
+    override fun commitTextToFocusedPane(text: String) {
+        if (text.isEmpty() || mDestroyDisplayRequested) return
+        mSplitController?.commitTextToFocusedPane(text)
     }
 
     override fun getRecentTask(): RecentTask {

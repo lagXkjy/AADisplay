@@ -151,6 +151,23 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
+    override fun commitTextToFocusedPane(text: String) {
+        if (text.isEmpty()) return
+        try {
+            getService()?.commitTextToFocusedPane(text)
+        } catch (e: Throwable) {
+            Log.e(TAG, "commitTextToFocusedPane failed", e)
+        }
+    }
+
+    override fun launchPhoneInputBridge(pane: Int) {
+        try {
+            getService()?.launchPhoneInputBridge(pane)
+        } catch (e: Throwable) {
+            Log.e(TAG, "launchPhoneInputBridge failed pane=$pane", e)
+        }
+    }
+
     /** @return false when binder missing or the remote call throws (caller must not swallow HU events).
      *  touchPane is oneway — success means the parcel was queued, not that inject finished. */
     fun tryTouchPane(pane: Int, motionEvent: MotionEvent): Boolean {

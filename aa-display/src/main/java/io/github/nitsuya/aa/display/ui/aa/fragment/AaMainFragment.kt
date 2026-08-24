@@ -173,10 +173,21 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         setupDivider()
         setupPaneSurfaces()
         setupEmptyPaneClicks()
+        setupCarControls()
 
         baseBinding.splitContainer.doOnLayout {
             reportAaUiDisplayId()
             requestDisplay("layout")
+        }
+    }
+
+    /** Car-side BACK and phone-input buttons. */
+    private fun setupCarControls() {
+        baseBinding.btnCarBack.setOnClickListener {
+            CoreApi.pressKey(KeyEvent.KEYCODE_BACK)
+        }
+        baseBinding.btnCarKeyboard.setOnClickListener {
+            CoreApi.launchPhoneInputBridge(CoreApi.focusedPane)
         }
     }
 

@@ -1,12 +1,10 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa
 
-import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import org.luckypray.dexkit.DexKitBridge
-import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.enums.StringMatchType
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.lang.reflect.Method
@@ -46,16 +44,13 @@ object AaSignatureHook: AaHook() {
             throw NoSuchMethodException("AaSignatureHook: not found SignatureVerifierUtil class：${classes.size}")
         }
 
-        val methodDatas = classes[0].getMethods().findMethod(FindMethod().matcher(methodMatcher))
+        val methodDatas = classes.findMethod {
+            matcher(methodMatcher)
+        }
         if (methodDatas.isEmpty() || methodDatas.size > 1) {
-            throw NoSuchMethodException("AaSignatureHook: not found Check method：${classes.size}")
+            throw NoSuchMethodException("AaSignatureHook: not found Check method：${methodDatas.size}")
         }
-        val methodData = methodDatas[0]
-        method = findMethod(methodData.className) {
-            name == methodData.methodName
-            && parameterCount == 1
-            && parameterTypes[0] == String::class.java
-        }
+        method = methodDatas.single().getMethodInstance(lpparam.classLoader)
     }
     override fun hook(lpparam: XC_LoadPackage.LoadPackageParam) {
         method.hookAfter { param ->

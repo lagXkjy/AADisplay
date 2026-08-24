@@ -5,7 +5,6 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.util.log
 import org.luckypray.dexkit.DexKitBridge
-import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.enums.StringMatchType
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.lang.reflect.Method
@@ -63,8 +62,8 @@ object AaFrxRequiredAppsHook : AaHook() {
                     add("isRequired=", StringMatchType.Contains, false)
                 }
             }
-        }.flatMap { classData ->
-            classData.getMethods().findMethod(FindMethod().matcher(contextStatusMatcher))
+        }.findMethod {
+            matcher(contextStatusMatcher)
         }.mapNotNull { md ->
             runCatching { md.getMethodInstance(lpparam.classLoader) }.getOrNull()
         }

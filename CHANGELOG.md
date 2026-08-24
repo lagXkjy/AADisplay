@@ -1,5 +1,27 @@
 # Changelog
 
+## Community Fork R1.0 — 2026-08-24
+
+First public community release based on `lagXkjy/AADisplay@AADisplay-Split-Lite`.
+
+### Added
+- Phone Input Bridge.
+- Car-side `←` Back and `⌨` Phone Input controls.
+- App-picker A–Z / pinyin-initial quick index.
+
+### Fixed / compatibility
+- Samsung Android 16 / One UI Android Auto disconnect safety.
+- Samsung Screen Curtain teardown safety.
+- Android 16 / 16 KB DexKit compatibility via DexKit 2.0.7.
+- Android Studio compatibility baseline (AGP 8.11.2 / Gradle 8.13 / JDK 17).
+- Debug APK no longer advertises itself as `android:debuggable=true`.
+
+### Intentionally preserved
+- Direct-upstream VirtualDisplay sizing/resolution behavior.
+- Android Auto bottom navigation area may remain visible.
+
+> Entries below this point are inherited upstream/development history and are preserved for provenance. The received direct-upstream tree already identified itself as `0.24#17.4-r11` (`versionCode 3067`), but the r11-era entries below were still under **Unreleased** and no standalone r11 release-notes file was present. Therefore this is treated as an **unreleased post-r10 r11 development snapshot**; the latest documented upstream release was `0.24#17.4-r10`.
+
 ## Unreleased
 
 ### Changed

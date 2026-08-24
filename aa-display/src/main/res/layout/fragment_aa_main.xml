@@ -99,7 +99,9 @@
                 android:id="@+id/rv_app_picker"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
-                android:layout_weight="1" />
+                android:layout_weight="1"
+                android:clipToPadding="false"
+                android:paddingEnd="38dp" />
 
             <Button
                 android:id="@+id/btn_picker_close"
@@ -107,6 +109,59 @@
                 android:layout_height="wrap_content"
                 android:text="关闭" />
         </LinearLayout>
+
+        <!-- App-picker-only A-Z quick index. No projected-display sizing is changed. -->
+        <LinearLayout
+            android:id="@+id/app_picker_index"
+            android:layout_width="34dp"
+            android:layout_height="match_parent"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginTop="44dp"
+            android:layout_marginEnd="6dp"
+            android:layout_marginBottom="58dp"
+            android:background="#66000000"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp" />
     </FrameLayout>
+
+    <!-- Minimal car-side controls only; no display/resolution/layout sizing changes. -->
+    <LinearLayout
+        android:id="@+id/car_controls"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end|center_vertical"
+        android:layout_marginEnd="6dp"
+        android:elevation="24dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/btn_car_back"
+            android:layout_width="52dp"
+            android:layout_height="46dp"
+            android:layout_marginBottom="6dp"
+            android:background="#B3000000"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:text="←"
+            android:textColor="#FFFFFF"
+            android:textSize="26sp"
+            android:contentDescription="后退" />
+
+        <TextView
+            android:id="@+id/btn_car_keyboard"
+            android:layout_width="52dp"
+            android:layout_height="46dp"
+            android:background="#B3000000"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:text="⌨"
+            android:textColor="#FFFFFF"
+            android:textSize="22sp"
+            android:contentDescription="手机输入" />
+    </LinearLayout>
 
 </FrameLayout>

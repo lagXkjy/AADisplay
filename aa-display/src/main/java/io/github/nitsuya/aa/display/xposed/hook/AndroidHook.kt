@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.IPackageManager
 import android.content.res.Configuration
 import android.view.Display
+import android.view.inputmethod.EditorInfo
 import android.view.WindowManager
 import com.github.kyuubiran.ezxhelper.utils.*
 import de.robv.android.xposed.XC_MethodHook
@@ -97,6 +98,9 @@ object AndroidHook : BaseHook() {
         isSystemServerHooked = true
         Initiator.init(lpparam.classLoader)
         log(tagName, "xposed init")
+        // Observe real text-editor start/focus and open the phone-side input bridge.
+        // This never rewrites IME display/token/binding state.
+        PhoneTextBridge.ensureHooked()
         var serviceManagerHook: XC_MethodHook.Unhook? = null
         serviceManagerHook = findMethod("android.os.ServiceManager") {
             name == "addService"
@@ -147,6 +151,64 @@ object AndroidHook : BaseHook() {
                     log(tagName, "systemReady failed", it)
                 }
             }
+    }
+
+    /**
+     * Observe IMMS editor start/focus without changing IME routing state.
+     * DISPLAY_IME_POLICY_HIDE suppresses the car-side IME, while startInput still carries
+     * EditorInfo and the remote input connection for a real text editor.
+     */
+    object PhoneTextBridge {
+        private val hooks = mutableListOf<XC_MethodHook.Unhook>()
+        @Volatile private var hooked = false
+
+        fun ensureHooked() {
+            if (!isReadyForSystemHooks() || hooked) return
+            val cl = systemServerClassLoader ?: return
+            val clazz = runCatching {
+                Class.forName("com.android.server.inputmethod.InputMethodManagerService", false, cl)
+            }.getOrElse {
+                log(tagName, "PhoneTextBridge: IMMS unavailable", it)
+                return
+            }
+
+            clazz.declaredMethods
+                .filter { method ->
+                    method.name == "startInputOrWindowGainedFocus" ||
+                        method.name == "startInputOrWindowGainedFocusAsync"
+                }
+                .forEach { method ->
+                    runCatching {
+                        method.isAccessible = true
+                        hooks += method.hookAfter { param ->
+                            runCatching {
+                                val editor = param.args.filterIsInstance<EditorInfo>().firstOrNull()
+                                    ?: return@runCatching
+                                val hasInputConnection = param.args.any { arg ->
+                                    if (arg == null) return@any false
+                                    val name = arg.javaClass.name
+                                    name.contains("IRemoteInputConnection") ||
+                                        name.contains("IInputContext")
+                                }
+                                if (!hasInputConnection) return@runCatching
+                                CoreManagerService.instance.maybeLaunchPhoneInputBridge(
+                                    editorPackage = editor.packageName,
+                                    reason = method.name,
+                                    force = false,
+                                )
+                            }.onFailure { e ->
+                                log(tagName, "PhoneTextBridge startInput check failed", e)
+                            }
+                        }
+                        log(tagName, "PhoneTextBridge: hooked ${method.name}/${method.parameterTypes.size}")
+                    }.onFailure {
+                        log(tagName, "PhoneTextBridge: failed hook ${method.name}", it)
+                    }
+                }
+
+            hooked = hooks.isNotEmpty()
+            log(tagName, "PhoneTextBridge installed hooks=${hooks.size}")
+        }
     }
 
     /**

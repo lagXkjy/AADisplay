@@ -42,10 +42,10 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
         }
     }
 
-    fun createKeyEvent(action: Int, keyCode: Int): KeyEvent {
+    fun createKeyEvent(action: Int, keyCode: Int, metaState: Int = 0): KeyEvent {
         val whenMillis = SystemClock.uptimeMillis()
         return KeyEvent(
-            whenMillis, whenMillis, action, keyCode, 0, 0,
+            whenMillis, whenMillis, action, keyCode, 0, metaState,
             KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
             KeyEvent.FLAG_FROM_SYSTEM or KeyEvent.FLAG_VIRTUAL_HARD_KEY,
             InputDevice.SOURCE_KEYBOARD

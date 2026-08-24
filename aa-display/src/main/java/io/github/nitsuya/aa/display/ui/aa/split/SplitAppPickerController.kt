@@ -2,11 +2,16 @@ package io.github.nitsuya.aa.display.ui.aa.split
 
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.graphics.drawable.Drawable
+import android.icu.text.Transliterator
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.util.Log
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.GridLayoutManager
@@ -17,6 +22,7 @@ import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.databinding.FragmentAaMainBinding
 import io.github.nitsuya.aa.display.databinding.ItemSplitAppBinding
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -41,6 +47,10 @@ class SplitAppPickerController(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val loadExecutor = Executors.newSingleThreadExecutor()
     private val loadGeneration = AtomicInteger(0)
+    private val sectionOrder = ('A'..'Z').map { it.toString() } + "#"
+    private val labelTransliterator = runCatching {
+        Transliterator.getInstance("Han-Latin; Latin-ASCII")
+    }.getOrNull()
     private val adapter = Adapter { entry ->
         logPicker("pick pane=$targetPane pkg=${entry.packageName} label=${entry.label}")
         CoreApi.startActivityOnPane(entry.packageName, 0, targetPane)
@@ -92,6 +102,7 @@ class SplitAppPickerController(
             mainHandler.post {
                 if (gen != loadGeneration.get() || !binding.appPickerHost.isVisible) return@post
                 adapter.submit(rows)
+                rebuildAlphabetIndex(rows)
             }
         }
     }
@@ -140,6 +151,78 @@ class SplitAppPickerController(
         return rows
     }
 
+    private fun normalizedLabel(label: String): String {
+        val trimmed = label.trim()
+        if (trimmed.isEmpty()) return "#"
+        return runCatching { labelTransliterator?.transliterate(trimmed) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?.uppercase(Locale.ROOT)
+            ?: trimmed.uppercase(Locale.ROOT)
+    }
+
+    private fun sectionKey(label: String): String {
+        val first = normalizedLabel(label).firstOrNull { it.isLetterOrDigit() } ?: return "#"
+        val upper = first.uppercaseChar()
+        return if (upper in 'A'..'Z') upper.toString() else "#"
+    }
+
+    /**
+     * Right-side A-Z quick index for the existing app picker.
+     * Recent apps and picker row structure are intentionally left unchanged; the index
+     * simply jumps to the first matching app inside the existing “全部应用” section.
+     */
+    private fun rebuildAlphabetIndex(rows: List<Row>) {
+        val host = binding.appPickerIndex
+        host.removeAllViews()
+        val allAppsHeader = rows.indexOfFirst { it is Row.Header && it.title == "全部应用" }
+        if (allAppsHeader < 0) return
+
+        val sectionPositions = linkedMapOf<String, Int>()
+        for (index in (allAppsHeader + 1) until rows.size) {
+            val row = rows[index] as? Row.App ?: continue
+            val section = sectionKey(row.entry.label)
+            sectionPositions.putIfAbsent(section, index)
+        }
+
+        val glm = binding.rvAppPicker.layoutManager as? GridLayoutManager ?: return
+        val labels = sectionOrder.filter { sectionPositions.containsKey(it) }
+        if (labels.isEmpty()) return
+
+        addIndexButton(host, "↑", 0, glm)
+        labels.forEach { label ->
+            addIndexButton(host, label, sectionPositions.getValue(label), glm)
+        }
+    }
+
+    private fun addIndexButton(
+        host: LinearLayout,
+        label: String,
+        position: Int,
+        layoutManager: GridLayoutManager,
+    ) {
+        val tv = TextView(host.context).apply {
+            text = label
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            textSize = 11f
+            isClickable = true
+            isFocusable = true
+            contentDescription = "跳转到 $label"
+            setOnClickListener {
+                layoutManager.scrollToPositionWithOffset(position, 0)
+            }
+        }
+        host.addView(
+            tv,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f,
+            )
+        )
+    }
+
     private fun loadRecentPackages(): List<String> {
         val recent = try {
             CoreApi.recentTask
@@ -174,7 +257,7 @@ class SplitAppPickerController(
                 icon = ai.loadIcon(pm),
             )
         }.distinctBy { it.packageName }
-            .sortedBy { it.label.lowercase() }
+            .sortedWith(compareBy<SplitAppEntry>({ normalizedLabel(it.label) }, { it.packageName }))
     }
 
     private class Adapter(

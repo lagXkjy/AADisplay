@@ -1,6 +1,8 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.hardware.display.VirtualDisplay
@@ -20,6 +22,7 @@ import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
+import io.github.nitsuya.aa.display.xposed.util.RomUtil
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
@@ -503,34 +506,42 @@ class SplitDisplayController(
         tryOrNull { Instances.iActivityTaskManager.unregisterTaskStackListener(mTaskStackListener) }
 
         val protectedPackages = linkedSetOf(BuildConfig.APPLICATION_ID)
-        for (displayId in listOf(primaryDisplayId, secondaryDisplayId)) {
-            if (displayId == Display.INVALID_DISPLAY) continue
-            tryOrNull {
-                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId).forEach { task ->
-                    ownership.trackPackageFromTask(task)
-                    tryOrNull { Instances.iActivityTaskManager.removeTask(task.taskId) }
-                }
-            }
-        }
-        mTrackedPackageUsers
-            .filterKeys { it.isNotBlank() && !protectedPackages.contains(it) }
-            .forEach { (pkg, userIds) ->
-                userIds.ifEmpty { mutableSetOf(0) }.forEach { userId ->
-                    try {
-                        Instances.activityManagerHidden.forceStopPackageAsUser(pkg, userId)
-                    } catch (e: Throwable) {
-                        log(TAG, "forceStop failed: $pkg", e)
+        if (RomUtil.isSamsungAndroid16Plus()) {
+            // One UI 8.5 exit-safe: do not remove VD tasks / force-stop their packages
+            // from system_server while AA is disconnecting. Release the displays only.
+            log(TAG, "Samsung Android 16 exit-safe: skip removeTask/forceStop cleanup")
+        } else {
+            for (displayId in listOf(primaryDisplayId, secondaryDisplayId)) {
+                if (displayId == Display.INVALID_DISPLAY) continue
+                tryOrNull {
+                    Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId).forEach { task ->
+                        ownership.trackPackageFromTask(task)
+                        tryOrNull { Instances.iActivityTaskManager.removeTask(task.taskId) }
                     }
                 }
             }
+            mTrackedPackageUsers
+                .filterKeys { it.isNotBlank() && !protectedPackages.contains(it) }
+                .forEach { (pkg, userIds) ->
+                    userIds.ifEmpty { mutableSetOf(0) }.forEach { userId ->
+                        try {
+                            Instances.activityManagerHidden.forceStopPackageAsUser(pkg, userId)
+                        } catch (e: Throwable) {
+                            log(TAG, "forceStop failed: $pkg", e)
+                        }
+                    }
+                }
+        }
         mTrackedPackageUsers.clear()
 
         vd.removeKeepAwakeOverlay(SplitPane.PRIMARY)
         vd.removeKeepAwakeOverlay(SplitPane.SECONDARY)
-        tryOrNull { mPrimary?.release() }
-        tryOrNull { mSecondary?.release() }
+        val primary = mPrimary
+        val secondary = mSecondary
         mPrimary = null
         mSecondary = null
+        tryOrNull { primary?.release() }
+        tryOrNull { secondary?.release() }
         mPrimarySurface = null
         mSecondarySurface = null
         mPanePackages[0] = null
@@ -541,6 +552,35 @@ class SplitDisplayController(
         mDensityDpi = 0
         mWidth = 0
         mHeight = 0
+    }
+
+    /** Phone-side text bridge commit: clipboard Unicode + Ctrl+V into focused pane. */
+    fun commitTextToFocusedPane(text: String) {
+        if (text.isEmpty() || mIsDestroying) return
+        val pane = mFocusedPane.takeIf { SplitPane.isValid(it) } ?: SplitPane.PRIMARY
+        val displayId = input.displayIdFor(pane) ?: return
+        try {
+            val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+            clipboard.setPrimaryClip(ClipData.newPlainText("AADisplay", text))
+            setFocusedPane(pane)
+            ownership.snapshotUserRootTasks(displayId).lastOrNull()?.let {
+                ownership.bringTaskToFront(it.taskId)
+            }
+            mHandler.postDelayed({
+                if (mIsDestroying) return@postDelayed
+                val down = input.createKeyEvent(
+                    KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_V, KeyEvent.META_CTRL_ON
+                )
+                val up = input.createKeyEvent(
+                    KeyEvent.ACTION_UP, KeyEvent.KEYCODE_V, KeyEvent.META_CTRL_ON
+                )
+                val okDown = input.injectInputEvent(displayId, down)
+                val okUp = input.injectInputEvent(displayId, up)
+                log(TAG, "phoneInput paste pane=$pane display=$displayId ok=${okDown && okUp}")
+            }, 180L)
+        } catch (e: Throwable) {
+            log(TAG, "commitTextToFocusedPane failed pane=$pane display=$displayId", e)
+        }
     }
 
     fun onTouchPane(pane: Int, event: MotionEvent) {

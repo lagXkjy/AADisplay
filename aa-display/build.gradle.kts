@@ -13,7 +13,7 @@ android {
         minSdk = 33
         targetSdk = 36
         versionCode = 3067
-        versionName = "0.24#17.4-r11"
+        versionName = "Community Fork R1.0"
         buildConfigField("long", "BUILD_TIME", buildTime.toString())
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -57,7 +57,9 @@ android {
             }
         }
         getByName("debug") {
-            // Keep debug artifacts unminified to avoid AGP warnings and speed up test builds.
+            // Keep test APK easy to build, but do not mark it as android:debuggable.
+            // This removes the Android/One UI "debug app" warning.
+            isDebuggable = false
             isMinifyEnabled = false
             isShrinkResources = false
             if (System.getenv("KEY_ANDROID") != null) {
@@ -71,8 +73,8 @@ android {
         val variant = this
         variant.outputs.all {
             val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
-            val versionName = variant.versionName.replace("#", "-")
-            output.outputFileName = "aa-display-${versionName}.apk"
+            val versionName = variant.versionName.replace("#", "-").replace(" ", "-")
+            output.outputFileName = "AADisplay-${versionName}.apk"
         }
     }
     
@@ -118,6 +120,6 @@ dependencies {
     compileOnly("dev.rikka.hidden:stub:4.4.0")
     compileOnly(files("./libs/de.robv.android.xposed_api_82.jar"))
     implementation("com.github.kyuubiran:EzXHelper:1.0.3")
-    implementation("org.luckypray:dexkit:2.0.0-rc3")
+    implementation("org.luckypray:dexkit:2.0.7")
     implementation(files("./libs/aauto.aar"))
 }
