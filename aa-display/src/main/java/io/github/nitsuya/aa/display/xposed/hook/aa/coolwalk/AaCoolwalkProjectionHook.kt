@@ -17,6 +17,13 @@ import kotlin.math.abs
 
 object AaCoolwalkProjectionHook {
 
+    /**
+     * Rect ctor/set hooks call [applyExpandedContentBounds] which mutates via [Rect.set].
+     * Without this guard, nested Rect allocation during expand (or sync side-effects) recurses
+     * until :projection StackOverflowError and DHU drops the GAL transport.
+     */
+    private val contentBoundsRectHookGuard = ThreadLocal.withInitial { java.lang.Boolean.FALSE }
+
     fun install(env: CoolwalkHookEnv) {
         CoolwalkRailCoordinator.syncExternalTruth()
         hookContentBounds(env)
@@ -171,9 +178,7 @@ object AaCoolwalkProjectionHook {
                 Int::class.javaPrimitiveType,
                 Int::class.javaPrimitiveType,
             ).hookAfter { param ->
-                val rect = param.thisObject as? Rect ?: return@hookAfter
-                if (!looksLikeExpandableContentBounds(env, rect)) return@hookAfter
-                applyExpandedContentBounds(env, rect)
+                maybeExpandContentBoundsRect(env, param.thisObject as? Rect ?: return@hookAfter)
             }
             logDebug(CoolwalkHookEnv.TAG, "AaUiHook: hooked Rect(int,int,int,int) for content_bounds")
         } catch (e: Throwable) {
@@ -189,9 +194,7 @@ object AaCoolwalkProjectionHook {
                 Int::class.javaPrimitiveType,
                 Int::class.javaPrimitiveType,
             ).hookAfter { param ->
-                val rect = param.thisObject as? Rect ?: return@hookAfter
-                if (!looksLikeExpandableContentBounds(env, rect)) return@hookAfter
-                applyExpandedContentBounds(env, rect)
+                maybeExpandContentBoundsRect(env, param.thisObject as? Rect ?: return@hookAfter)
             }
             logDebug(CoolwalkHookEnv.TAG, "AaUiHook: hooked Rect.set for content_bounds mutate (backup)")
         } catch (e: Throwable) {
@@ -217,13 +220,29 @@ object AaCoolwalkProjectionHook {
         AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "projection-reconnect")
     }
 
+    private fun maybeExpandContentBoundsRect(env: CoolwalkHookEnv, rect: Rect) {
+        if (contentBoundsRectHookGuard.get() == java.lang.Boolean.TRUE) return
+        try {
+            contentBoundsRectHookGuard.set(java.lang.Boolean.TRUE)
+            if (!looksLikeExpandableContentBounds(env, rect)) return
+            applyExpandedContentBounds(env, rect)
+        } finally {
+            contentBoundsRectHookGuard.set(java.lang.Boolean.FALSE)
+        }
+    }
+
     private fun looksLikeExpandableContentBounds(env: CoolwalkHookEnv, rect: Rect): Boolean {
+        if (rect.left <= 0 && rect.top <= 0) {
+            val full = CoolwalkRailCoordinator.observedFullHuWidthPx()
+                .takeIf { it > 0 } ?: env.layoutWidthPx()
+            if (full > 0 && abs(rect.right - full) <= 2) return false
+        }
         CoolwalkRailCoordinator.syncExternalTruth(InitFields.appContext.contentResolver)
         return CoolwalkRailMath.looksLikeHuContentBounds(
             rect,
             env.layoutWidthPx(),
             env.layoutHeightPx(),
-            CoolwalkRailCoordinator.bestObservedFullHuWidthPx(),
+            CoolwalkRailCoordinator.observedFullHuWidthPx(),
         )
     }
 
@@ -296,7 +315,7 @@ object AaCoolwalkProjectionHook {
 
     private fun applyExpandedContentBounds(env: CoolwalkHookEnv, rect: Rect): Rect? {
         CoolwalkRailCoordinator.syncExternalTruth(InitFields.appContext.contentResolver)
-        val before = Rect(rect)
+        val before = Rect(rect.left, rect.top, rect.right, rect.bottom)
         val snapBefore = CoolwalkRailCoordinator.current()
         val expanded = CoolwalkRailMath.applyExpandedContentBounds(
             rect,
