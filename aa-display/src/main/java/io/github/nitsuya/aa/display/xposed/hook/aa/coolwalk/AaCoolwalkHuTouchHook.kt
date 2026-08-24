@@ -205,11 +205,13 @@ object AaCoolwalkHuTouchHook {
                 env.mRailHostDownTime = now
             }
             val down = env.mRailHostDownTime.takeIf { it > 0L } ?: now
+            val xInset = CoolwalkRailMath.compositorLeftInsetPx(CoolwalkRailCoordinator.current()).toFloat()
             val toInject = rewriteMotionEvent(
                 source = motion,
                 downTime = down,
                 eventTime = now,
                 sourceOverride = InputDevice.SOURCE_TOUCHSCREEN,
+                xOffset = xInset,
             )
             var retainInject = false
             try {
@@ -246,7 +248,8 @@ object AaCoolwalkHuTouchHook {
                                 SplitPane.isFullscreenPane(fs) -> "touchPane($fs)"
                                 else -> "touchPrimaryPane"
                             }) +
-                            " x=${motion.x} y=${motion.y} rail=$rail " +
+                            " x=${motion.x} y=${motion.y} injectX=${motion.x - xInset} " +
+                            "inset=$xInset rail=$rail peel=$peel " +
                             "facetTarget=$railTarget picker=$railToAaUi",
                     )
                 }

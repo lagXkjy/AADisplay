@@ -6,16 +6,51 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-/** Pure rail geometry — no Android framework deps beyond Rect. */
+/**
+ * Pure Coolwalk rail geometry — no Android framework deps beyond Rect.
+ *
+ * Resolution adaptation model (no hardcoded 800/1280/1920):
+ * - [RailSnapshot.fullHuWidthPx] — head-unit canvas from LayoutInfo / VirtualDevice / expanded bounds
+ * - [RailSnapshot.contentSlotWidthPx] — live content slot (full − rail) from LayoutInfo / DrawingSpec
+ * - [RailSnapshot.touchRailWidthPx] — FacetBar VD width for hit-test only (not profile)
+ *
+ * Single-rail gap = fullHu − contentSlot. Must fall in [absoluteFacetRailBand] and match
+ * observed rail within [RAIL_MEASUREMENT_JITTER_PX] (VD create vs compositor blX can differ).
+ */
 object CoolwalkRailMath {
 
     const val FULL_BLEED_STABLE_THRESHOLD = 3
 
+    /** Physical Coolwalk facet bar width band (px) — same UI chrome on all HUs. */
+    private const val FACET_RAIL_ABS_MIN = 32
+    private const val FACET_RAIL_ABS_MAX = 160
+
+    /** Max |gap − touchRail| when both look like facet rails (e.g. blX 92 vs VD 107). */
+    private const val RAIL_MEASUREMENT_JITTER_PX = 20
+
+    fun absoluteFacetRailBand(): IntRange = FACET_RAIL_ABS_MIN..FACET_RAIL_ABS_MAX
+
     fun railPxRange(fullW: Int): IntRange {
-        if (fullW <= 0) return 32..160
-        val min = (fullW * 0.05f).roundToInt().coerceIn(32, 96)
-        val max = (fullW * 0.25f).roundToInt().coerceAtLeast(min).coerceAtMost(fullW / 2).coerceAtLeast(120)
-        return min..max
+        if (fullW <= 0) return absoluteFacetRailBand()
+        val max = (fullW * 0.25f).roundToInt().coerceAtLeast(120).coerceAtMost(fullW / 2)
+        return FACET_RAIL_ABS_MIN..max
+    }
+
+    /**
+     * True when [reportedW] is [fullW] minus one facet rail (content slot vs full HU).
+     */
+    fun isContentSlotVsFull(reportedW: Int, fullW: Int, observedRailWidthPx: Int = 0): Boolean {
+        if (reportedW <= 0 || fullW <= 0) return false
+        val gap = fullW - reportedW
+        return isPlausibleRailGap(gap, fullW, observedRailWidthPx)
+    }
+
+    /** Remember the narrower content slot; survives [layoutWidthPx] promotion to full HU. */
+    fun rememberContentSlotWidth(measuredW: Int, fullHu: Int, previous: Int): Int {
+        if (measuredW <= 0) return previous
+        if (fullHu > measuredW + 2) return measuredW
+        if (previous > 0 && fullHu > previous + 2) return previous
+        return if (fullHu > 0 && measuredW < fullHu - 2) measuredW else previous
     }
 
     fun isAbsoluteNarrowRailSize(width: Int, height: Int): Boolean =
@@ -35,10 +70,36 @@ object CoolwalkRailMath {
      */
     fun isPlausibleRailGap(gap: Int, fullW: Int, observedRailWidthPx: Int = 0): Boolean {
         if (gap <= 1 || fullW <= 0) return false
-        if (observedRailWidthPx > 1) return abs(gap - observedRailWidthPx) <= 2
-        if (gap !in railPxRange(fullW)) return false
-        val maxSingle = (fullW * 0.15f).roundToInt().coerceAtLeast(railPxRange(fullW).first)
+        if (gap !in absoluteFacetRailBand()) return false
+        if (observedRailWidthPx > 1) {
+            val jitter = maxOf(RAIL_MEASUREMENT_JITTER_PX, observedRailWidthPx / 5)
+            if (abs(gap - observedRailWidthPx) <= jitter) return true
+        }
+        // Single rail only — reject 2×rail (720+80+80) via ~15% HU cap, absolute max 160px.
+        val maxSingle = minOf(
+            (fullW * 0.15f).roundToInt().coerceAtLeast(FACET_RAIL_ABS_MIN),
+            FACET_RAIL_ABS_MAX,
+        )
         return gap <= maxSingle
+    }
+
+    /**
+     * HU x offset: full head-unit origin → content-slot / presentation origin (compositor blX).
+     * Derived from observed full vs content slot, not a per-resolution table.
+     */
+    fun compositorLeftInsetPx(snapshot: RailSnapshot): Int {
+        if (snapshot.phase == RailPhase.FullBleed &&
+            snapshot.fullBleedStableCount >= FULL_BLEED_STABLE_THRESHOLD
+        ) {
+            return 0
+        }
+        val full = snapshot.fullHuWidthPx
+        val slot = snapshot.contentSlotWidthPx.takeIf { it > 0 }
+            ?: snapshot.layoutWidthPx.takeIf { full > 0 && it in 1 until full }
+            ?: 0
+        if (full <= 0 || slot <= 0 || full <= slot + 2) return 0
+        val gap = full - slot
+        return if (isPlausibleRailGap(gap, full, snapshot.touchRailWidthPx)) gap else 0
     }
 
     /**

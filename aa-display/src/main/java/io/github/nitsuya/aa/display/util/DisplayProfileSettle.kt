@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.util
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.view.Display
+import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkRailMath
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailPhase
 import kotlin.math.abs
 
@@ -28,18 +29,13 @@ internal object DisplayProfileSettle {
             name.contains("EdgeColumn", ignoreCase = true)
     }
 
-    fun railPxRange(fullW: Int): IntRange {
-        if (fullW <= 0) return 32..160
-        val min = (fullW * 0.05f).toInt().coerceIn(32, 96)
-        val max = (fullW * 0.25f).toInt().coerceAtLeast(min).coerceAtMost(fullW / 2).coerceAtLeast(120)
-        return min..max
-    }
+    fun railPxRange(fullW: Int): IntRange = CoolwalkRailMath.railPxRange(fullW)
 
     private fun isPlausibleRailStrip(width: Int, height: Int): Boolean {
         if (width <= 1 || height <= 0) return false
         // Vertical rail: tall and narrow (e.g. 80×480).
         if (height < width * 2) return false
-        return width in 32..160 || width in railPxRange(height)
+        return width in CoolwalkRailMath.absoluteFacetRailBand() || width in railPxRange(height)
     }
 
     /**
@@ -94,12 +90,8 @@ internal object DisplayProfileSettle {
      * CarActivity presentation is still the content slot.
      */
     fun isContentSlotVsFull(reportedW: Int, fullW: Int): Boolean {
-        if (reportedW <= 0 || fullW <= 0) return false
-        val gap = fullW - reportedW
-        if (gap <= 1) return false
-        if (gap !in railPxRange(fullW)) return false
-        val maxSingle = (fullW * 0.15f).toInt().coerceAtLeast(railPxRange(fullW).first)
-        return gap <= maxSingle
+        val touchRail = CoolwalkRailStore.serverSnapshot.touchRailWidthPx
+        return CoolwalkRailMath.isContentSlotVsFull(reportedW, fullW, touchRail)
     }
 
     /**
@@ -115,7 +107,12 @@ internal object DisplayProfileSettle {
             // FacetBar starved, but CarActivity presentation may still be HU−rail.
             // After content_bounds reclaim is visible in the server snapshot, settle to
             // full HU so split VDs are not stuck at 693 while the compositor gutter is gone.
-            if (isContentSlotVsFull(reported.width, full) && !coolwalkReclaimProven(full)) {
+            if (CoolwalkRailMath.isContentSlotVsFull(
+                    reported.width,
+                    full,
+                    CoolwalkRailStore.serverSnapshot.touchRailWidthPx,
+                ) && !coolwalkReclaimProven(full)
+            ) {
                 return Size(reported.width.coerceAtLeast(1), h, dpi)
             }
             return Size(full, h, dpi)

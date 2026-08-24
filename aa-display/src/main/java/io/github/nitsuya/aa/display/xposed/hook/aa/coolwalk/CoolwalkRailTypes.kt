@@ -25,6 +25,12 @@ data class RailSnapshot(
     /** Hit-test band for :car HU touch steal only. */
     val touchRailWidthPx: Int = 0,
     val fullHuWidthPx: Int = 0,
+    /**
+     * Observed content-area width (LayoutInfo / DrawingSpec slot), kept after reclaim even
+     * when [layoutWidthPx] is promoted to [fullHuWidthPx]. Used for compositor inset / touch
+     * remap — resolution-agnostic, not a per-HU constant.
+     */
+    val contentSlotWidthPx: Int = 0,
     val facetDisplayId: Int = Display.INVALID_DISPLAY,
     val layoutWidthPx: Int = 0,
     val layoutHeightPx: Int = 0,

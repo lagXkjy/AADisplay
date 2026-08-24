@@ -14,6 +14,7 @@ fun rewriteMotionEvent(
     downTime: Long,
     eventTime: Long,
     sourceOverride: Int,
+    xOffset: Float = 0f,
 ): MotionEvent {
     val count = source.pointerCount
     val buffers = pointerBuffers.get()!!
@@ -21,6 +22,9 @@ fun rewriteMotionEvent(
     for (i in 0 until count) {
         source.getPointerProperties(i, buffers.props[i])
         source.getPointerCoords(i, buffers.coords[i])
+        if (xOffset != 0f) {
+            buffers.coords[i].x = (buffers.coords[i].x - xOffset).coerceAtLeast(0f)
+        }
     }
     val newEvent = MotionEvent.obtain(
         downTime,

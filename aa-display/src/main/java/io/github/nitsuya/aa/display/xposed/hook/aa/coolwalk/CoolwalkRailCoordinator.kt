@@ -135,6 +135,11 @@ object CoolwalkRailCoordinator {
                     layoutWidthPx = event.widthPx,
                     layoutHeightPx = event.heightPx,
                     fullHuWidthPx = resolvedFull,
+                    contentSlotWidthPx = CoolwalkRailMath.rememberContentSlotWidth(
+                        event.widthPx,
+                        resolvedFull,
+                        next.contentSlotWidthPx,
+                    ),
                     lastEvent = event.reason,
                     updatedUptimeMs = now,
                 )
@@ -208,7 +213,7 @@ object CoolwalkRailCoordinator {
                     updatedUptimeMs = now,
                 )
                 if (next.fullBleedStableCount >= CoolwalkRailMath.FULL_BLEED_STABLE_THRESHOLD) {
-                    next = next.copy(phase = RailPhase.FullBleed)
+                    next = next.copy(phase = RailPhase.FullBleed, contentSlotWidthPx = 0)
                 } else {
                     next = next.copy(phase = RailPhase.Reclaiming)
                 }
