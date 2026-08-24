@@ -277,7 +277,6 @@ Keep-awake 硬规则：
 | `swapSplitPanes` | 点分隔条 / 方控长按下一曲（快进） | 整栈 `moveRootTask` 对调，**VD 身份不变** |
 | `startActivity` / `startActivityOnPane` | 选择器 / Recent 点选 | `PaneAppStack.pushToTop` + 启动或置顶 |
 | `moveTaskId` / `moveTaskIdToPane` / `moveTaskToFront` | Recent 拖拽 | 跨 display 搬任务 |
-| `moveSecondTaskToFront` | 同窗栈内第二任务置顶（非方控长按） | 当前焦点窗栈内第二任务置顶 |
 | `removeTask` | Recent Close | 关任务；栈顶空则下一档 |
 | `pressKey` | 方控短按 / Activity 方向键 | 注入到焦点窗 |
 | `hideIme` **oneway** | 壳层「收起键盘」 | WMS/IMM hide；失败才对该 display 打 BACK（不 bringTaskToFront） |

@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.ContextParams
 import android.os.Handler
 import android.os.Looper
-import android.view.Display
 import android.view.MotionEvent
 import android.view.Surface
 import io.github.nitsuya.aa.display.BuildConfig
@@ -447,10 +446,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runIO { mSplitController?.moveTaskToFront(taskId) }
     }
 
-    override fun moveSecondTaskToFront() {
-        runIO { mSplitController?.moveSecondTaskToFront() }
-    }
-
     @SuppressLint("MissingPermission")
     override fun removeTask(taskId: Int) {
         runIO { mSplitController?.removeTask(taskId) }
@@ -575,32 +570,3 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runIO { noteUserInteraction() }
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

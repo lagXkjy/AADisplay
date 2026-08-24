@@ -37,7 +37,6 @@ interface ICoreManager {
     /** Move task onto PRIMARY/SECONDARY virtual-display pane (not the phone). */
     void moveTaskIdToPane(int taskId, int pane);
     void moveTaskToFront(int taskId);
-    void moveSecondTaskToFront();
     void removeTask(int taskId);
     void pressKey(int action);
     /**

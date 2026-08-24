@@ -119,10 +119,6 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.moveTaskToFront(taskId)
     }
 
-    override fun moveSecondTaskToFront() {
-        getService()?.moveSecondTaskToFront()
-    }
-
     override fun removeTask(taskId: Int) {
         getService()?.removeTask(taskId)
     }

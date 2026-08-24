@@ -1,16 +1,13 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk
 
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
-import android.view.Display
 import com.github.kyuubiran.ezxhelper.init.InitFields
+import com.github.kyuubiran.ezxhelper.utils.argTypes
 import com.github.kyuubiran.ezxhelper.utils.getIdByName
 import com.github.kyuubiran.ezxhelper.utils.loadClass
 import com.github.kyuubiran.ezxhelper.utils.staticMethod
-import com.github.kyuubiran.ezxhelper.utils.argTypes
-import android.content.Intent
-import com.github.kyuubiran.ezxhelper.utils.findMethod
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug

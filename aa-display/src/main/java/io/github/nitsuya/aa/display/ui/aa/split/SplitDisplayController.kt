@@ -21,7 +21,6 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.PmCaches
-import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
@@ -1142,20 +1141,6 @@ class SplitDisplayController(
             log(TAG, "removeTask error:", e)
             false
         }
-    }
-
-    fun moveSecondTaskToFront() {
-        val other = if (mFocusedPane == SplitPane.PRIMARY) SplitPane.SECONDARY else SplitPane.PRIMARY
-        val displayId = input.displayIdFor(other) ?: return
-        // Prefer stack front; fall back to ATMS top (list is bottom → top).
-        val frontPkg = stacks.front(other)
-        val taskId = if (!frontPkg.isNullOrBlank()) {
-            ownership.findPackageTaskOnDisplay(frontPkg, displayId, liveOnly = true)
-        } else {
-            ownership.snapshotUserRootTasks(displayId).lastOrNull()?.taskId
-        } ?: return
-        mFocusedPane = other
-        ownership.bringTaskToFront(taskId)
     }
 
     /**

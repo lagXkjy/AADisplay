@@ -9,7 +9,6 @@ import android.os.SystemClock
 import android.view.Display
 import android.view.Gravity
 import android.view.Surface
-import android.view.View
 import android.view.WindowManager
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
