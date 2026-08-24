@@ -37,7 +37,7 @@ import java.lang.reflect.Method
  * StatusBar [setTitle] is updated in-place (no layout switch). HU metadata push
  * injects lyric line and album. Same-track lyric-only lines open a short HU
  * PlaybackStatus window: at most one natural packet, then [pushPlaybackNow] if
- * none arrived after MediaInfo (T2-A: push uses Store extrapolated whole seconds).
+ * none arrived after MediaInfo (push = Store whole-second position + 1s).
  */
 object AaClusterLyricEgressHook : AaHook() {
     override val tagName: String = "AAD_AaClusterLyricEgressHook"
@@ -121,7 +121,8 @@ object AaClusterLyricEgressHook : AaHook() {
 
     private data class PushPlaybackBuild(
         val state: Any,
-        val storeSec: Long,
+        /** Whole-second position actually pushed (Store extrapolate + 1s). */
+        val pushSec: Long,
     )
 
     override fun applyCache(
@@ -445,14 +446,18 @@ object AaClusterLyricEgressHook : AaHook() {
     }
 
     /**
-     * Clone the cached Gearhead [AaPlaybackState] with Store-extrapolated position
-     * (whole seconds) instead of replaying a stale [lastPlaybackState] snapshot.
+     * Clone the cached Gearhead [AaPlaybackState] with Store-extrapolated whole-second
+     * position plus 1s (covers HU local advance / stale snapshot rewind), instead of
+     * replaying a raw [lastPlaybackState] snapshot.
      */
     private fun buildAaPlaybackStateForPush(template: Any): PushPlaybackBuild? = runCatching {
         val cr = InitFields.appContext.contentResolver
         val progress = readProgressFresh(cr) ?: return@runCatching null
         val compat = unwrapPlaybackCompat(template) ?: return@runCatching null
-        val positionMs = alignWholeSecondMs(ClusterLyricStore.extrapolatePosition(progress))
+        val positionMs = ClusterLyricStore.clampPosition(
+            alignWholeSecondMs(ClusterLyricStore.extrapolatePosition(progress)) + 1000L,
+            progress.durationMs,
+        )
         val patchedCompat = PlaybackStateCompat.Builder(compat)
             .setState(
                 mapCompatPlaybackState(progress.playbackState),
@@ -679,7 +684,7 @@ object AaClusterLyricEgressHook : AaHook() {
             if (built != null) {
                 logDebug(
                     tagName,
-                    "pushPlaybackNow storeSec=${built.storeSec} fallback=${state === template}",
+                    "pushPlaybackNow pushSec=${built.pushSec} fallback=${state === template}",
                 )
             } else {
                 logDebug(tagName, "pushPlaybackNow fallback=true")

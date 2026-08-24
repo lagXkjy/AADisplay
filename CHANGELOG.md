@@ -7,6 +7,7 @@
 
 ### Changed
 - **FacetBar 重构文档与试验代码清理：** 新增 [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)（状态机、四路回收、profile settle、坑点）；移除 `ReconnectSizingTrace`、未使用的 `:car` presentation resize 广播、`CoolwalkRailMath` 死代码；`AaDisplayPresentationResize` 改为 AADisplay 进程懒加载 `DrawingSpec` hook 入口；同步 [EXECUTION.md](docs/EXECUTION.md) §5.4。
+- **仪表歌词补进度包 +1s：** `pushPlaybackNow` 在 Store 外推整秒上再 **+1s**（clamp duration）；`getPlaybackState` 不加。见 `docs/CLUSTER_LYRIC_CLOCK.md` §5。
 - **仪表歌词 T2-A 外推整秒补包：** `pushPlaybackNow` 用 `ClusterLyricStore.extrapolatePosition` 当下整秒克隆 Gearhead `AaPlaybackState`，不再重放 `play_l` 过期快照（失败 fallback T1）。见 `docs/CLUSTER_LYRIC_CLOCK.md` §5。
 - **仪表歌词时钟文档：** [docs/CLUSTER_LYRIC_CLOCK.md](docs/CLUSTER_LYRIC_CLOCK.md) 更新为 **T2-A** 当前落地。
 - **分屏应用选择器加速：** launchable 列表进程内缓存 + 会话预热；图标懒加载；「最近」改用 `LastSplitStore`/occupancy 包名，不再拉完整 `recentTask` Bitmap IPC。

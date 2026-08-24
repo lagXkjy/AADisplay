@@ -79,12 +79,15 @@ object AaCoolwalkAutoOpenHook {
     /**
      * Presentation may have been created at HU−rail before content_bounds reclaim finished.
      * Force a CarActivity relaunch so the next [DrawingSpec] is built at full HU width.
+     *
+     * @param force when true, relaunch even if [CoolwalkHookEnv.mAaDisplayShownThisSession] is
+     *   still false — the CarActivity presentation VD may already exist at content-slot width.
      */
-    fun scheduleFullBleedRelaunch(env: CoolwalkHookEnv, reason: String) {
+    fun scheduleFullBleedRelaunch(env: CoolwalkHookEnv, reason: String, force: Boolean = false) {
         if (env.startMethod == null) return
-        if (!env.mAaDisplayShownThisSession) {
+        if (!force && !env.mAaDisplayShownThisSession) {
             logDebug(CoolwalkHookEnv.TAG, "AaUiHook: full-bleed relaunch ($reason) → AutoOpen (not shown)")
-            scheduleAutoOpenIfNeeded(env, reason)
+            scheduleAutoOpenIfNeeded(env, reason, bypassRearmGap = true)
             return
         }
         env.mAaDisplayShownThisSession = false

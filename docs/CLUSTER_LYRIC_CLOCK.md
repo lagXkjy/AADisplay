@@ -13,7 +13,7 @@
 | 换句闪 0:00 | 同曲下一句歌词时，剩余时间先归零再恢复 | HU MediaInfo `song` 变 → 车机内部重置 |
 | 换句跳秒 | `-2:59` → `-3:00` → `-2:59`，整秒 ±1 抖动 | 换句多包 PlaybackStatus，秒数不一致 |
 | **换句时间反复** | 如 `0:29` → `0:30` → `0:29` → `0:32`（先前进、回退、再前进） | 快照补包 + 窗前的自然 progress 打架（T2-A 已修 push 路径） |
-| 已解决（T2-A） | 歌词随句滚；**不闪 0:00**；真切歌才应重置时钟 | MediaInfo 后补 PlaybackStatus（Store 外推整秒） |
+| 已解决（T2-A→+1s） | 歌词随句滚；**不闪 0:00**；真切歌才应重置时钟 | MediaInfo 后补 PlaybackStatus（Store 整秒 **+1s**） |
 
 三个时钟问题**根因不同**，不要混为一谈：
 
@@ -38,7 +38,7 @@ QQ / 汽水 MediaSession
          ├─ metadata getter / getPlaybackState 从 Store 注入
          ├─ HU meta_p：注入 song / album；lyric-only 开 500ms playback 窗
          ├─ play_l：缓存 lastPlaybackState（作模板）；play_q：窗内限 1 包
-         ├─ meta_p afterHook：若无自然 playback → pushPlaybackNow（Store 外推整秒）
+         ├─ meta_p afterHook：若无自然 playback → pushPlaybackNow（Store 整秒 +1s）
          └─ setTitle 原地改字（AA 顶栏，不驱动仪表歌词）
 ```
 
@@ -76,9 +76,9 @@ QQ / 汽水 MediaSession
 
 ---
 
-## 5. 当前落地：T2-A（2026-08-23 晚）
+## 5. 当前落地：Store 整秒 +1s 补包（2026-08-24）
 
-在 T1（playback 500ms 窗 + `pushPlaybackNow`、不 hook GAL）基础上，**方案 A**：`pushPlaybackNow` 不再重放 `play_l` 过期快照，改为用 `ClusterLyricStore.extrapolatePosition` 当下整秒克隆 `AaPlaybackState` 再 push（反射失败 fallback T1 快照）。
+在 T2-A 基础上：`pushPlaybackNow` 发包秒数改为 **`alignWholeSecond(extrapolate) + 1s`**（`clamp` 到 duration），盖住 HU 本地已前进 / 窗前 natural 包，避免回退。反射失败仍 fallback T1 快照。`getPlaybackState` **不加** +1s。
 
 ### 5.1 行为表
 
@@ -90,10 +90,10 @@ QQ / 汽水 MediaSession
 | **Egress GAL** | **不 hook** |
 | **Egress `play_l`** | 持续缓存 `lastPlaybackState` / `lastPlaybackPkg`（push 模板） |
 | **Egress `play_q`** | lyric-only **500ms 窗**：首包放行，后续 drop |
-| **Egress `meta_p` afterHook** | 窗内尚无 natural playback → **`pushPlaybackNow`**（**Store 外推整秒** 克隆 state） |
-| **Egress `getPlaybackState`** | Store `extrapolatePosition` 外推（供 Gearhead 读壳 session） |
+| **Egress `meta_p` afterHook** | 窗内尚无 natural playback → **`pushPlaybackNow`**（Store 整秒 **+1s**） |
+| **Egress `getPlaybackState`** | Store `extrapolatePosition` 外推（供 Gearhead 读壳 session；不加 +1s） |
 
-### 5.2 换句事件链（T2-A）
+### 5.2 换句事件链
 
 ```
 LRC 换句 → Mirror.publish → 壳 lyricOnly setMetadata
@@ -101,7 +101,7 @@ LRC 换句 → Mirror.publish → 壳 lyricOnly setMetadata
     → meta_p beforeHook：判定 lyricOnly，开 500ms 窗
     → MediaInfo 出站（song=新歌词）→ 车机可能内部归零
     → meta_p afterHook：
-         若窗内尚无 play_q → pushPlaybackNow(Store 外推整秒)  ← 不再用过期快照
+         若窗内尚无 play_q → pushPlaybackNow(Store 整秒 +1s)
          若窗内已有 play_q → 跳过 push
     → 500ms 内后续 play_q 全 drop
     → 500ms 后自然 progress 恢复
@@ -109,21 +109,21 @@ LRC 换句 → Mirror.publish → 壳 lyricOnly setMetadata
 
 `pushPlaybackNow` **仅事件驱动**（非定时）：唯一调用点在 `meta_p` afterHook；真切歌不走此路径。
 
-### 5.3 真机（T2-A，奥迪横条，待验证）
+### 5.3 真机（奥迪横条，待验证 +1s）
 
 | 项 | 结果 |
 |----|------|
 | 歌词随句 | ✅（继承 T1） |
 | 换句闪 0:00 | ✅ **不闪**（继承 T1） |
 | 经典跳秒 `-2:59⇄-3:00` | 多数 **不明显** |
-| **时间反复** `0:29→0:30→0:29→0:32` | **待真机**（T2-A 目标消除） |
+| **时间反复** `0:29→0:30→0:29→0:32` | **待真机**（+1s 目标消除） |
 
 ### 5.4 三层模型（分析用）
 
 ```
 1. 触发层   HU song 变 → 车机内部重置（难消）
 2. 掩盖层   MediaInfo 后极短窗口内有效 PlaybackStatus → 0:00 肉眼不可见（T1/T2-A 核心）
-3. 副作用层 快照秒数 vs 本地走时 / 窗前包 → 跳秒或时间反复（T2-A 修 push；窗前包仍待 T2-B）
+3. 副作用层 快照秒数 vs 本地走时 / 窗前包 → 跳秒或时间反复（整秒 +1s 修 push；窗前包仍待 T2-B）
 ```
 
 ---
@@ -155,10 +155,11 @@ LRC 换句 → Mirror.publish → 壳 lyricOnly setMetadata
 | 优先级 | 做法 | 状态 |
 |--------|------|------|
 | **A** | `pushPlaybackNow` 用 **Store 当下外推整秒**，不用 `lastPlaybackState` 快照 | **已落地**（2026-08-23 晚） |
+| **A+1s** | 在 A 上再 **+1s** 发包（`clamp` duration） | **当前**（2026-08-24） |
 | **B** | 500ms 窗内 **drop 全部 natural play_q**，**只 push 一包** Store 秒数 | 待试 |
 | **C** | push 前 **不倒退** guard：`pushSec >= lastSentSec`（含窗外已出站包） | 待试 |
 
-勿再试：盲 **+1s**；仅加长抑制窗（管不到 MediaInfo 前 play_q）。
+勿再试：仅加长抑制窗（管不到 MediaInfo 前 play_q）；纯盲 **快照 +1s**（无 Store 外推）。
 
 ---
 
@@ -198,20 +199,20 @@ LRC 换句 → Mirror.publish → 壳 lyricOnly setMetadata
 | `xposed/cluster/ClusterLyricMirror.kt` | 绑 session，写 Store；快句 pending flush |
 | `xposed/cluster/ClusterLyricStore.kt` | 歌词 + 进度；`extrapolatePosition` |
 | `service/ClusterLyricMediaService.kt` | 壳 session；lyricOnly **只** setMetadata |
-| `xposed/hook/aa/AaClusterLyricEgressHook.kt` | T2-A：meta_p / play_q / play_l / getter；`buildAaPlaybackStateForPush` |
+| `xposed/hook/aa/AaClusterLyricEgressHook.kt` | meta_p / play_q / play_l / getter；`buildAaPlaybackStateForPush`（整秒 +1s） |
 
-**Egress 关键符号（T2-A）：**
+**Egress 关键符号：**
 
 - `LYRIC_ONLY_PLAYBACK_SUPPRESS_MS` — 500ms playback 窗
 - `pendingLyricOnlyUntilElapsedMs` / `lyricOnlyPlaybackSent`
-- `buildAaPlaybackStateForPush` / `pushPlaybackNow` — Store 外推整秒手补
+- `buildAaPlaybackStateForPush` / `pushPlaybackNow` — Store 整秒 **+1s** 手补
 - DexKit：`meta_p`、`play_q`（`Error updating playback status.`）、`play_l`（`playbackstate cannot be null`）
 - **无** `gal_h` / `gal_k` / GAL skip
 
 **日志标签：** `AAD_AaClusterLyricEgressHook`
 
 - `HU metadata lyric-only window`
-- `pushPlaybackNow storeSec=N` / `fallback=true` / `drop duplicate HU playback`
+- `pushPlaybackNow pushSec=N` / `fallback=true` / `drop duplicate HU playback`
 
 ---
 
@@ -258,6 +259,7 @@ adb install -r aa-display/build/outputs/apk/debug/aa-display-*.apk
 | 2026-08-23 上午 | v5～v11 矩阵；v8/v10 无有效 push → 仍闪 0:00 |
 | 2026-08-23 下午 | **T1**：恢复恭喜 playback 链路，**不 hook GAL** → 不闪 0:00；仍有时间反复 |
 | 2026-08-23 晚 | **T2-A**：`pushPlaybackNow` 用 Store 外推整秒克隆 `AaPlaybackState` |
+| 2026-08-24 | **+1s**：补包改为 Store 整秒 **+1s**（`getPlaybackState` 不加） |
 
 详见 `CHANGELOG.md`。
 
@@ -274,11 +276,11 @@ adb install -r aa-display/build/outputs/apk/debug/aa-display-*.apk
 | v9 式 push（观测失败 / 0 秒包） | 与 v8 无差别 |
 | 方案 C 整秒延迟 + 壳 pre-progress（v10） | 仍闪 |
 | 壳 lyric-only `scheduleProgressReassert` | 多造 progress 包 |
-| 盲 +1s 快照 | 易过头；应用 Store 外推 |
+| 盲 +1s 快照（无 Store 外推） | 易过头；现用 Store 整秒后再 +1s |
 | 仅加长 500ms 窗 | 管不到 MediaInfo **前** play_q |
 | setTitle 驱动仪表歌词 | v5 证伪 |
 
-**仍可试（T2-B/C）：** 窗内只发一包 Store 秒数；push 前不倒退 guard。
+**仍可试（T2-B/C）：** 窗内只发一包；push 前不倒退 guard。
 
 ---
 
@@ -289,8 +291,8 @@ LRC 换句
   → 壳 setMetadata(新 Title)
   → [可选] Gearhead play_q 窗外先出站 (秒 N+1)
   → HU MediaInfo(song=歌词) → 车机内部重置
-  → T2-A: meta_p afterHook pushPlaybackNow(Store 外推整秒) 或 窗内首包 natural
-  → 肉眼: 不闪 0:00；T2-A 消除 N+1→N 快照回退；窗前包仍可能打架 (T2-B)
+  → meta_p afterHook pushPlaybackNow(Store 整秒 +1s) 或 窗内首包 natural
+  → 肉眼: 不闪 0:00；+1s 目标盖住 N+1→N 回退；窗前包仍可能打架 (T2-B)
 
 若无 push / 无有效 playback → 闪 0:00 (v8)
 若拦截 HU MediaInfo → 不闪、歌词不滚 (v5)

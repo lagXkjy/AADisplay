@@ -351,13 +351,19 @@ object AaCoolwalkProjectionHook {
         )
         if (!skipReclaimDispatch) {
             notifyAaUiFullBleed()
-            if (env.mAaDisplayShownThisSession && expanded.railWidthPx > 0) {
+            if (needsPresentationWiden) {
+                log(
+                    CoolwalkHookEnv.TAG,
+                    "AAD_FacetDbg|H11|force relaunch slot=${before.width()}→${expanded.targetWidthPx}",
+                )
+                AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(env, "content_bounds-widen", force = true)
+            } else if (env.mAaDisplayShownThisSession && expanded.railWidthPx > 0) {
                 AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(env, "content_bounds")
             } else {
                 AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(
                     env,
                     "content_bounds",
-                    bypassRearmGap = needsPresentationWiden || expanded.railWidthPx > 0,
+                    bypassRearmGap = expanded.railWidthPx > 0,
                 )
             }
             env.mFacetEnsureHandler.post {
@@ -370,11 +376,11 @@ object AaCoolwalkProjectionHook {
             ) {
                 lastSlotRelaunchUptimeMs = now
                 notifyAaUiFullBleed()
-                if (env.mAaDisplayShownThisSession) {
-                    AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(env, "content_bounds-slot")
-                } else {
-                    AaCoolwalkAutoOpenHook.scheduleAutoOpenIfNeeded(env, "content_bounds-slot")
-                }
+                AaCoolwalkAutoOpenHook.scheduleFullBleedRelaunch(
+                    env,
+                    "content_bounds-slot",
+                    force = true,
+                )
                 env.mFacetEnsureHandler.post {
                     CoolwalkFacetChrome.reclaimAllWindowGutters("content_bounds-slot")
                 }

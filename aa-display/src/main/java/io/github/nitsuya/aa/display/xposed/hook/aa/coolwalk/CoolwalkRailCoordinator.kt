@@ -266,6 +266,21 @@ object CoolwalkRailCoordinator {
         return true
     }
 
+    /** Local content_bounds reclaim must not be wiped by stale ReconnectSettling IPC. */
+    private fun shouldPreserveLocalReclaimProgress(): Boolean =
+        (snapshot.phase == RailPhase.Reclaiming || snapshot.phase == RailPhase.FullBleed) &&
+            snapshot.fullHuWidthPx > 0
+
+    private fun mergePhasePreferringReclaim(local: RailPhase, server: RailPhase): RailPhase {
+        if (local == RailPhase.FullBleed) return RailPhase.FullBleed
+        if (local == RailPhase.Reclaiming && snapshot.fullHuWidthPx > 0 &&
+            server == RailPhase.ReconnectSettling
+        ) {
+            return RailPhase.Reclaiming
+        }
+        return server
+    }
+
     /**
      * Pull IPC / Settings into this process only when empty or the same head-unit.
      * A previous car's stored width must not replace this connection's LayoutInfo.
@@ -324,7 +339,8 @@ object CoolwalkRailCoordinator {
             val ipcPhase = RailPhase.fromCode(ipc[0])
             if (ipcPhase == RailPhase.ReconnectSettling &&
                 snapshot.phase != RailPhase.ReconnectSettling &&
-                snapshot.phase != RailPhase.Bootstrapping
+                snapshot.phase != RailPhase.Bootstrapping &&
+                !shouldPreserveLocalReclaimProgress()
             ) {
                 snapshot = RailSnapshot(
                     phase = RailPhase.ReconnectSettling,
@@ -452,7 +468,7 @@ object CoolwalkRailCoordinator {
             return
         }
         snapshot = snapshot.copy(
-            phase = serverResolved.phase,
+            phase = mergePhasePreferringReclaim(snapshot.phase, serverResolved.phase),
             touchRailWidthPx = serverResolved.touchRailWidthPx.takeIf { it > 0 } ?: snapshot.touchRailWidthPx,
             fullHuWidthPx = picked,
             layoutWidthPx = serverResolved.layoutWidthPx.takeIf { it > 0 } ?: snapshot.layoutWidthPx,

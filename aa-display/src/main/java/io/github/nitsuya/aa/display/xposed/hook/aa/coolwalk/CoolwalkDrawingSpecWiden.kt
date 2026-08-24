@@ -173,6 +173,8 @@ object CoolwalkDrawingSpecWiden {
             RailPhase.FullBleed,
             RailPhase.Reclaiming,
             -> full
+            // content_bounds may have fired while IPC still says ReconnectSettling.
+            RailPhase.ReconnectSettling -> if (snap.fullBleedStableCount >= 1) full else width
             else -> width
         }
     }

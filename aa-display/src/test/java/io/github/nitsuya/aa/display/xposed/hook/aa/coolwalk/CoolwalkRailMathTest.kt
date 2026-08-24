@@ -452,6 +452,8 @@ class CoolwalkRailMathTest {
             touchRailWidthPx = 107,
         )
         assertEquals(1173, CoolwalkDrawingSpecWiden.resolveTargetWidth(1173, settling))
+        val settlingAfterBounds = settling.copy(fullBleedStableCount = 1)
+        assertEquals(1280, CoolwalkDrawingSpecWiden.resolveTargetWidth(1173, settlingAfterBounds))
     }
 
     @Test
