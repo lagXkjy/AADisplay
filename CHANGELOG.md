@@ -6,8 +6,9 @@
 - **藏车机媒体壳图标：** 删除 `AaClusterMediaIconHideHook`（不再 hook `queryIntentServices` 过滤本包壳）。全屏投影下桌面列表本就会闪，隐藏收益低且增加 hook 面。
 
 ### Changed
-- **音视频单发声 + 栈顶优先（音乐 AvMedia）：** `AvMediaArbiter` 在 system_server 仲裁音乐类 AvMedia；赢家优先级为焦点窗栈顶 > 另一窗栈顶 > 埋栈音乐；对输家 `MediaSession.pause`；`ClusterLyricMirror` 跟赢家。抖音主包排除出 Music/AvMedia（虽声明 MediaBrowserService，Feed 无 Now Playing，不上仪表）。埋栈音乐仅在栈顶非 AvMedia（高德等）时续播。
-- **同窗叠栈音视频 / 仪表误投：** 栈底非音乐应用除 `moveTaskToBack` 外对 PLAYING MediaSession 显式 `pause`（切回栈顶 `play`）；音乐类（MediaBrowserService / 音乐播放器 intent / 音乐形态 metadata）埋栈可继续播；`ClusterLyricMirror` 仍优先 QQ/汽水选歌词源，埋栈仅排除非音乐包；专辑字段过滤 `http(s)://` URL。
+- **音视频粘性焦点（r16）：** AvMedia（音乐 ∪ 视频）正在播放时不因地图/浏览器压顶或空闲 Av 栈顶而自动丢发声权；仅在**停止播放**、**移出栈**、或**另一 AvMedia 开始 PLAYING** 时让出。同窗 `SplitBuriedPlayback` 仅在栈顶 Av 正在播时 pause 埋栈。清理：去掉 soft-idle 选主 / 仅音乐埋栈启发式、`eligibleControllers` 无用 layout 参数、重复 isPlaying/isIdle、无调用方的 `CoreManagerService.buriedPackagesOnAaDisplays`。
+- **音视频互斥 + 仪表三源重定义（r15）：** AvMedia = 音乐 ∪ 视频（抖音）。`AvMediaArbiter.pickWinner` 只保留一个发声源（焦点窗正在播的栈顶优先，否则三源 / 其它音乐 / 视频）；`pauseLosers` 停其它 PLAYING。仪表只跟 QQ 车载 / HD / 汽水里**正在播放**的那一个（`pickClusterSource`）；视频抢到发声权时清空仪表。三源彼此互斥。
+- **同窗叠栈：** 栈顶 AvMedia **正在播放**时对埋栈 AvMedia 显式 `pause`；非 Av / 空闲 Av 压顶时埋栈音视频可续播。
 - **FacetBar 重构文档与试验代码清理：** 新增 [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)（状态机、四路回收、profile settle、坑点）；移除 `ReconnectSizingTrace`、未使用的 `:car` presentation resize 广播、`CoolwalkRailMath` 死代码；`AaDisplayPresentationResize` 改为 AADisplay 进程懒加载 `DrawingSpec` hook 入口；同步 [EXECUTION.md](docs/EXECUTION.md) §5.4。
 - **仪表歌词补进度包 +1s：** `pushPlaybackNow` 在 Store 外推整秒上再 **+1s**（clamp duration）；`getPlaybackState` 不加。见 `docs/CLUSTER_LYRIC_CLOCK.md` §5。
 - **仪表歌词 T2-A 外推整秒补包：** `pushPlaybackNow` 用 `ClusterLyricStore.extrapolatePosition` 当下整秒克隆 Gearhead `AaPlaybackState`，不再重放 `play_l` 过期快照（失败 fallback T1）。见 `docs/CLUSTER_LYRIC_CLOCK.md` §5。
@@ -27,6 +28,9 @@
 - **左轨 ensure 窗口收敛：** FacetBar 回收 poll 从 8s/400ms 收为 2s/250ms；inject 成功即停；collapse/starve 只做一次全窗 reclaim，不再把 deadline 续满。晚到 chrome 仍靠 LayoutInfo / `windowAttach` 再武装。
 
 ### Fixed
+- **操作手机时被伪熄屏强制锁屏：** `DisplaySessionPolicy` 挂钩 `PowerManagerService.userActivity(Internal)`，仅 `DEFAULT_DISPLAY` 的 TOUCH/BUTTON/ACCESSIBILITY 重置伪熄屏计时；车机 / VD 触控仍只保活虚拟屏，不续手机 idle。手机主屏前台为用户应用（如地图）时直接跳过 `goToSleep`，回到桌面 / SystemUI 后才按超时伪熄屏。
+- **QQ 车载约 45s 灰屏重建：** 手机息屏心跳 `surfaces-ready` 把永久 LAUNCHER（`AppStarterActivity`）误判为 splash 并 cold relaunch；`isPackageFrontStaleOnReconnect` 去掉 AppStarter/Loading/Launcher 启发式，并对 MAIN/LAUNCHER 组件豁免。
+- **仪表歌词 clear no-session：** `qqmusiccar` 无 MediaBrowserService/APP_MUSIC，`MusicAppClassifier` 判非音乐导致 `AvMediaArbiter` 选不中；已知歌词源包强制算音乐，metadata 在 duration≤0 时仍认 artist/album；布局未命中时回退到正在播放的会话；无赢家时不再对所有 AvMedia 群 pause。
 - **埋栈音乐被强制停播：** 同窗地图/浏览器压在音乐上时不再 `MediaSession.pause` 音乐类会话（按能力识别，非包名白名单）；仪表歌词仍可绑定埋栈音乐源。
 - **软重连左侧黑条（1280×720 / gresolution）：** `:projection` 已把 `content_bounds` 扩到全宽 1280，但 gearhead 仍用 content slot `DrawingSpec`（1173=1280−107）建 Presentation / 分屏 VD，左侧留下 107px 合成器空槽。补 hook `ResourcesImpl` **long** 资源 ID 版 dimen（`:projection` 重启后 rail dimen 不再回弹）；新增 `CoolwalkDrawingSpecWiden` 在 gearhead（`:car`/`:projection`）把 `DrawingSpec` 扩到已观测全宽；`content_bounds` reclaim 后若 presentation 已按 content slot 创建则 `scheduleFullBleedRelaunch`；已 reclaim 的重复 `content_bounds` 幂等跳过（只改 rect，不再叠 reclaim / AutoOpen，避免 `:car` 主线程 ANR）。
 - **左侧导航栏黑条重连复发：** FacetBar 窗口一打 tag 就停掉回收，真正占着 ~107px 的 GhostActivity 宿主从未被扫到。改为每次 ensure / attach / collapse / starve 都扫进程内全部窗口；inject 成功即停 poll，晚到 chrome 靠 LayoutInfo / `windowAttach` 再武装。
@@ -46,10 +50,11 @@
 ### Verify（仪表歌词 + 重连）
 1. Soft-reconnect（含 1280×720 gresolution）：`content_bounds` 扩满全宽；`DrawingSpec`/profile 稳定 1280（非 1173 content slot）；日志可见 `displayProfile relocked(settle|rail-settle)` / `starve FacetBar` / `DrawingSpec ctor widen`；无左侧 107px 黑条
 2. 冷连 AutoOpen：仍能进 AaDisplay；connected kick 后无 100ms 级刷屏重试
-3. QQ 车载/HD 横条歌词随句切换（快句不丢）；同句 hold 时 Settings 标题无每 300ms 刷、进度最多约 1s 一写；媒体列表出现壳图标可接受
+3. QQ 车载/HD/汽水横条歌词随句切换（快句不丢）；同句 hold 时 Settings 标题无每 300ms 刷、进度最多约 1s 一写；三源同时只一个播、仪表跟正在播的源；播抖音时音乐停且仪表清空；媒体列表出现壳图标可接受
 4. 方控短按仍控真实播放器（Egress 不再改写 QQ Title）
 5. QQ 与汽水同时后台：只跟正在播的源；切到汽水未出封面时不残留 QQ 封面；QQ 车载↔HD 同曲仍可晚到封面；暂停 120s 清空不会误清刚切过去的源
 5b. AA 顶栏与奥迪仪表歌词随句刷新；换句不闪 0:00；无 `0:29→0:30→0:29→0:32` 式时间反复；真切歌才重置
+5c. 音视频互斥：音乐播时抖音停；抖音播时音乐停；分屏一窗音乐一窗视频时只一个发声
 6. 分屏栈切换 / Recent 置顶 / 触控滑动无明显变慢
 7. 左轨触控仍能注入 AaDisplay（starve 后 hit 带宽用观测轨宽）
 

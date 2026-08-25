@@ -16,12 +16,13 @@ import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
 /**
- * Mirrors the active AvMedia [MediaController] into [ClusterLyricStore] so
+ * Mirrors the playing preferred music [MediaController] into [ClusterLyricStore] so
  * [io.github.nitsuya.aa.display.service.ClusterLyricMediaService] / gearhead egress
  * can feed the instrument-cluster ticker.
  *
- * Winner = stack-top AvMedia (focused front > other front > buried music); single-sounder
- * pauses other PLAYING AvMedia. Runs in system_server after
+ * Single-sounder ([AvMediaArbiter.pickWinner]) pauses other music ∪ video.
+ * Cluster binds only QQ 车载 / HD / 汽水 via [AvMediaArbiter.pickClusterSource]
+ * (whoever among them is PLAYING). Runs in system_server after
  * [io.github.nitsuya.aa.display.xposed.CoreManagerService.systemReady].
  */
 object ClusterLyricMirror {
@@ -193,7 +194,7 @@ object ClusterLyricMirror {
             val sessions = sessionManager?.getActiveSessionsSafe()
             val preferredPlaying = countPreferredPlaying(sessions)
             if (preferredPlaying >= 2) {
-                val winner = pickControllerUnlocked(sessions)
+                val winner = pickClusterUnlocked(sessions)
                 if (winner != null) {
                     armConnectLock(winner.packageName, "aa-connect-race($preferredPlaying)")
                 }
@@ -258,21 +259,29 @@ object ClusterLyricMirror {
     private fun onSessionsChanged(sessions: List<MediaController>?) {
         val ctx = appContext
         val layout = stackLayout()
-        val pick = pickController(sessions)
+        // Audio ∪ video: one sounder. Cluster follows preferred music only.
+        val sounder = pickSounder(sessions)
         if (ctx != null) {
-            AvMediaArbiter.pauseLosers(ctx, sessions, pick)
+            AvMediaArbiter.pauseLosers(ctx, sessions, sounder)
         }
+        val pick = resolveClusterPick(sessions, sounder)
         if (pick == null) {
+            if (shouldRetainPausedBind(sounder)) {
+                refreshFromBound("sessions-paused")
+                return
+            }
             unbindController()
-            clearOutput("no-session")
+            clearOutput(
+                when {
+                    sounder != null && ctx != null &&
+                        MusicAppClassifier.isVideoSession(sounder) -> "video-sounder"
+                    sounder != null -> "other-sounder"
+                    else -> "no-session"
+                },
+            )
             return
         }
         val pkg = pick.packageName
-        if (ctx == null || !MusicAppClassifier.isAvMediaSession(ctx, pick)) {
-            unbindController()
-            clearOutput("non-av")
-            return
-        }
         if (boundController?.sessionToken == pick.sessionToken && boundPackage == pkg) {
             refreshFromBound("sessions-same")
             return
@@ -281,7 +290,7 @@ object ClusterLyricMirror {
         // steal binding from qqmusicpad back to a paused qqmusiccar (or vice versa).
         if (boundController != null &&
             boundPackage != null &&
-            isIdlePlayback(pick.playbackState?.state ?: PlaybackState.STATE_NONE) &&
+            AvMediaArbiter.isIdlePlayback(pick.playbackState?.state ?: PlaybackState.STATE_NONE) &&
             LyricLineExtractor.isPreferredPackage(boundPackage) &&
             LyricLineExtractor.isPreferredPackage(pkg) &&
             sameStackRank(boundPackage, pkg, layout)
@@ -312,6 +321,40 @@ object ClusterLyricMirror {
         refreshFromBound("bind")
     }
 
+    /**
+     * Prefer the single-sounder when it is a lyric-trio package; otherwise only a
+     * PLAYING preferred session (video/other music sounder → no cluster).
+     */
+    private fun resolveClusterPick(
+        sessions: List<MediaController>?,
+        sounder: MediaController?,
+    ): MediaController? {
+        clearConnectLockIfExpired()
+        val locked = pickLockedCluster(sessions)
+        if (locked != null) return locked
+        if (sounder != null) {
+            if (LyricLineExtractor.isPreferredPackage(sounder.packageName)) {
+                return sounder
+            }
+            // Video or non-trio music owns the speaker — cluster stays off.
+            return null
+        }
+        return pickClusterUnlocked(sessions)
+    }
+
+    /** Keep last lyric trio bind while paused until [pausedClear] (unless video took over). */
+    private fun shouldRetainPausedBind(sounder: MediaController?): Boolean {
+        val bound = boundController ?: return false
+        if (!LyricLineExtractor.isPreferredPackage(boundPackage)) return false
+        val state = bound.playbackState?.state ?: PlaybackState.STATE_NONE
+        if (!AvMediaArbiter.isIdlePlayback(state)) return false
+        if (sounder == null) return true
+        if (MusicAppClassifier.isVideoSession(sounder)) return false
+        if (!LyricLineExtractor.isPreferredPackage(sounder.packageName)) return false
+        return sounder.packageName == boundPackage ||
+            !AvMediaArbiter.isPlayingState(sounder.playbackState?.state ?: PlaybackState.STATE_NONE)
+    }
+
     private fun stackLayout(): AvMediaArbiter.StackLayout? {
         return runCatching { CoreManagerService.avStackLayout() }.getOrNull()
     }
@@ -325,30 +368,31 @@ object ClusterLyricMirror {
         return layout.stackRank(a) == layout.stackRank(b)
     }
 
-    private fun pickController(sessions: List<MediaController>?): MediaController? {
-        clearConnectLockIfExpired()
-        val locked = pickLockedController(sessions)
-        if (locked != null) return locked
-        return pickControllerUnlocked(sessions)
-    }
-
-    private fun pickControllerUnlocked(sessions: List<MediaController>?): MediaController? {
+    private fun pickSounder(sessions: List<MediaController>?): MediaController? {
         val ctx = appContext ?: return null
         return AvMediaArbiter.pickWinner(ctx, sessions, stackLayout())
     }
 
-    private fun pickLockedController(sessions: List<MediaController>?): MediaController? {
+    private fun pickClusterUnlocked(sessions: List<MediaController>?): MediaController? {
+        val ctx = appContext ?: return null
+        return AvMediaArbiter.pickClusterSource(ctx, sessions, stackLayout())
+    }
+
+    private fun pickLockedCluster(sessions: List<MediaController>?): MediaController? {
         if (!isConnectLockActive()) return null
         val lockPkg = connectLockPackage ?: return null
+        if (!LyricLineExtractor.isPreferredPackage(lockPkg)) {
+            releaseConnectLock("non-preferred")
+            return null
+        }
         val ctx = appContext ?: return null
-        val layout = stackLayout()
-        val locked = AvMediaArbiter.eligibleControllers(ctx, sessions, layout)
+        val locked = AvMediaArbiter.eligibleControllers(ctx, sessions)
             .firstOrNull { it.packageName == lockPkg } ?: run {
             releaseConnectLock("missing")
             return null
         }
         val state = locked.playbackState?.state ?: PlaybackState.STATE_NONE
-        if (isIdlePlayback(state)) {
+        if (AvMediaArbiter.isIdlePlayback(state)) {
             releaseConnectLock("idle")
             return null
         }
@@ -357,10 +401,9 @@ object ClusterLyricMirror {
 
     private fun countPreferredPlaying(sessions: List<MediaController>?): Int {
         val ctx = appContext ?: return 0
-        val layout = stackLayout()
-        return AvMediaArbiter.eligibleControllers(ctx, sessions, layout).count { c ->
+        return AvMediaArbiter.eligibleControllers(ctx, sessions).count { c ->
             LyricLineExtractor.isPreferredPackage(c.packageName) &&
-                isPlayingState(c.playbackState?.state ?: PlaybackState.STATE_NONE)
+                AvMediaArbiter.isPlayingState(c.playbackState?.state ?: PlaybackState.STATE_NONE)
         }
     }
 
@@ -535,7 +578,7 @@ object ClusterLyricMirror {
         reason: String,
         metadata: android.media.MediaMetadata? = null,
     ) {
-        if (!isBoundAvMedia()) return
+        if (!isBoundClusterSource()) return
         if (shouldAttemptArtPublish(reason, mediaId)) {
             val ctx = appContext
             val forceRescan = ctx != null &&
@@ -616,7 +659,7 @@ object ClusterLyricMirror {
         mediaId: String,
         forceRescan: Boolean = false,
     ) {
-        if (!isBoundAvMedia()) return
+        if (!isBoundClusterSource()) return
         if (metadata == null || mediaId.isEmpty()) return
         val ctx = appContext ?: return
         ClusterArtStore.publishFromMetadata(
@@ -704,11 +747,24 @@ object ClusterLyricMirror {
         }
         val controller = boundController ?: return false
         val sessions = sessionManager?.getActiveSessionsSafe() ?: return false
-        val pick = pickController(sessions) ?: return false
+        val sounder = pickSounder(sessions)
+        val pick = resolveClusterPick(sessions, sounder)
+        if (pick == null) {
+            if (!shouldRetainPausedBind(sounder)) {
+                logDebug(TAG, "switch drop pkg=$boundPackage reason=$reason")
+                onSessionsChanged(sessions)
+                return true
+            }
+            return false
+        }
         if (pick.sessionToken == controller.sessionToken) return false
 
-        val pickPlaying = isPlayingState(pick.playbackState?.state ?: PlaybackState.STATE_NONE)
-        val boundPlaying = isPlayingState(controller.playbackState?.state ?: PlaybackState.STATE_NONE)
+        val pickPlaying = AvMediaArbiter.isPlayingState(
+            pick.playbackState?.state ?: PlaybackState.STATE_NONE,
+        )
+        val boundPlaying = AvMediaArbiter.isPlayingState(
+            controller.playbackState?.state ?: PlaybackState.STATE_NONE,
+        )
         if (!pickPlaying) return false
 
         if (!boundPlaying) {
@@ -724,8 +780,8 @@ object ClusterLyricMirror {
     }
 
     /**
-     * Stack-top outranks freshness. Same-tier PLAYING pairs keep a 1.5s deadband
-     * so QQ↔汽水 list jitter cannot flap the ticker.
+     * Among preferred trio: stack-top outranks freshness only as a soft deadband.
+     * Same-tier PLAYING pairs keep a 1.5s deadband so QQ↔汽水 list jitter cannot flap.
      */
     private fun shouldKeepBoundPlaying(
         pick: MediaController,
@@ -741,24 +797,26 @@ object ClusterLyricMirror {
         val boundRank = layout?.stackRank(boundPackage) ?: 3
         if (pickRank < boundRank) return false
         if (pickRank > boundRank) return true
-        val pickPlaying = isPlayingState(pick.playbackState?.state ?: PlaybackState.STATE_NONE)
-        val boundPlaying = isPlayingState(bound.playbackState?.state ?: PlaybackState.STATE_NONE)
+        val pickPlaying = AvMediaArbiter.isPlayingState(
+            pick.playbackState?.state ?: PlaybackState.STATE_NONE,
+        )
+        val boundPlaying = AvMediaArbiter.isPlayingState(
+            bound.playbackState?.state ?: PlaybackState.STATE_NONE,
+        )
         if (!pickPlaying || !boundPlaying) return false
         val pickFresh = pick.playbackState?.lastPositionUpdateTime ?: 0L
         val boundFresh = bound.playbackState?.lastPositionUpdateTime ?: 0L
         return pickFresh <= boundFresh + STALE_PLAYING_MS
     }
 
-    private fun isBoundAvMedia(): Boolean {
-        val ctx = appContext ?: return false
-        val c = boundController ?: return false
-        return MusicAppClassifier.isAvMediaSession(ctx, c)
+    private fun isBoundClusterSource(): Boolean {
+        return LyricLineExtractor.isPreferredPackage(boundPackage)
     }
 
     private fun armRepickIfIdle() {
         if (repickArmed) return
         val state = boundController?.playbackState?.state ?: PlaybackState.STATE_NONE
-        if (isPlayingState(state)) return
+        if (AvMediaArbiter.isPlayingState(state)) return
         repickArmed = true
         handler.removeCallbacks(repickRunnable)
         handler.postDelayed(repickRunnable, REPICK_INTERVAL_MS)
@@ -768,18 +826,5 @@ object ClusterLyricMirror {
         if (!repickArmed) return
         repickArmed = false
         handler.removeCallbacks(repickRunnable)
-    }
-
-    private fun isPlayingState(state: Int): Boolean {
-        return state == PlaybackState.STATE_PLAYING ||
-            state == PlaybackState.STATE_BUFFERING ||
-            state == PlaybackState.STATE_FAST_FORWARDING ||
-            state == PlaybackState.STATE_REWINDING
-    }
-
-    private fun isIdlePlayback(state: Int): Boolean {
-        return state == PlaybackState.STATE_PAUSED ||
-            state == PlaybackState.STATE_STOPPED ||
-            state == PlaybackState.STATE_NONE
     }
 }

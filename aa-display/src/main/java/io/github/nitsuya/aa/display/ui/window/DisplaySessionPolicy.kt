@@ -11,6 +11,8 @@ import android.os.SystemClock
 import android.os.SystemProperties
 import android.provider.Settings
 import android.view.Display
+import com.github.kyuubiran.ezxhelper.utils.hookBefore
+import de.robv.android.xposed.XC_MethodHook
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
@@ -36,9 +38,12 @@ import kotlinx.coroutines.launch
  * Keep-awake strategy (with phone **pseudo screen-off**):
  * - Hold display-scoped [SCREEN_BRIGHT_WAKE_LOCK] Monitor + heartbeat [userActivity] on pane
  *   VDs for the whole AA session (Samsung OWN_DISPLAY_GROUP must not ColorFade).
- * - **Phone panel:** when DEFAULT_DISPLAY exceeds [Settings.System.SCREEN_OFF_TIMEOUT], force
- *   [IPowerManager.goToSleep] on display 0. Do not rely on the system idle timer (AA / apps on
- *   VDs hold global bright locks that block it).
+ * - **Phone panel:** when DEFAULT_DISPLAY idle since last wake / real phone
+ *   [userActivity](TOUCH|BUTTON|ACCESSIBILITY) exceeds [Settings.System.SCREEN_OFF_TIMEOUT],
+ *   force [IPowerManager.goToSleep] on display 0 — **unless** the phone front task is a
+ *   real user app (e.g. Maps). Do not rely on the system idle timer (AA / apps on VDs hold
+ *   global bright locks that block it). Car / VD interaction must not reset that clock
+ *   ([onVirtualDisplayUserInteraction] only keeps panes awake).
  * - Never use [ACQUIRE_CAUSES_WAKEUP] — leaks to the phone panel on Samsung. Pane OFF/DOZE uses
  *   a short display-scoped bright pulse without WAKEUP; phone SCREEN_OFF path is userActivity only.
  * - Presentation VD: no wake lock / userActivity / WAKEUP pulse (shares displayGroup 0).
@@ -58,10 +63,14 @@ class DisplaySessionPolicy(
         /** After phone SCREEN_OFF, reassert before the next heartbeat. */
         private const val SCREEN_OFF_REASSERT_COUNT = 10
         private const val SCREEN_OFF_REASSERT_INTERVAL_MS = 400L
-        /** PowerManager.USER_ACTIVITY_EVENT_TOUCH */
-        private const val USER_ACTIVITY_EVENT_TOUCH = 2
         /** PowerManager.USER_ACTIVITY_EVENT_OTHER */
         private const val USER_ACTIVITY_EVENT_OTHER = 0
+        /** PowerManager.USER_ACTIVITY_EVENT_BUTTON */
+        private const val USER_ACTIVITY_EVENT_BUTTON = 1
+        /** PowerManager.USER_ACTIVITY_EVENT_TOUCH */
+        private const val USER_ACTIVITY_EVENT_TOUCH = 2
+        /** PowerManager.USER_ACTIVITY_EVENT_ACCESSIBILITY */
+        private const val USER_ACTIVITY_EVENT_ACCESSIBILITY = 3
         /**
          * Display-scoped VD bright locks still need this legacy level;
          * [PowerManager.SCREEN_BRIGHT_WAKE_LOCK] is deprecated but required for hidden API.
@@ -102,6 +111,8 @@ class DisplaySessionPolicy(
     private var mLoggedMissingDisplayUserActivity = false
     private var mLoggedMissingGoToSleep = false
     private var mLastPresentationRecoveryAt = 0L
+    private val mPhoneUserActivityHooks = mutableListOf<XC_MethodHook.Unhook>()
+    @Volatile private var mPhoneUserActivityHookInstalled = false
 
     /** Split pane VDs (OWN_DISPLAY_GROUP). */
     private fun aaPaneDisplayIds(): IntArray {
@@ -307,6 +318,7 @@ class DisplaySessionPolicy(
             acquireMonitor()
             startKeepAwakeLoop()
             startPseudoOffLoop()
+            ensurePhoneUserActivityHook()
             keepVirtualDisplayAwake("init")
             // ensureHooked: do not reinstall/clear map on AA reconnect (onResume → init).
             if (AndroidHook.isReadyForSystemHooks()) {
@@ -318,6 +330,7 @@ class DisplaySessionPolicy(
             stopKeepAwakeLoop()
             stopPseudoOffLoop()
             cancelScreenOffReassertBurst()
+            releasePhoneUserActivityHook()
             if (mScreenReceiverRegistered) {
                 try {
                     mContext.unregisterReceiver(this)
@@ -380,6 +393,80 @@ class DisplaySessionPolicy(
         mPseudoOffAnchorUptime = SystemClock.uptimeMillis()
     }
 
+    /**
+     * Real phone-panel interaction (not car / VD). Resets the pseudo-off idle clock so
+     * operating the handset does not get force-slept mid-gesture.
+     */
+    private fun notePhoneUserActivity(event: Int) {
+        when (event) {
+            USER_ACTIVITY_EVENT_TOUCH,
+            USER_ACTIVITY_EVENT_BUTTON,
+            USER_ACTIVITY_EVENT_ACCESSIBILITY -> Unit
+            else -> return
+        }
+        if (!isDefaultDisplayOn()) return
+        resetPseudoOffAnchor("phone-ua-$event")
+    }
+
+    /**
+     * Observe [PowerManagerService] display-scoped userActivity for DEFAULT_DISPLAY only.
+     * Pane keep-awake calls the same API with VD displayIds and must not extend phone idle.
+     */
+    private fun ensurePhoneUserActivityHook() {
+        if (mPhoneUserActivityHookInstalled) return
+        if (!AndroidHook.isReadyForSystemHooks()) return
+        val pmsClass = AndroidHook.loadSystemClass("com.android.server.power.PowerManagerService")
+        if (pmsClass == null) {
+            log(TAG, "phone userActivity hook: PowerManagerService missing")
+            return
+        }
+        try {
+            var installed = 0
+            for (method in pmsClass.declaredMethods) {
+                if (method.name != "userActivity" && method.name != "userActivityInternal") continue
+                val pts = method.parameterTypes
+                // (displayId, eventTime, event, flags[, uid…])
+                if (pts.size < 3) continue
+                if (pts[0] != Int::class.javaPrimitiveType) continue
+                if (pts[1] != Long::class.javaPrimitiveType) continue
+                if (pts[2] != Int::class.javaPrimitiveType) continue
+                method.isAccessible = true
+                val unhook = method.hookBefore { param ->
+                    try {
+                        val displayId = param.args[0] as? Int ?: return@hookBefore
+                        if (displayId != Display.DEFAULT_DISPLAY) return@hookBefore
+                        val event = param.args[2] as? Int ?: return@hookBefore
+                        notePhoneUserActivity(event)
+                    } catch (_: Throwable) {
+                        // Never let observer failures abort PowerManagerService.userActivity.
+                    }
+                }
+                mPhoneUserActivityHooks.add(unhook)
+                installed++
+            }
+            if (installed == 0) {
+                log(TAG, "phone userActivity hook: no matching methods")
+                return
+            }
+            mPhoneUserActivityHookInstalled = true
+            log(TAG, "phone userActivity hook installed n=$installed")
+        } catch (e: Throwable) {
+            releasePhoneUserActivityHook()
+            log(TAG, "phone userActivity hook failed:", e)
+        }
+    }
+
+    private fun releasePhoneUserActivityHook() {
+        mPhoneUserActivityHooks.toList().forEach { unhook ->
+            try {
+                unhook.unhook()
+            } catch (_: Throwable) {
+            }
+        }
+        mPhoneUserActivityHooks.clear()
+        mPhoneUserActivityHookInstalled = false
+    }
+
     private fun defaultDisplayState(): Int {
         return try {
             Instances.displayManager.getDisplay(Display.DEFAULT_DISPLAY)?.state ?: Display.STATE_ON
@@ -422,9 +509,10 @@ class DisplaySessionPolicy(
     }
 
     /**
-     * Idle since the last phone wake / AA session anchor only.
+     * Idle since the last phone wake / phone-panel userActivity / AA session anchor.
      * Do not read PowerManagerService lastUserActivity — Samsung values stay stale across
      * goToSleep/wake and caused pseudo-off ~3s after a manual wake.
+     * Live phone TOUCH/BUTTON/A11Y is mirrored via [ensurePhoneUserActivityHook] instead.
      */
     private fun phoneDisplayGroupIdleMs(): Long {
         return (SystemClock.uptimeMillis() - mPseudoOffAnchorUptime).coerceAtLeast(0L)
@@ -440,6 +528,11 @@ class DisplaySessionPolicy(
         noteDefaultDisplayWakeTransition()
         // Only count down while the phone panel is actually on (not DOZE/OFF).
         if (!isDefaultDisplayOn()) return
+        // Handset showing Maps / Settings / etc. — never force-sleep over a user FG app.
+        if (phoneHasForegroundUserApp()) {
+            resetPseudoOffAnchor("phone-fg-app")
+            return
+        }
         val now = SystemClock.uptimeMillis()
         if (now - mLastForcePhoneOffAt < PSEUDO_OFF_FORCE_MIN_INTERVAL_MS) return
         val idleMs = phoneDisplayGroupIdleMs()
@@ -448,6 +541,18 @@ class DisplaySessionPolicy(
         if (forcePhonePanelOff("pseudo-idle-${idleMs}ms/${timeoutMs}ms")) {
             mLastForcePhoneOffAt = now
             mLastDefaultDisplayState = defaultDisplayState()
+        }
+    }
+
+    /**
+     * Phone DEFAULT_DISPLAY front is a real user app (Maps, browser, …), not Home / SystemUI.
+     * Pseudo-off must not lock the panel while the user is using the handset.
+     */
+    private fun phoneHasForegroundUserApp(): Boolean {
+        return try {
+            displayAdapter.ownership.phoneHasForegroundUserApp()
+        } catch (_: Throwable) {
+            false
         }
     }
 
@@ -623,6 +728,7 @@ class DisplaySessionPolicy(
     }
 
     fun onVirtualDisplayUserInteraction() {
+        // Car / VD only — must not reset phone pseudo-off idle (see ensurePhoneUserActivityHook).
         val now = SystemClock.uptimeMillis()
         if (now - mLastTouchKeepAwakeAt < TOUCH_KEEP_AWAKE_MIN_INTERVAL_MS) return
         mLastTouchKeepAwakeAt = now

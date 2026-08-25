@@ -348,14 +348,13 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                 if (c.startActivityOnPane(pkg, 0, pane)) {
                     relaunched = true
                 }
-                // Buried relaunch lands as front — restore intentional front immediately so
-                // Douyin (etc.) cannot keep audio focus under a 汽水 picture.
+                // Buried relaunch lands as front — restore intentional picture immediately.
                 if (!isFront && !stackFront.isNullOrBlank()) {
                     c.stacks.moveToTop(pane, stackFront)
                     ownershipBringFront(pane, stackFront)
                 }
             }
-            // Final front + demote buried stack mates off RESUMED/audio.
+            // Final front + demote buried for picture; sticky Av pause if front is PLAYING.
             if (!stackFront.isNullOrBlank()) {
                 c.stacks.moveToTop(pane, stackFront)
                 ownershipBringFront(pane, stackFront)

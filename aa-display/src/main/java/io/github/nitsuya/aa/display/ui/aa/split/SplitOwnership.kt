@@ -33,12 +33,17 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         private const val RESIZE_MODE_SYSTEM = 0
         /** ActivityTaskManager.RESIZE_MODE_SYSTEM | RESIZE_MODE_FORCED */
         private const val RESIZE_MODE_SYSTEM_FORCED = 2
+        /**
+         * Name heuristics for transient splash/welcome activities left after a bad VD resize.
+         * Do **not** include markers that are also permanent MAIN/LAUNCHER hosts
+         * (QQ Music Car = AppStarterActivity, 网易云 IoT = LoadingActivity) — those are
+         * filtered out via [isPackageLauncherComponent] instead of being listed here.
+         */
         private val STALE_FRONT_ACTIVITY_MARKERS = listOf(
-            "AppStarter",
             "Splash",
             "Welcome",
-            "Loading",
-            "Launcher",
+            "SplashActivity",
+            "WelcomeActivity",
         )
     }
     /**
@@ -152,16 +157,38 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     }
 
     /**
-     * Soft reconnect: WM may keep a launcher/splash on the VD while the Surface pipe is stale
-     * (e.g. QQ Music Car stuck on AppStarterActivity after VD resize).
+     * Soft reconnect: WM may keep a true splash/welcome on the VD while the Surface pipe is
+     * stale. Permanent single-activity hosts (QQ Music Car [AppStarterActivity], etc.) must
+     * not match — they look like splash names but are the live UI; cold-relaunching them on
+     * every `surfaces-ready` blanks the pane (white screen).
      */
     fun isPackageFrontStaleOnReconnect(packageName: String, displayId: Int): Boolean {
         if (displayId == Display.INVALID_DISPLAY) return false
         val front = frontRootTaskOnDisplay(displayId) ?: return false
-        if (front.topActivity?.packageName != packageName) return false
-        val simple = front.topActivity?.className?.substringAfterLast('.').orEmpty()
+        val top = front.topActivity ?: return false
+        if (top.packageName != packageName) return false
+        val simple = top.className.substringAfterLast('.')
         if (simple.isEmpty()) return false
-        return STALE_FRONT_ACTIVITY_MARKERS.any { simple.contains(it, ignoreCase = true) }
+        if (!STALE_FRONT_ACTIVITY_MARKERS.any { simple.contains(it, ignoreCase = true) }) {
+            return false
+        }
+        // LAUNCHER component is the app's real entry UI — never treat as transient splash.
+        if (isPackageLauncherComponent(packageName, top)) return false
+        return true
+    }
+
+    private fun isPackageLauncherComponent(packageName: String, activity: ComponentName): Boolean {
+        return try {
+            val intent = Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_LAUNCHER)
+                .setPackage(packageName)
+            val ri = c.context.packageManager.resolveActivity(intent, 0) ?: return false
+            ri.activityInfo?.let { info ->
+                info.packageName == activity.packageName && info.name == activity.className
+            } == true
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     /**
@@ -409,6 +436,23 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         return normalizeRootTasksBottomToTop(tasks).lastOrNull()
     }
 
+    /**
+     * Phone panel is showing a real user app (Maps, browser, …), not Home / SystemUI chrome.
+     * Used by pseudo screen-off: do not force-sleep over an active handset FG app.
+     */
+    fun phoneHasForegroundUserApp(): Boolean {
+        return try {
+            val front = frontRootTaskOnDisplay(Display.DEFAULT_DISPLAY) ?: return false
+            if (c.input.isSystemHomeTask(front)) return false
+            val pkg = front.topActivity?.packageName?.trim().orEmpty()
+            if (pkg.isEmpty()) return false
+            if (SplitChromePackages.BOUNCE_EXCLUDED.contains(pkg)) return false
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private fun findTopActivityForTask(taskId: Int): ComponentName? {
         for (displayId in listOf(c.primaryDisplayId, c.secondaryDisplayId, Display.DEFAULT_DISPLAY)) {
             if (displayId == Display.INVALID_DISPLAY) continue
@@ -577,9 +621,9 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     }
 
     /**
-     * Task demotion plus MediaSession pause for buried stack mates that keep
-     * playing after [moveTaskToBack] (e.g. Douyin FGS). Buried music is kept only
-     * when the pane front is not AvMedia (see [SplitBuriedPlayback]).
+     * Task demotion (picture) plus conditional MediaSession pause for buried mates.
+     * Sticky AvMedia: [SplitBuriedPlayback] only pauses when another AvMedia on this
+     * pane is actually PLAYING — maps/browser or idle Av front never steal focus.
      */
     fun enforceStackFrontAudio(
         pane: Int,
@@ -590,8 +634,9 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     }
 
     /**
-     * Move non-front stack packages on [pane]'s VD to the back so they leave RESUMED and
-     * release audio focus. Keeps tasks alive for fast stack switch (no remove/force-stop).
+     * Move non-front stack packages on [pane]'s VD to the back so the intentional
+     * front owns the picture. Does not itself decide AvMedia pause (see
+     * [SplitBuriedPlayback] sticky rule). Keeps tasks alive for fast stack switch.
      */
     fun demoteBuriedStackTasks(
         pane: Int,

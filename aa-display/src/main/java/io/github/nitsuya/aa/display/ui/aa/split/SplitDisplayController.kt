@@ -523,7 +523,7 @@ class SplitDisplayController(
         mFocusedPane = pane
     }
 
-    /** Non-front stack packages on either AA VD pane (lyric mirror drops non-music buried). */
+    /** Non-front stack packages on either AA VD pane (for [AvMediaArbiter.StackLayout]). */
     fun buriedPackagesOnAaDisplays(): Set<String> {
         val buried = linkedSetOf<String>()
         for (pane in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
@@ -922,8 +922,7 @@ class SplitDisplayController(
             val taskId = ownership.findPackageTaskOnDisplay(packageName, displayId, liveOnly = true)
             if (taskId != null && ownership.bringTaskToFront(taskId)) {
                 stacks.moveToTop(pane, packageName)
-                // Demote other stack mates so a buried Douyin cannot keep RESUMED/audio
-                // while 汽水 (or any new front) owns the picture.
+                // Picture demote + sticky Av pause (only if new front is PLAYING).
                 ownership.enforceStackFrontAudio(pane)
                 // 置顶 on the behind pane while the other side is fullscreen: keep the visible
                 // FS pane focused for input/media, but promote stack fronts so ATMS catches up.

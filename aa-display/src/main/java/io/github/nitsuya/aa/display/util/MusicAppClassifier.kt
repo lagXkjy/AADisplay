@@ -9,36 +9,55 @@ import android.os.Binder
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Heuristic music-app detection without a full package allowlist.
- * Prefers declared media capabilities; falls back to session metadata shape.
+ * Music vs short-video heuristics for single-sounder + cluster binding.
  *
- * - [isMusicPackage] / [isMusicSession]: may keep playing under a non-AV stack front (maps).
- * - [isAvMediaPackage] / [isAvMediaSession]: single-sounder + cluster source set (music only).
- * Short-video (Douyin) declares [MEDIA_BROWSER_SERVICE] but is never music / AvMedia —
- * FeedPlayerSession has no Now Playing metadata, so it must not win cluster binding.
+ * - [isMusicPackage] / [isMusicSession]: long-form audio (sticky under maps; see AvMediaArbiter §4).
+ * - [isVideoPackage] / [isVideoSession]: short-video / Feed players (Douyin; same sticky rule).
+ * - [isAvMediaPackage] / [isAvMediaSession]: music ∪ video — only one may sound.
+ *
+ * Cluster lyric sources are the known trio in [KNOWN_MUSIC_PACKAGES] (QQ 车载 / HD / 汽水);
+ * see [io.github.nitsuya.aa.display.xposed.cluster.LyricLineExtractor.PREFERRED_PACKAGE_ORDER].
  */
 object MusicAppClassifier {
     /** Same as [android.media.browse.MediaBrowserService.SERVICE_INTERFACE]. */
     private const val MEDIA_BROWSER_SERVICE = "android.media.browse.MediaBrowserService"
 
-    /** Douyin main package — not Music / AvMedia (MediaBrowserService false positive). */
+    /** Douyin main package — Feed has MediaBrowserService but no useful Now Playing for cluster. */
     private const val DOUYIN_PKG = "com.ss.android.ugc.aweme"
 
-    private val SHORT_VIDEO_PACKAGES = setOf(DOUYIN_PKG)
+    private val VIDEO_PACKAGES = setOf(DOUYIN_PKG)
+
+    /**
+     * Preferred cluster lyric sources. Often omit MediaBrowserService / APP_MUSIC
+     * (QQ Music Car exposes proprietary services only). Keep in sync with
+     * [io.github.nitsuya.aa.display.xposed.cluster.LyricLineExtractor.PREFERRED_PACKAGE_ORDER].
+     */
+    val KNOWN_MUSIC_PACKAGES = setOf(
+        "com.tencent.qqmusiccar",
+        "com.tencent.qqmusicpad",
+        "com.luna.music",
+    )
 
     private val byPackage = ConcurrentHashMap<String, Boolean>()
 
-    private fun isShortVideoPackage(packageName: String?): Boolean {
+    fun isVideoPackage(packageName: String?): Boolean {
         val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return false
-        return pkg in SHORT_VIDEO_PACKAGES
+        return pkg in VIDEO_PACKAGES
     }
 
-    /** Package declares a music player / MediaBrowserService. */
+    fun isVideoSession(controller: MediaController): Boolean =
+        isVideoPackage(controller.packageName)
+
+    /** Package declares a music player / MediaBrowserService, or is a known lyric source. */
     fun isMusicPackage(context: Context, packageName: String?): Boolean {
         val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return false
-        if (isShortVideoPackage(pkg)) {
+        if (isVideoPackage(pkg)) {
             byPackage[pkg] = false
             return false
+        }
+        if (pkg in KNOWN_MUSIC_PACKAGES) {
+            byPackage[pkg] = true
+            return true
         }
         byPackage[pkg]?.let { return it }
         val identity = Binder.clearCallingIdentity()
@@ -54,24 +73,25 @@ object MusicAppClassifier {
     }
 
     /**
-     * True if [controller]'s package is a music app, or the active session looks like
-     * long-form music (so buried NetEase / Spotify keep playing even without browser service).
-     * Short-video packages are never music.
+     * True if [controller]'s package is music, or the session looks like long-form music.
+     * Video packages are never music.
      */
     fun isMusicSession(context: Context, controller: MediaController): Boolean {
         val pkg = controller.packageName
-        if (isShortVideoPackage(pkg)) return false
+        if (isVideoPackage(pkg)) return false
         if (isMusicPackage(context, pkg)) return true
         return looksLikeMusicMetadata(controller.metadata)
     }
 
-    /** Music package — single-sounder + cluster source (not short-video). */
+    /** Music or video — single-sounder set. */
     fun isAvMediaPackage(context: Context, packageName: String?): Boolean {
+        if (isVideoPackage(packageName)) return true
         return isMusicPackage(context, packageName)
     }
 
-    /** Eligible for single-sounder arbitration / cluster binding. */
+    /** Eligible for single-sounder arbitration. */
     fun isAvMediaSession(context: Context, controller: MediaController): Boolean {
+        if (isVideoSession(controller)) return true
         return isMusicSession(context, controller)
     }
 
@@ -91,7 +111,6 @@ object MusicAppClassifier {
         if (hasActivity(pm, Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_MUSIC).setPackage(pkg))) {
             return true
         }
-        // Legacy music-player launcher intent (still common on Chinese OEMs).
         if (hasActivity(pm, Intent("android.intent.action.MUSIC_PLAYER").setPackage(pkg))) {
             return true
         }
@@ -108,11 +127,13 @@ object MusicAppClassifier {
 
     private fun looksLikeMusicMetadata(meta: MediaMetadata?): Boolean {
         if (meta == null) return false
-        val duration = meta.getLong(MediaMetadata.METADATA_KEY_DURATION)
-        if (duration < MUSIC_DURATION_MIN_MS) return false
         val artist = meta.getString(MediaMetadata.METADATA_KEY_ARTIST)?.trim().orEmpty()
         val album = meta.getString(MediaMetadata.METADATA_KEY_ALBUM)?.trim().orEmpty()
-        return artist.isNotEmpty() || album.isNotEmpty()
+        if (artist.isEmpty() && album.isEmpty()) return false
+        // Prefer long-form tracks; still accept artist/album when duration is missing
+        // (QQ Music Car often omits or zeros DURATION on the session).
+        val duration = meta.getLong(MediaMetadata.METADATA_KEY_DURATION)
+        return duration <= 0L || duration >= MUSIC_DURATION_MIN_MS
     }
 
     private const val MUSIC_DURATION_MIN_MS = 60_000L

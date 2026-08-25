@@ -1,18 +1,19 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
+import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.SystemClock
+import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.MusicAppClassifier
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
 /**
- * Pauses/resumes buried stack mates via MediaSession when [moveTaskToBack] alone
- * cannot stop non-music FGS audio (e.g. Douyin under a music app on the same VD pane).
+ * Same-pane MediaSession pause/resume when stack promote outruns global
+ * [AvMediaArbiter.pauseLosers] (e.g. Douyin FGS under another AvMedia).
  *
- * Buried music may keep playing only when the pane front is not AvMedia (maps/browser).
- * When the front is AvMedia (QQ / 汽水), buried music is paused — stack-top wins.
- * Short-video (Douyin) is not AvMedia; buried under a music front is still paused as non-music.
+ * Sticky AvMedia: pause buried only when this pane's front AvMedia is PLAYING.
+ * Non-Av / idle Av fronts never steal focus.
  */
 internal class SplitBuriedPlayback(private val c: SplitDisplayController) {
 
@@ -26,8 +27,7 @@ internal class SplitBuriedPlayback(private val c: SplitDisplayController) {
             .map { it.trim() }
             .filter { it.isNotEmpty() && it != frontPkg }
         if (buried.isEmpty()) return
-        val buriedSet = buried.toSet()
-        val frontIsAv = MusicAppClassifier.isAvMediaPackage(c.context, frontPkg)
+        if (!MusicAppClassifier.isAvMediaPackage(c.context, frontPkg)) return
 
         val msm = c.context.getSystemService(MediaSessionManager::class.java) ?: return
         val sessions = try {
@@ -36,14 +36,16 @@ internal class SplitBuriedPlayback(private val c: SplitDisplayController) {
             logDebug(SplitDisplayController.TAG, "pauseBuried getActiveSessions failed: ${e.message}")
             return
         }
+        if (!isPackagePlaying(sessions, frontPkg)) return
+
+        val buriedSet = buried.toSet()
         val now = SystemClock.uptimeMillis()
         for (controller in sessions) {
             val pkg = controller.packageName?.trim()?.takeIf { it.isNotEmpty() } ?: continue
             if (pkg !in buriedSet) continue
-            // Maps/browser on top: keep buried music. AvMedia on top: pause all buried AvMedia.
-            if (!frontIsAv && MusicAppClassifier.isMusicSession(c.context, controller)) continue
+            if (!MusicAppClassifier.isAvMediaSession(c.context, controller)) continue
             val state = controller.playbackState?.state ?: PlaybackState.STATE_NONE
-            if (!isPlayingState(state)) continue
+            if (!AvMediaArbiter.isPlayingState(state)) continue
             val last = lastPauseAtMs[pkg] ?: 0L
             if (now - last < PAUSE_THROTTLE_MS) continue
             try {
@@ -75,11 +77,13 @@ internal class SplitBuriedPlayback(private val c: SplitDisplayController) {
         }
     }
 
-    private fun isPlayingState(state: Int): Boolean {
-        return state == PlaybackState.STATE_PLAYING ||
-            state == PlaybackState.STATE_BUFFERING ||
-            state == PlaybackState.STATE_FAST_FORWARDING ||
-            state == PlaybackState.STATE_REWINDING
+    private fun isPackagePlaying(sessions: List<MediaController>, packageName: String): Boolean {
+        return sessions.any { c ->
+            c.packageName == packageName &&
+                AvMediaArbiter.isPlayingState(
+                    c.playbackState?.state ?: PlaybackState.STATE_NONE,
+                )
+        }
     }
 
     private companion object {

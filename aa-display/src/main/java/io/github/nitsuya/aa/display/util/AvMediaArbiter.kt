@@ -11,8 +11,15 @@ import io.github.nitsuya.aa.display.xposed.cluster.LyricLineExtractor
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
 /**
- * Single-sounder among AvMedia sessions: stack-top beats buried; focused pane front
- * beats the other pane; cluster follows the winner.
+ * Single-sounder among AvMedia (music ∪ video) + cluster source among the lyric trio.
+ *
+ * Rules:
+ * 1. Audio and video cannot both play — one [pauseLosers] winner among all AvMedia.
+ * 2. QQ 车载 / HD / 汽水 — at most one plays; [pickClusterSource] follows that player.
+ * 3. Among PLAYING sessions, focused front → other front → stack rank / preferred / freshness.
+ * 4. Sticky AvMedia focus: no PLAYING → no sounder (do not invent one from idle stack-top).
+ *    A player yields only when it stops, leaves the stack, or another AvMedia starts PLAYING
+ *    (same-pane pause: SplitBuriedPlayback).
  */
 object AvMediaArbiter {
     private const val TAG = "AAD_AvMediaArbiter"
@@ -58,11 +65,9 @@ object AvMediaArbiter {
     fun eligibleControllers(
         context: Context,
         sessions: List<MediaController>?,
-        layout: StackLayout?,
     ): List<MediaController> {
         if (sessions.isNullOrEmpty()) return emptyList()
         val selfPkg = BuildConfig.APPLICATION_ID
-        val buried = layout?.buried.orEmpty()
         return sessions.filter { c ->
             val pkg = c.packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return@filter false
             if (pkg == selfPkg) return@filter false
@@ -72,33 +77,50 @@ object AvMediaArbiter {
             if (mediaId?.startsWith(ClusterLyricMediaService.MEDIA_ID_PREFIX) == true) {
                 return@filter false
             }
-            if (!MusicAppClassifier.isAvMediaSession(context, c)) return@filter false
-            // Buried non-music never eligible; buried music OK under maps.
-            if (pkg in buried && !MusicAppClassifier.isMusicSession(context, c)) {
-                return@filter false
-            }
-            true
+            MusicAppClassifier.isAvMediaSession(context, c)
         }
     }
 
+    /**
+     * Single sounder: exactly one PLAYING AvMedia session, or null.
+     * Prefer focused/other stack front when that front is PLAYING; else rank/preferred/freshness.
+     */
     fun pickWinner(
         context: Context,
         sessions: List<MediaController>?,
         layout: StackLayout?,
     ): MediaController? {
-        val eligible = eligibleControllers(context, sessions, layout)
-        if (eligible.isEmpty()) return null
-
-        if (layout != null) {
-            // Focused front first when it has an active AvMedia session; else other front;
-            // else buried music under non-AV fronts (maps).
-            pickForFront(context, eligible, layout.focusedFront())?.let { return it }
-            pickForFront(context, eligible, layout.otherFront())?.let { return it }
-            pickBuriedMusic(eligible, layout)?.let { return it }
-            return null
+        val playing = eligibleControllers(context, sessions).filter {
+            isPlayingState(it.playbackState?.state ?: PlaybackState.STATE_NONE)
         }
+        if (playing.isEmpty()) return null
+        if (layout != null) {
+            pickPlayingForFront(playing, layout.focusedFront())?.let { return it }
+            pickPlayingForFront(playing, layout.otherFront())?.let { return it }
+        }
+        return playing.maxWithOrNull(playingComparator(layout))
+    }
 
-        return pickWithoutLayout(eligible)
+    /**
+     * Dashboard lyric source: the one preferred music app that is PLAYING
+     * (QQ 车载 / HD / 汽水). When video (or other non-trio) owns the speaker,
+     * preferred are paused and this returns null.
+     */
+    fun pickClusterSource(
+        context: Context,
+        sessions: List<MediaController>?,
+        layout: StackLayout?,
+    ): MediaController? {
+        val preferredPlaying = eligibleControllers(context, sessions).filter { c ->
+            LyricLineExtractor.isPreferredPackage(c.packageName) &&
+                isPlayingState(c.playbackState?.state ?: PlaybackState.STATE_NONE)
+        }
+        if (preferredPlaying.isEmpty()) return null
+        if (layout != null) {
+            pickPlayingForFront(preferredPlaying, layout.focusedFront())?.let { return it }
+            pickPlayingForFront(preferredPlaying, layout.otherFront())?.let { return it }
+        }
+        return preferredPlaying.maxWithOrNull(playingComparator(layout))
     }
 
     /**
@@ -110,13 +132,14 @@ object AvMediaArbiter {
         sessions: List<MediaController>?,
         winner: MediaController?,
     ) {
-        if (sessions.isNullOrEmpty()) return
-        val winnerToken = winner?.sessionToken
-        val winnerPkg = winner?.packageName
+        // No winner → do not mass-pause; that fights the real player and clears cluster.
+        if (winner == null || sessions.isNullOrEmpty()) return
+        val winnerToken = winner.sessionToken
+        val winnerPkg = winner.packageName
         val now = SystemClock.uptimeMillis()
         for (controller in sessions) {
             val pkg = controller.packageName?.trim()?.takeIf { it.isNotEmpty() } ?: continue
-            if (winnerToken != null && controller.sessionToken == winnerToken) continue
+            if (controller.sessionToken == winnerToken) continue
             if (winnerPkg != null && pkg == winnerPkg) continue
             if (!MusicAppClassifier.isAvMediaSession(context, controller)) continue
             val state = controller.playbackState?.state ?: PlaybackState.STATE_NONE
@@ -133,61 +156,22 @@ object AvMediaArbiter {
         }
     }
 
-    private fun pickForFront(
-        context: Context,
-        eligible: List<MediaController>,
+    private fun pickPlayingForFront(
+        playing: List<MediaController>,
         frontPkg: String?,
     ): MediaController? {
         val pkg = frontPkg?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        if (!MusicAppClassifier.isAvMediaPackage(context, pkg) &&
-            eligible.none { it.packageName == pkg }
-        ) {
-            return null
-        }
-        val forPkg = eligible.filter { it.packageName == pkg }
-        if (forPkg.isEmpty()) return null
-        forPkg.firstOrNull { isPlayingState(it.playbackState?.state ?: PlaybackState.STATE_NONE) }
-            ?.let { return it }
-        return forPkg.firstOrNull {
-            !isIdlePlayback(it.playbackState?.state ?: PlaybackState.STATE_NONE)
-        }
+        return playing.firstOrNull { it.packageName == pkg }
     }
 
-    private fun pickBuriedMusic(
-        eligible: List<MediaController>,
-        layout: StackLayout,
-    ): MediaController? {
-        val buried = eligible.filter { c ->
-            val pkg = c.packageName ?: return@filter false
-            pkg in layout.buried
-        }
-        if (buried.isEmpty()) return null
-        val playing = buried.filter {
-            isPlayingState(it.playbackState?.state ?: PlaybackState.STATE_NONE)
-        }
-        if (playing.isNotEmpty()) {
-            return playing.maxWithOrNull(sameTierComparator())
-        }
-        return buried
-            .filter { !isIdlePlayback(it.playbackState?.state ?: PlaybackState.STATE_NONE) }
-            .maxWithOrNull(sameTierComparator())
-    }
-
-    private fun pickWithoutLayout(eligible: List<MediaController>): MediaController? {
-        val playing = eligible.filter {
-            isPlayingState(it.playbackState?.state ?: PlaybackState.STATE_NONE)
-        }
-        if (playing.isNotEmpty()) {
-            return playing.maxWithOrNull(sameTierComparator())
-        }
-        return eligible
-            .filter { !isIdlePlayback(it.playbackState?.state ?: PlaybackState.STATE_NONE) }
-            .maxWithOrNull(sameTierComparator())
-    }
-
-    /** Preferred lyric packages first, then freshest. */
-    private fun sameTierComparator(): Comparator<MediaController> =
+    /** Lower stack rank wins; then preferred lyric index; then freshest position update. */
+    private fun playingComparator(layout: StackLayout?): Comparator<MediaController> =
         Comparator { a, b ->
+            if (layout != null) {
+                val rankA = layout.stackRank(a.packageName)
+                val rankB = layout.stackRank(b.packageName)
+                if (rankA != rankB) return@Comparator rankB.compareTo(rankA) // lower rank better → reverse
+            }
             val prefA = preferredIndex(a.packageName)
             val prefB = preferredIndex(b.packageName)
             if (prefA != prefB) return@Comparator prefB.compareTo(prefA)
