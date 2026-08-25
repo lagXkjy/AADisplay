@@ -28,4 +28,10 @@ public final class DisplayManagerHidden {
      * @hide Disables touch feedback (haptics / sound) on the virtual display.
      */
     public static final int VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED = 1 << 13;
+
+    /**
+     * @hide Register with InputFlinger so the display gets a touch/pointer viewport
+     * (needed for {@code setVirtualMousePointerDisplayId} to paint the cursor there).
+     */
+    public static final int VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH = 1 << 6;
 }

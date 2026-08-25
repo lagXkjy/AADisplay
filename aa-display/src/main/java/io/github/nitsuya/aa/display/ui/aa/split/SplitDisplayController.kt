@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Point
 import android.hardware.display.VirtualDisplay
 import android.os.Binder
 import android.os.Handler
@@ -849,6 +850,92 @@ class SplitDisplayController(
             }
             true
         }
+    }
+
+    /** Target VD for phone BT keyboard / mouse redirect. */
+    fun resolveHidInjectionDisplayId(): Int = resolveKeyInjectionDisplayId()
+
+    fun onHidKeyEvent(event: KeyEvent): Boolean {
+        val displayId = resolveHidInjectionDisplayId()
+        if (displayId == Display.INVALID_DISPLAY) return false
+        return input.injectKeyEvent(displayId, event)
+    }
+
+    fun onHidTouch(
+        action: Int,
+        x: Float,
+        y: Float,
+        downTime: Long,
+        eventTime: Long,
+    ): Boolean {
+        val displayId = resolveHidInjectionDisplayId()
+        if (displayId == Display.INVALID_DISPLAY) return false
+        if (action == MotionEvent.ACTION_DOWN) {
+            paneForDisplayId(displayId)?.let { mFocusedPane = it }
+        }
+        return input.injectTouchAt(displayId, action, x, y, downTime, eventTime)
+    }
+
+    fun onHidScroll(x: Float, y: Float, vScroll: Float, hScroll: Float): Boolean {
+        val displayId = resolveHidInjectionDisplayId()
+        if (displayId == Display.INVALID_DISPLAY) return false
+        return input.injectScrollAt(displayId, x, y, vScroll, hScroll)
+    }
+
+    fun hidTargetSize(): Point? {
+        val displayId = resolveHidInjectionDisplayId()
+        if (displayId == Display.INVALID_DISPLAY) return null
+        return input.displaySizePx(displayId)
+    }
+
+    fun hidSizeForPane(pane: Int): Point? {
+        val displayId = input.displayIdFor(pane) ?: return null
+        return input.displaySizePx(displayId)
+    }
+
+    fun onHidTouchOnPane(
+        pane: Int,
+        action: Int,
+        x: Float,
+        y: Float,
+        downTime: Long,
+        eventTime: Long,
+    ): Boolean {
+        if (!SplitPane.isValid(pane)) return false
+        val displayId = input.displayIdFor(pane) ?: return false
+        if (action == MotionEvent.ACTION_DOWN) {
+            mFocusedPane = pane
+        }
+        return input.injectTouchAt(displayId, action, x, y, downTime, eventTime)
+    }
+
+    fun onHidScrollOnPane(
+        pane: Int,
+        x: Float,
+        y: Float,
+        vScroll: Float,
+        hScroll: Float,
+    ): Boolean {
+        if (!SplitPane.isValid(pane)) return false
+        val displayId = input.displayIdFor(pane) ?: return false
+        return input.injectScrollAt(displayId, x, y, vScroll, hScroll)
+    }
+
+    /** Snapshot for BT mouse cross-pane cursor. */
+    fun hidSplitLayout(): HidSplitLayout {
+        val primarySize = hidSizeForPane(SplitPane.PRIMARY)
+        val secondarySize = hidSizeForPane(SplitPane.SECONDARY)
+        return HidSplitLayout(
+            sideBySide = isSideBySide,
+            fullscreenPane = mFullscreenPane,
+            focusedPane = mFocusedPane,
+            primaryDisplayId = primaryDisplayId,
+            secondaryDisplayId = secondaryDisplayId,
+            primaryW = primarySize?.x ?: 0,
+            primaryH = primarySize?.y ?: 0,
+            secondaryW = secondarySize?.x ?: 0,
+            secondaryH = secondarySize?.y ?: 0,
+        )
     }
 
     /** Focused pane first, then secondary, then primary. */

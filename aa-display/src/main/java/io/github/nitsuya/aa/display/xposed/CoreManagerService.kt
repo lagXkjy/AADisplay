@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.Surface
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
+import io.github.nitsuya.aa.display.ui.aa.split.HidSplitLayout
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
@@ -17,7 +18,11 @@ import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.CoolwalkRailStore
 import io.github.nitsuya.aa.display.util.DisplayProfileSettle
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
+import android.graphics.Point
+import android.view.Display
+import android.view.KeyEvent
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
+import io.github.nitsuya.aa.display.xposed.hook.PhoneHidRedirect
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkRailMath
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailPhase
 import io.github.nitsuya.aa.display.xposed.hook.VdImeDisplayPin
@@ -251,6 +256,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 .onFailure { log(TAG, "VdImeDisplayPin.ensureHooked failed", it) }
             runCatching { VdOrientationFill.ensureHooked() }
                 .onFailure { log(TAG, "VdOrientationFill.ensureHooked failed", it) }
+            runCatching { PhoneHidRedirect.ensureHooked() }
+                .onFailure { log(TAG, "PhoneHidRedirect.ensureHooked failed", it) }
             runCatching { ClusterLyricMirror.start(systemContext) }
                 .onFailure { log(TAG, "ClusterLyricMirror.start failed", it) }
         }
@@ -261,6 +268,123 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
         /** Cheap gate for WM hooks: false when no AA pane VDs exist. */
         fun hasAaVirtualDisplays(): Boolean = mSplitController != null
+
+        /** AA UI attached (not Delay Destroy). Used by [PhoneHidRedirect]. */
+        fun isAaSessionLive(): Boolean =
+            mSplitController != null && mSessionPolicy?.isAaSessionLive == true
+
+        fun hidTargetDisplayId(): Int =
+            mSplitController?.resolveHidInjectionDisplayId() ?: Display.INVALID_DISPLAY
+
+        fun hidPrimaryDisplayId(): Int =
+            mSplitController?.primaryDisplayId?.takeIf { it != Display.INVALID_DISPLAY }
+                ?: Display.INVALID_DISPLAY
+
+        fun hidSecondaryDisplayId(): Int =
+            mSplitController?.secondaryDisplayId?.takeIf { it != Display.INVALID_DISPLAY }
+                ?: Display.INVALID_DISPLAY
+
+        fun hidTargetSize(): Point? = mSplitController?.hidTargetSize()
+
+        fun hidSplitLayout(): HidSplitLayout? = mSplitController?.hidSplitLayout()
+
+        fun focusHidPane(pane: Int): Boolean {
+            val c = mSplitController ?: return false
+            if (!SplitPane.isValid(pane)) return false
+            c.setFocusedPane(pane)
+            return true
+        }
+
+        fun injectHidTouchOnPane(
+            pane: Int,
+            action: Int,
+            x: Float,
+            y: Float,
+            downTime: Long,
+            eventTime: Long,
+        ): Boolean {
+            return try {
+                if (action == MotionEvent.ACTION_DOWN) {
+                    mSessionPolicy?.onVirtualDisplayUserInteraction()
+                }
+                mSplitController?.onHidTouchOnPane(pane, action, x, y, downTime, eventTime) == true
+            } catch (e: Throwable) {
+                logDebug(TAG, "injectHidTouchOnPane: ${e.message}")
+                false
+            }
+        }
+
+        fun injectHidScrollOnPane(
+            pane: Int,
+            x: Float,
+            y: Float,
+            vScroll: Float,
+            hScroll: Float,
+        ): Boolean {
+            return try {
+                mSessionPolicy?.onVirtualDisplayUserInteraction()
+                mSplitController?.onHidScrollOnPane(pane, x, y, vScroll, hScroll) == true
+            } catch (e: Throwable) {
+                logDebug(TAG, "injectHidScrollOnPane: ${e.message}")
+                false
+            }
+        }
+
+        fun defaultDisplaySize(): Point? = displaySizeFor(Display.DEFAULT_DISPLAY)
+
+        fun displaySizeFor(displayId: Int): Point? {
+            if (displayId < 0) return null
+            return runCatching {
+                val display = Instances.displayManager.getDisplay(displayId)
+                    ?: return@runCatching null
+                val point = Point()
+                @Suppress("DEPRECATION")
+                display.getRealSize(point)
+                if (point.x <= 0 || point.y <= 0) {
+                    @Suppress("DEPRECATION")
+                    display.getSize(point)
+                }
+                point.takeIf { it.x > 0 && it.y > 0 }
+            }.getOrNull()
+        }
+
+        fun injectHidKeyEvent(event: KeyEvent): Boolean {
+            return try {
+                mSessionPolicy?.onVirtualDisplayUserInteraction()
+                mSplitController?.onHidKeyEvent(event) == true
+            } catch (e: Throwable) {
+                logDebug(TAG, "injectHidKeyEvent: ${e.message}")
+                false
+            }
+        }
+
+        fun injectHidTouch(
+            action: Int,
+            x: Float,
+            y: Float,
+            downTime: Long,
+            eventTime: Long,
+        ): Boolean {
+            return try {
+                if (action == MotionEvent.ACTION_DOWN) {
+                    mSessionPolicy?.onVirtualDisplayUserInteraction()
+                }
+                mSplitController?.onHidTouch(action, x, y, downTime, eventTime) == true
+            } catch (e: Throwable) {
+                logDebug(TAG, "injectHidTouch: ${e.message}")
+                false
+            }
+        }
+
+        fun injectHidScroll(x: Float, y: Float, vScroll: Float, hScroll: Float): Boolean {
+            return try {
+                mSessionPolicy?.onVirtualDisplayUserInteraction()
+                mSplitController?.onHidScroll(x, y, vScroll, hScroll) == true
+            } catch (e: Throwable) {
+                logDebug(TAG, "injectHidScroll: ${e.message}")
+                false
+            }
+        }
 
         fun panePackageForDisplay(displayId: Int): String? {
             val controller = mSplitController ?: return null
@@ -355,6 +479,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                                 CommonContextWrapper.createModuleContext(systemContext),
                                 controller,
                             )
+                            runCatching { PhoneHidRedirect.onSessionLiveChanged(true) }
+                                .onFailure { log(TAG, "PhoneHidRedirect session-live failed", it) }
                         }
                     }
                 } finally {

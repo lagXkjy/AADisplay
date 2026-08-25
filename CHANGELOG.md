@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- **手机蓝牙键鼠 → 焦点窗 VD：** `PhoneHidRedirect`（system_server）。AA 会话活跃时偷物理键盘 / 鼠标事件并 `inject` 到焦点 VirtualDisplay（鼠标主键按触控注入）；Delay Destroy 期间归还手机。方控媒体键路径不变。折叠屏：光标会先画在合盖外屏 / 展开主屏，需 `setVirtualMousePointerDisplayId` 绑到 AA VD + 隐藏实体屏光标；绝对坐标按 `event.displayId` 缩放。W7023：AA VD 缺 Input viewport（touch NONE）时 override 仍落主屏——加 `SUPPORTS_TOUCH` + hook `setDisplayViewports` 注入窗 viewport + `forceHideCursor`。双窗：相对移动越过分隔条自动进另一窗并切焦点；中键切换对侧窗。
+
 ### Removed
 - **藏车机媒体壳图标：** 删除 `AaClusterMediaIconHideHook`（不再 hook `queryIntentServices` 过滤本包壳）。全屏投影下桌面列表本就会闪，隐藏收益低且增加 hook 面。
 

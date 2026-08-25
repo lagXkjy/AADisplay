@@ -16,6 +16,7 @@ import de.robv.android.xposed.XC_MethodHook
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
+import io.github.nitsuya.aa.display.xposed.hook.PhoneHidRedirect
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -94,6 +95,10 @@ class DisplaySessionPolicy(
     }
 
     private var mDestroyJob: Job? = null
+
+    /** True while AA UI is attached; false during Delay Destroy / after teardown. */
+    val isAaSessionLive: Boolean
+        get() = mDestroyJob?.isActive != true
 
     private var mKeepAwakeJob: Job? = null
     private var mPseudoOffJob: Job? = null
@@ -793,9 +798,13 @@ class DisplaySessionPolicy(
         interactiveMonitor.init()
         // Soft reconnect: only recover panes that are already OFF/DOZE while phone is off.
         keepVirtualDisplayAwake("resume")
+        runCatching { PhoneHidRedirect.onSessionLiveChanged(true) }
+            .onFailure { log(TAG, "PhoneHidRedirect onResume failed", it) }
     }
 
     suspend fun onDestroyPromptly() {
+        runCatching { PhoneHidRedirect.onSessionLiveChanged(false) }
+            .onFailure { log(TAG, "PhoneHidRedirect onDestroyPromptly failed", it) }
         resetPresentationRecoveryState()
         restorePhoneDisplayPower()
         interactiveMonitor.release()
@@ -805,6 +814,8 @@ class DisplaySessionPolicy(
     suspend fun onDestroy(onDestroySucceed: () -> Unit) {
         // Keep heartbeat through Delay Destroy so soft reconnect can recover OFF panes.
         // Monitor locks are acquired only when phone is off or a pane is OFF/DOZE.
+        runCatching { PhoneHidRedirect.onSessionLiveChanged(false) }
+            .onFailure { log(TAG, "PhoneHidRedirect onDestroy failed", it) }
         resetPresentationRecoveryState()
         mDestroyJob?.cancelAndJoin()
         startDelayDestroy(onDestroySucceed)

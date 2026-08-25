@@ -182,6 +182,61 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
         }
     }
 
+    /** Phone BT mouse → touchscreen inject on [displayId] (caller owns no recycle). */
+    fun injectTouchAt(
+        displayId: Int,
+        action: Int,
+        x: Float,
+        y: Float,
+        downTime: Long,
+        eventTime: Long,
+    ): Boolean = injectMotion(displayId, action, x, y, downTime, eventTime)
+
+    /** Phone BT mouse wheel → scroll MotionEvent on [displayId]. */
+    fun injectScrollAt(
+        displayId: Int,
+        x: Float,
+        y: Float,
+        vScroll: Float,
+        hScroll: Float,
+    ): Boolean {
+        val whenMs = SystemClock.uptimeMillis()
+        val props = arrayOf(MotionEvent.PointerProperties().apply {
+            id = 0
+            toolType = MotionEvent.TOOL_TYPE_MOUSE
+        })
+        val coords = arrayOf(MotionEvent.PointerCoords().apply {
+            this.x = x
+            this.y = y
+            setAxisValue(MotionEvent.AXIS_VSCROLL, vScroll)
+            setAxisValue(MotionEvent.AXIS_HSCROLL, hScroll)
+        })
+        val event = MotionEvent.obtain(
+            whenMs,
+            whenMs,
+            MotionEvent.ACTION_SCROLL,
+            1,
+            props,
+            coords,
+            0,
+            0,
+            1f,
+            1f,
+            0,
+            0,
+            InputDevice.SOURCE_MOUSE,
+            0,
+        )
+        return try {
+            injectInputEvent(displayId, event)
+        } finally {
+            event.recycle()
+        }
+    }
+
+    fun injectKeyEvent(displayId: Int, event: KeyEvent): Boolean =
+        injectInputEvent(displayId, event)
+
     fun isSystemHomeTask(taskInfo: ActivityTaskManager.RootTaskInfo): Boolean {
         return try {
             val conf = (taskInfo as Any).invokeMethod("getConfiguration", args(), argTypes()) ?: return false

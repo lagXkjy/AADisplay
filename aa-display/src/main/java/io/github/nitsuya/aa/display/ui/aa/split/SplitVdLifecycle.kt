@@ -64,7 +64,10 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_TRUSTED or
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP or
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED or
-            DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED
+            DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED or
+            // Input viewport so BT mouse cursor can bind via setVirtualMousePointerDisplayId
+            // (without this, dumpsys shows touch NONE and override falls back to display 0).
+            DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH
     }
 
     fun resizePanesInternal(reason: String) {

@@ -45,7 +45,7 @@ sequenceDiagram
     XP->>SS: handleLoadPackage(android, appInfo=null)
     SS->>SS: AndroidHook: 截 PMS / AMS
     SS->>SS: BridgeService 注入 IPackageManager.onTransact AADD
-    SS->>SS: AMS.systemReady → Instances + PanePresentationGuard + VdImeDisplayPin + ClusterLyricMirror
+    SS->>SS: AMS.systemReady → Instances + PanePresentationGuard + VdImeDisplayPin + PhoneHidRedirect + ClusterLyricMirror
 
     Note over GH,HU: 连接 Android Auto
     XP->>GH: handleLoadPackage(gearhead)
@@ -93,7 +93,7 @@ ServiceManager.addService("package")
   → reply.writeStrongBinder(CoreManagerService.instance)
 
 AMS 构造 → 捕获 system UI Context → CoreManagerService.systemContext
-AMS.systemReady → Instances.init + PanePresentationGuard + VdImeDisplayPin + VdOrientationFill + ClusterLyricMirror
+AMS.systemReady → Instances.init + PanePresentationGuard + VdImeDisplayPin + VdOrientationFill + PhoneHidRedirect + ClusterLyricMirror
 ```
 
 客户端拿 Binder：`xposed/CoreManager.kt` `getService()`  
@@ -369,7 +369,7 @@ TextureView 触摸：`rewriteMotionEvent` 后 `CoreApi.touchPane`；MOVE 合并�
 
 ---
 
-## 10. 输入三条路（不要混）
+## 10. 输入四条路（不要混）
 
 ```mermaid
 flowchart TB
@@ -378,6 +378,10 @@ flowchart TB
         RAIL["AaUiHook :car 左轨偷触摸"]
         KEY["AaDisplayActivity onKeyDown / 滚轮"]
         WH["方向盘 MEDIA_BUTTON"]
+    end
+
+    subgraph PhoneHid["手机蓝牙键鼠"]
+        BT["PhoneHidRedirect system_server"]
     end
 
     TV --> touchPane
@@ -390,6 +394,7 @@ flowchart TB
     MAIN -->|短按媒体键| pressKey
     MAIN -->|长按下一曲/快进| swap或切全屏
     MAIN -->|长按上一曲/快退| Recent
+    BT -->|键盘 / 鼠标主键当触控| HID["inject 焦点窗 VD"]
 
     touchPane --> IM["IInputManager.inject 到窗 VD"]
     touchPrimaryPane --> IM
@@ -397,7 +402,14 @@ flowchart TB
     PEEL -->|是| LOCK["SplitLockedPeelController 直接改 controller"]
     PEEL -->|否| PRES["inject 到 AaDisplay presentation"]
     pressKey --> IM
+    HID --> IM
 ```
+
+手机蓝牙键鼠（`PhoneHidRedirect`，仅 AA 会话活跃、非 Delay Destroy）：
+
+- 键盘：物理外设键（放行 Power / Volume / Home / Back）→ `inject` 到焦点窗。
+- 鼠标：`InputFilter` 偷 `SOURCE_MOUSE` 等；光标状态机 + 主键 → `SOURCE_TOUCHSCREEN` 注入；尽力 `setVirtualMousePointerDisplayId`。
+- 方控媒体键路径不变（`AaBtnEventHook` → `pressKey`）。
 
 方控映射（`AaMainFragment` 收 `ACTION_STEERING_WHEEL_CONTROL`）：
 
@@ -405,7 +417,7 @@ flowchart TB
 - 长按下一曲/快进（`EXTRA_TYPE=1`，87/90）：与点分隔条相同（分屏对调整栈；全屏只切可见侧）。
 - 长按上一曲/快退（88/89）：开/关 Recent。
 
-`pressKey` / 触控 DOWN 会 `DisplaySessionPolicy.onVirtualDisplayUserInteraction`。
+`pressKey` / 触控 DOWN / HID 注入会 `DisplaySessionPolicy.onVirtualDisplayUserInteraction`。
 
 ---
 
@@ -432,6 +444,8 @@ flowchart TB
 `PanePresentationGuard`：`systemReady` 时装一次。拦外包往本窗 VD 贴 `TYPE_PRESENTATION`（典型：抖音 LivePlay + MediaRouter）。
 
 `VdImeDisplayPin`：`systemReady` 时装一次。AA VD 上的 client 要键盘时，IME 窗/token 必须落在同一 VD（纠正 OEM 把目标改写到默认屏，如三星合盖 `isFolded`→0）。
+
+`PhoneHidRedirect`：`systemReady` 装钩；AA 会话 live 时启用 InputFilter + 键拦截，Delay Destroy / teardown 关闭。手机蓝牙键鼠 → 焦点窗 VD。
 
 ---
 
