@@ -64,6 +64,7 @@ class SplitDisplayController(
     internal val vd = SplitVdLifecycle(this)
     internal val launch = SplitLaunchRestore(this)
     internal val ownership = SplitOwnership(this)
+    internal val buriedPlayback = SplitBuriedPlayback(this)
     internal val input = SplitInputRecents(this)
     internal val stacks = PaneAppStack(this)
     internal val lockedPeel = SplitLockedPeelController(this)
@@ -521,6 +522,19 @@ class SplitDisplayController(
         mFocusedPane = pane
     }
 
+    /** Non-front stack packages on either AA VD pane (for cluster lyric mirror exclusion). */
+    fun buriedPackagesOnAaDisplays(): Set<String> {
+        val buried = linkedSetOf<String>()
+        for (pane in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
+            val front = stacks.front(pane)?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+            stacks.packagesBottomToTop(pane)
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && it != front }
+                .forEach { buried += it }
+        }
+        return buried
+    }
+
     fun getPanePackage(pane: Int): String? {
         if (!SplitPane.isValid(pane)) return null
         // Prefer [PaneAppStack] front while that package still has a live root on the VD.
@@ -566,6 +580,7 @@ class SplitDisplayController(
                     if (stacks.contains(pane, topPkg)) {
                         stacks.moveToTop(pane, topPkg)
                         if (mPanePackages[pane] != topPkg) mPanePackages[pane] = topPkg
+                        mHandler.post { ownership.enforceStackFrontAudio(pane) }
                     } else {
                         stacks.syncFrontToMPanePackages()
                     }
@@ -898,7 +913,7 @@ class SplitDisplayController(
                 stacks.moveToTop(pane, packageName)
                 // Demote other stack mates so a buried Douyin cannot keep RESUMED/audio
                 // while 汽水 (or any new front) owns the picture.
-                ownership.demoteBuriedStackTasks(pane)
+                ownership.enforceStackFrontAudio(pane)
                 // 置顶 on the behind pane while the other side is fullscreen: keep the visible
                 // FS pane focused for input/media, but promote stack fronts so ATMS catches up.
                 if (SplitPane.isFullscreenPane(mFullscreenPane) && mFullscreenPane != pane) {
@@ -993,7 +1008,7 @@ class SplitDisplayController(
             stacks.pushToTop(pane, packageName)
             mFocusedPane = pane
             ownership.markOwnership(packageName, displayId)
-            ownership.demoteBuriedStackTasks(pane)
+                    ownership.enforceStackFrontAudio(pane)
             launch.schedulePersistSnapshot()
             notifySplitStateChanged()
             logDebug(TAG, "startActivityOnPane ok pkg=$packageName pane=$pane display=$displayId stack=${stacks.packagesBottomToTop(pane)}")
@@ -1073,7 +1088,7 @@ class SplitDisplayController(
                 stacks.pushToTop(pane, packageName)
                 ownership.markOwnership(packageName, targetDisplayId)
                 VdDensityPin.markPackageOnVirtualDisplay(packageName, targetDisplayId)
-                ownership.demoteBuriedStackTasks(pane)
+                ownership.enforceStackFrontAudio(pane)
             }
             mFocusedPane = pane
         } else {
@@ -1113,7 +1128,7 @@ class SplitDisplayController(
                         }
                         stacks.pushToTop(pane, packageName)
                     }
-                    ownership.demoteBuriedStackTasks(pane)
+                    ownership.enforceStackFrontAudio(pane)
                     mFocusedPane = pane
                     launch.schedulePersistSnapshot()
                     notifySplitStateChanged()

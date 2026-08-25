@@ -571,8 +571,21 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             bringTaskToFront(taskId, cachedRootsByDisplay = rootsCache)
             // Push non-front stack mates off resumed/audio focus (same-pane Douyin vs 汽水).
             rootsCache.remove(displayId)
-            demoteBuriedStackTasks(pane, rootsCache = rootsCache)
+            enforceStackFrontAudio(pane, rootsCache = rootsCache)
+            c.buriedPlayback.resumeFrontPlaybackIfPausedByUs(frontPkg)
         }
+    }
+
+    /**
+     * Task demotion plus MediaSession pause for buried stack mates that keep playing
+     * after [moveTaskToBack] (FGS music).
+     */
+    fun enforceStackFrontAudio(
+        pane: Int,
+        rootsCache: MutableMap<Int, List<ActivityTaskManager.RootTaskInfo>>? = null,
+    ) {
+        demoteBuriedStackTasks(pane, rootsCache = rootsCache)
+        c.buriedPlayback.pauseBuriedStackPlayback(pane)
     }
 
     /**

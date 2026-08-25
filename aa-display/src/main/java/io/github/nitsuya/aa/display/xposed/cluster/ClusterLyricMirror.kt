@@ -10,6 +10,7 @@ import android.os.Looper
 import android.os.SystemClock
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.service.ClusterLyricMediaService
+import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
@@ -259,6 +260,15 @@ object ClusterLyricMirror {
             return
         }
         val pkg = pick.packageName
+        if (!LyricLineExtractor.isPreferredPackage(pkg)) {
+            if (boundController != null && LyricLineExtractor.isPreferredPackage(boundPackage)) {
+                refreshFromBound("reject-non-preferred")
+                return
+            }
+            unbindController()
+            clearOutput("non-preferred")
+            return
+        }
         if (boundController?.sessionToken == pick.sessionToken && boundPackage == pkg) {
             refreshFromBound("sessions-same")
             return
@@ -297,12 +307,18 @@ object ClusterLyricMirror {
         refreshFromBound("bind")
     }
 
+    private fun buriedPackages(): Set<String> {
+        return runCatching { CoreManagerService.buriedPackagesOnAaDisplays() }.getOrDefault(emptySet())
+    }
+
     private fun filterSessions(sessions: List<MediaController>?): List<MediaController>? {
         if (sessions.isNullOrEmpty()) return null
         val selfPkg = BuildConfig.APPLICATION_ID
+        val buried = buriedPackages()
         val filtered = sessions.filter { c ->
             val pkg = c.packageName ?: return@filter false
             if (pkg == selfPkg) return@filter false
+            if (pkg in buried) return@filter false
             // Skip system / gearhead sessions; never re-bind our :cluster shell.
             if (pkg == "android") return@filter false
             if (pkg.startsWith("com.google.android.projection.gearhead")) return@filter false
@@ -322,6 +338,8 @@ object ClusterLyricMirror {
 
     private fun pickControllerUnlocked(sessions: List<MediaController>?): MediaController? {
         val filtered = filterSessions(sessions) ?: return null
+        val preferred = filtered.filter { LyricLineExtractor.isPreferredPackage(it.packageName) }
+        if (preferred.isEmpty()) return null
 
         fun isPlaying(c: MediaController): Boolean =
             isPlayingState(c.playbackState?.state ?: PlaybackState.STATE_NONE)
@@ -331,7 +349,7 @@ object ClusterLyricMirror {
 
         fun pickPreferred(predicate: (MediaController) -> Boolean): MediaController? {
             for (pkg in LyricLineExtractor.PREFERRED_PACKAGE_ORDER) {
-                filtered.firstOrNull { it.packageName == pkg && predicate(it) }?.let { return it }
+                preferred.firstOrNull { it.packageName == pkg && predicate(it) }?.let { return it }
             }
             return null
         }
@@ -339,8 +357,8 @@ object ClusterLyricMirror {
         fun freshness(c: MediaController): Long =
             c.playbackState?.lastPositionUpdateTime ?: 0L
 
-        // Freshest playing session wins — do not let a ghost qqmusiccar PLAYING block Luna.
-        val playing = filtered.filter { isPlaying(it) }
+        // Freshest playing preferred session wins — never bind VD video apps (Douyin).
+        val playing = preferred.filter { isPlaying(it) }
         if (playing.isNotEmpty()) {
             return playing.maxByOrNull { freshness(it) }
         }
@@ -348,8 +366,7 @@ object ClusterLyricMirror {
         // Handoff between qqmusiccar / qqmusicpad when both idle briefly.
         pickPreferred { isActive(it) }?.let { return it }
 
-        return filtered.filter { isActive(it) }.maxByOrNull { freshness(it) }
-            ?: filtered.firstOrNull()
+        return preferred.filter { isActive(it) }.maxByOrNull { freshness(it) }
     }
 
     private fun pickLockedController(sessions: List<MediaController>?): MediaController? {
@@ -546,6 +563,7 @@ object ClusterLyricMirror {
         reason: String,
         metadata: android.media.MediaMetadata? = null,
     ) {
+        if (!LyricLineExtractor.isPreferredPackage(boundPackage)) return
         if (shouldAttemptArtPublish(reason, mediaId)) {
             val ctx = appContext
             val forceRescan = ctx != null &&
@@ -626,6 +644,7 @@ object ClusterLyricMirror {
         mediaId: String,
         forceRescan: Boolean = false,
     ) {
+        if (!LyricLineExtractor.isPreferredPackage(boundPackage)) return
         if (metadata == null || mediaId.isEmpty()) return
         val ctx = appContext ?: return
         ClusterArtStore.publishFromMetadata(
@@ -714,6 +733,7 @@ object ClusterLyricMirror {
         val controller = boundController ?: return false
         val sessions = sessionManager?.getActiveSessionsSafe() ?: return false
         val pick = pickController(sessions) ?: return false
+        if (!LyricLineExtractor.isPreferredPackage(pick.packageName)) return false
         if (pick.sessionToken == controller.sessionToken) return false
 
         val pickPlaying = isPlayingState(pick.playbackState?.state ?: PlaybackState.STATE_NONE)
@@ -738,6 +758,11 @@ object ClusterLyricMirror {
      * callbacks cannot flap QQ ghost PLAYING vs Luna.
      */
     private fun shouldKeepBoundPlaying(pick: MediaController): Boolean {
+        if (LyricLineExtractor.isPreferredPackage(boundPackage) &&
+            !LyricLineExtractor.isPreferredPackage(pick.packageName)
+        ) {
+            return true
+        }
         if (isConnectLockActive()) {
             val lockPkg = connectLockPackage ?: boundPackage
             if (lockPkg != null && pick.packageName != lockPkg) return true

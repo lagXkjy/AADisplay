@@ -81,7 +81,13 @@ internal class SplitTaskStackListener(
         } catch (_: Throwable) {
             return
         }
-        c.paneForDisplayId(displayId)?.let { pane -> c.mFocusedPane = pane }
+        val pane = c.paneForDisplayId(displayId) ?: return
+        c.mFocusedPane = pane
+        val pkg = taskInfo.topActivity?.packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        val front = c.stacks.front(pane)?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        if (pkg != front && c.stacks.contains(pane, pkg)) {
+            c.mHandler.post { c.ownership.enforceStackFrontAudio(pane) }
+        }
     }
 
     override fun onTaskDescriptionChanged(taskInfo: ActivityManager.RunningTaskInfo?) {}

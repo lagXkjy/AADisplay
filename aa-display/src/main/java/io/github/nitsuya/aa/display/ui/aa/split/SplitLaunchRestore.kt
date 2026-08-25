@@ -104,6 +104,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         val taskId = c.ownership.findPackageTaskOnDisplay(pkg, displayId, liveOnly = true) ?: return
         if (c.ownership.bringTaskToFront(taskId)) {
             c.stacks.moveToTop(pane, pkg)
+            c.ownership.enforceStackFrontAudio(pane)
         } else {
             log(
                 SplitDisplayController.TAG,
@@ -359,7 +360,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                 c.stacks.moveToTop(pane, stackFront)
                 ownershipBringFront(pane, stackFront)
             }
-            c.ownership.demoteBuriedStackTasks(pane)
+            c.ownership.enforceStackFrontAudio(pane)
         }
         if (relaunched) {
             c.mSuppressReclaimUntil =
@@ -566,6 +567,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                             c.stacks.moveToTop(pane, topPkg)
                         }
                     }
+                    c.ownership.enforceStackFrontAudio(pane)
                 } else if (!settling && next == null) {
                     c.stacks.trimToAlive(pane, emptyList())
                 }

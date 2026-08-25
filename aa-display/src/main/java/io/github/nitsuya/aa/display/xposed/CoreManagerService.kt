@@ -270,6 +270,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             }?.trim()?.takeIf { it.isNotEmpty() }
         }
 
+        fun buriedPackagesOnAaDisplays(): Set<String> {
+            return mSplitController?.buriedPackagesOnAaDisplays().orEmpty()
+        }
+
         fun getDensityDpi(): Int {
             return mSplitController?.mDensityDpi ?: 0
         }

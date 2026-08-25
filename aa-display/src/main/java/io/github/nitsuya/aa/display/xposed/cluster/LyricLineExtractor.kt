@@ -72,6 +72,20 @@ object LyricLineExtractor {
         return pkg in PREFERRED_PACKAGES
     }
 
+    /** Reject CDN / share links mistaken as album names on cluster egress. */
+    fun looksLikeUrl(value: String): Boolean {
+        val t = value.trim()
+        return t.startsWith("http://", ignoreCase = true) ||
+            t.startsWith("https://", ignoreCase = true) ||
+            "://" in t
+    }
+
+    private fun sanitizeAlbum(raw: String): String {
+        val t = raw.trim()
+        if (t.isEmpty() || looksLikeUrl(t)) return ""
+        return t
+    }
+
     /** QQ 车载 / HD share a library — keep deferred cover across that handoff. */
     fun sameCoverSource(a: String?, b: String?): Boolean {
         val left = a?.trim().orEmpty()
@@ -93,7 +107,7 @@ object LyricLineExtractor {
                 ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
                 ?: displaySub.takeIf { it.isNotEmpty() && !looksLikeLrc(it) }
             )?.trim().orEmpty()
-        val album = extractAlbum(metadata)
+        val album = sanitizeAlbum(extractAlbum(metadata))
         val durationMs = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION).coerceAtLeast(0L)
         val baseId = metadata.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)?.trim().orEmpty()
         val mediaId = when {
@@ -165,24 +179,24 @@ object LyricLineExtractor {
         metadata.getString(MediaMetadata.METADATA_KEY_ALBUM)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
-            ?.let { return it }
+            ?.let { return sanitizeAlbum(it) }
         metadata.bundleCompat()?.getString(MediaMetadata.METADATA_KEY_ALBUM)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
-            ?.let { return it }
+            ?.let { return sanitizeAlbum(it) }
         // Luna / others: album name often lives in MediaDescription.description.
         metadata.description?.description?.toString()
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
-            ?.let { return it }
+            ?.let { return sanitizeAlbum(it) }
         metadata.description?.subtitle?.toString()
             ?.trim()
             ?.takeIf { it.isNotEmpty() && !PANEL_ARTIST_SEP.containsMatchIn(it) }
-            ?.let { return it }
+            ?.let { return sanitizeAlbum(it) }
         val bundle = metadata.bundleCompat() ?: return ""
         for (key in bundle.keySet()) {
             if (!key.contains("album", ignoreCase = true)) continue
-            bundle.getString(key)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+            bundle.getString(key)?.trim()?.takeIf { it.isNotEmpty() }?.let { return sanitizeAlbum(it) }
         }
         return ""
     }

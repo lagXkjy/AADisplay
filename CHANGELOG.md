@@ -6,6 +6,7 @@
 - **藏车机媒体壳图标：** 删除 `AaClusterMediaIconHideHook`（不再 hook `queryIntentServices` 过滤本包壳）。全屏投影下桌面列表本就会闪，隐藏收益低且增加 hook 面。
 
 ### Changed
+- **同窗叠栈音视频 / 仪表误投：** 栈底应用除 `moveTaskToBack` 外对 PLAYING MediaSession 显式 `pause`（切回栈顶 `play`）；`ClusterLyricMirror` 仅在 QQ/汽水 preferred 中选源，排除 VD buried 包，不向仪表推送非音乐 metadata；专辑字段过滤 `http(s)://` URL。
 - **FacetBar 重构文档与试验代码清理：** 新增 [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)（状态机、四路回收、profile settle、坑点）；移除 `ReconnectSizingTrace`、未使用的 `:car` presentation resize 广播、`CoolwalkRailMath` 死代码；`AaDisplayPresentationResize` 改为 AADisplay 进程懒加载 `DrawingSpec` hook 入口；同步 [EXECUTION.md](docs/EXECUTION.md) §5.4。
 - **仪表歌词补进度包 +1s：** `pushPlaybackNow` 在 Store 外推整秒上再 **+1s**（clamp duration）；`getPlaybackState` 不加。见 `docs/CLUSTER_LYRIC_CLOCK.md` §5。
 - **仪表歌词 T2-A 外推整秒补包：** `pushPlaybackNow` 用 `ClusterLyricStore.extrapolatePosition` 当下整秒克隆 Gearhead `AaPlaybackState`，不再重放 `play_l` 过期快照（失败 fallback T1）。见 `docs/CLUSTER_LYRIC_CLOCK.md` §5。
