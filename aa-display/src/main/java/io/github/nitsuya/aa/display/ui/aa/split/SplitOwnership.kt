@@ -577,8 +577,9 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     }
 
     /**
-     * Task demotion plus MediaSession pause for buried non-music stack mates that keep
-     * playing after [moveTaskToBack] (e.g. Douyin FGS). Music apps are not paused.
+     * Task demotion plus MediaSession pause for buried stack mates that keep
+     * playing after [moveTaskToBack] (e.g. Douyin FGS). Buried music is kept only
+     * when the pane front is not AvMedia (see [SplitBuriedPlayback]).
      */
     fun enforceStackFrontAudio(
         pane: Int,

@@ -20,6 +20,7 @@ import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.PmCaches
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -533,6 +534,16 @@ class SplitDisplayController(
                 .forEach { buried += it }
         }
         return buried
+    }
+
+    /** Stack fronts + focus for [io.github.nitsuya.aa.display.util.AvMediaArbiter]. */
+    fun avStackLayout(): AvMediaArbiter.StackLayout {
+        return AvMediaArbiter.StackLayout(
+            focusedPane = mFocusedPane,
+            primaryFront = stacks.front(SplitPane.PRIMARY)?.trim()?.takeIf { it.isNotEmpty() },
+            secondaryFront = stacks.front(SplitPane.SECONDARY)?.trim()?.takeIf { it.isNotEmpty() },
+            buried = buriedPackagesOnAaDisplays(),
+        )
     }
 
     fun getPanePackage(pane: Int): String? {

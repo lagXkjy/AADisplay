@@ -9,8 +9,10 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
 /**
  * Pauses/resumes buried stack mates via MediaSession when [moveTaskToBack] alone
  * cannot stop non-music FGS audio (e.g. Douyin under a music app on the same VD pane).
- * Music apps (MediaBrowserService / music-player intents / music-shaped metadata) may
- * keep playing while buried.
+ *
+ * Buried music may keep playing only when the pane front is not AvMedia (maps/browser).
+ * When the front is AvMedia (QQ / 汽水), buried music is paused — stack-top wins.
+ * Short-video (Douyin) is not AvMedia; buried under a music front is still paused as non-music.
  */
 internal class SplitBuriedPlayback(private val c: SplitDisplayController) {
 
@@ -25,6 +27,7 @@ internal class SplitBuriedPlayback(private val c: SplitDisplayController) {
             .filter { it.isNotEmpty() && it != frontPkg }
         if (buried.isEmpty()) return
         val buriedSet = buried.toSet()
+        val frontIsAv = MusicAppClassifier.isAvMediaPackage(c.context, frontPkg)
 
         val msm = c.context.getSystemService(MediaSessionManager::class.java) ?: return
         val sessions = try {
@@ -37,8 +40,8 @@ internal class SplitBuriedPlayback(private val c: SplitDisplayController) {
         for (controller in sessions) {
             val pkg = controller.packageName?.trim()?.takeIf { it.isNotEmpty() } ?: continue
             if (pkg !in buriedSet) continue
-            // Keep music playing under maps/browser on the same pane.
-            if (MusicAppClassifier.isMusicSession(c.context, controller)) continue
+            // Maps/browser on top: keep buried music. AvMedia on top: pause all buried AvMedia.
+            if (!frontIsAv && MusicAppClassifier.isMusicSession(c.context, controller)) continue
             val state = controller.playbackState?.state ?: PlaybackState.STATE_NONE
             if (!isPlayingState(state)) continue
             val last = lastPauseAtMs[pkg] ?: 0L
@@ -47,7 +50,7 @@ internal class SplitBuriedPlayback(private val c: SplitDisplayController) {
                 controller.transportControls.pause()
                 pausedByAADisplay += pkg
                 lastPauseAtMs[pkg] = now
-                logDebug(SplitDisplayController.TAG, "pauseBuried pkg=$pkg pane=$pane")
+                logDebug(SplitDisplayController.TAG, "pauseBuried pkg=$pkg pane=$pane front=$frontPkg")
             } catch (e: Throwable) {
                 logDebug(SplitDisplayController.TAG, "pauseBuried failed pkg=$pkg: ${e.message}")
             }

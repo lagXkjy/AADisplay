@@ -12,9 +12,10 @@ import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
+import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.CoolwalkRailStore
 import io.github.nitsuya.aa.display.util.DisplayProfileSettle
-import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkRailMath
@@ -272,6 +273,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
         fun buriedPackagesOnAaDisplays(): Set<String> {
             return mSplitController?.buriedPackagesOnAaDisplays().orEmpty()
+        }
+
+        fun avStackLayout(): AvMediaArbiter.StackLayout? {
+            return mSplitController?.avStackLayout()
         }
 
         fun getDensityDpi(): Int {

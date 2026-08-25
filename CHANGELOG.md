@@ -6,6 +6,7 @@
 - **藏车机媒体壳图标：** 删除 `AaClusterMediaIconHideHook`（不再 hook `queryIntentServices` 过滤本包壳）。全屏投影下桌面列表本就会闪，隐藏收益低且增加 hook 面。
 
 ### Changed
+- **音视频单发声 + 栈顶优先（音乐 AvMedia）：** `AvMediaArbiter` 在 system_server 仲裁音乐类 AvMedia；赢家优先级为焦点窗栈顶 > 另一窗栈顶 > 埋栈音乐；对输家 `MediaSession.pause`；`ClusterLyricMirror` 跟赢家。抖音主包排除出 Music/AvMedia（虽声明 MediaBrowserService，Feed 无 Now Playing，不上仪表）。埋栈音乐仅在栈顶非 AvMedia（高德等）时续播。
 - **同窗叠栈音视频 / 仪表误投：** 栈底非音乐应用除 `moveTaskToBack` 外对 PLAYING MediaSession 显式 `pause`（切回栈顶 `play`）；音乐类（MediaBrowserService / 音乐播放器 intent / 音乐形态 metadata）埋栈可继续播；`ClusterLyricMirror` 仍优先 QQ/汽水选歌词源，埋栈仅排除非音乐包；专辑字段过滤 `http(s)://` URL。
 - **FacetBar 重构文档与试验代码清理：** 新增 [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)（状态机、四路回收、profile settle、坑点）；移除 `ReconnectSizingTrace`、未使用的 `:car` presentation resize 广播、`CoolwalkRailMath` 死代码；`AaDisplayPresentationResize` 改为 AADisplay 进程懒加载 `DrawingSpec` hook 入口；同步 [EXECUTION.md](docs/EXECUTION.md) §5.4。
 - **仪表歌词补进度包 +1s：** `pushPlaybackNow` 在 Store 外推整秒上再 **+1s**（clamp duration）；`getPlaybackState` 不加。见 `docs/CLUSTER_LYRIC_CLOCK.md` §5。
