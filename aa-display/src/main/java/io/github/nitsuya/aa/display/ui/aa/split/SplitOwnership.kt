@@ -247,6 +247,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     }
 
     fun vacateOtherPanesHolding(packageName: String, keepPane: Int) {
+        val toPromote = mutableListOf<Int>()
         for (p in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
             if (p == keepPane) continue
             if (!c.stacks.contains(p, packageName) && c.mPanePackages[p] != packageName) continue
@@ -255,7 +256,13 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             // Only strip chrome when the other pane's stack became empty.
             if (c.stacks.front(p) == null) {
                 c.input.displayIdFor(p)?.let { removeChromeTasksOnDisplay(it) }
+            } else {
+                // Bring the new bookkeeping front so picture/audio leave the vacated pkg.
+                toPromote += p
             }
+        }
+        if (toPromote.isNotEmpty()) {
+            promoteStackFronts(toPromote)
         }
     }
 

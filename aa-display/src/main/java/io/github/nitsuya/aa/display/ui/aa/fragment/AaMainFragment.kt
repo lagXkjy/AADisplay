@@ -126,7 +126,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     when (intent.getIntExtra(AABroadcastConst.EXTRA_TYPE, 0)) {
                         0 -> {
                             when (action) {
-                                KeyEvent.KEYCODE_SEARCH,
+                                // KEYCODE_SEARCH is not stolen by AaBtnEventHook (early return).
                                 KeyEvent.KEYCODE_MEDIA_NEXT,
                                 KeyEvent.KEYCODE_MEDIA_PREVIOUS,
                                 KeyEvent.KEYCODE_HEADSETHOOK,

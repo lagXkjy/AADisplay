@@ -158,8 +158,9 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             return
         }
         if (primaryPresent && secondaryPresent) {
-            c.stacks.setStackBottomToTop(SplitPane.PRIMARY, snap.primaryPackagesBottomToTop())
-            c.stacks.setStackBottomToTop(SplitPane.SECONDARY, snap.secondaryPackagesBottomToTop())
+            // Prefer snapshot order but drop ghost buried entries that never landed.
+            trimStackToDisplayAlive(SplitPane.PRIMARY, snap.primaryPackagesBottomToTop())
+            trimStackToDisplayAlive(SplitPane.SECONDARY, snap.secondaryPackagesBottomToTop())
             ownershipBringFront(SplitPane.PRIMARY, snap.primaryPackage)
             ownershipBringFront(SplitPane.SECONDARY, snap.secondaryPackage)
             persistSnapshot(force = true, logSettingsFailures = true)
@@ -236,14 +237,50 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         )) {
             val current = c.mPanePackages[entry.pane]?.trim()?.takeIf { it.isNotEmpty() }
             if (current != null) continue
-            val pkg = entry.front.trim().takeIf { it.isNotEmpty() } ?: continue
+            val other = if (entry.pane == SplitPane.PRIMARY) SplitPane.SECONDARY else SplitPane.PRIMARY
+            val otherPkgs = c.stacks.packagesBottomToTop(other).toSet()
+            // Drop packages already owned by the healthy other pane so setStackBottomToTop
+            // does not strip them via cross-pane exclusivity.
+            val filtered = entry.stack.filter { it.trim().isNotEmpty() && it.trim() !in otherPkgs }
+            val pkg = (filtered.lastOrNull() ?: entry.front).trim().takeIf { it.isNotEmpty() }
+                ?: continue
+            if (pkg in otherPkgs) continue
             if (resolveLaunchComponent(pkg) == null) continue
             logDebug(
                 SplitDisplayController.TAG,
                 "ensurePanes[$reason]: backfill pane=${entry.pane} from snapshot pkg=$pkg",
             )
-            c.stacks.setStackBottomToTop(entry.pane, entry.stack)
+            val stackToApply = if (filtered.isNotEmpty()) filtered else listOf(pkg)
+            c.stacks.setStackBottomToTop(entry.pane, stackToApply)
             c.mPanePackages[entry.pane] = pkg
+            if (c.stacks.front(other) != null) {
+                c.ownership.promoteStackFronts(listOf(other))
+            }
+        }
+    }
+
+    /**
+     * After restore verify: apply [desiredBottomToTop] then drop packages with no live root
+     * on this pane's display (ghost buried entries from a partial restore).
+     */
+    private fun trimStackToDisplayAlive(pane: Int, desiredBottomToTop: List<String>) {
+        val displayId = c.input.displayIdFor(pane) ?: return
+        if (displayId == Display.INVALID_DISPLAY) return
+        val tasks = c.ownership.normalizeRootTasksBottomToTop(
+            tryOrNull {
+                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+            }.orEmpty()
+        )
+        val alive = c.ownership.snapshotUserRootTasks(tasks)
+            .mapNotNull { it.packageName?.trim()?.takeIf { p -> p.isNotEmpty() } }
+            .toSet()
+        val filtered = desiredBottomToTop
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it in alive }
+        if (filtered.isNotEmpty()) {
+            c.stacks.setStackBottomToTop(pane, filtered)
+        } else {
+            c.stacks.trimToAlive(pane, alive)
         }
     }
 
@@ -450,8 +487,11 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
 
     fun persistSnapshot(force: Boolean, logSettingsFailures: Boolean) {
         refreshPanePackagesFromAtms()
-        val primaryPkg = c.mPanePackages[SplitPane.PRIMARY]?.trim().orEmpty()
-        val secondaryPkg = c.mPanePackages[SplitPane.SECONDARY]?.trim().orEmpty()
+        // Prefer stack fronts so a transient ATMS-only top cannot poison the durable snapshot.
+        val primaryPkg = (c.stacks.front(SplitPane.PRIMARY) ?: c.mPanePackages[SplitPane.PRIMARY])
+            ?.trim().orEmpty()
+        val secondaryPkg = (c.stacks.front(SplitPane.SECONDARY) ?: c.mPanePackages[SplitPane.SECONDARY])
+            ?.trim().orEmpty()
         if (primaryPkg.isEmpty() || secondaryPkg.isEmpty() || primaryPkg == secondaryPkg) {
             if (force) {
                 logDebug(SplitDisplayController.TAG, "persist skip: incomplete panes primary=$primaryPkg secondary=$secondaryPkg")
@@ -513,19 +553,23 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                 }
                 if (!settling && userPkgsBottomToTop.isNotEmpty()) {
                     // Keep intentional PaneAppStack front (Recent 置顶) when ATMS on a behind VD
-                    // still reports the old top — sync membership/order, then restore that front.
+                    // still reports the old top. Merge instead of replace so demoted buried
+                    // packages missing from the ATMS walk are not wiped from bookkeeping.
                     val previousFront = c.stacks.front(pane)
-                    c.stacks.syncFromAtmsBottomToTop(pane, userPkgsBottomToTop)
+                    c.stacks.mergeAliveKeepingOrder(pane, userPkgsBottomToTop)
                     when {
                         !previousFront.isNullOrBlank() &&
                             userPkgsBottomToTop.contains(previousFront) -> {
                             c.stacks.moveToTop(pane, previousFront)
                         }
-                        topPkg != null -> c.stacks.moveToTop(pane, topPkg)
+                        topPkg != null && c.stacks.contains(pane, topPkg) -> {
+                            c.stacks.moveToTop(pane, topPkg)
+                        }
                     }
                 } else if (!settling && next == null) {
                     c.stacks.trimToAlive(pane, emptyList())
                 }
+                // Prefer stack front for persist; fall back to ATMS top only when stack empty.
                 val booked = c.stacks.front(pane) ?: next
                 if (c.mPanePackages[pane] != booked) {
                     c.mPanePackages[pane] = booked

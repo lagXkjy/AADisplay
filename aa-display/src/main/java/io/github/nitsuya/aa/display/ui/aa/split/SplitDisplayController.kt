@@ -560,11 +560,16 @@ class SplitDisplayController(
                         !pkg.isNullOrBlank() && !SplitChromePackages.BOUNCE_EXCLUDED.contains(pkg)
                     }?.topActivity?.packageName
                 if (!topPkg.isNullOrBlank()) {
-                    if (mPanePackages[pane] != topPkg) mPanePackages[pane] = topPkg
-                    // Read path: only reorder if already tracked — never evict here.
+                    // Read path: only reorder if already tracked — never evict / push here.
+                    // Do not dirty mPanePackages with an ATMS top outside the stack (persist
+                    // would save ATMS front + stale buried list). Keep mPanePackages = stacks.front.
                     if (stacks.contains(pane, topPkg)) {
                         stacks.moveToTop(pane, topPkg)
+                        if (mPanePackages[pane] != topPkg) mPanePackages[pane] = topPkg
+                    } else {
+                        stacks.syncFrontToMPanePackages()
                     }
+                    // Still return ATMS top so empty-overlay occupancy matches the picture.
                     return topPkg
                 }
                 val settling = SystemClock.uptimeMillis() < mSuppressReclaimUntil
@@ -872,6 +877,14 @@ class SplitDisplayController(
     }
 
     fun startActivityOnPane(packageName: String, userId: Int, pane: Int): Boolean {
+        // Same queue as move/remove/reclaim — Binder/IO must not interleave stack mutations.
+        // runOnHandlerBlocking already runs inline when already on mHandler (restore loops).
+        return ownership.runOnHandlerBlocking(false) {
+            startActivityOnPaneOnHandler(packageName, userId, pane)
+        }
+    }
+
+    private fun startActivityOnPaneOnHandler(packageName: String, userId: Int, pane: Int): Boolean {
         if (!SplitPane.isValid(pane)) return false
         val displayId = input.displayIdFor(pane) ?: return false
         val component = launch.resolveLaunchComponent(packageName) ?: run {
@@ -944,6 +957,10 @@ class SplitDisplayController(
                     launch.launchOnDisplay(component, userId, displayId)
                 }
             } else {
+                // Vacate→pushToTop leaves paneContaining null; suppress reclaim so it cannot
+                // releaseOwnershipIfUnused mid-relocate and bounce the task back.
+                mHandler.removeCallbacks(ownership.mDebouncedReclaim)
+                mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
                 ownership.vacateOtherPanesHolding(packageName, keepPane = pane)
                 val relocated = try {
                     Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, displayId)
@@ -1039,6 +1056,9 @@ class SplitDisplayController(
                 }
             }
             if (!packageName.isNullOrBlank()) {
+                // Same vacate→push window as startActivityOnPane: hold reclaim until stacked.
+                mHandler.removeCallbacks(ownership.mDebouncedReclaim)
+                mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
                 ownership.vacateOtherPanesHolding(packageName, pane)
             }
         }
@@ -1053,6 +1073,7 @@ class SplitDisplayController(
                 stacks.pushToTop(pane, packageName)
                 ownership.markOwnership(packageName, targetDisplayId)
                 VdDensityPin.markPackageOnVirtualDisplay(packageName, targetDisplayId)
+                ownership.demoteBuriedStackTasks(pane)
             }
             mFocusedPane = pane
         } else {
@@ -1083,8 +1104,16 @@ class SplitDisplayController(
                     if (stacks.contains(pane, packageName)) {
                         stacks.moveToTop(pane, packageName)
                     } else {
+                        // Match startActivityOnPane: evict bottom tasks before bookkeeping push.
+                        if (stacks.packagesBottomToTop(pane).size >= PaneAppStack.MAX_PER_PANE) {
+                            val bottom = stacks.packagesBottomToTop(pane).firstOrNull()
+                            if (!bottom.isNullOrBlank() && bottom != packageName) {
+                                ownership.evictPackageFromPane(pane, bottom)
+                            }
+                        }
                         stacks.pushToTop(pane, packageName)
                     }
+                    ownership.demoteBuriedStackTasks(pane)
                     mFocusedPane = pane
                     launch.schedulePersistSnapshot()
                     notifySplitStateChanged()

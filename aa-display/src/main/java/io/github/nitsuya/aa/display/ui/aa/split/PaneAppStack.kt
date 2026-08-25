@@ -192,4 +192,39 @@ internal class PaneAppStack(private val c: SplitDisplayController) {
         }
         setStackBottomToTop(pane, kept)
     }
+
+    /**
+     * Merge ATMS-visible packages into the intentional stack without wiping buried members
+     * that demote may have dropped from the ATMS walk.
+     *
+     * - Drop bookkeeping packages no longer in [aliveBottomToTop]
+     * - Keep relative order of remaining intentional entries
+     * - Append ATMS-only packages at the bottom (capacity permitting; launch paths evict)
+     */
+    fun mergeAliveKeepingOrder(pane: Int, aliveBottomToTop: List<String>) {
+        if (!SplitPane.isValid(pane)) return
+        val alive = ArrayList<String>(MAX_PER_PANE)
+        val seen = linkedSetOf<String>()
+        for (raw in aliveBottomToTop) {
+            val pkg = raw.trim().takeIf { it.isNotEmpty() } ?: continue
+            if (!seen.add(pkg)) continue
+            alive.add(pkg)
+        }
+        val aliveSet = alive.toSet()
+        val merged = ArrayList<String>(MAX_PER_PANE)
+        // Keep intentional buried order for packages still alive.
+        for (pkg in stacks[pane]) {
+            if (pkg in aliveSet) merged.add(pkg)
+        }
+        // ATMS-only packages: prepend at bottom preserving ATMS bottom→top order.
+        val extras = alive.filter { it !in merged }
+        val room = MAX_PER_PANE - merged.size
+        if (room > 0 && extras.isNotEmpty()) {
+            merged.addAll(0, extras.take(room))
+        }
+        while (merged.size > MAX_PER_PANE) {
+            merged.removeAt(0)
+        }
+        setStackBottomToTop(pane, merged)
+    }
 }
