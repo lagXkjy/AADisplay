@@ -883,6 +883,9 @@ class SplitDisplayController(
             val taskId = ownership.findPackageTaskOnDisplay(packageName, displayId, liveOnly = true)
             if (taskId != null && ownership.bringTaskToFront(taskId)) {
                 stacks.moveToTop(pane, packageName)
+                // Demote other stack mates so a buried Douyin cannot keep RESUMED/audio
+                // while 汽水 (or any new front) owns the picture.
+                ownership.demoteBuriedStackTasks(pane)
                 // 置顶 on the behind pane while the other side is fullscreen: keep the visible
                 // FS pane focused for input/media, but promote stack fronts so ATMS catches up.
                 if (SplitPane.isFullscreenPane(mFullscreenPane) && mFullscreenPane != pane) {
@@ -973,6 +976,7 @@ class SplitDisplayController(
             stacks.pushToTop(pane, packageName)
             mFocusedPane = pane
             ownership.markOwnership(packageName, displayId)
+            ownership.demoteBuriedStackTasks(pane)
             launch.schedulePersistSnapshot()
             notifySplitStateChanged()
             logDebug(TAG, "startActivityOnPane ok pkg=$packageName pane=$pane display=$displayId stack=${stacks.packagesBottomToTop(pane)}")

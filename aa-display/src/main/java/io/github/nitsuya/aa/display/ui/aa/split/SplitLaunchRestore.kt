@@ -280,29 +280,49 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             }
             if (stackPkgs.isEmpty()) continue
             val displayId = c.input.displayIdFor(pane) ?: continue
-            val stackFront = c.mPanePackages[pane]?.trim()?.takeIf { it.isNotEmpty() }
+            // Capture intentional front before any startActivityOnPane (which moveToTop-s).
+            val stackFront = c.stacks.front(pane)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: c.mPanePackages[pane]?.trim()?.takeIf { it.isNotEmpty() }
                 ?: stackPkgs.lastOrNull()
             for (pkg in stackPkgs) {
                 val isFront = pkg == stackFront
                 if (c.ownership.shouldSkipRelaunchOnDisplay(pkg, displayId, reason, isFront)) {
                     continue
                 }
-                if (c.ownership.hasPackageOnDisplay(pkg, displayId)) {
+                // Soft-reconnect splash: bring alone is a no-op — drop then cold start.
+                if (isFront &&
+                    isSoftReconnectReason(reason) &&
+                    c.ownership.hasPackageOnDisplay(pkg, displayId) &&
+                    c.ownership.isPackageFrontStaleOnReconnect(pkg, displayId)
+                ) {
                     logDebug(
                         SplitDisplayController.TAG,
-                        "ensurePanes[$reason]: stale $pkg on pane=$pane front=$isFront → relaunch",
+                        "ensurePanes[$reason]: stale front $pkg on pane=$pane → cold relaunch",
+                    )
+                    c.ownership.removePackageTasksOnDisplay(pkg, displayId)
+                } else if (c.ownership.hasPackageOnDisplay(pkg, displayId)) {
+                    logDebug(
+                        SplitDisplayController.TAG,
+                        "ensurePanes[$reason]: order drift $pkg on pane=$pane front=$isFront → bring",
                     )
                 }
                 logDebug(SplitDisplayController.TAG, "ensurePanes[$reason]: relaunch $pkg on pane=$pane")
                 if (c.startActivityOnPane(pkg, 0, pane)) {
                     relaunched = true
                 }
+                // Buried relaunch lands as front — restore intentional front immediately so
+                // Douyin (etc.) cannot keep audio focus under a 汽水 picture.
+                if (!isFront && !stackFront.isNullOrBlank()) {
+                    c.stacks.moveToTop(pane, stackFront)
+                    ownershipBringFront(pane, stackFront)
+                }
             }
-            // Restore intended front after stack relaunches.
-            val front = c.mPanePackages[pane] ?: stackPkgs.lastOrNull()
-            if (!front.isNullOrBlank()) {
-                ownershipBringFront(pane, front)
+            // Final front + demote buried stack mates off RESUMED/audio.
+            if (!stackFront.isNullOrBlank()) {
+                c.stacks.moveToTop(pane, stackFront)
+                ownershipBringFront(pane, stackFront)
             }
+            c.ownership.demoteBuriedStackTasks(pane)
         }
         if (relaunched) {
             c.mSuppressReclaimUntil =

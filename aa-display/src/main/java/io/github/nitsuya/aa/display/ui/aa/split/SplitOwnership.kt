@@ -124,6 +124,14 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             try {
                 Instances.iActivityTaskManager.moveRootTaskToDisplay(phoneTask, targetDisplay)
                 VdDensityPin.markPackageOnVirtualDisplay(pkg, targetDisplay)
+                // moveRootTaskToDisplay lands on top — if this pkg is only a buried stack
+                // member (e.g. Douyin under 汽水), demote it and restore the intentional front
+                // or it steals audio focus while the UI still shows the old front.
+                val stackFront = c.stacks.front(targetPane)
+                if (!stackFront.isNullOrBlank() && stackFront != pkg) {
+                    moveTaskToBackQuiet(phoneTask)
+                    promoteStackFronts(listOf(targetPane))
+                }
             } catch (e: Throwable) {
                 log(SplitDisplayController.TAG, "reclaim move failed:", e)
             }
@@ -158,6 +166,9 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
 
     /**
      * @return true when [ensurePanePackages] should skip relaunching [packageName] on [displayId].
+     *
+     * Buried-but-alive stack members must be skipped: bringing them to front (even briefly)
+     * steals audio focus (Douyin under 汽水) while a later re-promote restores only the picture.
      */
     fun shouldSkipRelaunchOnDisplay(
         packageName: String,
@@ -166,12 +177,18 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         isStackFront: Boolean,
     ): Boolean {
         if (!hasPackageOnDisplay(packageName, displayId)) return false
-        if (!isPackageFrontVisibleOnDisplay(packageName, displayId)) return false
-        if (isSoftReconnectEnsureReason(reason)) {
-            if (isStackFront) return false
-            if (isPackageFrontStaleOnReconnect(packageName, displayId)) return false
+        // On this VD and not the intentional stack front → leave buried (do not bring).
+        if (!isStackFront) return true
+        // Soft reconnect: splash/launcher still showing as front → force cold relaunch.
+        if (isSoftReconnectEnsureReason(reason) &&
+            isPackageFrontStaleOnReconnect(packageName, displayId)
+        ) {
+            return false
         }
-        return true
+        // Healthy visible front — nothing to do.
+        if (isPackageFrontVisibleOnDisplay(packageName, displayId)) return true
+        // Present but not visible top (order drift) → allow bring/relaunch.
+        return false
     }
 
     private fun isSoftReconnectEnsureReason(reason: String): Boolean {
@@ -537,8 +554,67 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
                     Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
                 }.orEmpty()
             }
-            val taskId = findPackageTaskInRoots(frontPkg, roots, liveOnly = true) ?: continue
+            val taskId = findPackageTaskInRoots(frontPkg, roots, liveOnly = true)
+            if (taskId == null) {
+                // Stack says front but no live root — clear chrome so a zombie/HOME shell
+                // cannot linger as a "residual" picture.
+                removeChromeTasksOnDisplay(displayId)
+                continue
+            }
             bringTaskToFront(taskId, cachedRootsByDisplay = rootsCache)
+            // Push non-front stack mates off resumed/audio focus (same-pane Douyin vs 汽水).
+            rootsCache.remove(displayId)
+            demoteBuriedStackTasks(pane, rootsCache = rootsCache)
+        }
+    }
+
+    /**
+     * Move non-front stack packages on [pane]'s VD to the back so they leave RESUMED and
+     * release audio focus. Keeps tasks alive for fast stack switch (no remove/force-stop).
+     */
+    fun demoteBuriedStackTasks(
+        pane: Int,
+        rootsCache: MutableMap<Int, List<ActivityTaskManager.RootTaskInfo>>? = null,
+    ) {
+        if (!SplitPane.isValid(pane)) return
+        val frontPkg = c.stacks.front(pane)?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        val displayId = c.input.displayIdFor(pane) ?: return
+        if (displayId == Display.INVALID_DISPLAY) return
+        val buried = c.stacks.packagesBottomToTop(pane)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it != frontPkg }
+            .toSet()
+        if (buried.isEmpty()) return
+        val roots = rootsCache?.getOrPut(displayId) {
+            tryOrNull {
+                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+            }.orEmpty()
+        } ?: tryOrNull {
+            Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+        }.orEmpty()
+        for (info in roots) {
+            val pkg = info.topActivity?.packageName?.trim() ?: continue
+            if (pkg !in buried) continue
+            moveTaskToBackQuiet(info.taskId)
+        }
+    }
+
+    private fun moveTaskToBackQuiet(taskId: Int) {
+        try {
+            // Not on our compile stub — resolve at runtime (system_server has it).
+            val am = Instances.activityManager
+            val method = am.javaClass.methods.firstOrNull { m ->
+                m.name == "moveTaskToBack" &&
+                    m.parameterTypes.size == 1 &&
+                    m.parameterTypes[0] == Int::class.javaPrimitiveType
+            }
+            if (method == null) {
+                logDebug(SplitDisplayController.TAG, "moveTaskToBack Method missing")
+                return
+            }
+            method.invoke(am, taskId)
+        } catch (e: Throwable) {
+            logDebug(SplitDisplayController.TAG, "moveTaskToBack failed task=$taskId: ${e.message}")
         }
     }
 
