@@ -522,7 +522,7 @@ class SplitDisplayController(
         mFocusedPane = pane
     }
 
-    /** Non-front stack packages on either AA VD pane (for cluster lyric mirror exclusion). */
+    /** Non-front stack packages on either AA VD pane (lyric mirror drops non-music buried). */
     fun buriedPackagesOnAaDisplays(): Set<String> {
         val buried = linkedSetOf<String>()
         for (pane in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {

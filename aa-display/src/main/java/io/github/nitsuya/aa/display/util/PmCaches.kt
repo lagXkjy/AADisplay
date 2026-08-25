@@ -7,10 +7,12 @@ object PmCaches {
     fun invalidateAll() {
         PmResolveCache.invalidateAll()
         PmIconCache.invalidateAll()
+        MusicAppClassifier.invalidate()
     }
 
     fun invalidatePackage(packageName: String?) {
         PmResolveCache.invalidate(packageName)
         PmIconCache.invalidate(packageName)
+        MusicAppClassifier.invalidate(packageName)
     }
 }

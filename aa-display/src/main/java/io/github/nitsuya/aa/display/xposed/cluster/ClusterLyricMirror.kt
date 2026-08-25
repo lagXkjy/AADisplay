@@ -10,6 +10,7 @@ import android.os.Looper
 import android.os.SystemClock
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.service.ClusterLyricMediaService
+import io.github.nitsuya.aa.display.util.MusicAppClassifier
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
@@ -318,7 +319,13 @@ object ClusterLyricMirror {
         val filtered = sessions.filter { c ->
             val pkg = c.packageName ?: return@filter false
             if (pkg == selfPkg) return@filter false
-            if (pkg in buried) return@filter false
+            // Drop buried non-music (e.g. Douyin); music may play under maps.
+            val ctx = appContext
+            if (pkg in buried &&
+                (ctx == null || !MusicAppClassifier.isMusicSession(ctx, c))
+            ) {
+                return@filter false
+            }
             // Skip system / gearhead sessions; never re-bind our :cluster shell.
             if (pkg == "android") return@filter false
             if (pkg.startsWith("com.google.android.projection.gearhead")) return@filter false
