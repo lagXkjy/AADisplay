@@ -2,6 +2,8 @@ package io.github.nitsuya.aa.display.xposed.hook
 
 import android.app.Application
 import android.app.Instrumentation
+import android.os.Handler
+import android.os.Looper
 import com.github.kyuubiran.ezxhelper.init.EzXHelperInit
 import com.github.kyuubiran.ezxhelper.init.InitFields
 import com.github.kyuubiran.ezxhelper.utils.findMethod
@@ -19,6 +21,7 @@ import io.github.nitsuya.aa.display.xposed.hook.aa.AaUiHook
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.luckypray.dexkit.DexKitBridge
+import kotlin.concurrent.thread
 import kotlin.system.measureTimeMillis
 
 
@@ -49,6 +52,9 @@ abstract class AaHook {
 
 object AndroidAutoHook : BaseHook() {
     override val tagName: String = "AAD_AndroidAutoHook"
+
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
     override fun init(lpparam: XC_LoadPackage.LoadPackageParam) {
         val processName = lpparam.processName
         val hooks = listOf(
@@ -93,42 +99,71 @@ object AndroidAutoHook : BaseHook() {
                 }
             }
 
-            if (needScan.isNotEmpty()) {
-                System.loadLibrary("dexkit")
-                val measureTimeMillis = measureTimeMillis {
-                    DexKitBridge.create(lpparam.appInfo.sourceDir).use { bridge ->
-                        needScan.forEach { h ->
-                            runCatching { h.loadDexClass(bridge, lpparam) }
-                                .onSuccess {
-                                    ready += h
-                                    runCatching { h.saveCache(cache, lpparam) }
-                                        .onFailure { e ->
-                                            log(tagName, "${h.tagName} saveCache failed", e)
-                                        }
-                                }
-                                .onFailure { e ->
-                                    log(tagName, "${h.tagName} loadDexClass failed", e)
-                                }
-                        }
-                    }
-                }
-                cache.commit()
-                logDebug(
-                    tagName,
-                    "${lpparam.processName} load class measure ${measureTimeMillis}ms " +
-                        "(scanned=${needScan.size} cached=${hooks.count { it.usesDexKit } - needScan.size})",
-                )
-            } else {
+            // Install cache hits + non-DexKit hooks immediately on the main thread.
+            ready.forEach { h ->
+                runCatching { h.hook(lpparam) }
+                    .onFailure { e -> log(tagName, "${h.tagName} hook failed", e) }
+            }
+
+            if (needScan.isEmpty()) {
                 logDebug(
                     tagName,
                     "${lpparam.processName} dexkit cache hit all " +
                         "(${hooks.count { it.usesDexKit }} hooks, skipped scan)",
                 )
+                return@hookBefore
             }
 
-            ready.forEach { h ->
-                runCatching { h.hook(lpparam) }
-                    .onFailure { e -> log(tagName, "${h.tagName} hook failed", e) }
+            // FacetBar starve/collapse live in AaUiHook — scan it first to shrink
+            // the window where Coolwalk can show the left rail during cold start.
+            needScan.sortBy { if (it === AaUiHook) 0 else 1 }
+
+            // Cold DexKit scan is multi-second; keep it off the main thread so
+            // gearhead:car can still handle USB_STATE / projection without ANR.
+            log(
+                tagName,
+                "${lpparam.processName} dexkit cold scan deferred " +
+                    "(${needScan.size} hooks, main-thread install=${ready.size}, " +
+                    "order=${needScan.joinToString { it.tagName }})",
+            )
+            thread(name = "AAD-DexKit-$processName", isDaemon = true) {
+                runCatching {
+                    System.loadLibrary("dexkit")
+                    var scanned = 0
+                    val measureTimeMillis = measureTimeMillis {
+                        DexKitBridge.create(lpparam.appInfo.sourceDir).use { bridge ->
+                            needScan.forEach { h ->
+                                runCatching { h.loadDexClass(bridge, lpparam) }
+                                    .onSuccess {
+                                        scanned++
+                                        runCatching { h.saveCache(cache, lpparam) }
+                                            .onFailure { e ->
+                                                log(tagName, "${h.tagName} saveCache failed", e)
+                                            }
+                                        // Install each hook as soon as its scan finishes.
+                                        mainHandler.post {
+                                            runCatching { h.hook(lpparam) }
+                                                .onFailure { e ->
+                                                    log(tagName, "${h.tagName} hook failed", e)
+                                                }
+                                        }
+                                    }
+                                    .onFailure { e ->
+                                        log(tagName, "${h.tagName} loadDexClass failed", e)
+                                    }
+                            }
+                        }
+                    }
+                    cache.commit()
+                    logDebug(
+                        tagName,
+                        "${lpparam.processName} load class measure ${measureTimeMillis}ms " +
+                            "(scanned=$scanned/${needScan.size} " +
+                            "cached=${hooks.count { it.usesDexKit } - needScan.size})",
+                    )
+                }.onFailure { e ->
+                    log(tagName, "${lpparam.processName} dexkit cold scan failed", e)
+                }
             }
         }
     }
