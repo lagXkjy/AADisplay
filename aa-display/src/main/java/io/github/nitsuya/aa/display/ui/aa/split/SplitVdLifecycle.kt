@@ -171,6 +171,7 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
         }
     }
 
+    /** Zero-size overlay anchor on the pane VD (no FLAG_KEEP_SCREEN_ON — DisplaySessionPolicy owns power). */
     fun addKeepAwakeOverlay(pane: Int) {
         val vd = if (pane == SplitPane.PRIMARY) c.mPrimary else c.mSecondary
         val forceView = if (pane == SplitPane.PRIMARY) c.mPrimaryForceView else c.mSecondaryForceView
@@ -185,8 +186,7 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
                     0, 0,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                     PixelFormat.TRANSPARENT
                 ).also {
                     it.gravity = Gravity.START or Gravity.TOP

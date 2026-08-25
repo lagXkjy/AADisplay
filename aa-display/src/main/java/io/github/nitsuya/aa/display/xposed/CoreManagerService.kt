@@ -313,7 +313,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 // Always kick resize/policies/ensure after surface rebind (null→live).
                 onReconnected(profile.width, profile.height, profile.densityDpi)
                 // Exit ColorFade if panes went OFF while AA was disconnected.
-                mSessionPolicy?.keepVirtualDisplayAwake("soft-reconnect", forceWake = true)
+                mSessionPolicy?.keepVirtualDisplayAwake("soft-reconnect")
                 // Ratio is owned by divider drag / restore — do not push AA's echo back
                 // unless it meaningfully differs (avoids resize thrash).
                 val clamped = SplitPane.clampRatio(ratio)
