@@ -13,7 +13,8 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
  * [AvMediaArbiter.pauseLosers] (e.g. Douyin FGS under another AvMedia).
  *
  * Sticky AvMedia: pause buried only when this pane's front AvMedia is PLAYING.
- * Non-Av / idle Av fronts never steal focus.
+ * Non-Av / idle Av fronts never steal focus — but [enforceSingleSounder] still
+ * keeps only one AvMedia sounding across both panes (restore / cross-pane).
  */
 internal class SplitBuriedPlayback(private val c: SplitDisplayController) {
 
@@ -59,15 +60,94 @@ internal class SplitBuriedPlayback(private val c: SplitDisplayController) {
         }
     }
 
+    /**
+     * Global single-sounder: at most one AvMedia PLAYING across both panes / buried.
+     * Call after restore / ensure / multi-pane promote — apps often auto-resume together.
+     */
+    fun enforceSingleSounder(reason: String) {
+        if (c.mIsDestroying) return
+        val msm = c.context.getSystemService(MediaSessionManager::class.java) ?: return
+        val sessions = try {
+            msm.getActiveSessions(null)
+        } catch (e: Throwable) {
+            logDebug(SplitDisplayController.TAG, "enforceSingle getActiveSessions failed: ${e.message}")
+            return
+        }
+        val layout = c.avStackLayout()
+        val winner = AvMediaArbiter.pickWinner(c.context, sessions, layout)
+        AvMediaArbiter.pauseLosers(c.context, sessions, winner)
+        val winnerPkg = winner?.packageName
+        if (winnerPkg != null) {
+            for (controller in sessions) {
+                val pkg = controller.packageName?.trim() ?: continue
+                if (pkg == winnerPkg) continue
+                if (!MusicAppClassifier.isAvMediaSession(c.context, controller)) continue
+                if (!AvMediaArbiter.isPlayingState(
+                        controller.playbackState?.state ?: PlaybackState.STATE_NONE,
+                    )
+                ) {
+                    continue
+                }
+                pausedByAADisplay += pkg
+            }
+        }
+        logDebug(
+            SplitDisplayController.TAG,
+            "enforceSingleSounder[$reason] winner=$winnerPkg",
+        )
+    }
+
+    /**
+     * Restore / reconnect: sessions often flip to PLAYING after launch settles.
+     * Kick now plus a few delayed passes so multi-Av stacks stay single-sounder.
+     */
+    fun scheduleEnforceSingleSounder(reason: String) {
+        c.mHandler.removeCallbacksAndMessages(SINGLE_SOUNDER_TOKEN)
+        enforceSingleSounder(reason)
+        val now = SystemClock.uptimeMillis()
+        for (delay in ENFORCE_RETRY_DELAYS_MS) {
+            c.mHandler.postAtTime(
+                {
+                    if (c.mIsDestroying) return@postAtTime
+                    enforceSingleSounder("$reason+$delay")
+                },
+                SINGLE_SOUNDER_TOKEN,
+                now + delay,
+            )
+        }
+    }
+
+    fun cancelScheduledEnforceSingleSounder() {
+        c.mHandler.removeCallbacksAndMessages(SINGLE_SOUNDER_TOKEN)
+    }
+
+    /**
+     * Resume a front we previously paused — only if it would not break single-sounder
+     * (another AvMedia already PLAYING wins).
+     */
     fun resumeFrontPlaybackIfPausedByUs(frontPkg: String) {
         val pkg = frontPkg.trim().takeIf { it.isNotEmpty() } ?: return
-        if (!pausedByAADisplay.remove(pkg)) return
+        if (pkg !in pausedByAADisplay) return
         val msm = c.context.getSystemService(MediaSessionManager::class.java) ?: return
         val sessions = try {
             msm.getActiveSessions(null)
         } catch (_: Throwable) {
             return
         }
+        val layout = c.avStackLayout()
+        val winner = AvMediaArbiter.pickWinner(c.context, sessions, layout)
+        val winnerPkg = winner?.packageName
+        val winnerPlaying = winner != null &&
+            AvMediaArbiter.isPlayingState(winner.playbackState?.state ?: PlaybackState.STATE_NONE)
+        // Another Av already owns the speaker — keep this one paused for later promote.
+        if (winnerPlaying && winnerPkg != null && winnerPkg != pkg) {
+            logDebug(
+                SplitDisplayController.TAG,
+                "resumeFront skip pkg=$pkg winner=$winnerPkg",
+            )
+            return
+        }
+        pausedByAADisplay.remove(pkg)
         val controller = sessions.firstOrNull { it.packageName == pkg } ?: return
         try {
             controller.transportControls.play()
@@ -88,5 +168,7 @@ internal class SplitBuriedPlayback(private val c: SplitDisplayController) {
 
     private companion object {
         const val PAUSE_THROTTLE_MS = 500L
+        val SINGLE_SOUNDER_TOKEN = Any()
+        val ENFORCE_RETRY_DELAYS_MS = longArrayOf(600L, 1600L, 3200L)
     }
 }

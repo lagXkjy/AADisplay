@@ -6,7 +6,7 @@
 - **藏车机媒体壳图标：** 删除 `AaClusterMediaIconHideHook`（不再 hook `queryIntentServices` 过滤本包壳）。全屏投影下桌面列表本就会闪，隐藏收益低且增加 hook 面。
 
 ### Changed
-- **音视频粘性焦点（r16）：** AvMedia（音乐 ∪ 视频）正在播放时不因地图/浏览器压顶或空闲 Av 栈顶而自动丢发声权；仅在**停止播放**、**移出栈**、或**另一 AvMedia 开始 PLAYING** 时让出。同窗 `SplitBuriedPlayback` 仅在栈顶 Av 正在播时 pause 埋栈。清理：去掉 soft-idle 选主 / 仅音乐埋栈启发式、`eligibleControllers` 无用 layout 参数、重复 isPlaying/isIdle、无调用方的 `CoreManagerService.buriedPackagesOnAaDisplays`。
+- **音视频粘性焦点（r16）：** AvMedia（音乐 ∪ 视频）正在播放时不因地图/浏览器压顶或空闲 Av 栈顶而自动丢发声权；仅在**停止播放**、**移出栈**、或**另一 AvMedia 开始 PLAYING** 时让出。同窗 `SplitBuriedPlayback` 仅在栈顶 Av 正在播时 pause 埋栈。**栈恢复 / ensure / 双窗 promote** 走 `enforceSingleSounder`（立即 + 延迟重试），多 Av 同恢只留一个发声；`resumeFront` 若已有其它 Av 在播则跳过。清理：去掉 soft-idle 选主 / 仅音乐埋栈启发式、`eligibleControllers` 无用 layout 参数、重复 isPlaying/isIdle、无调用方的 `CoreManagerService.buriedPackagesOnAaDisplays`。
 - **音视频互斥 + 仪表三源重定义（r15）：** AvMedia = 音乐 ∪ 视频（抖音）。`AvMediaArbiter.pickWinner` 只保留一个发声源（焦点窗正在播的栈顶优先，否则三源 / 其它音乐 / 视频）；`pauseLosers` 停其它 PLAYING。仪表只跟 QQ 车载 / HD / 汽水里**正在播放**的那一个（`pickClusterSource`）；视频抢到发声权时清空仪表。三源彼此互斥。
 - **同窗叠栈：** 栈顶 AvMedia **正在播放**时对埋栈 AvMedia 显式 `pause`；非 Av / 空闲 Av 压顶时埋栈音视频可续播。
 - **FacetBar 重构文档与试验代码清理：** 新增 [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)（状态机、四路回收、profile settle、坑点）；移除 `ReconnectSizingTrace`、未使用的 `:car` presentation resize 广播、`CoolwalkRailMath` 死代码；`AaDisplayPresentationResize` 改为 AADisplay 进程懒加载 `DrawingSpec` hook 入口；同步 [EXECUTION.md](docs/EXECUTION.md) §5.4。

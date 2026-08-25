@@ -86,6 +86,8 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         if (SplitPane.isFullscreenPane(snap.fullscreenPane)) {
             c.setSplitFullscreen(snap.fullscreenPane)
         }
+        // Multi-Av restore (e.g. music + Douyin) — only one may keep sounding.
+        c.buriedPlayback.scheduleEnforceSingleSounder("restore")
         log(
             SplitDisplayController.TAG,
             "restoreLastSplit primary=${snap.primaryPackage}:$primaryOk " +
@@ -164,6 +166,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             trimStackToDisplayAlive(SplitPane.SECONDARY, snap.secondaryPackagesBottomToTop())
             ownershipBringFront(SplitPane.PRIMARY, snap.primaryPackage)
             ownershipBringFront(SplitPane.SECONDARY, snap.secondaryPackage)
+            c.buriedPlayback.scheduleEnforceSingleSounder("restore-verify")
             persistSnapshot(force = true, logSettingsFailures = true)
         }
         c.notifySplitStateChanged()
@@ -361,6 +364,8 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             }
             c.ownership.enforceStackFrontAudio(pane)
         }
+        // Cross-pane / multi-Av ensure: only one sounder after relaunch settle.
+        c.buriedPlayback.scheduleEnforceSingleSounder("ensure-$reason")
         if (relaunched) {
             c.mSuppressReclaimUntil =
                 maxOf(c.mSuppressReclaimUntil, SystemClock.uptimeMillis() + SplitDisplayController.SUPPRESS_RECLAIM_MS)

@@ -592,6 +592,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     /** Bring the current stack-front task to the foreground for each pane. */
     fun promoteStackFronts(panes: Collection<Int>) {
         val rootsCache = HashMap<Int, List<ActivityTaskManager.RootTaskInfo>>(2)
+        val fronts = ArrayList<String>(2)
         for (pane in panes) {
             val frontPkg = c.stacks.front(pane)
             c.mPanePackages[pane] = frontPkg
@@ -613,10 +614,19 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
                 continue
             }
             bringTaskToFront(taskId, cachedRootsByDisplay = rootsCache)
-            // Push non-front stack mates off resumed/audio focus (same-pane Douyin vs 汽水).
+            // Push non-front stack mates off for picture; same-pane Av pause if front PLAYING.
             rootsCache.remove(displayId)
             enforceStackFrontAudio(pane, rootsCache = rootsCache)
+            fronts += frontPkg
+        }
+        // Cross-pane: restore / dual Av fronts must not both sound.
+        c.buriedPlayback.enforceSingleSounder("promote")
+        for (frontPkg in fronts) {
             c.buriedPlayback.resumeFrontPlaybackIfPausedByUs(frontPkg)
+        }
+        // Resume may have started a second player — re-assert single sounder.
+        if (fronts.size > 1) {
+            c.buriedPlayback.enforceSingleSounder("promote-after-resume")
         }
     }
 

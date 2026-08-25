@@ -18,8 +18,9 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
  * 2. QQ 车载 / HD / 汽水 — at most one plays; [pickClusterSource] follows that player.
  * 3. Among PLAYING sessions, focused front → other front → stack rank / preferred / freshness.
  * 4. Sticky AvMedia focus: no PLAYING → no sounder (do not invent one from idle stack-top).
- *    A player yields only when it stops, leaves the stack, or another AvMedia starts PLAYING
- *    (same-pane pause: SplitBuriedPlayback).
+ *    A player yields only when it stops, leaves the stack, or another AvMedia starts PLAYING.
+ *    Stack restore / ensure must still [pauseLosers] so multi-Av relaunch keeps one sounder
+ *    (SplitBuriedPlayback.enforceSingleSounder).
  */
 object AvMediaArbiter {
     private const val TAG = "AAD_AvMediaArbiter"

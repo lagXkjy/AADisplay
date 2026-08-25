@@ -636,6 +636,7 @@ class SplitDisplayController(
         mHandler.removeCallbacksAndMessages(launch.VERIFY_RESTORE_TOKEN)
         mHandler.removeCallbacksAndMessages(FULLSCREEN_FOCUS_TOKEN)
         mHandler.removeCallbacksAndMessages(RECONNECT_FILL_TOKEN)
+        buriedPlayback.cancelScheduledEnforceSingleSounder()
         tryOrNull { Instances.iActivityTaskManager.unregisterTaskStackListener(mTaskStackListener) }
 
         val protectedPackages = linkedSetOf(BuildConfig.APPLICATION_ID)
