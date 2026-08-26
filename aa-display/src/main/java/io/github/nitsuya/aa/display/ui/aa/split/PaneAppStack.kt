@@ -151,15 +151,6 @@ internal class PaneAppStack(private val c: SplitDisplayController) {
         syncFrontToMPanePackages()
     }
 
-    fun swapStacks() {
-        val tmp = ArrayList(stacks[SplitPane.PRIMARY])
-        stacks[SplitPane.PRIMARY].clear()
-        stacks[SplitPane.PRIMARY].addAll(stacks[SplitPane.SECONDARY])
-        stacks[SplitPane.SECONDARY].clear()
-        stacks[SplitPane.SECONDARY].addAll(tmp)
-        syncFrontToMPanePackages()
-    }
-
     /**
      * Drop packages no longer alive on the pane display; keep relative order.
      * @return true if the front package changed

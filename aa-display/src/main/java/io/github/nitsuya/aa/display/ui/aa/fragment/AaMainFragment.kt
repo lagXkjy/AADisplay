@@ -48,9 +48,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         private const val PENDING_OCCUPANCY_MS = 8_000L
         /** Ignore stale empty occupancy while connect-time restore is in flight. */
         private const val RESTORE_PENDING_MS = 8_000L
-        /** Blocks pane surface rebind during ratio drag settle (matches server ratio-settle fill). */
+        /** Blocks pane surface rebind / occupancy sync during ratio or swap settle. */
         private const val RATIO_SETTLE_GUARD_MS = 180L
-        /** Unified swap settle: occupancy sync + server ratio revert if swap failed. */
+        /** Optimistic swap settle — longer than ratio guard to cover VD resize. */
         private const val SWAP_SETTLE_MS = 280L
         /** Extra restore-pending windows when server pkg still empty after [RESTORE_PENDING_MS]. */
         private const val RESTORE_PENDING_MAX_REARMS = 2
@@ -110,7 +110,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     val secondary = intent.getStringExtra(AABroadcastConst.EXTRA_SECONDARY_PACKAGE)
                     if (primary != null || secondary != null) {
                         applyOccupancyFromPackages(primary.orEmpty(), secondary.orEmpty())
-                    } else if (!swapInFlight) {
+                    } else if (!isLayoutSettling()) {
                         syncPaneOccupancyFromService()
                     }
                     if (intent.hasExtra(AABroadcastConst.EXTRA_FULLSCREEN_PANE) && !dividerDragging) {
@@ -121,7 +121,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                         applyFullscreenFromRemote(fs)
                     }
                     // Optimistic swap already laid out shell; settle runnable reconciles ratio.
-                    if (swapInFlight) return
+                    if (swapSettling) return
                     if (intent.hasExtra(AABroadcastConst.EXTRA_RATIO) &&
                         !dividerDragging &&
                         !SplitPane.isFullscreenPane(fullscreenPane)
@@ -330,8 +330,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             baseBinding.root.removeCallbacks(settleMid)
             baseBinding.root.removeCallbacks(settleLate)
             baseBinding.root.removeCallbacks(afterOccupancySync)
-            baseBinding.root.removeCallbacks(afterSwapSettle)
-            baseBinding.root.removeCallbacks(clearRatioSettling)
+            baseBinding.root.removeCallbacks(clearLayoutSettle)
             baseBinding.root.removeCallbacks(clearPendingOccupancy)
             baseBinding.root.removeCallbacks(clearRestorePending)
             baseBinding.splitContainer.removeCallbacks(hostLayoutCatchup)
@@ -385,10 +384,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private var lastCreateHeight = 0
     private var lastCreateDpi = 0
     private var dividerDragging = false
-    /** Blocks TextureView rebind → setPaneSurface → ensure during ratio settle. */
-    private var ratioSettling = false
-    /** Optimistic swap layout in flight — skip redundant broadcast/settle relayout. */
-    private var swapInFlight = false
+    /** Uptime deadline — blocks rebind/occupancy sync until ratio or swap settle completes. */
+    private var layoutSettleUntil = 0L
+    /** True during optimistic tap-swap (skip redundant ratio broadcast relayout). */
+    private var swapSettling = false
     /** GPU split/peel preview — pane layout sizes stay put until settle. */
     private var dragPreviewActive = false
     private var dragPeelPreview = false
@@ -402,7 +401,39 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private val settleLate = Runnable { runConnectSettleStep(2) }
     private val primaryPaneSurfaceRebind = Runnable { rebindPaneSurface(SplitPane.PRIMARY) }
     private val secondaryPaneSurfaceRebind = Runnable { rebindPaneSurface(SplitPane.SECONDARY) }
-    private val clearRatioSettling = Runnable { ratioSettling = false }
+    private val clearLayoutSettle: Runnable = Runnable { onClearLayoutSettle() }
+
+    private fun onClearLayoutSettle() {
+        if (SystemClock.uptimeMillis() < layoutSettleUntil) {
+            val delay: Long = layoutSettleUntil - SystemClock.uptimeMillis()
+            baseBinding.root.postDelayed(clearLayoutSettle, delay.coerceAtLeast(0L))
+            return
+        }
+        val wasSwap = swapSettling
+        layoutSettleUntil = 0L
+        swapSettling = false
+        if (wasSwap) {
+            reconcileAfterSwapSettle()
+        }
+    }
+
+    private fun isLayoutSettling(): Boolean = SystemClock.uptimeMillis() < layoutSettleUntil
+
+    private fun armLayoutSettle(durationMs: Long, swap: Boolean = false) {
+        if (swap) swapSettling = true
+        val until = SystemClock.uptimeMillis() + durationMs
+        layoutSettleUntil = maxOf(layoutSettleUntil, until)
+        val root = baseBinding.root
+        root.removeCallbacks(clearLayoutSettle)
+        val delay = (layoutSettleUntil - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+        root.postDelayed(clearLayoutSettle, delay)
+    }
+
+    private fun clearLayoutSettleNow() {
+        layoutSettleUntil = 0L
+        swapSettling = false
+        baseBinding.root.removeCallbacks(clearLayoutSettle)
+    }
     private val afterOccupancySync = Runnable { syncPaneOccupancyFromService() }
     private val clearPendingOccupancy = Runnable {
         pendingOccPane = SplitPane.FULLSCREEN_NONE
@@ -441,14 +472,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         restorePendingRearms = 0
         syncPaneOccupancyFromService()
     }
-    private val afterSwapSettle = Runnable {
-        swapInFlight = false
-        ratioSettling = false
-        if (!isAdded || view == null || dividerDragging) return@Runnable
+
+    private fun reconcileAfterSwapSettle() {
+        if (!isAdded || view == null || dividerDragging) return
         val fs = tryOrNull { CoreApi.splitFullscreenPane } ?: SplitPane.FULLSCREEN_NONE
         applyFullscreenFromRemote(fs)
         if (!SplitPane.isFullscreenPane(fs)) {
-            val ratio = tryOrNull { CoreApi.splitRatio }?.takeIf { it > 0f } ?: return@Runnable
+            val ratio = tryOrNull { CoreApi.splitRatio }?.takeIf { it > 0f } ?: return
             val clamped = SplitPane.clampRatio(ratio)
             splitRatio = clamped
             // Revert optimistic layout only when server ratio drifted (swap failed / lag).
@@ -503,13 +533,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             }
             onRatioSettled = { ratio ->
                 splitRatio = ratio
-                ratioSettling = true
-                baseBinding.root.removeCallbacks(clearRatioSettling)
+                armLayoutSettle(RATIO_SETTLE_GUARD_MS)
                 // Shell-first (same as HID_APPLY_SPLIT_RATIO): layout before VD resize.
                 applySplitLayoutWeights(ratio, force = true)
                 CoreApi.setSplitRatio(ratio)
                 dividerDragging = false
-                baseBinding.root.postDelayed(clearRatioSettling, RATIO_SETTLE_GUARD_MS)
                 refreshImeChip()
             }
             onFullscreenEnter = { pane ->
@@ -572,18 +600,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     private fun armSwapSettle() {
-        swapInFlight = true
-        ratioSettling = true
-        baseBinding.root.removeCallbacks(afterSwapSettle)
-        baseBinding.root.postDelayed(afterSwapSettle, SWAP_SETTLE_MS)
+        armLayoutSettle(SWAP_SETTLE_MS, swap = true)
     }
 
     private fun onSwapFailedFromServer() {
-        if (!swapInFlight) return
-        baseBinding.root.removeCallbacks(afterSwapSettle)
+        if (!swapSettling) return
+        clearLayoutSettleNow()
         revertSwapOptimisticLayout()
-        swapInFlight = false
-        ratioSettling = false
         syncPaneOccupancyFromService()
     }
 
@@ -1347,7 +1370,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     private fun schedulePaneSurfaceRebind(pane: Int) {
-        if (!isAdded || view == null || dividerDragging || ratioSettling) return
+        if (!isAdded || view == null || dividerDragging || isLayoutSettling()) return
         val runnable =
             if (pane == SplitPane.PRIMARY) primaryPaneSurfaceRebind else secondaryPaneSurfaceRebind
         val root = baseBinding.root

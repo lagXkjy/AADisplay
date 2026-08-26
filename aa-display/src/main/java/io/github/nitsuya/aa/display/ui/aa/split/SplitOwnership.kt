@@ -92,7 +92,6 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     }
 
     fun forgetOwnership(taskId: Int, packageName: String?) {
-        c.mVdTaskIds.remove(taskId)
         packageName?.let { c.mVdPackages.remove(it) }
     }
 
@@ -205,7 +204,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         // On this VD and not the intentional stack front → leave buried (do not bring).
         if (!isStackFront) return true
         // Soft reconnect: splash/launcher still showing as front → force cold relaunch.
-        if (isSoftReconnectEnsureReason(reason) &&
+        if (SplitPane.isSoftReconnectReason(reason) &&
             isPackageFrontStaleOnReconnect(packageName, displayId)
         ) {
             return false
@@ -214,12 +213,6 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         if (isPackageFrontVisibleOnDisplay(packageName, displayId)) return true
         // Present but not visible top (order drift) → allow bring/relaunch.
         return false
-    }
-
-    private fun isSoftReconnectEnsureReason(reason: String): Boolean {
-        return reason == "reconnect" ||
-            reason == "reconnect-late" ||
-            reason == "surfaces-ready"
     }
 
     fun findPackageTaskOnDisplay(
@@ -485,51 +478,22 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         val targetingLauncher = launcher != null && component == launcher
         return try {
             VdDensityPin.markPackageOnVirtualDisplay(packageName, displayId)
-            c.context.invokeMethod(
-                "startActivityAsUser",
-                args(
-                    Intent().apply {
-                        this.component = component
-                        `package` = component.packageName
-                        action = Intent.ACTION_MAIN
-                        // MAIN/LAUNCHER on MainMapActivity misses the task; only tag LAUNCHER
-                        // when reordering via the real launcher component.
-                        if (targetingLauncher) {
-                            addCategory(Intent.CATEGORY_LAUNCHER)
-                        }
-                        // Reuse existing root on this display — do not MULTIPLE_TASK.
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    },
-                    android.app.ActivityOptions.makeBasic().apply {
-                        launchDisplayId = displayId
-                        try {
-                            invokeMethod(
-                                "setCallerDisplayId",
-                                args(displayId),
-                                argTypes(Integer.TYPE)
-                            )
-                        } catch (_: Throwable) {
-                        }
-                    }.toBundle(),
-                    UserHandle::class.java.newInstance(
-                        args(0),
-                        argTypes(Integer.TYPE)
-                    )
-                ),
-                argTypes(
-                    Intent::class.java,
-                    Bundle::class.java,
-                    UserHandle::class.java
+            val ok = AaLaunchHelper.startActivityOnDisplay(
+                context = c.context,
+                component = component,
+                userId = 0,
+                displayId = displayId,
+                mode = AaLaunchHelper.Mode.REORDER,
+                addLauncherCategory = targetingLauncher,
+            )
+            if (ok) {
+                logDebug(
+                    SplitDisplayController.TAG,
+                    "bringTaskToFront reorder pkg=$packageName cmp=${component.className} " +
+                        "task=$taskId display=$displayId topPreferred=$preferTopActivity",
                 )
-            )
-            logDebug(
-                SplitDisplayController.TAG,
-                "bringTaskToFront reorder pkg=$packageName cmp=${component.className} " +
-                    "task=$taskId display=$displayId topPreferred=$preferTopActivity"
-            )
-            true
+            }
+            ok
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "bringTaskToFront reorder failed:", e)
             false

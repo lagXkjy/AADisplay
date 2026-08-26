@@ -53,7 +53,6 @@ internal class SplitTaskStackListener(
         if (!SplitChromePackages.BOUNCE_EXCLUDED.contains(pkg)) {
             c.mHandler.post {
                 if (c.ownership.isTaskOnAaDisplay(taskId)) {
-                    c.mVdTaskIds.add(taskId)
                     c.mVdPackages.add(pkg)
                 } else if (c.mVdPackages.contains(pkg)) {
                     c.launch.scheduleAtmsSettle()
@@ -63,7 +62,6 @@ internal class SplitTaskStackListener(
     }
 
     override fun onTaskRemoved(taskId: Int) {
-        c.mVdTaskIds.remove(taskId)
         if (!c.mIsDestroying) {
             c.launch.scheduleAtmsSettle()
         }
@@ -98,7 +96,6 @@ internal class SplitTaskStackListener(
         val pkg = c.ownership.findPackageForTask(taskId)
         VdDensityPin.onTaskDisplayChanged(pkg, newDisplayId)
         if (c.isAaVirtualDisplay(newDisplayId)) {
-            c.mVdTaskIds.add(taskId)
             pkg?.let { c.mVdPackages.add(it) }
         } else if (newDisplayId == Display.DEFAULT_DISPLAY) {
             // During intentional swipe-off / close, suppress is armed and ownership is

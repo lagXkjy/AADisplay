@@ -156,7 +156,6 @@ class SplitDisplayController(
 
     internal val mPanePackages = arrayOfNulls<String>(2)
     internal val mTrackedPackageUsers = linkedMapOf<String, MutableSet<Int>>()
-    internal val mVdTaskIds = mutableSetOf<Int>()
     internal val mVdPackages = mutableSetOf<String>()
     /** Explicit Recent/stack closes this session — must not backfill or restore from snapshot. */
     internal val mExplicitlyClosedPackages = mutableSetOf<String>()
@@ -271,7 +270,6 @@ class SplitDisplayController(
         mPanePackages[0] = null
         mPanePackages[1] = null
         stacks.clearAll()
-        mVdTaskIds.clear()
         mVdPackages.clear()
         mTrackedPackageUsers.clear()
         mSuppressReclaimUntil = 0L
@@ -646,6 +644,7 @@ class SplitDisplayController(
             log(TAG, "onDestroy snapshot failed:", e)
         }
         mIsDestroying = true
+        launch.resetSettlement()
         mExplicitlyClosedPackages.clear()
         ime.stop()
         mAaUiDisplayId = Display.INVALID_DISPLAY
@@ -657,7 +656,6 @@ class SplitDisplayController(
         mHandler.removeCallbacks(launch.mDebouncedAtmsSettle)
         mHandler.removeCallbacks(launch.mDebouncedPersist)
         mHandler.removeCallbacks(mPendingResize)
-        mHandler.removeCallbacks(launch.mDebouncedAtmsSettle)
         mHandler.removeCallbacksAndMessages(launch.RESTORE_TOKEN)
         mHandler.removeCallbacksAndMessages(launch.ENSURE_TOKEN)
         mHandler.removeCallbacksAndMessages(launch.VERIFY_RESTORE_TOKEN)
@@ -702,7 +700,6 @@ class SplitDisplayController(
         mPanePackages[0] = null
         mPanePackages[1] = null
         stacks.clearAll()
-        mVdTaskIds.clear()
         mVdPackages.clear()
         mDensityDpi = 0
         mWidth = 0
@@ -1506,9 +1503,6 @@ class SplitDisplayController(
 
         val afterPrimary = ownership.snapshotUserRootTasks(primaryDisplay)
         val afterSecondary = ownership.snapshotUserRootTasks(secondaryDisplay)
-        mVdTaskIds.clear()
-        mVdTaskIds.addAll(afterPrimary.map { it.taskId })
-        mVdTaskIds.addAll(afterSecondary.map { it.taskId })
 
         // Re-point package ownership at the new displays (both sides stay on VDs).
         linkedSetOf<String>().apply {

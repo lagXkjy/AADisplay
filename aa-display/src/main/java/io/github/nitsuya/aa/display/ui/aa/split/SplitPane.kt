@@ -97,6 +97,10 @@ object SplitPane {
 
     fun isValid(pane: Int): Boolean = pane == PRIMARY || pane == SECONDARY
 
+    /** Soft reconnect / surface-ready ensure reasons (shared by launch + ownership). */
+    fun isSoftReconnectReason(reason: String): Boolean =
+        reason == "reconnect" || reason == "reconnect-late" || reason == "surfaces-ready"
+
     fun isFullscreenPane(pane: Int): Boolean = pane == PRIMARY || pane == SECONDARY
 
     /** Which pane becomes fullscreen when a raw settle ratio crosses the edge. */

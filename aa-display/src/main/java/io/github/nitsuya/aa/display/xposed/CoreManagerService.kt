@@ -564,11 +564,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
         fun panePackageForDisplay(displayId: Int): String? {
             val controller = mSplitController ?: return null
-            return when (displayId) {
-                controller.primaryDisplayId -> controller.mPanePackages[SplitPane.PRIMARY]
-                controller.secondaryDisplayId -> controller.mPanePackages[SplitPane.SECONDARY]
-                else -> null
-            }?.trim()?.takeIf { it.isNotEmpty() }
+            val pane = when (displayId) {
+                controller.primaryDisplayId -> SplitPane.PRIMARY
+                controller.secondaryDisplayId -> SplitPane.SECONDARY
+                else -> return null
+            }
+            return controller.getPanePackage(pane)
         }
 
         fun avStackLayout(): AvMediaArbiter.StackLayout? {

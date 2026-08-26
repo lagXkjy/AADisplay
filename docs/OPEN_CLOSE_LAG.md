@@ -19,7 +19,7 @@ SplitAppPickerController / RecentTasksCoordinator / AaMainFragment
     → ACTION_SPLIT_STATE_CHANGED / ACTION_RECENT_TASK_DIRTY 广播回 AA UI
 ```
 
-**关键设计**：用户操作走 `*Async` + `postUserAction`（插队到 handler 队首）；restore/ensure 走同步 `runOnHandlerBlocking` 全路径。
+**关键设计**：用户操作走 `*Async` + `postUserAction`（插队到 handler 队首）；restore/ensure 走同步 `runOnHandlerBlocking` 全路径。恢复链路由 `SplitLaunchRestore` 的 `SettlementPhase`（`IDLE → RESTORING → VERIFYING`）串行，禁止并行 `scheduleRestoreLastSplit`。
 
 ---
 
@@ -41,21 +41,20 @@ UI: hide_picker / post_onExit
   → CoreApi.startActivityOnPane (gearhead 后台线程)
   → CoreManagerService.startActivityOnPane → startActivityOnPaneAsync
   → postUserAction (cancel debounced persist/reclaim/dirty)
-  → startActivityOnPaneUserPickOnHandler
+  → startActivityOnPaneOnHandler
        ├─ 栈上已有     → bringTaskToFront
        ├─ 手机 live task → moveRootTaskToDisplay + bringTaskToFront
-       └─ 否则         → launchOnDisplay (startActivityAsUser 冷启动)
-  → finishUserPickLaunch
-       ├─ schedulePersistSnapshot (debounce 2500ms)
-       ├─ notifySplitStateChanged → AaMainFragment 占位/布局
-       └─ mHandler.post { enforceStackFrontAudio }
+       └─ 否则         → launchOnDisplay (AaLaunchHelper COLD)
+  → schedulePersistSnapshot (debounce 2500ms)
+  → notifySplitStateChanged → AaMainFragment 占位/布局
+  → mHandler.post { enforceStackFrontAudio }
 ```
 
-**决策树**（`SplitDisplayController.startActivityOnPaneUserPickOnHandler`）：
+**决策树**（`SplitDisplayController.startActivityOnPaneOnHandler`）：
 
 1. 栈上已有 → `bringTaskToFront`（最快）
 2. 手机上有 live task → `moveRootTaskToDisplay` + verify
-3. 否则 → `launchOnDisplay`（冷启动）
+3. 否则 → `launchOnDisplay`（冷启动，`AaLaunchHelper.Mode.COLD`）
 4. 栈满 3 个 → 挤底 `evictPackageFromPane`
 
 ### 1.3 已做优化（见 CHANGELOG Unreleased）
@@ -63,6 +62,7 @@ UI: hide_picker / post_onExit
 - 选择器：先 `hide()` + 乐观占位，IPC 放后台线程
 - Recent 点选：先关面板再异步 launch
 - 用户路径用 `startActivityOnPaneAsync` + `postAtFrontOfQueue`
+- Open 双路径合并为单一 `startActivityOnPaneOnHandler`
 
 ---
 
@@ -81,14 +81,14 @@ UI: hide_picker / post_onExit
 ### 2.2 调用链
 
 ```
-RecentTasksCoordinator.closeTask
-  → rememberClosed + removeFromAllColumns (乐观 UI，立即 notifyItemRemoved)
+RecentTasksCoordinator.closeTask / swipe
+  → closeTaskOptimistic (乐观 UI，立即 notifyItemRemoved + skipDirtyReloads)
   → ++reloadGeneration (取消 pending debounced reload)
   → CoreApi.removeTask (fire-and-forget, mutationExecutor)
   → removeTaskAsync → postUserAction → removeTaskOnHandler (sync on mHandler)
        ├─ findPackageForTask (3 display 扫描)
        ├─ stacks.removeFromAll + notifySplitStateChanged
-       └─ mHandler.post { promoteStackFronts / strip chrome }
+       └─ promoteStackFronts (sync on handler)
   → Thread "AADisplay-close":
        ├─ forceStopPackageAsUser (VD 先 forceStop，pane 立刻清)
        └─ ATMS.removeTask (QQ 音乐等可阻塞数秒，故意不在 handler 上)
@@ -98,7 +98,7 @@ RecentTasksCoordinator.closeTask
 
 - `onExplicitPackageClosed` → 本会话不再 restore/backfill
 - `schedulePersistSnapshot`（debounce；单窗空时 skip 写盘）
-- `SplitTaskStackListener.onTaskRemoved` → dirty/reclaim/persist 扇出
+- `SplitTaskStackListener` → `scheduleAtmsSettle` + `schedulePersistSnapshot` + Presentation evict
 
 ---
 
@@ -108,22 +108,24 @@ RecentTasksCoordinator.closeTask
 
 即使用 `*Async`，`postUserAction` 内的 handler 方法仍是**同步**执行：
 
-- 冷启动：`startActivityAsUser`
+- 冷启动：`startActivityAsUser`（经 `AaLaunchHelper`）
 - 置顶：`bringTaskToFront`（多次 ATMS + reorder fallback）
 - 关闭开始：`findPackageForTask` 扫描 3 个 display
 - 关闭后：`promoteStackFronts` → 每窗 `getAllRootTaskInfosOnDisplay`
 
 **表现**：VD 画面切换滞后于 Recent 行乐观移除；多 App 栈切换时更明显。
 
-### 3.2 TaskStackListener 一次操作触发 4 路 debounce（HIGH）
+### 3.2 TaskStackListener 栈变更扇出（HIGH，部分已合并）
 
 `SplitTaskStackListener.onTaskStackChanged`：
 
 | 调度 | 延迟 | 效果 |
 |------|------|------|
-| `scheduleStackSettle` | 200ms | → `refreshPanePackagesFromAtms` + split broadcast + `ACTION_RECENT_TASK_DIRTY` |
+| `scheduleAtmsSettle` | 200ms | → `reclaimOwnedPackages` + `refreshPanePackagesFromAtms` + split broadcast + `ACTION_RECENT_TASK_DIRTY` |
 | `schedulePersistSnapshot` | 0–2500ms | LastSplitStore 写盘 |
-| `mDebouncedReclaim` | 200ms | 可能 `moveRootTaskToDisplay` 二次跳动 |
+| `SplitPresentationGuard.scheduleEvict` | debounced | foreign Presentation 驱逐 |
+
+notify + Recent dirty 已合并进 `scheduleAtmsSettle`；persist 与 evict 仍独立（正确性需要）。
 
 一次 open/close 在 ATMS settle 期间可能**连续触发多次** `onTaskStackChanged`，形成 handler 队列积压。
 
@@ -135,17 +137,17 @@ RecentTasksCoordinator.closeTask
 - 最多 **3×** `getAllRootTaskInfosOnDisplay`（手机 + 双 VD）
 - 每 task：`getTaskDescription` + PM icon + 64px downsample
 - 结果带 Bitmap **跨进程 parcel**
-- UI 侧 `setItems` → `notifyDataSetChanged` 三列全刷（无 DiffUtil）
+- UI 侧 `setItems` → **DiffUtil** 增量刷新（已落地；打开时仍全量 IPC 构建快照）
 
 **debounce 叠加**：dirty 200ms + reload 280ms ≈ **480ms**；打开 Recent 时 `onResume` 还会 `reloadImmediate()`。
 
 ### 3.4 AvMedia 栈仲裁（MEDIUM–HIGH，音乐/视频栈）
 
-`finishUserPickLaunch` / `promoteStackFronts` → `enforceStackFrontAudio` → `getActiveSessions` + pause 埋栈。
+`promoteStackFronts` → `enforceStackFrontAudio` → `getActiveSessions` + pause 埋栈。
 
 ### 3.5 AA 主壳布局更新（MEDIUM）
 
-`AaMainFragment` 收 `ACTION_SPLIT_STATE_CHANGED` → `applyOccupancyFromPackages` → 分屏 weight 重算。
+`AaMainFragment` 收 `ACTION_SPLIT_STATE_CHANGED` → `applyOccupancyFromPackages` → 分屏 weight 重算。occupancy 未变时跳过 overlay 刷新；ratio/swap settle 期间 `layoutSettleUntil` 挡 rebind。
 
 ### 3.6 目标 App 冷启动（框架层）
 
@@ -158,9 +160,13 @@ RecentTasksCoordinator.closeTask
 | 主线程 Binder 阻塞（选择器/Recent close） | **已修复** — 后台 executor |
 | `removeTask` 在 handler 上阻塞 4–5s | **已修复** — 后台 `AADisplay-close` 线程 |
 | Recent 200ms 缩放动画 | **已移除** |
+| Recent 全列 `notifyDataSetChanged` | **已修复** — DiffUtil |
+| ATMS notify + dirty 双 debounce | **已合并** — `scheduleAtmsSettle` |
+| Open 双路径不一致 | **已合并** — `startActivityOnPaneOnHandler` |
+| 并行 restore/ensure 双发 launch | **已收敛** — `SettlementPhase` 状态机 |
+| `panePackageForDisplay` 读路径不一致 | **已修复** — 走 `getPanePackage` |
 | VD 画面切换 vs Recent 行移除不同步 | **仍存** — promote/ATMS 在 handler |
-| Recent 打开时全量 reload 卡顿 | **仍存** — 快照 + notifyDataSetChanged |
-| 栈变更 fan-out 4 路 debounce | **仍存** — 正确性 vs 性能权衡 |
+| Recent 打开时全量 IPC 快照构建 | **仍存** — 快照 + Bitmap parcel |
 
 ---
 
@@ -177,9 +183,9 @@ RecentTasksCoordinator.closeTask
 
 ### 场景 B：Recent 打开/关闭 App（最差）
 
-1. 点 close：行立即消失 — **快**
+1. 点 close / 滑动：行立即消失 — **快**
 2. VD 切栈顶：`promoteStackFronts` — **慢 200–800ms**
-3. dirty + reload：三列全刷 — **卡顿峰值**
+3. dirty + reload：DiffUtil 增量但仍全量 IPC 快照 — **卡顿峰值**
 4. 后台 `removeTask` 数秒 — 可能再触发 dirty reload
 
 **典型感受**：Recent 列表「闪一下又卡」、VD 画面比列表慢半拍。
@@ -197,7 +203,8 @@ RecentTasksCoordinator.closeTask
 | 职责 | 文件 |
 |------|------|
 | Open 编排 | `ui/aa/split/SplitDisplayController.kt` |
-| 冷启动 / restore / dirty | `ui/aa/split/SplitLaunchRestore.kt` |
+| 冷启动 / restore / settle | `ui/aa/split/SplitLaunchRestore.kt` |
+| 统一 launch 反射 | `ui/aa/split/AaLaunchHelper.kt` |
 | ATMS 置顶/搬迁 | `ui/aa/split/SplitOwnership.kt` |
 | Close 核心 | `SplitDisplayController.removeTaskOnHandler` |
 | 栈 pop | `ui/aa/split/PaneAppStack.kt` |
@@ -214,7 +221,7 @@ RecentTasksCoordinator.closeTask
 
 按优先级：
 
-1. **Recents**：DiffUtil 增量刷新；dirty 时 patch taskId/icon 而非全量 snapshot
-2. **Server**：合并 dirty+notify 共用一个 settle 窗口；`bringTaskToFront` 复用单次 display snapshot
+1. **Recents**：dirty 时 patch taskId/icon 而非全量 snapshot 构建
+2. **Server**：`bringTaskToFront` 进一步复用单次 display snapshot
 3. **Close**：评估 promote 与 forceStop 并行化（注意 AvMedia 顺序）
-4. **非 Recent**：occupancy 未变时 skip `ACTION_SPLIT_STATE_CHANGED` 触发的 layout pass
+4. **重连**：将 scattered Runnable 收敛为单一 `SettlementPhase` 扩展（ensure 阶段）

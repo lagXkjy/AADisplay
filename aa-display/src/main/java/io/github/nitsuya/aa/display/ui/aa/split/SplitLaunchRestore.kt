@@ -4,14 +4,8 @@ import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Binder
-import android.os.Bundle
 import android.os.SystemClock
-import android.os.UserHandle
 import android.view.Display
-import com.github.kyuubiran.ezxhelper.utils.argTypes
-import com.github.kyuubiran.ezxhelper.utils.args
-import com.github.kyuubiran.ezxhelper.utils.invokeMethod
-import com.github.kyuubiran.ezxhelper.utils.newInstance
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.util.AABroadcastConst
@@ -23,6 +17,10 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
 
 internal class SplitLaunchRestore(private val c: SplitDisplayController) {
+
+    private enum class SettlementPhase { IDLE, RESTORING, VERIFYING }
+
+    private var settlementPhase = SettlementPhase.IDLE
 
     internal val RESTORE_TOKEN = Any()
     internal val VERIFY_RESTORE_TOKEN = Any()
@@ -59,6 +57,14 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
     }
 
     fun scheduleRestoreLastSplit() {
+        if (settlementPhase != SettlementPhase.IDLE) {
+            logDebug(
+                SplitDisplayController.TAG,
+                "scheduleRestoreLastSplit skipped phase=$settlementPhase",
+            )
+            return
+        }
+        settlementPhase = SettlementPhase.RESTORING
         c.mHandler.removeCallbacksAndMessages(RESTORE_TOKEN)
         // Next frame — no artificial 400ms wait before launching restored apps.
         c.mHandler.postAtTime({
@@ -118,9 +124,11 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
     fun restoreLastSplitNow() {
         val snap = prefillRestoreFromSnapshot()
         if (snap == null) {
+            settlementPhase = SettlementPhase.IDLE
             c.notifySplitStateChanged()
             return
         }
+        settlementPhase = SettlementPhase.RESTORING
         c.mSuppressReclaimUntil = SystemClock.uptimeMillis() + SplitDisplayController.SUPPRESS_RECLAIM_AFTER_RESTORE_MS
         c.mRatio = SplitPane.clampRatio(snap.primaryRatio)
         c.mRatioBeforeFullscreen = c.mRatio
@@ -237,12 +245,17 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         primaryStack.lastOrNull()?.let { pkg ->
             c.mExplicitlyClosedPackages.remove(pkg)
             c.ownership.markOwnership(pkg, c.input.displayIdFor(SplitPane.PRIMARY) ?: return@let)
-            ownershipBringFront(SplitPane.PRIMARY, pkg)
         }
         secondaryStack.lastOrNull()?.let { pkg ->
             c.mExplicitlyClosedPackages.remove(pkg)
             c.ownership.markOwnership(pkg, c.input.displayIdFor(SplitPane.SECONDARY) ?: return@let)
-            ownershipBringFront(SplitPane.SECONDARY, pkg)
+        }
+        val promotePanes = buildList {
+            if (primaryStack.isNotEmpty()) add(SplitPane.PRIMARY)
+            if (secondaryStack.isNotEmpty()) add(SplitPane.SECONDARY)
+        }
+        if (promotePanes.isNotEmpty()) {
+            c.ownership.promoteStackFronts(promotePanes, settleAv = false)
         }
         if (SplitPane.isFullscreenPane(snap.fullscreenPane)) {
             c.setSplitFullscreen(snap.fullscreenPane)
@@ -256,22 +269,8 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                 "fullscreen=${c.mFullscreenPane}"
         )
         c.notifySplitStateChanged()
+        settlementPhase = SettlementPhase.VERIFYING
         scheduleVerifyRestore(snap, attempt = 0)
-    }
-
-    private fun ownershipBringFront(pane: Int, packageName: String) {
-        val pkg = packageName.trim().takeIf { it.isNotEmpty() } ?: return
-        val displayId = c.input.displayIdFor(pane) ?: return
-        val taskId = c.ownership.findPackageTaskOnDisplay(pkg, displayId, liveOnly = true) ?: return
-        if (c.ownership.bringTaskToFront(taskId)) {
-            c.stacks.moveToTop(pane, pkg)
-            c.ownership.enforceStackFrontAudio(pane)
-        } else {
-            log(
-                SplitDisplayController.TAG,
-                "ownershipBringFront failed pane=$pane pkg=$pkg — keep ATMS order"
-            )
-        }
     }
 
     fun scheduleVerifyRestore(snap: LastSplitStore.Snapshot, attempt: Int) {
@@ -336,14 +335,15 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             trimStackToDisplayAlive(SplitPane.PRIMARY, primaryStack)
             trimStackToDisplayAlive(SplitPane.SECONDARY, secondaryStack)
             if (wantPrimary) {
-                ownershipBringFront(SplitPane.PRIMARY, snap.primaryPackage)
+                c.ownership.promoteStackFronts(listOf(SplitPane.PRIMARY), settleAv = false)
             }
             if (wantSecondary) {
-                ownershipBringFront(SplitPane.SECONDARY, snap.secondaryPackage)
+                c.ownership.promoteStackFronts(listOf(SplitPane.SECONDARY), settleAv = false)
             }
             c.buriedPlayback.scheduleEnforceSingleSounder("restore-verify")
             persistSnapshot(force = true, logSettingsFailures = true)
         }
+        settlementPhase = SettlementPhase.IDLE
         c.notifySplitStateChanged()
     }
 
@@ -398,11 +398,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }, ENSURE_TOKEN, 1200L)
     }
 
-    private fun isSoftReconnectReason(reason: String): Boolean {
-        return reason == "reconnect" ||
-            reason == "reconnect-late" ||
-            reason == "surfaces-ready"
-    }
+    private fun isSoftReconnectReason(reason: String): Boolean = SplitPane.isSoftReconnectReason(reason)
 
     /**
      * Soft reconnect: one pane may look vacant in ATMS while the durable snapshot is still valid
@@ -486,7 +482,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         val secondaryPkg = c.mPanePackages[SplitPane.SECONDARY]
         if (!settling && primaryPkg.isNullOrBlank() && secondaryPkg.isNullOrBlank()) {
             logDebug(SplitDisplayController.TAG, "ensurePanes[$reason]: both empty → restore or idle")
-            if (shouldRestoreLastSplitOnConnect()) {
+            if (shouldRestoreLastSplitOnConnect() && settlementPhase == SettlementPhase.IDLE) {
                 scheduleRestoreLastSplit()
             } else {
                 c.notifySplitStateChanged()
@@ -534,13 +530,13 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                 // Buried relaunch lands as front — restore intentional picture immediately.
                 if (!isFront && !stackFront.isNullOrBlank()) {
                     c.stacks.moveToTop(pane, stackFront)
-                    ownershipBringFront(pane, stackFront)
+                    c.ownership.promoteStackFronts(listOf(pane), settleAv = false)
                 }
             }
             // Final front + demote buried for picture; sticky Av pause if front is PLAYING.
             if (!stackFront.isNullOrBlank()) {
                 c.stacks.moveToTop(pane, stackFront)
-                ownershipBringFront(pane, stackFront)
+                c.ownership.promoteStackFronts(listOf(pane), settleAv = false)
             }
             c.ownership.enforceStackFrontAudio(pane)
         }
@@ -587,6 +583,10 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }
     }
 
+    fun resetSettlement() {
+        settlementPhase = SettlementPhase.IDLE
+    }
+
     /** Debounced after ATMS stack settles (reclaim + refresh + dirty). */
     fun scheduleAtmsSettle() {
         c.mHandler.removeCallbacks(mDebouncedAtmsSettle)
@@ -601,37 +601,20 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         return try {
             VdDensityPin.markPackageOnVirtualDisplay(
                 componentName.packageName,
-                displayId
+                displayId,
             )
-            c.context.invokeMethod(
-                "startActivityAsUser",
-                args(
-                    Intent().apply {
-                        component = componentName
-                        `package` = componentName.packageName
-                        action = Intent.ACTION_MAIN
-                        addCategory(Intent.CATEGORY_LAUNCHER)
-                        putExtra("displayId", displayId)
-                        // MULTIPLE_TASK: force a new root on the target VD when an old task
-                        // still exists elsewhere; otherwise OEM task reuse ignores launchDisplayId.
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
-                    },
-                    android.app.ActivityOptions.makeBasic().apply {
-                        launchDisplayId = displayId
-                        try {
-                            invokeMethod("setCallerDisplayId", args(displayId), argTypes(Integer.TYPE))
-                        } catch (_: Throwable) {
-                        }
-                    }.toBundle(),
-                    UserHandle::class.java.newInstance(
-                        args(userId),
-                        argTypes(Integer.TYPE)
-                    )
-                ),
-                argTypes(Intent::class.java, Bundle::class.java, UserHandle::class.java)
+            val ok = AaLaunchHelper.startActivityOnDisplay(
+                context = c.context,
+                component = componentName,
+                userId = userId,
+                displayId = displayId,
+                mode = AaLaunchHelper.Mode.COLD,
+                addLauncherCategory = true,
             )
-            c.ownership.trackPackage(componentName.packageName, userId)
-            true
+            if (ok) {
+                c.ownership.trackPackage(componentName.packageName, userId)
+            }
+            ok
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "launchOnDisplay error display=$displayId:", e)
             false
