@@ -493,7 +493,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
         fun swapHidPanes(): Boolean {
             return try {
-                mSplitController?.swapPanesFromUser()
+                if (!hasSystemContext) return false
+                // Same path as divider tap — optimistic shell layout in AaMainFragment.
+                systemContext.sendBroadcast(
+                    android.content.Intent(AABroadcastConst.ACTION_SPLIT_SWAP),
+                )
                 mSessionPolicy?.onVirtualDisplayUserInteraction()
                 true
             } catch (e: Throwable) {

@@ -49,6 +49,13 @@ interface AABroadcastConst {
          */
         const val ACTION_HID_APPLY_SPLIT_RATIO = "aa.display.action.HID_APPLY_SPLIT_RATIO"
         /**
+         * system_server → AA: BT Ctrl+S / HID shortcut — run the same optimistic
+         * [AaMainFragment.performSwapClick] path as divider tap (not swapPanes alone).
+         */
+        const val ACTION_SPLIT_SWAP = "aa.display.action.SPLIT_SWAP"
+        /** system_server → AA: [SplitDisplayController.swapPanesOnHandler] failed; revert UI. */
+        const val ACTION_SPLIT_SWAP_FAILED = "aa.display.action.SPLIT_SWAP_FAILED"
+        /**
          * AA UI → gearhead :car (+ system_server): when true, Coolwalk left-rail steal
          * and phone BT mouse inject into AaDisplay presentation (app picker / Recents)
          * instead of pane VirtualDisplays.

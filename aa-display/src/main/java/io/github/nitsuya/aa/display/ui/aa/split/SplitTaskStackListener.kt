@@ -17,9 +17,7 @@ internal class SplitTaskStackListener(
 
     override fun onTaskStackChanged() {
         if (c.mIsDestroying) return
-        c.mHandler.removeCallbacks(c.ownership.mDebouncedReclaim)
-        c.mHandler.postDelayed(c.ownership.mDebouncedReclaim, SplitDisplayController.RECLAIM_DEBOUNCE_MS)
-        c.launch.scheduleStackSettle()
+        c.launch.scheduleAtmsSettle()
         c.launch.schedulePersistSnapshot()
         // Douyin LivePlay (and similar) may attach a foreign Presentation on the other pane.
         SplitPresentationGuard.scheduleEvictOnStackChanged(c)
@@ -58,8 +56,7 @@ internal class SplitTaskStackListener(
                     c.mVdTaskIds.add(taskId)
                     c.mVdPackages.add(pkg)
                 } else if (c.mVdPackages.contains(pkg)) {
-                    c.mHandler.removeCallbacks(c.ownership.mDebouncedReclaim)
-                    c.mHandler.postDelayed(c.ownership.mDebouncedReclaim, SplitDisplayController.RECLAIM_DEBOUNCE_MS)
+                    c.launch.scheduleAtmsSettle()
                 }
             }
         }
@@ -68,9 +65,7 @@ internal class SplitTaskStackListener(
     override fun onTaskRemoved(taskId: Int) {
         c.mVdTaskIds.remove(taskId)
         if (!c.mIsDestroying) {
-            c.mHandler.removeCallbacks(c.ownership.mDebouncedReclaim)
-            c.mHandler.postDelayed(c.ownership.mDebouncedReclaim, SplitDisplayController.RECLAIM_DEBOUNCE_MS)
-            c.launch.scheduleStackSettle()
+            c.launch.scheduleAtmsSettle()
         }
     }
 
@@ -110,14 +105,13 @@ internal class SplitTaskStackListener(
             // already dropped on the controller thread — do not re-arm reclaim or the
             // task snaps straight back onto the VD (~200ms later).
             if (SystemClock.uptimeMillis() < c.mSuppressReclaimUntil) return
-            c.mHandler.removeCallbacks(c.ownership.mDebouncedReclaim)
-            c.mHandler.postDelayed(c.ownership.mDebouncedReclaim, SplitDisplayController.RECLAIM_DEBOUNCE_MS)
+            c.launch.scheduleAtmsSettle()
         }
     }
 
     override fun onRecentTaskListUpdated() {
         if (c.mIsDestroying) return
-        c.launch.scheduleStackSettle()
+        c.launch.scheduleAtmsSettle()
     }
     override fun onRecentTaskRemovedForAddTask(taskId: Int) {}
     override fun onRecentTaskListFrozenChanged(frozen: Boolean) {}

@@ -9,6 +9,7 @@ package io.github.nitsuya.aa.display.ui.aa.split
  * When syncing from ATMS, always go through
  * [SplitOwnership.normalizeRootTasksBottomToTop] — Samsung may enumerate
  * top→bottom; never assume raw [getAllRootTaskInfosOnDisplay] ends with the front.
+ * ATMS reconcile uses [mergeAliveKeepingOrder] in [SplitLaunchRestore.refreshPanePackagesFromAtms].
  *
  * Capacity is [MAX_PER_PANE]; pushing a new package when full evicts the bottom.
  */
@@ -170,27 +171,6 @@ internal class PaneAppStack(private val c: SplitDisplayController) {
         stacks[pane].removeAll { it !in alive }
         syncFrontToMPanePackages()
         return stacks[pane].lastOrNull() != before
-    }
-
-    /**
-     * Rebuild from ATMS user-root order (bottom → top), capped at [MAX_PER_PANE]
-     * (keeps the topmost packages).
-     */
-    fun syncFromAtmsBottomToTop(pane: Int, packagesBottomToTop: List<String>) {
-        if (!SplitPane.isValid(pane)) return
-        val cleaned = ArrayList<String>(MAX_PER_PANE)
-        val seen = linkedSetOf<String>()
-        for (raw in packagesBottomToTop) {
-            val pkg = raw.trim().takeIf { it.isNotEmpty() } ?: continue
-            if (!seen.add(pkg)) continue
-            cleaned.add(pkg)
-        }
-        val kept = if (cleaned.size > MAX_PER_PANE) {
-            cleaned.takeLast(MAX_PER_PANE)
-        } else {
-            cleaned
-        }
-        setStackBottomToTop(pane, kept)
     }
 
     /**

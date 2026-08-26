@@ -35,8 +35,9 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         persistSnapshot(force = false, logSettingsFailures = false)
     }
 
-    /** ATMS stack settle: refresh pane packages once, then notify AA UI + Recent dirty. */
-    internal val mDebouncedStackSettle = Runnable {
+    /** ATMS settle: reclaim + refresh pane bookkeeping, then notify AA UI + Recent. */
+    internal val mDebouncedAtmsSettle = Runnable {
+        c.ownership.reclaimOwnedPackages("stack")
         if (refreshPanePackagesFromAtms()) {
             notifySplitStateChangedImmediate()
         }
@@ -586,10 +587,10 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }
     }
 
-    /** Debounced after ATMS stack settles (aligns with reclaim debounce). */
-    fun scheduleStackSettle() {
-        c.mHandler.removeCallbacks(mDebouncedStackSettle)
-        c.mHandler.postDelayed(mDebouncedStackSettle, SplitDisplayController.RECLAIM_DEBOUNCE_MS)
+    /** Debounced after ATMS stack settles (reclaim + refresh + dirty). */
+    fun scheduleAtmsSettle() {
+        c.mHandler.removeCallbacks(mDebouncedAtmsSettle)
+        c.mHandler.postDelayed(mDebouncedAtmsSettle, SplitDisplayController.RECLAIM_DEBOUNCE_MS)
     }
 
     fun launchOnDisplay(

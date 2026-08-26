@@ -24,8 +24,6 @@ import java.util.concurrent.TimeUnit
 
 internal class SplitOwnership(private val c: SplitDisplayController) {
 
-    internal val mDebouncedReclaim = Runnable { reclaimOwnedPackages("stack") }
-
     internal data class PaneTaskRef(val taskId: Int, val packageName: String?)
 
     companion object {
