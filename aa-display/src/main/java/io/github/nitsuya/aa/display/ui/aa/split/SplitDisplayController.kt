@@ -125,7 +125,20 @@ class SplitDisplayController(
      * Avoids scanning 1..64 on every peel touch after a miss.
      */
     @Volatile
+    private var mHidShellGeometry: HidShellGeometry? = null
+
+    @Volatile
     private var mAaUiDisplayIdLookupFailed = false
+
+    fun aaUiDisplayId(): Int = mAaUiDisplayId
+
+    fun updateHidShellGeometry(geometry: HidShellGeometry) {
+        mHidShellGeometry = geometry
+    }
+
+    fun clearHidShellGeometry() {
+        mHidShellGeometry = null
+    }
     /** Uptime of last peel-inject recovery (latch clear + UI re-report ask). */
     @Volatile
     private var mLastAaUiDisplayIdRecoveryUptime = 0L
@@ -921,20 +934,51 @@ class SplitDisplayController(
         return input.injectScrollAt(displayId, x, y, vScroll, hScroll)
     }
 
-    /** Snapshot for BT mouse cross-pane cursor. */
+    /**
+     * Snapshot for BT mouse cross-pane cursor.
+     *
+     * Pane sizes **must** match the real VirtualDisplays (inject + pointer bind), not the
+     * AA UI TextureView metrics. UI density / Coolwalk chrome can differ from [mDensityDpi]
+     * and previously made right-edge clicks look hundreds of px early / "wrong resolution".
+     * Shell geometry only supplies fullscreen / expand hints and optional touch scaling.
+     */
     fun hidSplitLayout(): HidSplitLayout {
-        val primarySize = hidSizeForPane(SplitPane.PRIMARY)
-        val secondarySize = hidSizeForPane(SplitPane.SECONDARY)
+        val sizes = vd.computePaneSizes()
+        val livePrimary = hidSizeForPane(SplitPane.PRIMARY)
+        val liveSecondary = hidSizeForPane(SplitPane.SECONDARY)
+        val primaryW = (livePrimary?.x?.takeIf { it > 0 } ?: sizes.primaryW).coerceAtLeast(1)
+        val primaryH = (livePrimary?.y?.takeIf { it > 0 } ?: sizes.primaryH).coerceAtLeast(1)
+        val secondaryW = (liveSecondary?.x?.takeIf { it > 0 } ?: sizes.secondaryW).coerceAtLeast(1)
+        val secondaryH = (liveSecondary?.y?.takeIf { it > 0 } ?: sizes.secondaryH).coerceAtLeast(1)
+        val geo = mHidShellGeometry
+        val sideBySide = geo?.sideBySide ?: isSideBySide
+        val totalW = mWidth.coerceAtLeast(1)
+        val totalH = mHeight.coerceAtLeast(1)
+        // Gap closes the canvas: primary + gap + secondary == total (not UI density gap).
+        val gap = if (SplitPane.isFullscreenPane(geo?.fullscreenPane ?: mFullscreenPane)) {
+            0
+        } else if (sideBySide) {
+            (totalW - primaryW - secondaryW).coerceAtLeast(1)
+        } else {
+            (totalH - primaryH - secondaryH).coerceAtLeast(1)
+        }
         return HidSplitLayout(
-            sideBySide = isSideBySide,
-            fullscreenPane = mFullscreenPane,
+            sideBySide = sideBySide,
+            fullscreenPane = geo?.fullscreenPane ?: mFullscreenPane,
             focusedPane = mFocusedPane,
             primaryDisplayId = primaryDisplayId,
             secondaryDisplayId = secondaryDisplayId,
-            primaryW = primarySize?.x ?: 0,
-            primaryH = primarySize?.y ?: 0,
-            secondaryW = secondarySize?.x ?: 0,
-            secondaryH = secondarySize?.y ?: 0,
+            primaryW = primaryW,
+            primaryH = primaryH,
+            secondaryW = secondaryW,
+            secondaryH = secondaryH,
+            totalW = totalW,
+            totalH = totalH,
+            densityDpi = mDensityDpi.coerceAtLeast(160),
+            shellGap = gap,
+            shellExpand = geo?.expand ?: -1,
+            shellTotalW = geo?.parentW ?: 0,
+            shellTotalH = geo?.parentH ?: 0,
         )
     }
 

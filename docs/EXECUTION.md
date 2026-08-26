@@ -394,7 +394,9 @@ flowchart TB
     MAIN -->|短按媒体键| pressKey
     MAIN -->|长按下一曲/快进| swap或切全屏
     MAIN -->|长按上一曲/快退| Recent
-    BT -->|键盘 / 鼠标主键当触控| HID["inject 焦点窗 VD"]
+    BT -->|窗内主键| HID["inject 焦点窗 VD"]
+    BT -->|分隔条带| touchAaDisplay
+    BT -->|Ctrl 快捷键| Chrome["ratio / Recent / swap"]
 
     touchPane --> IM["IInputManager.inject 到窗 VD"]
     touchPrimaryPane --> IM
@@ -403,15 +405,48 @@ flowchart TB
     PEEL -->|否| PRES["inject 到 AaDisplay presentation"]
     pressKey --> IM
     HID --> IM
+    Chrome --> MAIN
 ```
 
-手机蓝牙键鼠（`PhoneHidRedirect`，仅 AA 会话活跃、非 Delay Destroy）：
+### 10.1 手机蓝牙键鼠（操作说明）
 
-- 键盘：物理外设键（放行 Power / Volume / Home / Back）→ `inject` 到焦点窗。
-- 鼠标：`InputFilter` 偷 `SOURCE_MOUSE` 等；光标状态机 + 主键 → `SOURCE_TOUCHSCREEN` 注入；尽力 `setVirtualMousePointerDisplayId`。
-- 方控媒体键路径不变（`AaBtnEventHook` → `pressKey`）。
+前提：键鼠**连手机**；AA 会话活跃（非 Delay Destroy）；改钩子后需**重启**（`system_server`）。实现：`xposed/hook/PhoneHidRedirect.kt`。方控媒体键路径不变。
 
-方控映射（`AaMainFragment` 收 `ACTION_STEERING_WHEEL_CONTROL`）：
+光标在 **AaDisplay 壳画布**上连续移动（`[左窗][分隔条][右窗]`），不是「靠近缝就传送到另一 VD」。
+
+**鼠标**
+
+| 操作 | 效果 |
+|------|------|
+| 窗内移动 / 主键点击 | 当触控注入当前窗格 VD（App） |
+| 移到两窗**中间分隔带**停住再拖 | 调**壳**分屏比例（`touchAaDisplay` → `SplitDividerView` 预览，松手再 `setSplitRatio` 改 VD） |
+| 分隔带上**长按再松手** | 打开堆栈 / Recent 三列；之后鼠标继续打到壳（堆栈可点） |
+| 分隔带**短按** | 对调两窗（同点分隔条） |
+| **中键** | 光标跳到另一窗中心并切焦点 |
+| 相对移动越过缝 | 经分隔带进入另一窗（可在带上停留） |
+| 全屏某一窗 | 只在该窗内移动（无跨窗） |
+| 堆栈 / 应用选择器打开时 | 全部触控走 `touchAaDisplay`（`ACTION_AA_UI_RAIL_CONSUME`） |
+
+分隔条 / 堆栈 / 对调在 **AA 壳 presentation**，不在窗 VD。
+
+**键盘**（须按住 **Ctrl**；放行 Power / Volume / Home / Back）
+
+| 快捷键 | 效果 |
+|--------|------|
+| Ctrl + ← / → / ↑ / ↓ 或 WASD | 壳比例 ±5%（广播 `HID_APPLY_SPLIT_RATIO` → UI 改 TextureView + 再 settle VD；**禁止**只调 `setSplitRatio`） |
+| Ctrl + R 或 Ctrl + Tab 或 App Switch | 打开堆栈 / Recent（`ACTION_SHOW_RECENT_TASK`） |
+| Ctrl + S | 对调两窗（`swapPanes`） |
+| 其它物理键 | `inject` 到当前焦点窗（跟随鼠标焦点） |
+
+**折叠屏注意（如三星 W7023）**
+
+- 系统光标默认画在合盖外屏 / 展开主屏；会话 live 时 `setVirtualMousePointerDisplayId` 绑到 AA VD，并尽力 `forceHideCursor` / 藏实体屏 icon。
+- AA 窗需 Input viewport：VD 带 `VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH`；另 hook `setDisplayViewports` 注入窗 viewport。缺 viewport 时 override 仍会落主屏。
+- 日志标签：`AAD_PhoneHid`（LSPosed Bridge / modules log）。
+
+### 10.2 方控映射
+
+`AaMainFragment` 收 `ACTION_STEERING_WHEEL_CONTROL`：
 
 - 短按（`EXTRA_TYPE=0`）：媒体键 → `CoreApi.pressKey`（直播顶窗里 next/prev 可能被改写成滑动，见 `SplitInputRecents`）。
 - 长按下一曲/快进（`EXTRA_TYPE=1`，87/90）：与点分隔条相同（分屏对调整栈；全屏只切可见侧）。
@@ -445,7 +480,7 @@ flowchart TB
 
 `VdImeDisplayPin`：`systemReady` 时装一次。AA VD 上的 client 要键盘时，IME 窗/token 必须落在同一 VD（纠正 OEM 把目标改写到默认屏，如三星合盖 `isFolded`→0）。
 
-`PhoneHidRedirect`：`systemReady` 装钩；AA 会话 live 时启用 InputFilter + 键拦截，Delay Destroy / teardown 关闭。手机蓝牙键鼠 → 焦点窗 VD。
+`PhoneHidRedirect`：`systemReady` 装钩；AA 会话 live 时启用 InputFilter + 键拦截，Delay Destroy / teardown 关闭。操作说明见 §10.1。
 
 ---
 
@@ -459,7 +494,8 @@ flowchart TB
 | `OPEN_SPLIT_PICKER` | Recent / restore 失败 → App | 打开选择器 |
 | `AA_UI_RAIL_CONSUME` | App → `:car` | 选择器打开时左轨打到 presentation |
 | `REQUEST_AA_UI_DISPLAY_ID` | system_server → App | peel 找不到 presentation id |
-| `SHOW_RECENT_TASK` | system_server → App | 锁屏 peel 长按无法点到 DividerView |
+| `SHOW_RECENT_TASK` | system_server → App | 锁屏 peel 长按；蓝牙键鼠 Ctrl+R/Tab（`PhoneHidRedirect`） |
+| `HID_APPLY_SPLIT_RATIO` | system_server → App | 蓝牙 Ctrl+方向：先改壳布局再 `setSplitRatio` |
 
 ---
 
@@ -500,6 +536,7 @@ flowchart TB
 | Recent 三列 | `AaRecentTaskFragment`、`RecentTaskColumns`、`getRecentTask` |
 | 快照恢复错误 | `LastSplitStore.kt`、`restoreLastSplitNow`、ATMS 底→顶 |
 | 方控 | `AaBtnEventHook`、`AaMainFragment` `ACTION_STEERING_WHEEL_CONTROL` |
+| 手机蓝牙键鼠 / 分屏比例 / 堆栈快捷键 | §10.1、`PhoneHidRedirect.kt`、`HidSplitLayout.kt` |
 | FRX / 无 Maps 崩溃 / 空媒体卡 | `AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`、`rewriteVirtualDisplayArgs` |
 | 仪表横条歌词采得到但推不过去 | `ClusterLyricMediaService`（`:cluster`）、`AaMediaAllowlistHook`、`ClusterLyricStore`、`AaClusterLyricEgressHook` |
 | 抖音盖导航 / 外窗 Presentation | `PanePresentationGuard`、`SplitPresentationGuard` |

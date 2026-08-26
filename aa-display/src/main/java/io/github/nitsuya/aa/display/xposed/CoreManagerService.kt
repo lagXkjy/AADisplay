@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.Surface
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
+import io.github.nitsuya.aa.display.ui.aa.split.HidShellGeometry
 import io.github.nitsuya.aa.display.ui.aa.split.HidSplitLayout
 import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
@@ -258,8 +259,69 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 .onFailure { log(TAG, "VdOrientationFill.ensureHooked failed", it) }
             runCatching { PhoneHidRedirect.ensureHooked() }
                 .onFailure { log(TAG, "PhoneHidRedirect.ensureHooked failed", it) }
+            runCatching { registerAaUiBroadcastReceivers() }
+                .onFailure { log(TAG, "registerAaUiBroadcastReceivers failed", it) }
             runCatching { ClusterLyricMirror.start(systemContext) }
                 .onFailure { log(TAG, "ClusterLyricMirror.start failed", it) }
+        }
+
+        private fun registerAaUiBroadcastReceivers() {
+            if (aaUiBroadcastReceiver != null || !hasSystemContext) return
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: android.content.Intent?) {
+                    when (intent?.action) {
+                        AABroadcastConst.ACTION_AA_UI_RAIL_CONSUME -> {
+                            setAaUiShellCapture(
+                                intent.getBooleanExtra(
+                                    AABroadcastConst.EXTRA_AA_UI_RAIL_CONSUME,
+                                    false,
+                                ),
+                            )
+                        }
+                        AABroadcastConst.ACTION_HID_SHELL_GEOMETRY -> {
+                            val w = intent.getIntExtra(AABroadcastConst.EXTRA_SHELL_PARENT_W, 0)
+                            val h = intent.getIntExtra(AABroadcastConst.EXTRA_SHELL_PARENT_H, 0)
+                            if (w <= 0 || h <= 0) return
+                            mSplitController?.updateHidShellGeometry(
+                                HidShellGeometry(
+                                    parentW = w,
+                                    parentH = h,
+                                    primaryMain = intent.getIntExtra(
+                                        AABroadcastConst.EXTRA_SHELL_PRIMARY_MAIN,
+                                        w / 2,
+                                    ),
+                                    gap = intent.getIntExtra(AABroadcastConst.EXTRA_SHELL_GAP, 0),
+                                    expand = intent.getIntExtra(
+                                        AABroadcastConst.EXTRA_SHELL_EXPAND,
+                                        0,
+                                    ),
+                                    sideBySide = intent.getBooleanExtra(
+                                        AABroadcastConst.EXTRA_SHELL_SIDEBYSIDE,
+                                        true,
+                                    ),
+                                    fullscreenPane = intent.getIntExtra(
+                                        AABroadcastConst.EXTRA_FULLSCREEN_PANE,
+                                        SplitPane.FULLSCREEN_NONE,
+                                    ),
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+            try {
+                systemContext.registerReceiver(
+                    receiver,
+                    android.content.IntentFilter().apply {
+                        addAction(AABroadcastConst.ACTION_AA_UI_RAIL_CONSUME)
+                        addAction(AABroadcastConst.ACTION_HID_SHELL_GEOMETRY)
+                    },
+                    Context.RECEIVER_EXPORTED,
+                )
+                aaUiBroadcastReceiver = receiver
+            } catch (e: Throwable) {
+                log(TAG, "registerAaUiBroadcastReceivers failed", e)
+            }
         }
 
         fun isAaVirtualDisplay(displayId: Int): Boolean {
@@ -272,6 +334,30 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         /** AA UI attached (not Delay Destroy). Used by [PhoneHidRedirect]. */
         fun isAaSessionLive(): Boolean =
             mSplitController != null && mSessionPolicy?.isAaSessionLive == true
+
+        /**
+         * True while app picker / Recents covers the shell — phone BT mouse must
+         * inject via [touchAaDisplay], not pane VDs. Driven by [ACTION_AA_UI_RAIL_CONSUME].
+         */
+        @Volatile
+        var aaUiShellCapture: Boolean = false
+            private set
+
+        fun clearAaUiShellCapture() {
+            setAaUiShellCapture(false)
+        }
+
+        fun setAaUiShellCapture(capture: Boolean) {
+            if (aaUiShellCapture == capture) return
+            aaUiShellCapture = capture
+            logDebug(TAG, "aaUiShellCapture=$capture")
+            PhoneHidRedirect.onShellCaptureChanged(capture)
+        }
+
+        private var aaUiBroadcastReceiver: android.content.BroadcastReceiver? = null
+
+        fun hidAaUiDisplayId(): Int =
+            mSplitController?.aaUiDisplayId() ?: Display.INVALID_DISPLAY
 
         fun hidTargetDisplayId(): Int =
             mSplitController?.resolveHidInjectionDisplayId() ?: Display.INVALID_DISPLAY
@@ -326,6 +412,92 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 mSplitController?.onHidScrollOnPane(pane, x, y, vScroll, hScroll) == true
             } catch (e: Throwable) {
                 logDebug(TAG, "injectHidScrollOnPane: ${e.message}")
+                false
+            }
+        }
+
+        fun injectHidAaUiTouch(
+            action: Int,
+            x: Float,
+            y: Float,
+            downTime: Long,
+            eventTime: Long,
+        ): Boolean {
+            return try {
+                if (action == MotionEvent.ACTION_DOWN) {
+                    mSessionPolicy?.onVirtualDisplayUserInteraction()
+                }
+                val event = MotionEvent.obtain(downTime, eventTime, action, x, y, 0).apply {
+                    source = android.view.InputDevice.SOURCE_TOUCHSCREEN
+                }
+                try {
+                    mSplitController?.onTouchAaDisplay(event)
+                    true
+                } finally {
+                    event.recycle()
+                }
+            } catch (e: Throwable) {
+                logDebug(TAG, "injectHidAaUiTouch: ${e.message}")
+                false
+            }
+        }
+
+        /** Adjust split ratio by [delta] (−0.05 / +0.05) on the **shell**, then settle VD. */
+        fun nudgeHidSplitRatio(delta: Float): Boolean {
+            return try {
+                val c = mSplitController ?: return false
+                if (SplitPane.isFullscreenPane(c.mFullscreenPane)) return false
+                // Accumulate while UI may still be applying the previous broadcast.
+                val base = pendingHidShellRatio ?: c.mRatio
+                val next = SplitPane.clampRatio(base + delta)
+                if (kotlin.math.abs(next - base) < 0.001f) return true
+                pendingHidShellRatio = next
+                // Do not call setSplitRatio here — that resizes VDs while TextureViews lag
+                // (shell ratio stays old). Ask AaMainFragment to layout + settle.
+                if (!hasSystemContext) return false
+                systemContext.sendBroadcast(
+                    android.content.Intent(AABroadcastConst.ACTION_HID_APPLY_SPLIT_RATIO)
+                        .putExtra(AABroadcastConst.EXTRA_RATIO, next)
+                )
+                mSessionPolicy?.onVirtualDisplayUserInteraction()
+                true
+            } catch (e: Throwable) {
+                logDebug(TAG, "nudgeHidSplitRatio: ${e.message}")
+                false
+            }
+        }
+
+        /** Cleared when UI settles [ACTION_HID_APPLY_SPLIT_RATIO] via setSplitRatio. */
+        @Volatile
+        private var pendingHidShellRatio: Float? = null
+
+        fun clearPendingHidShellRatio() {
+            pendingHidShellRatio = null
+        }
+
+        fun showHidRecentTask(): Boolean {
+            return try {
+                if (!hasSystemContext) return false
+                // Shell overlay must steal HID before the UI broadcast round-trip.
+                setAaUiShellCapture(true)
+                systemContext.sendBroadcast(
+                    android.content.Intent(AABroadcastConst.ACTION_SHOW_RECENT_TASK)
+                )
+                mSessionPolicy?.onVirtualDisplayUserInteraction()
+                true
+            } catch (e: Throwable) {
+                logDebug(TAG, "showHidRecentTask: ${e.message}")
+                false
+            }
+        }
+
+        fun swapHidPanes(): Boolean {
+            return try {
+                mSplitController?.swapPanes()
+                mSessionPolicy?.onVirtualDisplayUserInteraction()
+                true
+            } catch (e: Throwable) {
+                logDebug(TAG, "swapHidPanes: ${e.message}")
                 false
             }
         }
@@ -497,6 +669,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     override fun setSplitRatio(ratio: Float) {
+        clearPendingHidShellRatio()
         runMain {
             mSplitController?.setSplitRatio(ratio)
         }

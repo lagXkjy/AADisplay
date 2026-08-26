@@ -163,6 +163,21 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     // Locked-phone peel: system_server cannot inject into occluded presentation.
                     openRecentsFromSteering()
                 }
+                AABroadcastConst.ACTION_HID_APPLY_SPLIT_RATIO -> {
+                    // Shell-first ratio (BT Ctrl+arrows). Never setSplitRatio alone —
+                    // that resizes VDs while TextureViews keep the old chrome ratio.
+                    if (dividerDragging || SplitPane.isFullscreenPane(fullscreenPane)) return
+                    if (!isBaseBindingInitialized() || !isAdded) return
+                    val remote = intent.getFloatExtra(AABroadcastConst.EXTRA_RATIO, Float.NaN)
+                    if (remote.isNaN() || remote <= 0f) return
+                    val clamped = SplitPane.clampRatio(remote)
+                    splitRatio = clamped
+                    clearDragPreview()
+                    applySplitLayoutWeights(clamped, force = true)
+                    baseBinding.splitDivider.setRatio(clamped)
+                    CoreApi.setSplitRatio(clamped)
+                    refreshImeChip()
+                }
                 AABroadcastConst.ACTION_IME_VISIBILITY -> {
                     val pane = intent.getIntExtra(
                         AABroadcastConst.EXTRA_PANE,
@@ -241,12 +256,14 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             if (width <= 0 || height <= 0) return@addOnLayoutChangeListener
             if (width == oldWidth && height == oldHeight) return@addOnLayoutChangeListener
             reportAaUiDisplayId()
+            reportHidShellLayout()
             requestDisplay("layout-change")
         }
         // First layout may already have non-zero size before the listener is attached.
         baseBinding.splitContainer.post {
             if (baseBinding.splitContainer.width > 0 && baseBinding.splitContainer.height > 0) {
                 reportAaUiDisplayId()
+                reportHidShellLayout()
                 requestDisplay("layout")
             }
         }
@@ -513,6 +530,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         applySplitLayoutWeights(splitRatio, force = true)
         baseBinding.splitDivider.setFullscreenPane(SplitPane.FULLSCREEN_NONE)
         baseBinding.splitDivider.setRatio(splitRatio)
+        reportHidShellLayout()
         updateEmptyOverlays()
         baseBinding.root.removeCallbacks(afterOccupancySync)
         baseBinding.root.postDelayed(afterOccupancySync, 300L)
@@ -531,9 +549,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         } else {
             val ratio = tryOrNull { CoreApi.splitRatio }?.takeIf { it > 0f } ?: splitRatio
             splitRatio = SplitPane.clampRatio(ratio)
+            clearDragPreview()
             applySplitLayoutWeights(splitRatio, force = true)
             baseBinding.splitDivider.setFullscreenPane(SplitPane.FULLSCREEN_NONE)
             baseBinding.splitDivider.setRatio(splitRatio)
+            reportHidShellLayout()
         }
         updateEmptyOverlays()
     }
@@ -583,6 +603,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         baseBinding.splitDivider.invalidate()
         syncPaneTouchEnabled(pane)
         positionImeChip()
+        reportHidShellLayout()
     }
 
     private data class SplitVisual(
@@ -703,7 +724,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         }
         baseBinding.splitDivider.invalidate()
         syncPaneTouchEnabled(SplitPane.FULLSCREEN_NONE)
+        baseBinding.splitContainer.requestLayout()
         positionImeChip()
+        reportHidShellLayout()
     }
 
     /**
@@ -1152,6 +1175,27 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         tryOrNull { CoreApi.reportAaUiDisplayId(id) }
     }
 
+    /** Shell layout for BT mouse hit-test in system_server ([PhoneHidRedirect]). */
+    private fun reportHidShellLayout() {
+        if (!isBaseBindingInitialized() || !isAdded) return
+        val vis = splitVisual(splitRatio) ?: return
+        val ctx = context ?: return
+        try {
+            ctx.sendBroadcast(
+                android.content.Intent(AABroadcastConst.ACTION_HID_SHELL_GEOMETRY).apply {
+                    putExtra(AABroadcastConst.EXTRA_SHELL_PARENT_W, vis.parentW)
+                    putExtra(AABroadcastConst.EXTRA_SHELL_PARENT_H, vis.parentH)
+                    putExtra(AABroadcastConst.EXTRA_SHELL_PRIMARY_MAIN, vis.primaryMain)
+                    putExtra(AABroadcastConst.EXTRA_SHELL_GAP, vis.gap)
+                    putExtra(AABroadcastConst.EXTRA_SHELL_EXPAND, vis.expand)
+                    putExtra(AABroadcastConst.EXTRA_SHELL_SIDEBYSIDE, vis.sideBySide)
+                    putExtra(AABroadcastConst.EXTRA_FULLSCREEN_PANE, fullscreenPane)
+                },
+            )
+        } catch (_: Throwable) {
+        }
+    }
+
     /**
      * Rebind pane surfaces after presentation DOZE / ColorFade or a stale Surface pipe.
      * Does not run after [onDestroy] — health callbacks are removed first.
@@ -1437,6 +1481,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             addAction(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID)
             addAction(AABroadcastConst.ACTION_REQUEST_DISPLAY_RECOVERY)
             addAction(AABroadcastConst.ACTION_SHOW_RECENT_TASK)
+            addAction(AABroadcastConst.ACTION_HID_APPLY_SPLIT_RATIO)
             addAction(AABroadcastConst.ACTION_IME_VISIBILITY)
             addAction(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED)
         }, Context.RECEIVER_EXPORTED)

@@ -41,11 +41,29 @@ interface AABroadcastConst {
          */
         const val ACTION_SHOW_RECENT_TASK = "aa.display.action.SHOW_RECENT_TASK"
         /**
-         * AA UI → gearhead :car: when true, Coolwalk left-rail steal injects into
-         * AaDisplay presentation (app picker) instead of the primary pane VD.
+         * system_server → AA: apply split ratio on the **shell** first
+         * ([AaMainFragment] layout + divider), then settle VD via [ICoreManager.setSplitRatio].
+         * Used by phone BT keyboard Ctrl+arrows (do not call setSplitRatio alone).
+         */
+        const val ACTION_HID_APPLY_SPLIT_RATIO = "aa.display.action.HID_APPLY_SPLIT_RATIO"
+        /**
+         * AA UI → gearhead :car (+ system_server): when true, Coolwalk left-rail steal
+         * and phone BT mouse inject into AaDisplay presentation (app picker / Recents)
+         * instead of pane VirtualDisplays.
          */
         const val ACTION_AA_UI_RAIL_CONSUME = "aa.display.action.AA_UI_RAIL_CONSUME"
         const val EXTRA_AA_UI_RAIL_CONSUME = "aa.display.extra.AA_UI_RAIL_CONSUME"
+        /**
+         * AA UI → system_server: measured shell layout for BT mouse hit-test
+         * ([HidSplitLayout] must match [AaMainFragment] divider position).
+         */
+        const val ACTION_HID_SHELL_GEOMETRY = "aa.display.action.HID_SHELL_GEOMETRY"
+        const val EXTRA_SHELL_PARENT_W = "aa.display.extra.SHELL_PARENT_W"
+        const val EXTRA_SHELL_PARENT_H = "aa.display.extra.SHELL_PARENT_H"
+        const val EXTRA_SHELL_PRIMARY_MAIN = "aa.display.extra.SHELL_PRIMARY_MAIN"
+        const val EXTRA_SHELL_GAP = "aa.display.extra.SHELL_GAP"
+        const val EXTRA_SHELL_EXPAND = "aa.display.extra.SHELL_EXPAND"
+        const val EXTRA_SHELL_SIDEBYSIDE = "aa.display.extra.SHELL_SIDEBYSIDE"
         /**
          * system_server → AA: IME visibility on a pane VD.
          * [EXTRA_PANE] is -1 when hidden; PRIMARY/SECONDARY when showing.
