@@ -123,6 +123,10 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.removeTask(taskId)
     }
 
+    override fun reorderPaneStack(pane: Int, packagesTopToBottom: Array<out String>?): Boolean {
+        return getService()?.reorderPaneStack(pane, packagesTopToBottom) ?: false
+    }
+
     override fun pressKey(action: Int) {
         getService()?.pressKey(action)
     }

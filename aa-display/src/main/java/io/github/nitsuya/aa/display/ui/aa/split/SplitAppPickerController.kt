@@ -51,6 +51,7 @@ class SplitAppPickerController(
     private var targetPane: Int = SplitPane.PRIMARY
     private val mainHandler = Handler(Looper.getMainLooper())
     private val loadExecutor = Executors.newSingleThreadExecutor()
+    private val launchExecutor = Executors.newSingleThreadExecutor()
     private val loadGeneration = AtomicInteger(0)
     private val iconInFlight = ConcurrentHashMap.newKeySet<String>()
 
@@ -67,9 +68,17 @@ class SplitAppPickerController(
     private val adapter = Adapter(
         onClick = { entry ->
             logPicker("pick pane=$targetPane pkg=${entry.packageName} label=${entry.label}")
-            CoreApi.startActivityOnPane(entry.packageName, 0, targetPane)
+            val pkg = entry.packageName
+            val pane = targetPane
             hide()
-            onAppPicked?.invoke(targetPane, entry.packageName)
+            onAppPicked?.invoke(pane, pkg)
+            launchExecutor.execute {
+                try {
+                    CoreApi.startActivityOnPane(pkg, 0, pane)
+                } catch (t: Throwable) {
+                    logPicker("startActivityOnPane failed pkg=$pkg: ${t.message}")
+                }
+            }
         },
         requestIcon = { entry, position -> requestIconLoad(entry, position) },
     )
@@ -146,6 +155,7 @@ class SplitAppPickerController(
         hide()
         unregisterPackageReceiver()
         loadExecutor.shutdownNow()
+        launchExecutor.shutdownNow()
     }
 
     private fun invalidateCache() {

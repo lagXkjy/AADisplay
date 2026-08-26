@@ -1,9 +1,12 @@
 package io.github.nitsuya.aa.display.ui.aa
 
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.add
 import androidx.fragment.app.commit
+import androidx.fragment.app.commitNow
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.ui.aa.fragment.AaMainFragment
@@ -25,25 +28,39 @@ object AaDisplayActivityKt {
 
     fun showRecentTask(fragmentManager: FragmentManager){
         val fragment = fragmentManager.findFragmentByTag("RecentTask")
-        if(fragment == null){
+        if (fragment == null) {
             fragmentManager.commit {
                 setReorderingAllowed(true)
                 add<AaRecentTaskFragment>(R.id.fragment_container_view, "RecentTask")
             }
-            // BT mouse + Coolwalk rail must hit the Recents overlay on the shell.
             setAaUiShellCapture(fragmentManager, true)
         } else {
-            hideRecentTask(fragmentManager)
+            (fragment as? AaRecentTaskFragment)?.requestReload()
         }
     }
 
-    fun hideRecentTask(fragmentManager: FragmentManager){
+    fun hideRecentTask(fragmentManager: FragmentManager) {
         val fragment = fragmentManager.findFragmentByTag("RecentTask") ?: return
-        fragmentManager.commit {
-            setReorderingAllowed(true)
-            remove(fragment)
+        val removeNow = Runnable {
+            if (fragmentManager.findFragmentByTag("RecentTask") == null) return@Runnable
+            if (!fragmentManager.isStateSaved) {
+                fragmentManager.commitNow {
+                    setReorderingAllowed(true)
+                    remove(fragment)
+                }
+            } else {
+                fragmentManager.commit {
+                    setReorderingAllowed(true)
+                    remove(fragment)
+                }
+            }
+            setAaUiShellCapture(fragmentManager, false)
         }
-        setAaUiShellCapture(fragmentManager, false)
+        // commitNow during the touch/click that opened hide stalls the UI and can break picker taps.
+        val posted = fragment.view?.post(removeNow) == true
+        if (!posted) {
+            Handler(Looper.getMainLooper()).post(removeNow)
+        }
     }
 
     /** Same flag as app picker: rail / HID → AaDisplay presentation. */

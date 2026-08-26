@@ -131,6 +131,74 @@ object LastSplitStore {
         }
     }
 
+    /**
+     * Wipe durable snapshot (Settings + file + cache).
+     * Used when an explicit close leaves a pane empty so soft-reconnect
+     * [backfill] cannot resurrect the closed app.
+     */
+    fun clear(contentResolver: ContentResolver? = null): Boolean {
+        synchronized(cacheLock) {
+            cachedSnapshot = null
+        }
+        var settingsOk = false
+        if (contentResolver != null) {
+            try {
+                Settings.Global.putString(contentResolver, SETTINGS_LEFT, null)
+                Settings.Global.putString(contentResolver, SETTINGS_RIGHT, null)
+                Settings.Global.putString(contentResolver, SETTINGS_RATIO, null)
+                Settings.Global.putString(contentResolver, SETTINGS_FULLSCREEN, null)
+                Settings.Global.putString(contentResolver, SETTINGS_LEFT_STACK, null)
+                Settings.Global.putString(contentResolver, SETTINGS_RIGHT_STACK, null)
+                settingsOk = true
+            } catch (e: Throwable) {
+                Log.w(TAG, "settings clear failed", e)
+            }
+        }
+        val fileOk = try {
+            val file = File(PATH)
+            if (!file.exists()) true else file.delete()
+        } catch (e: Throwable) {
+            Log.w(TAG, "file clear failed", e)
+            false
+        }
+        if (settingsOk || fileOk) {
+            Log.d(TAG, "snapshot cleared")
+        }
+        return settingsOk || fileOk
+    }
+
+    /**
+     * Remove [packageName] from the durable snapshot after an explicit close.
+     * If either pane would become empty, [clear] the whole snapshot (dual-pane
+     * restore requires both sides).
+     */
+    fun dropPackage(packageName: String, contentResolver: ContentResolver? = null): Boolean {
+        val pkg = packageName.trim()
+        if (pkg.isEmpty()) return false
+        val snap = load(contentResolver) ?: return false
+        val primary = snap.primaryPackagesBottomToTop().filter { it != pkg }
+        val secondary = snap.secondaryPackagesBottomToTop().filter { it != pkg }
+        if (primary.isEmpty() || secondary.isEmpty()) {
+            Log.d(TAG, "dropPackage $pkg → clear (incomplete panes)")
+            return clear(contentResolver)
+        }
+        if (primary == snap.primaryPackagesBottomToTop() &&
+            secondary == snap.secondaryPackagesBottomToTop()
+        ) {
+            return false
+        }
+        val updated = Snapshot(
+            primaryPackage = primary.last(),
+            secondaryPackage = secondary.last(),
+            primaryRatio = snap.primaryRatio,
+            fullscreenPane = snap.fullscreenPane,
+            primaryStack = primary,
+            secondaryStack = secondary,
+        )
+        Log.d(TAG, "dropPackage $pkg → primary=${updated.primaryPackage} secondary=${updated.secondaryPackage}")
+        return save(updated, contentResolver, logSettingsFailures = true)
+    }
+
     fun encodeStack(packagesBottomToTop: List<String>): String =
         packagesBottomToTop
             .map { it.trim() }

@@ -13,6 +13,7 @@ import com.github.kyuubiran.ezxhelper.utils.args
 import com.github.kyuubiran.ezxhelper.utils.invokeMethod
 import com.github.kyuubiran.ezxhelper.utils.newInstance
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
+import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.LastSplitStore
 import io.github.nitsuya.aa.display.util.PmResolveCache
@@ -34,9 +35,18 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         persistSnapshot(force = false, logSettingsFailures = false)
     }
 
-    internal val mDebouncedNotifyState = Runnable {
+    /** ATMS stack settle: refresh pane packages once, then notify AA UI + Recent dirty. */
+    internal val mDebouncedStackSettle = Runnable {
         if (refreshPanePackagesFromAtms()) {
             notifySplitStateChangedImmediate()
+        }
+        try {
+            c.context.sendBroadcast(
+                Intent(AABroadcastConst.ACTION_RECENT_TASK_DIRTY)
+                    .setPackage(BuildConfig.APPLICATION_ID),
+            )
+        } catch (e: Throwable) {
+            logDebug(SplitDisplayController.TAG, "recent dirty broadcast failed: ${e.message}")
         }
     }
 
@@ -56,8 +66,56 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }, RESTORE_TOKEN, SystemClock.uptimeMillis())
     }
 
+    /** Bookkeeping + broadcast snapshot fronts before ATMS launch (connect-settle poll). */
+    fun prefillRestoreFromSnapshot(): LastSplitStore.Snapshot? {
+        val snap = LastSplitStore.load(c.context.contentResolver) ?: return null
+        if (resolveLaunchComponent(snap.primaryPackage) == null ||
+            resolveLaunchComponent(snap.secondaryPackage) == null
+        ) {
+            return null
+        }
+        val (primaryStack, secondaryStack) = filteredRestoreStacks(snap)
+        c.stacks.setStackBottomToTop(SplitPane.PRIMARY, primaryStack)
+        c.stacks.setStackBottomToTop(SplitPane.SECONDARY, secondaryStack)
+        logDebug(
+            SplitDisplayController.TAG,
+            "prefillRestore primary=${c.mPanePackages[SplitPane.PRIMARY]} " +
+                "secondary=${c.mPanePackages[SplitPane.SECONDARY]} " +
+                "pStack=$primaryStack sStack=$secondaryStack"
+        )
+        return snap
+    }
+
+    /** True when both AA VDs have no live user root (soft reconnect may need restore). */
+    fun bothPanesVacantOnDisplays(): Boolean {
+        for (pane in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
+            val displayId = c.input.displayIdFor(pane) ?: return false
+            val tasks = c.ownership.normalizeRootTasksBottomToTop(
+                tryOrNull {
+                    Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+                }.orEmpty()
+            )
+            val hasUser = tasks.any { info ->
+                val pkg = info.topActivity?.packageName
+                !pkg.isNullOrBlank() && !SplitChromePackages.BOUNCE_EXCLUDED.contains(pkg)
+            }
+            if (hasUser) return false
+        }
+        return true
+    }
+
+    private fun filteredRestoreStacks(
+        snap: LastSplitStore.Snapshot,
+    ): Pair<List<String>, List<String>> {
+        val primaryStack = snap.primaryPackagesBottomToTop()
+            .filter { it.trim().isNotEmpty() && it !in c.mExplicitlyClosedPackages }
+        val secondaryStack = snap.secondaryPackagesBottomToTop()
+            .filter { it.trim().isNotEmpty() && it !in c.mExplicitlyClosedPackages }
+        return primaryStack to secondaryStack
+    }
+
     fun restoreLastSplitNow() {
-        val snap = LastSplitStore.load(c.context.contentResolver)
+        val snap = prefillRestoreFromSnapshot()
         if (snap == null) {
             c.notifySplitStateChanged()
             return
@@ -67,26 +125,127 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         c.mRatioBeforeFullscreen = c.mRatio
         c.mFullscreenPane = SplitPane.FULLSCREEN_NONE
         c.vd.resizePanesInternal("restore")
-        val primaryStack = snap.primaryPackagesBottomToTop()
-        val secondaryStack = snap.secondaryPackagesBottomToTop()
-        // Launch bottom → top so the last package ends as the visible front.
+        val (primaryStack, secondaryStack) = filteredRestoreStacks(snap)
+        c.notifySplitStateChanged()
+        logDebug(
+            SplitDisplayController.TAG,
+            "restoreLastSplitNow start pStack=$primaryStack sStack=$secondaryStack"
+        )
         var primaryOk = false
-        for (pkg in primaryStack) {
+        for (pkg in primaryStack.dropLast(1)) {
             primaryOk = c.startActivityOnPane(pkg, 0, SplitPane.PRIMARY) || primaryOk
         }
         var secondaryOk = false
-        for (pkg in secondaryStack) {
+        for (pkg in secondaryStack.dropLast(1)) {
             secondaryOk = c.startActivityOnPane(pkg, 0, SplitPane.SECONDARY) || secondaryOk
         }
-        // Ensure bookkeeping matches the snapshot order (front = last).
+        val primaryFront = primaryStack.lastOrNull()
+        val secondaryFront = secondaryStack.lastOrNull()
+        when {
+            primaryFront != null && secondaryFront != null -> {
+                launchRestoreFrontsParallel(primaryFront, secondaryFront) { pOk, sOk ->
+                    finishRestoreLastSplit(
+                        snap,
+                        primaryStack,
+                        secondaryStack,
+                        primaryOk || pOk,
+                        secondaryOk || sOk,
+                    )
+                }
+            }
+            primaryFront != null -> {
+                primaryOk = c.startActivityOnPane(primaryFront, 0, SplitPane.PRIMARY) || primaryOk
+                finishRestoreLastSplit(snap, primaryStack, secondaryStack, primaryOk, secondaryOk)
+            }
+            secondaryFront != null -> {
+                secondaryOk = c.startActivityOnPane(secondaryFront, 0, SplitPane.SECONDARY) || secondaryOk
+                finishRestoreLastSplit(snap, primaryStack, secondaryStack, primaryOk, secondaryOk)
+            }
+            else -> finishRestoreLastSplit(snap, primaryStack, secondaryStack, false, false)
+        }
+    }
+
+    /**
+     * Cold-start both pane fronts on worker threads so ATMS is not serialized on [mHandler].
+     * Bookkeeping is already seeded via [prefillRestoreFromSnapshot].
+     */
+    private fun launchRestoreFrontsParallel(
+        primaryFront: String,
+        secondaryFront: String,
+        onComplete: (primaryOk: Boolean, secondaryOk: Boolean) -> Unit,
+    ) {
+        val primaryDisplay = c.input.displayIdFor(SplitPane.PRIMARY)
+        val secondaryDisplay = c.input.displayIdFor(SplitPane.SECONDARY)
+        val primaryComp = resolveLaunchComponent(primaryFront)
+        val secondaryComp = resolveLaunchComponent(secondaryFront)
+        if (primaryDisplay == null || secondaryDisplay == null ||
+            primaryComp == null || secondaryComp == null
+        ) {
+            c.mHandler.post { onComplete(false, false) }
+            return
+        }
+        val results = BooleanArray(2)
+        val latch = java.util.concurrent.CountDownLatch(2)
+        fun launchPane(
+            threadName: String,
+            pkg: String,
+            component: ComponentName,
+            displayId: Int,
+            slot: Int,
+        ) {
+            Thread({
+                try {
+                    c.ownership.removePackageTasksOnDisplay(pkg, displayId)
+                    results[slot] = launchOnDisplay(component, 0, displayId)
+                } catch (e: Throwable) {
+                    log(SplitDisplayController.TAG, "restore parallel launch failed pkg=$pkg:", e)
+                    results[slot] = false
+                } finally {
+                    latch.countDown()
+                }
+            }, threadName).start()
+        }
+        launchPane("AADisplay-restore-P", primaryFront, primaryComp, primaryDisplay, 0)
+        launchPane("AADisplay-restore-S", secondaryFront, secondaryComp, secondaryDisplay, 1)
+        Thread({
+            try {
+                latch.await()
+            } catch (_: InterruptedException) {
+            }
+            c.mHandler.post {
+                if (c.mIsDestroying) return@post
+                logDebug(
+                    SplitDisplayController.TAG,
+                    "restore parallel fronts primary=$primaryFront:${results[0]} " +
+                        "secondary=$secondaryFront:${results[1]}"
+                )
+                onComplete(results[0], results[1])
+            }
+        }, "AADisplay-restore-wait").start()
+    }
+
+    private fun finishRestoreLastSplit(
+        snap: LastSplitStore.Snapshot,
+        primaryStack: List<String>,
+        secondaryStack: List<String>,
+        primaryOk: Boolean,
+        secondaryOk: Boolean,
+    ) {
         c.stacks.setStackBottomToTop(SplitPane.PRIMARY, primaryStack)
         c.stacks.setStackBottomToTop(SplitPane.SECONDARY, secondaryStack)
-        ownershipBringFront(SplitPane.PRIMARY, snap.primaryPackage)
-        ownershipBringFront(SplitPane.SECONDARY, snap.secondaryPackage)
+        primaryStack.lastOrNull()?.let { pkg ->
+            c.mExplicitlyClosedPackages.remove(pkg)
+            c.ownership.markOwnership(pkg, c.input.displayIdFor(SplitPane.PRIMARY) ?: return@let)
+            ownershipBringFront(SplitPane.PRIMARY, pkg)
+        }
+        secondaryStack.lastOrNull()?.let { pkg ->
+            c.mExplicitlyClosedPackages.remove(pkg)
+            c.ownership.markOwnership(pkg, c.input.displayIdFor(SplitPane.SECONDARY) ?: return@let)
+            ownershipBringFront(SplitPane.SECONDARY, pkg)
+        }
         if (SplitPane.isFullscreenPane(snap.fullscreenPane)) {
             c.setSplitFullscreen(snap.fullscreenPane)
         }
-        // Multi-Av restore (e.g. music + Douyin) — only one may keep sounding.
         c.buriedPlayback.scheduleEnforceSingleSounder("restore")
         log(
             SplitDisplayController.TAG,
@@ -96,7 +255,6 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                 "fullscreen=${c.mFullscreenPane}"
         )
         c.notifySplitStateChanged()
-        // Launch returning true only means startActivity was accepted — verify panes stuck.
         scheduleVerifyRestore(snap, attempt = 0)
     }
 
@@ -134,13 +292,21 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }
         val primaryDisplay = c.primaryDisplayId
         val secondaryDisplay = c.secondaryDisplayId
-        val primaryPresent = primaryDisplay != Display.INVALID_DISPLAY &&
-            c.ownership.hasPackageOnDisplay(snap.primaryPackage, primaryDisplay)
-        val secondaryPresent = secondaryDisplay != Display.INVALID_DISPLAY &&
-            c.ownership.hasPackageOnDisplay(snap.secondaryPackage, secondaryDisplay)
+        val wantPrimary = snap.primaryPackage.trim().isNotEmpty() &&
+            snap.primaryPackage !in c.mExplicitlyClosedPackages
+        val wantSecondary = snap.secondaryPackage.trim().isNotEmpty() &&
+            snap.secondaryPackage !in c.mExplicitlyClosedPackages
+        val primaryPresent = !wantPrimary || (
+            primaryDisplay != Display.INVALID_DISPLAY &&
+                c.ownership.hasPackageOnDisplay(snap.primaryPackage, primaryDisplay)
+            )
+        val secondaryPresent = !wantSecondary || (
+            secondaryDisplay != Display.INVALID_DISPLAY &&
+                c.ownership.hasPackageOnDisplay(snap.secondaryPackage, secondaryDisplay)
+            )
 
         var retry = false
-        if (!primaryPresent) {
+        if (wantPrimary && !primaryPresent) {
             retry = retry || verifyRestorePaneMissing(
                 snap.primaryPackage,
                 SplitPane.PRIMARY,
@@ -148,7 +314,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                 attempt,
             )
         }
-        if (!secondaryPresent) {
+        if (wantSecondary && !secondaryPresent) {
             retry = retry || verifyRestorePaneMissing(
                 snap.secondaryPackage,
                 SplitPane.SECONDARY,
@@ -162,10 +328,18 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }
         if (primaryPresent && secondaryPresent) {
             // Prefer snapshot order but drop ghost buried entries that never landed.
-            trimStackToDisplayAlive(SplitPane.PRIMARY, snap.primaryPackagesBottomToTop())
-            trimStackToDisplayAlive(SplitPane.SECONDARY, snap.secondaryPackagesBottomToTop())
-            ownershipBringFront(SplitPane.PRIMARY, snap.primaryPackage)
-            ownershipBringFront(SplitPane.SECONDARY, snap.secondaryPackage)
+            val primaryStack = snap.primaryPackagesBottomToTop()
+                .filter { it !in c.mExplicitlyClosedPackages }
+            val secondaryStack = snap.secondaryPackagesBottomToTop()
+                .filter { it !in c.mExplicitlyClosedPackages }
+            trimStackToDisplayAlive(SplitPane.PRIMARY, primaryStack)
+            trimStackToDisplayAlive(SplitPane.SECONDARY, secondaryStack)
+            if (wantPrimary) {
+                ownershipBringFront(SplitPane.PRIMARY, snap.primaryPackage)
+            }
+            if (wantSecondary) {
+                ownershipBringFront(SplitPane.SECONDARY, snap.secondaryPackage)
+            }
             c.buriedPlayback.scheduleEnforceSingleSounder("restore-verify")
             persistSnapshot(force = true, logSettingsFailures = true)
         }
@@ -182,6 +356,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         attempt: Int,
     ): Boolean {
         if (displayId == Display.INVALID_DISPLAY) return false
+        if (packageName.trim() in c.mExplicitlyClosedPackages) return false
         if (c.ownership.hasPackageOnDisplay(packageName, displayId)) return false
         logDebug(
             SplitDisplayController.TAG,
@@ -245,10 +420,13 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             val otherPkgs = c.stacks.packagesBottomToTop(other).toSet()
             // Drop packages already owned by the healthy other pane so setStackBottomToTop
             // does not strip them via cross-pane exclusivity.
-            val filtered = entry.stack.filter { it.trim().isNotEmpty() && it.trim() !in otherPkgs }
+            val filtered = entry.stack.filter { pkg ->
+                val p = pkg.trim()
+                p.isNotEmpty() && p !in otherPkgs && p !in c.mExplicitlyClosedPackages
+            }
             val pkg = (filtered.lastOrNull() ?: entry.front).trim().takeIf { it.isNotEmpty() }
                 ?: continue
-            if (pkg in otherPkgs) continue
+            if (pkg in otherPkgs || pkg in c.mExplicitlyClosedPackages) continue
             if (resolveLaunchComponent(pkg) == null) continue
             logDebug(
                 SplitDisplayController.TAG,
@@ -326,6 +504,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                 ?: c.mPanePackages[pane]?.trim()?.takeIf { it.isNotEmpty() }
                 ?: stackPkgs.lastOrNull()
             for (pkg in stackPkgs) {
+                if (pkg.trim() in c.mExplicitlyClosedPackages) continue
                 val isFront = pkg == stackFront
                 if (c.ownership.shouldSkipRelaunchOnDisplay(pkg, displayId, reason, isFront)) {
                     continue
@@ -407,9 +586,10 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }
     }
 
-    fun scheduleNotifySplitState() {
-        c.mHandler.removeCallbacks(mDebouncedNotifyState)
-        c.mHandler.postDelayed(mDebouncedNotifyState, 180L)
+    /** Debounced after ATMS stack settles (aligns with reclaim debounce). */
+    fun scheduleStackSettle() {
+        c.mHandler.removeCallbacks(mDebouncedStackSettle)
+        c.mHandler.postDelayed(mDebouncedStackSettle, SplitDisplayController.RECLAIM_DEBOUNCE_MS)
     }
 
     fun launchOnDisplay(
@@ -476,7 +656,20 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }
     }
 
+    /**
+     * Explicit Recent/stack close: remember [packageName] for this session so
+     * surfaces-ready backfill / restore do not resurrect it. Durable snapshot is
+     * left intact for reconnect memory (filtered at restore/backfill).
+     */
+    fun onExplicitPackageClosed(packageName: String) {
+        val pkg = packageName.trim()
+        if (pkg.isNotEmpty()) {
+            c.mExplicitlyClosedPackages.add(pkg)
+        }
+    }
+
     fun schedulePersistSnapshot() {
+
         val now = SystemClock.uptimeMillis()
         if (mPersistFirstScheduledAt == 0L) {
             mPersistFirstScheduledAt = now
@@ -491,7 +684,10 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
     }
 
     fun persistSnapshot(force: Boolean, logSettingsFailures: Boolean) {
-        refreshPanePackagesFromAtms()
+        // On destroy/verify, ATMS may already show empty VDs — do not trim stacks first.
+        if (!force) {
+            refreshPanePackagesFromAtms()
+        }
         // Prefer stack fronts so a transient ATMS-only top cannot poison the durable snapshot.
         val primaryPkg = (c.stacks.front(SplitPane.PRIMARY) ?: c.mPanePackages[SplitPane.PRIMARY])
             ?.trim().orEmpty()
@@ -562,14 +758,8 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                     // packages missing from the ATMS walk are not wiped from bookkeeping.
                     val previousFront = c.stacks.front(pane)
                     c.stacks.mergeAliveKeepingOrder(pane, userPkgsBottomToTop)
-                    when {
-                        !previousFront.isNullOrBlank() &&
-                            userPkgsBottomToTop.contains(previousFront) -> {
-                            c.stacks.moveToTop(pane, previousFront)
-                        }
-                        topPkg != null && c.stacks.contains(pane, topPkg) -> {
-                            c.stacks.moveToTop(pane, topPkg)
-                        }
+                    if (!previousFront.isNullOrBlank() && c.stacks.contains(pane, previousFront)) {
+                        c.stacks.moveToTop(pane, previousFront)
                     }
                     c.ownership.enforceStackFrontAudio(pane)
                 } else if (!settling && next == null) {

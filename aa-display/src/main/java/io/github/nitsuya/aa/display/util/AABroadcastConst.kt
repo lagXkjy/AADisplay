@@ -40,6 +40,8 @@ interface AABroadcastConst {
          * [SplitDividerView] while keyguard occludes the presentation).
          */
         const val ACTION_SHOW_RECENT_TASK = "aa.display.action.SHOW_RECENT_TASK"
+        /** system_server → AA: ATMS stack changed while Recents may be visible. */
+        const val ACTION_RECENT_TASK_DIRTY = "aa.display.action.RECENT_TASK_DIRTY"
         /**
          * system_server → AA: apply split ratio on the **shell** first
          * ([AaMainFragment] layout + divider), then settle VD via [ICoreManager.setSplitRatio].

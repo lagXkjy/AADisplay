@@ -210,11 +210,10 @@ internal class PaneAppStack(private val c: SplitDisplayController) {
             if (!seen.add(pkg)) continue
             alive.add(pkg)
         }
-        val aliveSet = alive.toSet()
         val merged = ArrayList<String>(MAX_PER_PANE)
-        // Keep intentional buried order for packages still alive.
+        // Preserve intentional stack order first — ATMS walks lag VD resize and may omit buried tasks.
         for (pkg in stacks[pane]) {
-            if (pkg in aliveSet) merged.add(pkg)
+            merged.add(pkg)
         }
         // ATMS-only packages: prepend at bottom preserving ATMS bottom→top order.
         val extras = alive.filter { it !in merged }

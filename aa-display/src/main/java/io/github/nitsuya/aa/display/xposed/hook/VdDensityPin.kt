@@ -1,6 +1,7 @@
 package io.github.nitsuya.aa.display.xposed.hook
 
 import android.content.res.Configuration
+import android.graphics.Rect
 import android.view.Display
 import com.github.kyuubiran.ezxhelper.utils.getObject
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
@@ -178,9 +179,16 @@ object VdDensityPin {
                     if (!pinnedPackages.contains(packageName)) {
                         markPackageOnVirtualDisplay(packageName, displayId)
                     }
-                    // Only rewrite when density is wrong — avoid fighting live layout.
-                    val config = mergedOverrideConfig(record)
-                    if (config != null && config.densityDpi != vdDpi) {
+                    val config = mergedOverrideConfig(record) ?: return@hookBefore
+                    val paneSize = CoreManagerService.aaPaneSizePx(displayId)
+                    if (paneSize != null) {
+                        val (paneW, paneH) = paneSize
+                        if (paneBoundsStale(config, paneW, paneH, vdDpi)) {
+                            applyAaPaneBounds(config, paneW, paneH, vdDpi)
+                        } else if (config.densityDpi != vdDpi) {
+                            config.densityDpi = vdDpi
+                        }
+                    } else if (config.densityDpi != vdDpi) {
                         config.densityDpi = vdDpi
                     }
                 } catch (_: Throwable) {
@@ -190,6 +198,48 @@ object VdDensityPin {
         } catch (e: Throwable) {
             log(TAG, "ActivityRecord configuration pin hook failed", e)
             null
+        }
+    }
+
+    private fun paneBoundsStale(
+        config: Configuration,
+        widthPx: Int,
+        heightPx: Int,
+        densityDpi: Int,
+    ): Boolean {
+        val bounds = configWindowBounds(config)
+        if (bounds != null) {
+            return bounds.width() != widthPx || bounds.height() != heightPx
+        }
+        val density = densityDpi / 160f
+        val expectedW = (widthPx / density).toInt()
+        val expectedH = (heightPx / density).toInt()
+        return config.screenWidthDp != expectedW || config.screenHeightDp != expectedH
+    }
+
+    private fun configWindowBounds(config: Configuration): Rect? {
+        return runCatching {
+            val wc = config.javaClass.getField("windowConfiguration").get(config) ?: return null
+            wc.javaClass.getMethod("getBounds").invoke(wc) as? Rect
+        }.getOrNull()
+    }
+
+    private fun applyAaPaneBounds(
+        config: Configuration,
+        widthPx: Int,
+        heightPx: Int,
+        densityDpi: Int,
+    ) {
+        val density = densityDpi / 160f
+        config.densityDpi = densityDpi
+        config.screenWidthDp = (widthPx / density).toInt().coerceAtLeast(1)
+        config.screenHeightDp = (heightPx / density).toInt().coerceAtLeast(1)
+        val rect = Rect(0, 0, widthPx, heightPx)
+        runCatching {
+            val wc = config.javaClass.getField("windowConfiguration").get(config) ?: return@runCatching
+            wc.javaClass.getMethod("setBounds", Rect::class.java).invoke(wc, rect)
+            wc.javaClass.getMethod("setAppBounds", Rect::class.java).invoke(wc, rect)
+            wc.javaClass.getMethod("setMaxBounds", Rect::class.java).invoke(wc, rect)
         }
     }
 

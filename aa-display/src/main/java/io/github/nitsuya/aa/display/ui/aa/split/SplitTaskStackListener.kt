@@ -19,8 +19,7 @@ internal class SplitTaskStackListener(
         if (c.mIsDestroying) return
         c.mHandler.removeCallbacks(c.ownership.mDebouncedReclaim)
         c.mHandler.postDelayed(c.ownership.mDebouncedReclaim, SplitDisplayController.RECLAIM_DEBOUNCE_MS)
-        // Only notify AA when pane packages actually change (debounced). Never push ratio.
-        c.launch.scheduleNotifySplitState()
+        c.launch.scheduleStackSettle()
         c.launch.schedulePersistSnapshot()
         // Douyin LivePlay (and similar) may attach a foreign Presentation on the other pane.
         SplitPresentationGuard.scheduleEvictOnStackChanged(c)
@@ -71,6 +70,7 @@ internal class SplitTaskStackListener(
         if (!c.mIsDestroying) {
             c.mHandler.removeCallbacks(c.ownership.mDebouncedReclaim)
             c.mHandler.postDelayed(c.ownership.mDebouncedReclaim, SplitDisplayController.RECLAIM_DEBOUNCE_MS)
+            c.launch.scheduleStackSettle()
         }
     }
 
@@ -86,7 +86,9 @@ internal class SplitTaskStackListener(
         val pkg = taskInfo.topActivity?.packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
         val front = c.stacks.front(pane)?.trim()?.takeIf { it.isNotEmpty() } ?: return
         if (pkg != front && c.stacks.contains(pane, pkg)) {
-            c.mHandler.post { c.ownership.enforceStackFrontAudio(pane) }
+            if (SystemClock.uptimeMillis() < c.mSuppressReclaimUntil) return
+            // Ratio resize / WM churn can briefly bring a buried mate forward — re-promote stack front.
+            c.mHandler.post { c.ownership.promoteStackFronts(listOf(pane), settleAv = false) }
         }
     }
 
@@ -113,7 +115,10 @@ internal class SplitTaskStackListener(
         }
     }
 
-    override fun onRecentTaskListUpdated() {}
+    override fun onRecentTaskListUpdated() {
+        if (c.mIsDestroying) return
+        c.launch.scheduleStackSettle()
+    }
     override fun onRecentTaskRemovedForAddTask(taskId: Int) {}
     override fun onRecentTaskListFrozenChanged(frozen: Boolean) {}
     override fun onTaskFocusChanged(taskId: Int, focused: Boolean) {}

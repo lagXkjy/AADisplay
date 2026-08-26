@@ -589,8 +589,11 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         return emptyList()
     }
 
-    /** Bring the current stack-front task to the foreground for each pane. */
-    fun promoteStackFronts(panes: Collection<Int>) {
+    /**
+     * Bring the current stack-front task to the foreground for each pane.
+     * @param settleAv when false, skip cross-pane MediaSession arbitration (close / swap fast path).
+     */
+    fun promoteStackFronts(panes: Collection<Int>, settleAv: Boolean = true) {
         val rootsCache = HashMap<Int, List<ActivityTaskManager.RootTaskInfo>>(2)
         val fronts = ArrayList<String>(2)
         for (pane in panes) {
@@ -619,6 +622,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             enforceStackFrontAudio(pane, rootsCache = rootsCache)
             fronts += frontPkg
         }
+        if (!settleAv) return
         // Cross-pane: restore / dual Av fronts must not both sound.
         c.buriedPlayback.enforceSingleSounder("promote")
         for (frontPkg in fronts) {
@@ -779,6 +783,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         width: Int,
         height: Int,
         reason: String,
+        nudgeVd: Boolean = true,
     ) {
         if (displayId == Display.INVALID_DISPLAY || width <= 0 || height <= 0) return
         val pane = when (displayId) {
@@ -787,7 +792,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             else -> return
         }
         val vd = if (pane == SplitPane.PRIMARY) c.mPrimary else c.mSecondary
-        if (vd != null) {
+        if (nudgeVd && vd != null) {
             try {
                 val nudgeW = (width - 1).coerceAtLeast(1)
                 vd.resize(nudgeW, height, c.mDensityDpi)
@@ -816,7 +821,7 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         logDebug(
             SplitDisplayController.TAG,
             "ensureTasksFillDisplay[$reason] display=$displayId " +
-                "${width}x$height nudged=${vd != null} forced=$forced front=${front?.taskId}"
+                "${width}x$height nudged=${nudgeVd && vd != null} forced=$forced front=${front?.taskId}"
         )
     }
 

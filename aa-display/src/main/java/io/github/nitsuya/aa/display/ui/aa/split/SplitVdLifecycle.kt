@@ -23,10 +23,7 @@ internal data class PaneSizes(
 
 internal class SplitVdLifecycle(private val c: SplitDisplayController) {
 
-    fun dividerPx(): Int {
-        val dpi = c.mDensityDpi.coerceAtLeast(160)
-        return (SplitPane.DIVIDER_DP * dpi / 160f).toInt().coerceAtLeast(8)
-    }
+    fun dividerPx(): Int = SplitPane.dividerPx(c.mDensityDpi)
 
     fun computePaneSizes(): PaneSizes {
         // Fullscreen: both VDs stay full-buffer so the hidden pane keeps rendering
@@ -86,7 +83,10 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
         c.mLastSecondaryW = sizes.secondaryW
         c.mLastSecondaryH = sizes.secondaryH
         c.mLastResizeAt = SystemClock.uptimeMillis()
-        c.mSuppressReclaimUntil = SystemClock.uptimeMillis() + 800L
+        c.mSuppressReclaimUntil = maxOf(
+            c.mSuppressReclaimUntil,
+            SystemClock.uptimeMillis() + 800L,
+        )
         try {
             // Only resize panes whose buffer size actually changes. Fullscreen toggle between
             // panes is a no-op size-wise; resizing both always triggered Samsung

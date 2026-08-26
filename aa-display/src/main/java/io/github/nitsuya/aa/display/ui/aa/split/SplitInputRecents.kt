@@ -259,41 +259,7 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
             val all = c.ownership.normalizeRootTasksBottomToTop(
                 Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
             )
-            val mapped = all.mapNotNull { taskInfo ->
-                if (isSystemHomeTask(taskInfo)) return@mapNotNull null
-                val topActivity = taskInfo.topActivity ?: return@mapNotNull null
-                if (SplitChromePackages.BOUNCE_EXCLUDED.contains(topActivity.packageName)) return@mapNotNull null
-                val cacheKey = topActivity.flattenToString()
-                var taskDescription = taskInfo.taskDescription
-                    ?: Instances.iActivityTaskManager.getTaskDescription(taskInfo.taskId)
-                    ?: return@mapNotNull null
-                var icon = runCatching { taskDescription.icon }.getOrNull()
-                var iconFromPm = false
-                if (icon == null) {
-                    icon = PmIconCache.getBitmap(cacheKey)
-                }
-                if (icon == null) {
-                    icon = Instances.packageManager.getActivityIcon(topActivity).toBitmap()
-                    iconFromPm = true
-                }
-                icon = downsampleForIpc(icon, MAX_RECENT_ICON_EDGE_PX)
-                if (iconFromPm) {
-                    PmIconCache.putBitmap(cacheKey, icon)
-                }
-                var label = taskDescription.label
-                if (label == null) {
-                    label = PmIconCache.getLabel(cacheKey)
-                }
-                if (label == null) {
-                    val activityInfo = Instances.packageManager.getActivityInfo(
-                        topActivity,
-                        PackageManager.ComponentInfoFlags.of(0)
-                    )
-                    label = activityInfo.loadLabel(Instances.packageManager).toString()
-                    PmIconCache.putLabel(cacheKey, label)
-                }
-                RecentTaskInfo(icon, taskInfo.taskId, label, topActivity.packageName)
-            }
+            val mapped = all.mapNotNull { taskInfoFromRoot(it) }
             // Normalized bottom → top; VD Recents UI wants top → bottom (index 0 = front).
             if (topFirst) {
                 mapped.takeLast(maxCount).asReversed()
@@ -305,6 +271,57 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
         }
     }
 
+    /** Package → row metadata for a display (order not significant). */
+    fun recentTaskInfoByPackage(displayId: Int): Map<String, RecentTaskInfo> {
+        val identity = Binder.clearCallingIdentity()
+        return try {
+            recentTaskInfo(displayId, maxCount = MAX_RECENT_PER_DISPLAY, topFirst = false)
+                .mapNotNull { info ->
+                    val pkg = info.packageName?.trim().orEmpty()
+                    if (pkg.isEmpty()) null else pkg to info
+                }
+                .toMap()
+        } finally {
+            Binder.restoreCallingIdentity(identity)
+        }
+    }
+
+    private fun taskInfoFromRoot(taskInfo: ActivityTaskManager.RootTaskInfo): RecentTaskInfo? {
+        if (isSystemHomeTask(taskInfo)) return null
+        val topActivity = taskInfo.topActivity ?: return null
+        if (SplitChromePackages.BOUNCE_EXCLUDED.contains(topActivity.packageName)) return null
+        val cacheKey = topActivity.flattenToString()
+        var taskDescription = taskInfo.taskDescription
+            ?: Instances.iActivityTaskManager.getTaskDescription(taskInfo.taskId)
+            ?: return null
+        var icon = runCatching { taskDescription.icon }.getOrNull()
+        var iconFromPm = false
+        if (icon == null) {
+            icon = PmIconCache.getBitmap(cacheKey)
+        }
+        if (icon == null) {
+            icon = Instances.packageManager.getActivityIcon(topActivity).toBitmap()
+            iconFromPm = true
+        }
+        icon = downsampleForIpc(icon, MAX_RECENT_ICON_EDGE_PX)
+        if (iconFromPm) {
+            PmIconCache.putBitmap(cacheKey, icon)
+        }
+        var label = taskDescription.label
+        if (label == null) {
+            label = PmIconCache.getLabel(cacheKey)
+        }
+        if (label == null) {
+            val activityInfo = Instances.packageManager.getActivityInfo(
+                topActivity,
+                PackageManager.ComponentInfoFlags.of(0)
+            )
+            label = activityInfo.loadLabel(Instances.packageManager).toString()
+            PmIconCache.putLabel(cacheKey, label)
+        }
+        return RecentTaskInfo(icon, taskInfo.taskId, label, topActivity.packageName)
+    }
+
     companion object {
         /** Hot path: resolve once — every MOVE used to re-lookup via ezxhelper invokeMethod. */
         private val setDisplayIdMethod: Method? = runCatching {
@@ -313,7 +330,8 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
 
         /** Cap tasks per display to keep Binder payload bounded. */
         private const val MAX_RECENT_PER_DISPLAY = 12
-        private const val MAX_RECENT_ICON_EDGE_PX = 96
+        /** HU Recent icons are small; 64px keeps the parcel light vs 96. */
+        private const val MAX_RECENT_ICON_EDGE_PX = 64
 
         /** Soft-copy / scale icons so Recent IPC stays light. */
         private fun downsampleForIpc(src: Bitmap, maxEdgePx: Int): Bitmap {

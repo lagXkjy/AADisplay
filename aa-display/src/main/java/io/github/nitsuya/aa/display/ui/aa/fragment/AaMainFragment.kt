@@ -44,6 +44,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         private const val SURFACE_HEALTH_INTERVAL_MS = 30_000L
         /** Debounce VD resize → TextureView size without requestDisplay feedback loop. */
         private const val PANE_SURFACE_REBIND_MS = 80L
+        /** Ignore stale empty occupancy while picker launch is in flight. */
+        private const val PENDING_OCCUPANCY_MS = 8_000L
+        /** Ignore stale empty occupancy while connect-time restore is in flight. */
+        private const val RESTORE_PENDING_MS = 8_000L
+        /** Blocks pane surface rebind during ratio settle (matches server ratio-settle fill). */
+        private const val RATIO_SETTLE_GUARD_MS = 180L
     }
 
     private var displayId: Int = Display.INVALID_DISPLAY
@@ -62,6 +68,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private val paneHasApp = booleanArrayOf(false, false)
     /** Live front packages for picker "最近" (empty string = vacant). */
     private val panePackages = arrayOf("", "")
+    /** Picker launch in flight — stale Binder/broadcast must not flash vacant overlay. */
+    private var pendingOccPane = SplitPane.FULLSCREEN_NONE
+    private var pendingOccPkg = ""
+    /** LastSplit restore in flight — connect-settle must not downgrade optimistic occupancy. */
+    private var restorePendingPrimary = ""
+    private var restorePendingSecondary = ""
     private var imeChipVisible = false
     private var imeChipPane = SplitPane.PRIMARY
 
@@ -112,11 +124,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                         val remote = intent.getFloatExtra(AABroadcastConst.EXTRA_RATIO, Float.NaN)
                         if (!remote.isNaN() && remote > 0f) {
                             val clamped = SplitPane.clampRatio(remote)
-                            if (appliedRatio.isNaN() || abs(appliedRatio - clamped) >= 0.01f) {
-                                splitRatio = clamped
+                            splitRatio = clamped
+                            val needsLayout = appliedRatio.isNaN() ||
+                                abs(appliedRatio - clamped) >= 0.01f
+                            if (needsLayout && !swapInFlight) {
                                 applySplitLayoutWeights(clamped, force = true)
-                                baseBinding.splitDivider.setRatio(clamped)
                             }
+                            baseBinding.splitDivider.setRatio(clamped)
                         }
                     }
                 }
@@ -206,12 +220,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         }.also {
             it.onAppPicked = { pane, packageName ->
                 if (SplitPane.isValid(pane)) {
+                    markPendingOccupancy(pane, packageName)
                     paneHasApp[pane] = true
                     panePackages[pane] = packageName.trim()
                 }
                 updateEmptyOverlays()
-                // Confirm with system_server after launch settles.
-                scheduleOccupancySync(400L)
+                // SPLIT_STATE_CHANGED confirms when system_server launch settles.
             }
             it.onVisibilityChanged = { showing ->
                 isPickerVisible = showing
@@ -233,6 +247,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             paneHasApp[SplitPane.SECONDARY] = true
             panePackages[SplitPane.PRIMARY] = snap.primaryPackage.trim()
             panePackages[SplitPane.SECONDARY] = snap.secondaryPackage.trim()
+            markRestorePending(snap)
         }
         if (SplitPane.isFullscreenPane(fullscreenPane)) {
             applyFullscreenLayout(fullscreenPane)
@@ -305,6 +320,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             baseBinding.root.removeCallbacks(settleLate)
             baseBinding.root.removeCallbacks(afterOccupancySync)
             baseBinding.root.removeCallbacks(afterSwapSettle)
+            baseBinding.root.removeCallbacks(clearRatioSettling)
+            baseBinding.root.removeCallbacks(clearPendingOccupancy)
+            baseBinding.root.removeCallbacks(clearRestorePending)
             baseBinding.splitContainer.removeCallbacks(hostLayoutCatchup)
         } catch (_: Throwable) {
         }
@@ -356,6 +374,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private var lastCreateHeight = 0
     private var lastCreateDpi = 0
     private var dividerDragging = false
+    /** Blocks TextureView rebind → setPaneSurface → ensure during ratio settle. */
+    private var ratioSettling = false
+    /** Optimistic swap layout in flight — skip redundant broadcast/settle relayout. */
+    private var swapInFlight = false
     /** GPU split/peel preview — pane layout sizes stay put until settle. */
     private var dragPreviewActive = false
     private var dragPeelPreview = false
@@ -369,8 +391,18 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private val settleLate = Runnable { runConnectSettleStep(2) }
     private val primaryPaneSurfaceRebind = Runnable { rebindPaneSurface(SplitPane.PRIMARY) }
     private val secondaryPaneSurfaceRebind = Runnable { rebindPaneSurface(SplitPane.SECONDARY) }
+    private val clearRatioSettling = Runnable { ratioSettling = false }
     private val afterOccupancySync = Runnable { syncPaneOccupancyFromService() }
+    private val clearPendingOccupancy = Runnable {
+        pendingOccPane = SplitPane.FULLSCREEN_NONE
+        pendingOccPkg = ""
+    }
+    private val clearRestorePending = Runnable {
+        restorePendingPrimary = ""
+        restorePendingSecondary = ""
+    }
     private val afterSwapSettle = Runnable {
+        swapInFlight = false
         if (!isAdded || view == null || dividerDragging) return@Runnable
         val fs = tryOrNull { CoreApi.splitFullscreenPane } ?: SplitPane.FULLSCREEN_NONE
         applyFullscreenFromRemote(fs)
@@ -378,7 +410,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             val ratio = tryOrNull { CoreApi.splitRatio }?.takeIf { it > 0f } ?: return@Runnable
             val clamped = SplitPane.clampRatio(ratio)
             splitRatio = clamped
-            applySplitLayoutWeights(clamped, force = true)
+            if (appliedRatio.isNaN() || abs(appliedRatio - clamped) >= 0.01f) {
+                applySplitLayoutWeights(clamped, force = true)
+            }
             baseBinding.splitDivider.setRatio(clamped)
         }
         syncPaneOccupancyFromService()
@@ -428,12 +462,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             }
             onRatioSettled = { ratio ->
                 splitRatio = ratio
-                clearDragPreview()
+                ratioSettling = true
+                baseBinding.root.removeCallbacks(clearRatioSettling)
+                // Shell-first (same as HID_APPLY_SPLIT_RATIO): layout before VD resize.
                 applySplitLayoutWeights(ratio, force = true)
                 CoreApi.setSplitRatio(ratio)
                 dividerDragging = false
-                baseBinding.root.removeCallbacks(afterOccupancySync)
-                baseBinding.root.postDelayed(afterOccupancySync, 300L)
+                baseBinding.root.postDelayed(clearRatioSettling, RATIO_SETTLE_GUARD_MS)
                 refreshImeChip()
             }
             onFullscreenEnter = { pane ->
@@ -456,7 +491,18 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 refreshImeChip()
             }
             onStackClick = { openRecentsFromSteering() }
-            onSwapClick = { performSwapClick() }
+            onSwapClick = {
+                // Tap that breached touchSlop may have started a drag preview —
+                // restore pre-press ratio before invert-swap so UI does not
+                // shrink then jump.
+                if (dividerDragging) {
+                    splitRatio = ratioAtDragStart
+                    clearDragPreview()
+                    dividerDragging = false
+                    setRatio(ratioAtDragStart)
+                }
+                performSwapClick()
+            }
         }
     }
 
@@ -476,6 +522,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         } else {
             // Mirror controller's 1-ratio invert immediately so TextureViews track VD
             // resize; broadcast / afterSwapSettle correct if the Binder path lags.
+            swapInFlight = true
+            ratioSettling = true
+            baseBinding.root.removeCallbacks(clearRatioSettling)
+            baseBinding.root.postDelayed(clearRatioSettling, RATIO_SETTLE_GUARD_MS)
             val next = SplitPane.clampRatio(1f - splitRatio)
             splitRatio = next
             applySplitLayoutWeights(next, force = true)
@@ -498,6 +548,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         runMain {
             AaDisplayActivityKt.showRecentTask(parentFragmentManager)
         }
+    }
+
+    /** Recent 底栏「添加应用」：直接开 picker，勿经广播（Recent hide 后 post 会丢）。 */
+    fun showAppPickerFromRecent(pane: Int) {
+        if (!isAdded || !::appPicker.isInitialized || !SplitPane.isValid(pane)) return
+        appPicker.show(pane)
     }
 
     private fun enterFullscreen(pane: Int) {
@@ -625,7 +681,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         if (parentW <= 0 || parentH <= 0) return null
         val sideBySide = parentW >= parentH
         val density = resources.displayMetrics.density
-        val gap = (SplitPane.DIVIDER_DP * density).toInt().coerceAtLeast(1)
+        val gap = splitDividerGapPx()
         val expand = (SplitPane.DIVIDER_TOUCH_EXPAND_DP * density).toInt().coerceAtLeast(0)
         val visual = ratio.coerceIn(0.01f, 0.99f)
         return if (sideBySide) {
@@ -637,6 +693,12 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             val ph = (usable * visual).toInt().coerceAtLeast(1)
             SplitVisual(false, parentW, parentH, gap, expand, ph, (usable - ph).coerceAtLeast(1))
         }
+    }
+
+    /** Same gap as [SplitVdLifecycle.dividerPx] / locked VD profile dpi. */
+    private fun splitDividerGapPx(): Int {
+        val dpi = lastCreateDpi.takeIf { it > 0 } ?: resolveHostDensityDpi()
+        return SplitPane.dividerPx(dpi)
     }
 
     private fun applySplitLayoutWeights(
@@ -988,9 +1050,13 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private fun syncPaneOccupancyFromService() {
         if (!isAdded || view == null || dividerDragging) return
         for (pane in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
-            val pkg = tryOrNull { CoreApi.getPanePackage(pane) }?.trim().orEmpty()
-            paneHasApp[pane] = pkg.isNotEmpty()
-            panePackages[pane] = pkg
+            val serverPkg = tryOrNull { CoreApi.getPanePackage(pane) }?.trim().orEmpty()
+            applyEffectiveOccupancy(pane, serverPkg)
+            Log.d(
+                TAG,
+                "connect-settle: pane=$pane server=$serverPkg hasApp=${paneHasApp[pane]} " +
+                    "restorePending=${restorePendingPkgFor(pane)}"
+            )
         }
         updateEmptyOverlays()
         maybeAutoHidePickerWhenOccupied()
@@ -998,14 +1064,104 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
 
     private fun applyOccupancyFromPackages(primaryPkg: String, secondaryPkg: String) {
         if (!isAdded || view == null || dividerDragging) return
-        val primary = primaryPkg.trim()
-        val secondary = secondaryPkg.trim()
-        paneHasApp[SplitPane.PRIMARY] = primary.isNotEmpty()
-        paneHasApp[SplitPane.SECONDARY] = secondary.isNotEmpty()
-        panePackages[SplitPane.PRIMARY] = primary
-        panePackages[SplitPane.SECONDARY] = secondary
+        val primary = resolveEffectivePkg(SplitPane.PRIMARY, primaryPkg.trim())
+        val secondary = resolveEffectivePkg(SplitPane.SECONDARY, secondaryPkg.trim())
+        if (occupancyMatches(SplitPane.PRIMARY, primary) &&
+            occupancyMatches(SplitPane.SECONDARY, secondary)
+        ) {
+            return
+        }
+        applyEffectiveOccupancy(SplitPane.PRIMARY, primaryPkg.trim())
+        applyEffectiveOccupancy(SplitPane.SECONDARY, secondaryPkg.trim())
         updateEmptyOverlays()
         maybeAutoHidePickerWhenOccupied()
+    }
+
+    /** Occupancy after applying server pkg, including optimistic picker pending. */
+    private fun resolveEffectivePkg(pane: Int, serverPkg: String): String {
+        if (serverPkg.isNotEmpty()) return serverPkg
+        if (pendingOccPane == pane && pendingOccPkg.isNotEmpty()) return pendingOccPkg.trim()
+        return restorePendingPkgFor(pane)
+    }
+
+    private fun occupancyMatches(pane: Int, effectivePkg: String): Boolean {
+        val has = effectivePkg.isNotEmpty()
+        return paneHasApp[pane] == has && panePackages[pane]?.trim().orEmpty() == effectivePkg
+    }
+
+    private fun markPendingOccupancy(pane: Int, packageName: String) {
+        val pkg = packageName.trim()
+        if (!SplitPane.isValid(pane) || pkg.isEmpty()) return
+        pendingOccPane = pane
+        pendingOccPkg = pkg
+        baseBinding.root.removeCallbacks(clearPendingOccupancy)
+        baseBinding.root.postDelayed(clearPendingOccupancy, PENDING_OCCUPANCY_MS)
+    }
+
+    private fun clearPendingOccupancyIfConfirmed(pane: Int, serverPkg: String) {
+        if (pendingOccPane != pane) return
+        if (serverPkg.trim() == pendingOccPkg) {
+            baseBinding.root.removeCallbacks(clearPendingOccupancy)
+            pendingOccPane = SplitPane.FULLSCREEN_NONE
+            pendingOccPkg = ""
+        }
+    }
+
+    private fun markRestorePending(snap: LastSplitStore.Snapshot) {
+        restorePendingPrimary = snap.primaryPackage.trim()
+        restorePendingSecondary = snap.secondaryPackage.trim()
+        baseBinding.root.removeCallbacks(clearRestorePending)
+        baseBinding.root.postDelayed(clearRestorePending, RESTORE_PENDING_MS)
+        Log.d(
+            TAG,
+            "restore pending primary=$restorePendingPrimary secondary=$restorePendingSecondary"
+        )
+    }
+
+    private fun restorePendingPkgFor(pane: Int): String {
+        return when (pane) {
+            SplitPane.PRIMARY -> restorePendingPrimary
+            SplitPane.SECONDARY -> restorePendingSecondary
+            else -> ""
+        }
+    }
+
+    private fun clearRestorePendingIfConfirmed(pane: Int, serverPkg: String) {
+        val pending = restorePendingPkgFor(pane)
+        if (pending.isEmpty() || serverPkg.trim() != pending) return
+        if (pane == SplitPane.PRIMARY) {
+            restorePendingPrimary = ""
+        } else if (pane == SplitPane.SECONDARY) {
+            restorePendingSecondary = ""
+        }
+        if (restorePendingPrimary.isEmpty() && restorePendingSecondary.isEmpty()) {
+            baseBinding.root.removeCallbacks(clearRestorePending)
+        }
+    }
+
+    /** Server empty during async launch must not downgrade optimistic picker / restore occupancy. */
+    private fun applyEffectiveOccupancy(pane: Int, serverPkg: String) {
+        val remote = serverPkg.trim()
+        if (remote.isNotEmpty()) {
+            clearPendingOccupancyIfConfirmed(pane, remote)
+            clearRestorePendingIfConfirmed(pane, remote)
+            paneHasApp[pane] = true
+            panePackages[pane] = remote
+            return
+        }
+        if (pendingOccPane == pane && pendingOccPkg.isNotEmpty()) {
+            paneHasApp[pane] = true
+            panePackages[pane] = pendingOccPkg
+            return
+        }
+        val restorePending = restorePendingPkgFor(pane)
+        if (restorePending.isNotEmpty()) {
+            paneHasApp[pane] = true
+            panePackages[pane] = restorePending
+            return
+        }
+        paneHasApp[pane] = false
+        panePackages[pane] = ""
     }
 
     /**
@@ -1019,6 +1175,20 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         if (paneHasApp[SplitPane.PRIMARY] && paneHasApp[SplitPane.SECONDARY]) {
             appPicker.hide()
         }
+    }
+
+    private fun armRestorePendingForSoftReconnect() {
+        val snap = LastSplitStore.load(requireContext().contentResolver) ?: return
+        markRestorePending(snap)
+        if (!paneHasApp[SplitPane.PRIMARY]) {
+            paneHasApp[SplitPane.PRIMARY] = true
+            panePackages[SplitPane.PRIMARY] = snap.primaryPackage.trim()
+        }
+        if (!paneHasApp[SplitPane.SECONDARY]) {
+            paneHasApp[SplitPane.SECONDARY] = true
+            panePackages[SplitPane.SECONDARY] = snap.secondaryPackage.trim()
+        }
+        updateEmptyOverlays()
     }
 
     /** Apply remote ratio / fullscreen only once after create/restore (not on every broadcast). */
@@ -1050,6 +1220,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     return@runMain
                 }
                 Log.d(TAG, "onAvailableDisplay: displayId=$displayId create=$create")
+                if (!create) {
+                    armRestorePendingForSoftReconnect()
+                }
                 reportAaUiDisplayId()
                 primarySurface?.let { CoreApi.setPaneSurface(SplitPane.PRIMARY, it) }
                 secondarySurface?.let { CoreApi.setPaneSurface(SplitPane.SECONDARY, it) }
@@ -1114,7 +1287,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     private fun schedulePaneSurfaceRebind(pane: Int) {
-        if (!isAdded || view == null || dividerDragging) return
+        if (!isAdded || view == null || dividerDragging || ratioSettling) return
         val runnable =
             if (pane == SplitPane.PRIMARY) primaryPaneSurfaceRebind else secondaryPaneSurfaceRebind
         val root = baseBinding.root

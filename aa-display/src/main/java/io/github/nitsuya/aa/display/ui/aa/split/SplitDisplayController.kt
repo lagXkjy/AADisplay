@@ -22,6 +22,7 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
+import io.github.nitsuya.aa.display.util.LastSplitStore
 import io.github.nitsuya.aa.display.util.PmCaches
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -61,6 +62,9 @@ class SplitDisplayController(
         internal val FULLSCREEN_FOCUS_TOKEN = Any()
         /** Token for post-reconnect task fill / layout nudge kicks. */
         internal val RECONNECT_FILL_TOKEN = Any()
+        /** Token for debounced ratio-settle config refresh (no VD nudge). */
+        internal val RATIO_SETTLE_FILL_TOKEN = Any()
+        internal const val RATIO_SETTLE_FILL_DELAY_MS = 180L
     }
 
     internal val vd = SplitVdLifecycle(this)
@@ -68,6 +72,7 @@ class SplitDisplayController(
     internal val ownership = SplitOwnership(this)
     internal val buriedPlayback = SplitBuriedPlayback(this)
     internal val input = SplitInputRecents(this)
+    internal val recentProvider = RecentTaskProvider(this)
     internal val stacks = PaneAppStack(this)
     internal val lockedPeel = SplitLockedPeelController(this)
     internal val ime = SplitImeController(this)
@@ -153,6 +158,8 @@ class SplitDisplayController(
     internal val mTrackedPackageUsers = linkedMapOf<String, MutableSet<Int>>()
     internal val mVdTaskIds = mutableSetOf<Int>()
     internal val mVdPackages = mutableSetOf<String>()
+    /** Explicit Recent/stack closes this session — must not backfill or restore from snapshot. */
+    internal val mExplicitlyClosedPackages = mutableSetOf<String>()
     /**
      * Written from Binder/IO ([moveTaskId]/[removeTask]) and read on the main handler
      * ([SplitOwnership.reclaimOwnedPackages]). Must be volatile so intentional move-off is not raced by reclaim.
@@ -176,7 +183,12 @@ class SplitDisplayController(
     internal var mLastPrimaryH = 0
     internal var mLastSecondaryW = 0
     internal var mLastSecondaryH = 0
-    internal val mPendingResize = Runnable { vd.resizePanesInternal("ratio-throttled") }
+    private var mPendingShrinkPrimary = false
+    private var mPendingShrinkSecondary = false
+    internal val mPendingResize = Runnable {
+        vd.resizePanesInternal("ratio-throttled")
+        scheduleEnsureTasksFillAfterRatioSettle(mPendingShrinkPrimary, mPendingShrinkSecondary)
+    }
 
     private var packageReceiverRegistered = false
     private val packageReceiver = object : BroadcastReceiver() {
@@ -318,6 +330,8 @@ class SplitDisplayController(
         if (launch.shouldRestoreLastSplitOnConnect()) {
             mSuppressReclaimUntil =
                 SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_AFTER_RESTORE_MS
+            launch.prefillRestoreFromSnapshot()
+            notifySplitStateChanged()
             launch.scheduleRestoreLastSplit()
         } else {
             notifySplitStateChanged()
@@ -343,6 +357,15 @@ class SplitDisplayController(
         vd.applyPolicies(SplitPane.SECONDARY, "reconnect")
         ime.start()
         scheduleEnsureTasksFillAfterReconnect()
+        if (launch.shouldRestoreLastSplitOnConnect() && launch.bothPanesVacantOnDisplays()) {
+            mSuppressReclaimUntil = maxOf(
+                mSuppressReclaimUntil,
+                SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_AFTER_RESTORE_MS,
+            )
+            launch.prefillRestoreFromSnapshot()
+            notifySplitStateChanged()
+            launch.scheduleRestoreLastSplit()
+        }
         launch.scheduleReconnectEnsurePasses()
         SplitPresentationGuard.scheduleEvictForeignPresentations(this, "reconnect")
     }
@@ -360,24 +383,62 @@ class SplitDisplayController(
         }
     }
 
-    private fun ensureTasksFillBothPanes(reason: String) {
+    private fun ensureTasksFillBothPanes(
+        reason: String,
+        nudgeVd: Boolean = true,
+        nudgePrimary: Boolean? = null,
+        nudgeSecondary: Boolean? = null,
+    ) {
         val sizes = vd.computePaneSizes()
         val primaryDisplay = primaryDisplayId
         val secondaryDisplay = secondaryDisplayId
+        val nudgeP = nudgePrimary ?: nudgeVd
+        val nudgeS = nudgeSecondary ?: nudgeVd
         if (primaryDisplay != Display.INVALID_DISPLAY) {
             ownership.ensureTasksFillDisplay(
-                primaryDisplay, sizes.primaryW, sizes.primaryH, reason
+                primaryDisplay, sizes.primaryW, sizes.primaryH, reason, nudgeP
             )
         }
         if (secondaryDisplay != Display.INVALID_DISPLAY) {
             ownership.ensureTasksFillDisplay(
-                secondaryDisplay, sizes.secondaryW, sizes.secondaryH, reason
+                secondaryDisplay, sizes.secondaryW, sizes.secondaryH, reason, nudgeS
             )
         }
     }
 
+    /** Ratio settle: push WM/task config; nudge only panes that shrank (OneUI letterbox). */
+    private fun scheduleEnsureTasksFillAfterRatioSettle(
+        nudgePrimary: Boolean = false,
+        nudgeSecondary: Boolean = false,
+    ) {
+        if (SplitPane.isFullscreenPane(mFullscreenPane)) return
+        mHandler.removeCallbacksAndMessages(RATIO_SETTLE_FILL_TOKEN)
+        val now = SystemClock.uptimeMillis()
+        mHandler.postAtTime(
+            {
+                ensureTasksFillBothPanes(
+                    "ratio-settle",
+                    nudgePrimary = nudgePrimary,
+                    nudgeSecondary = nudgeSecondary,
+                )
+            },
+            RATIO_SETTLE_FILL_TOKEN,
+            now + RATIO_SETTLE_FILL_DELAY_MS,
+        )
+    }
+
+    private fun ratioShrinkFlags(): Pair<Boolean, Boolean> {
+        val sizes = vd.computePaneSizes()
+        val shrinkPrimary =
+            sizes.primaryW < mLastPrimaryW || sizes.primaryH < mLastPrimaryH
+        val shrinkSecondary =
+            sizes.secondaryW < mLastSecondaryW || sizes.secondaryH < mLastSecondaryH
+        return shrinkPrimary to shrinkSecondary
+    }
+
     fun setPaneSurface(pane: Int, surface: Surface?) {
         if (!SplitPane.isValid(pane)) return
+        val bothWereReady = mPrimarySurface != null && mSecondarySurface != null
         if (pane == SplitPane.PRIMARY) {
             mPrimarySurface = surface
             mPrimary?.surface = surface
@@ -386,8 +447,11 @@ class SplitDisplayController(
             mSecondary?.surface = surface
         }
         logDebug(TAG, "setPaneSurface pane=$pane surface=${surface != null}")
-        // Soft reconnect / AA UI recreate often nulls then restores surfaces; re-ensure apps.
-        if (mPrimarySurface != null && mSecondarySurface != null && !mIsDestroying) {
+        if (mIsDestroying) return
+        val bothReady = mPrimarySurface != null && mSecondarySurface != null
+        // Only ensure on first both-ready or reconnect — quiet rebind after ratio settle
+        // must not re-run ensure (cold relaunch / resolution rebuild on every drag).
+        if (bothReady && !bothWereReady) {
             launch.scheduleEnsurePanePackages("surfaces-ready")
         }
     }
@@ -403,15 +467,19 @@ class SplitDisplayController(
         }
         if (abs(clamped - mRatio) < 0.001f) return
         mRatio = clamped
-        // Resizing VDs makes tasks churn; suppress reclaim so bounce-back does not jitter.
-        mSuppressReclaimUntil = SystemClock.uptimeMillis() + 800L
+        val (shrinkPrimary, shrinkSecondary) = ratioShrinkFlags()
+        // Resizing VDs makes tasks churn; suppress reclaim + ATMS stack refresh until settle.
+        mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
         val now = SystemClock.uptimeMillis()
         if (now - mLastResizeAt < RESIZE_THROTTLE_MS) {
+            mPendingShrinkPrimary = shrinkPrimary
+            mPendingShrinkSecondary = shrinkSecondary
             mHandler.removeCallbacks(mPendingResize)
             mHandler.postDelayed(mPendingResize, RESIZE_THROTTLE_MS)
             return
         }
         vd.resizePanesInternal("ratio")
+        scheduleEnsureTasksFillAfterRatioSettle(shrinkPrimary, shrinkSecondary)
         launch.schedulePersistSnapshot()
     }
 
@@ -634,6 +702,7 @@ class SplitDisplayController(
             log(TAG, "onDestroy snapshot failed:", e)
         }
         mIsDestroying = true
+        mExplicitlyClosedPackages.clear()
         ime.stop()
         mAaUiDisplayId = Display.INVALID_DISPLAY
         mAaUiDisplayIdLookupFailed = false
@@ -644,7 +713,7 @@ class SplitDisplayController(
         mHandler.removeCallbacks(ownership.mDebouncedReclaim)
         mHandler.removeCallbacks(launch.mDebouncedPersist)
         mHandler.removeCallbacks(mPendingResize)
-        mHandler.removeCallbacks(launch.mDebouncedNotifyState)
+        mHandler.removeCallbacks(launch.mDebouncedStackSettle)
         mHandler.removeCallbacksAndMessages(launch.RESTORE_TOKEN)
         mHandler.removeCallbacksAndMessages(launch.ENSURE_TOKEN)
         mHandler.removeCallbacksAndMessages(launch.VERIFY_RESTORE_TOKEN)
@@ -1005,29 +1074,30 @@ class SplitDisplayController(
 
     fun getRecentTask(): RecentTask {
         return try {
-            val primary = if (primaryDisplayId != Display.INVALID_DISPLAY) {
-                input.recentTaskInfo(
-                    primaryDisplayId,
-                    maxCount = PaneAppStack.MAX_PER_PANE,
-                    topFirst = true,
-                )
-            } else {
-                emptyList()
-            }
-            val secondary = if (secondaryDisplayId != Display.INVALID_DISPLAY) {
-                input.recentTaskInfo(
-                    secondaryDisplayId,
-                    maxCount = PaneAppStack.MAX_PER_PANE,
-                    topFirst = true,
-                )
-            } else {
-                emptyList()
-            }
-            RecentTask(input.recentTaskInfo(Display.DEFAULT_DISPLAY), primary, secondary)
+            recentProvider.buildSnapshot()
         } catch (e: Throwable) {
             log(TAG, "RecentTask Exception", e)
             RecentTask(emptyList(), emptyList(), emptyList())
         }
+    }
+
+    fun reorderPaneStack(pane: Int, packagesTopToBottom: Array<out String>): Boolean {
+        if (!SplitPane.isValid(pane)) return false
+        return ownership.runOnHandlerBlocking(false) {
+            reorderPaneStackOnHandler(pane, packagesTopToBottom.toList())
+        }
+    }
+
+    /** Drag-reordered VD stack; [packagesTopToBottom] index 0 = front (visible). */
+    private fun reorderPaneStackOnHandler(pane: Int, packagesTopToBottom: List<String>): Boolean {
+        if (!SplitPane.isValid(pane)) return false
+        val bottomToTop = packagesTopToBottom.asReversed()
+        stacks.setStackBottomToTop(pane, bottomToTop)
+        ownership.promoteStackFronts(listOf(pane))
+        mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
+        launch.schedulePersistSnapshot()
+        notifySplitStateChanged()
+        return true
     }
 
     fun startActivity(packageName: String, userId: Int): Boolean {
@@ -1042,9 +1112,133 @@ class SplitDisplayController(
         }
     }
 
+    /** Picker / Recent tap — fast path + jump ahead of ensure/reclaim. */
+    fun startActivityOnPaneAsync(packageName: String, userId: Int, pane: Int) {
+        postUserAction { startActivityOnPaneUserPickOnHandler(packageName, userId, pane) }
+    }
+
+    fun startActivityAsync(packageName: String, userId: Int) {
+        startActivityOnPaneAsync(packageName, userId, mFocusedPane)
+    }
+
+    /** User close / swipe-off / picker — cancel background settle and run next. */
+    private fun postUserAction(block: () -> Unit) {
+        cancelBackgroundSettleForUserAction()
+        mHandler.postAtFrontOfQueue {
+            if (mIsDestroying) return@postAtFrontOfQueue
+            try {
+                block()
+            } catch (e: Throwable) {
+                log(TAG, "postUserAction failed:", e)
+            }
+        }
+    }
+
+    private fun cancelBackgroundSettleForUserAction() {
+        mHandler.removeCallbacks(ownership.mDebouncedReclaim)
+        mHandler.removeCallbacks(launch.mDebouncedPersist)
+        mHandler.removeCallbacks(launch.mDebouncedStackSettle)
+        // Do not cancel restore/ensure/verify — user picks must not abort connect memory restore.
+        mHandler.removeCallbacksAndMessages(FULLSCREEN_FOCUS_TOKEN)
+        mHandler.removeCallbacksAndMessages(RECONNECT_FILL_TOKEN)
+        mHandler.removeCallbacksAndMessages(RATIO_SETTLE_FILL_TOKEN)
+        mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
+    }
+
+    /**
+     * Explicit picker / Recent launch — mirrors the original split path (6539077):
+     * resolve → launch on the target VD, minimal ATMS churn. Full
+     * [startActivityOnPaneOnHandler] stays for ensure/restore/reclaim.
+     */
+    private fun startActivityOnPaneUserPickOnHandler(
+        packageName: String,
+        userId: Int,
+        pane: Int,
+    ): Boolean {
+        if (!SplitPane.isValid(pane)) return false
+        val displayId = input.displayIdFor(pane) ?: return false
+        val pkg = packageName.trim()
+        if (pkg.isEmpty()) return false
+        mExplicitlyClosedPackages.remove(pkg)
+        val component = launch.resolveLaunchComponent(pkg) ?: run {
+            log(TAG, "startActivityOnPane user: no launcher for $pkg")
+            return false
+        }
+        if (stacks.contains(pane, pkg)) {
+            val taskId = ownership.findPackageTaskOnDisplay(pkg, displayId, liveOnly = true)
+            if (taskId != null && ownership.bringTaskToFront(taskId)) {
+                stacks.moveToTop(pane, pkg)
+                finishUserPickLaunch(pane, pkg, displayId)
+                logDebug(TAG, "startActivityOnPane user front-existing pkg=$pkg pane=$pane")
+                return true
+            }
+            if (taskId != null) {
+                ownership.removePackageTasksOnDisplay(pkg, displayId)
+            }
+            stacks.remove(pane, pkg)
+        }
+        if (!stacks.contains(pane, pkg) &&
+            stacks.packagesBottomToTop(pane).size >= PaneAppStack.MAX_PER_PANE
+        ) {
+            stacks.packagesBottomToTop(pane).firstOrNull()?.takeIf { it.isNotBlank() && it != pkg }
+                ?.let { bottom ->
+                    logDebug(TAG, "startActivityOnPane user evict bottom=$bottom pane=$pane")
+                    ownership.evictPackageFromPane(pane, bottom)
+                }
+        }
+        val phoneTaskId = ownership.findPackageTaskOnDisplay(
+            pkg,
+            Display.DEFAULT_DISPLAY,
+            liveOnly = true,
+        )
+        if (phoneTaskId != null) {
+            ownership.vacateOtherPanesHolding(pkg, keepPane = pane)
+            val relocated = try {
+                Instances.iActivityTaskManager.moveRootTaskToDisplay(phoneTaskId, displayId)
+                VdDensityPin.markPackageOnVirtualDisplay(pkg, displayId)
+                ownership.bringTaskToFront(phoneTaskId)
+                ownership.findPackageTaskOnDisplay(pkg, displayId, liveOnly = true) != null
+            } catch (e: Throwable) {
+                log(TAG, "startActivityOnPane user relocate failed pkg=$pkg:", e)
+                false
+            }
+            if (relocated) {
+                stacks.pushToTop(pane, pkg)
+                finishUserPickLaunch(pane, pkg, displayId)
+                logDebug(TAG, "startActivityOnPane user relocate ok pkg=$pkg pane=$pane")
+                return true
+            }
+        }
+        ownership.removePackageTasksOnDisplay(pkg, displayId)
+        val ok = launch.launchOnDisplay(component, userId, displayId)
+        if (ok) {
+            stacks.pushToTop(pane, pkg)
+            finishUserPickLaunch(pane, pkg, displayId)
+            logDebug(TAG, "startActivityOnPane user launch ok pkg=$pkg pane=$pane")
+        } else {
+            log(TAG, "startActivityOnPane user launch failed pkg=$pkg pane=$pane")
+        }
+        return ok
+    }
+
+    private fun finishUserPickLaunch(pane: Int, packageName: String, displayId: Int) {
+        mFocusedPane = pane
+        mPanePackages[pane] = packageName
+        mExplicitlyClosedPackages.remove(packageName)
+        ownership.markOwnership(packageName, displayId)
+        launch.schedulePersistSnapshot()
+        notifySplitStateChanged()
+        mHandler.post { ownership.enforceStackFrontAudio(pane) }
+    }
+
     private fun startActivityOnPaneOnHandler(packageName: String, userId: Int, pane: Int): Boolean {
         if (!SplitPane.isValid(pane)) return false
         val displayId = input.displayIdFor(pane) ?: return false
+        val pkg = packageName.trim()
+        if (pkg.isNotEmpty()) {
+            // User picked / Recent tapped — allow relaunch after an explicit close this session.
+            mExplicitlyClosedPackages.remove(pkg)
+        }
         val component = launch.resolveLaunchComponent(packageName) ?: run {
             log(TAG, "startActivityOnPane: no launcher for $packageName")
             return false
@@ -1149,6 +1343,7 @@ class SplitDisplayController(
         if (ok) {
             stacks.pushToTop(pane, packageName)
             mFocusedPane = pane
+            mExplicitlyClosedPackages.remove(packageName.trim())
             ownership.markOwnership(packageName, displayId)
                     ownership.enforceStackFrontAudio(pane)
             launch.schedulePersistSnapshot()
@@ -1163,11 +1358,13 @@ class SplitDisplayController(
     fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean): Boolean {
         // Ownership + reclaim run on mHandler; Binder/IO callers must not race them.
         return ownership.runOnHandlerBlocking(false) {
-            if (isVirtualDisplay) {
-                moveTaskIdOnHandler(taskId, targetPane = mFocusedPane)
-            } else {
-                moveTaskIdOnHandler(taskId, targetPane = null)
-            }
+            moveTaskIdOnHandler(taskId, if (isVirtualDisplay) mFocusedPane else null)
+        }
+    }
+
+    fun moveTaskIdAsync(taskId: Int, isVirtualDisplay: Boolean) {
+        postUserAction {
+            moveTaskIdOnHandler(taskId, if (isVirtualDisplay) mFocusedPane else null)
         }
     }
 
@@ -1175,6 +1372,11 @@ class SplitDisplayController(
     fun moveTaskIdToPane(taskId: Int, pane: Int): Boolean {
         if (!SplitPane.isValid(pane)) return false
         return ownership.runOnHandlerBlocking(false) { moveTaskIdOnHandler(taskId, targetPane = pane) }
+    }
+
+    fun moveTaskIdToPaneAsync(taskId: Int, pane: Int) {
+        if (!SplitPane.isValid(pane)) return
+        postUserAction { moveTaskIdOnHandler(taskId, targetPane = pane) }
     }
 
     /**
@@ -1248,40 +1450,54 @@ class SplitDisplayController(
     }
 
     fun moveTaskToFront(taskId: Int): Boolean {
-        return ownership.runOnHandlerBlocking(false) {
-            val packageName = ownership.findPackageForTask(taskId)
-            val ok = ownership.bringTaskToFront(taskId)
-            if (ok && !packageName.isNullOrBlank()) {
-                val pane = stacks.paneContaining(packageName)
-                    ?: paneForDisplayId(
-                        ownership.findLivePackageTaskAnywhere(packageName)?.second
-                            ?: Display.INVALID_DISPLAY
-                    )
-                if (pane != null) {
-                    if (stacks.contains(pane, packageName)) {
-                        stacks.moveToTop(pane, packageName)
-                    } else {
-                        // Match startActivityOnPane: evict bottom tasks before bookkeeping push.
-                        if (stacks.packagesBottomToTop(pane).size >= PaneAppStack.MAX_PER_PANE) {
-                            val bottom = stacks.packagesBottomToTop(pane).firstOrNull()
-                            if (!bottom.isNullOrBlank() && bottom != packageName) {
-                                ownership.evictPackageFromPane(pane, bottom)
-                            }
+        return ownership.runOnHandlerBlocking(false) { moveTaskToFrontOnHandler(taskId) }
+    }
+
+    fun moveTaskToFrontAsync(taskId: Int) {
+        postUserAction { moveTaskToFrontOnHandler(taskId) }
+    }
+
+    private fun moveTaskToFrontOnHandler(taskId: Int): Boolean {
+        val packageName = ownership.findPackageForTask(taskId)
+        val ok = ownership.bringTaskToFront(taskId)
+        if (ok && !packageName.isNullOrBlank()) {
+            val pane = stacks.paneContaining(packageName)
+                ?: paneForDisplayId(
+                    ownership.findLivePackageTaskAnywhere(packageName)?.second
+                        ?: Display.INVALID_DISPLAY
+                )
+            if (pane != null) {
+                if (stacks.contains(pane, packageName)) {
+                    stacks.moveToTop(pane, packageName)
+                } else {
+                    // Match startActivityOnPane: evict bottom tasks before bookkeeping push.
+                    if (stacks.packagesBottomToTop(pane).size >= PaneAppStack.MAX_PER_PANE) {
+                        val bottom = stacks.packagesBottomToTop(pane).firstOrNull()
+                        if (!bottom.isNullOrBlank() && bottom != packageName) {
+                            ownership.evictPackageFromPane(pane, bottom)
                         }
-                        stacks.pushToTop(pane, packageName)
                     }
-                    ownership.enforceStackFrontAudio(pane)
-                    mFocusedPane = pane
-                    launch.schedulePersistSnapshot()
-                    notifySplitStateChanged()
+                    stacks.pushToTop(pane, packageName)
                 }
+                ownership.enforceStackFrontAudio(pane)
+                mFocusedPane = pane
+                launch.schedulePersistSnapshot()
+                notifySplitStateChanged()
             }
-            ok
         }
+        return ok
     }
 
     fun removeTask(taskId: Int): Boolean {
         return ownership.runOnHandlerBlocking(false) { removeTaskOnHandler(taskId) }
+    }
+
+    fun removeTaskAsync(taskId: Int) {
+        postUserAction { removeTaskOnHandler(taskId) }
+    }
+
+    fun reorderPaneStackAsync(pane: Int, packagesTopToBottom: Array<out String>) {
+        postUserAction { reorderPaneStackOnHandler(pane, packagesTopToBottom.toList()) }
     }
 
     /** Kill the app process after an explicit close/remove (stack Close, swipe-off, etc.). */
@@ -1300,33 +1516,59 @@ class SplitDisplayController(
 
     private fun removeTaskOnHandler(taskId: Int): Boolean {
         val packageName = ownership.findPackageForTask(taskId)
+        val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() }
         val onVd = ownership.isTaskOnAaDisplay(taskId)
-        val trackedUserIds = packageName?.let { mTrackedPackageUsers[it]?.toSet() }
+        val trackedUserIds = pkg?.let { mTrackedPackageUsers[it]?.toSet() }
         return try {
             if (onVd) {
                 mHandler.removeCallbacks(ownership.mDebouncedReclaim)
                 mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
                 ownership.forgetOwnership(taskId, packageName)
             }
-            val removed = Instances.iActivityTaskManager.removeTask(taskId)
-            if (removed && !packageName.isNullOrBlank()) {
-                if (onVd) {
-                    val vacated = stacks.removeFromAll(packageName)
-                    ownership.releaseOwnershipIfUnused(packageName)
-                    VdDensityPin.clearPackageVirtualDisplay(packageName)
-                    ownership.untrackPackage(packageName)
-                    ownership.promoteStackFronts(vacated)
-                    vacated.forEach { pane ->
-                        if (stacks.front(pane) == null) {
-                            input.displayIdFor(pane)?.let { ownership.removeChromeTasksOnDisplay(it) }
-                        }
+            if (onVd && pkg != null) {
+                // Bookkeeping + broadcast first so UI/Recent drop the row immediately.
+                launch.onExplicitPackageClosed(pkg)
+                val vacated = stacks.removeFromAll(pkg)
+                ownership.releaseOwnershipIfUnused(pkg)
+                VdDensityPin.clearPackageVirtualDisplay(pkg)
+                ownership.untrackPackage(pkg)
+                vacated.forEach { pane ->
+                    mPanePackages[pane] = stacks.front(pane)
+                }
+                notifySplitStateChanged()
+                mHandler.post {
+                    val needsPromote = vacated.filter { pane ->
+                        !stacks.front(pane).isNullOrBlank()
+                    }
+                    vacated.filter { stacks.front(it).isNullOrBlank() }.forEach { pane ->
+                        input.displayIdFor(pane)?.let { ownership.removeChromeTasksOnDisplay(it) }
+                    }
+                    if (needsPromote.isNotEmpty()) {
+                        ownership.promoteStackFronts(needsPromote, settleAv = false)
                     }
                     launch.schedulePersistSnapshot()
-                    notifySplitStateChanged()
                 }
-                forceStopPackageOnClose(packageName, trackedUserIds)
             }
-            removed
+            // ATMS removeTask can block seconds (QQ 音乐车机等) — keep off mHandler.
+            // VD: forceStop first so the pane clears immediately; then removeTask.
+            val users = trackedUserIds
+            Thread(
+                {
+                    if (onVd && pkg != null) {
+                        forceStopPackageOnClose(pkg, users)
+                    }
+                    try {
+                        Instances.iActivityTaskManager.removeTask(taskId)
+                    } catch (e: Throwable) {
+                        log(TAG, "removeTask ATMS error taskId=$taskId:", e)
+                    }
+                    if (!onVd && pkg != null) {
+                        forceStopPackageOnClose(pkg, users)
+                    }
+                },
+                "AADisplay-close",
+            ).apply { isDaemon = true; start() }
+            true
         } catch (e: Throwable) {
             log(TAG, "removeTask error:", e)
             false
@@ -1339,6 +1581,11 @@ class SplitDisplayController(
      */
     fun swapPanes(): Boolean {
         return ownership.runOnHandlerBlocking(false) { swapPanesOnHandler() }
+    }
+
+    /** Divider / steering tap — jump ahead of ratio settle / reclaim on the handler. */
+    fun swapPanesFromUser() {
+        postUserAction { swapPanesOnHandler() }
     }
 
     private fun swapPanesOnHandler(): Boolean {
@@ -1424,30 +1671,29 @@ class SplitDisplayController(
         }
         mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
         vd.resizePanesInternal("swap")
-        // Move+resize often leaves Window frames at the pre-swap size (ADB: 386 on a 436 VD).
-        // OneUI ignores resizeTask on fullscreen roots — nudge VD ±1px to re-dispatch config.
-        val sizes = vd.computePaneSizes()
-        ownership.ensureTasksFillDisplay(
-            primaryDisplay, sizes.primaryW, sizes.primaryH, "swap"
-        )
-        ownership.ensureTasksFillDisplay(
-            secondaryDisplay, sizes.secondaryW, sizes.secondaryH, "swap"
-        )
+        notifySplitStateChanged()
+        launch.schedulePersistSnapshot()
+        // VD nudge + per-task resize are heavy — defer so tap-swap returns immediately.
         mHandler.postDelayed({
             if (mIsDestroying) return@postDelayed
             if (primaryDisplayId != primaryDisplay || secondaryDisplayId != secondaryDisplay) {
                 return@postDelayed
             }
+            val sizes = vd.computePaneSizes()
+            ownership.ensureTasksFillDisplay(
+                primaryDisplay, sizes.primaryW, sizes.primaryH, "swap"
+            )
+            ownership.ensureTasksFillDisplay(
+                secondaryDisplay, sizes.secondaryW, sizes.secondaryH, "swap"
+            )
             ownership.snapshotUserRootTasks(primaryDisplay).lastOrNull()?.let {
                 ownership.bringTaskToFront(it.taskId)
             }
             ownership.snapshotUserRootTasks(secondaryDisplay).lastOrNull()?.let {
                 ownership.bringTaskToFront(it.taskId)
             }
-        }, 220L)
-
-        launch.schedulePersistSnapshot()
-        notifySplitStateChanged()
+            buriedPlayback.scheduleEnforceSingleSounder("swap")
+        }, 80L)
         logDebug(
             TAG,
             "swapPanes ok primary=${mPanePackages[SplitPane.PRIMARY]} " +

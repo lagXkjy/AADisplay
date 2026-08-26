@@ -493,7 +493,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
         fun swapHidPanes(): Boolean {
             return try {
-                mSplitController?.swapPanes()
+                mSplitController?.swapPanesFromUser()
                 mSessionPolicy?.onVirtualDisplayUserInteraction()
                 true
             } catch (e: Throwable) {
@@ -573,6 +573,17 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
         fun getDensityDpi(): Int {
             return mSplitController?.mDensityDpi ?: 0
+        }
+
+        /** Live AA pane buffer size (px) for [displayId]; null when not a split VD. */
+        fun aaPaneSizePx(displayId: Int): Pair<Int, Int>? {
+            val controller = mSplitController ?: return null
+            val sizes = controller.vd.computePaneSizes()
+            return when (displayId) {
+                controller.primaryDisplayId -> sizes.primaryW to sizes.primaryH
+                controller.secondaryDisplayId -> sizes.secondaryW to sizes.secondaryH
+                else -> null
+            }
         }
     }
 
@@ -702,8 +713,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     override fun swapSplitPanes() {
-        // Controller marshals onto its handler; keep off the Binder thread.
-        runIO { mSplitController?.swapPanes() }
+        mSplitController?.swapPanesFromUser()
     }
 
     override fun onDestroyDisplay() {
@@ -730,29 +740,35 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     override fun startActivity(packageName: String, userId: Int) {
-        runIO { mSplitController?.startActivity(packageName, userId) }
+        mSplitController?.startActivityAsync(packageName, userId)
     }
 
     override fun startActivityOnPane(packageName: String, userId: Int, pane: Int) {
-        runIO { mSplitController?.startActivityOnPane(packageName, userId, pane) }
+        mSplitController?.startActivityOnPaneAsync(packageName, userId, pane)
     }
 
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
-        // Controller marshals onto its handler; keep off the Binder thread.
-        runIO { mSplitController?.moveTaskId(taskId, isVirtualDisplay) }
+        mSplitController?.moveTaskIdAsync(taskId, isVirtualDisplay)
     }
 
     override fun moveTaskIdToPane(taskId: Int, pane: Int) {
-        runIO { mSplitController?.moveTaskIdToPane(taskId, pane) }
+        mSplitController?.moveTaskIdToPaneAsync(taskId, pane)
     }
 
     override fun moveTaskToFront(taskId: Int) {
-        runIO { mSplitController?.moveTaskToFront(taskId) }
+        mSplitController?.moveTaskToFrontAsync(taskId)
     }
 
     @SuppressLint("MissingPermission")
     override fun removeTask(taskId: Int) {
-        runIO { mSplitController?.removeTask(taskId) }
+        mSplitController?.removeTaskAsync(taskId)
+    }
+
+    override fun reorderPaneStack(pane: Int, packagesTopToBottom: Array<out String>?): Boolean {
+        val pkgs = packagesTopToBottom ?: return false
+        val controller = mSplitController ?: return false
+        // Synchronous — Recent drag must not reload before stack order is persisted.
+        return controller.reorderPaneStack(pane, pkgs)
     }
 
     override fun pressKey(action: Int) {
@@ -874,3 +890,5 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runIO { noteUserInteraction() }
     }
 }
+
+

@@ -52,6 +52,12 @@ interface ICoreManager {
     RecentTask getRecentTask();
 
     /**
+     * Reorder a VD pane stack after Recents drag. [packagesTopToBottom] index 0 = front.
+     * Appended at end for Stub ordinals.
+     */
+    boolean reorderPaneStack(int pane, in String[] packagesTopToBottom);
+
+    /**
      * Enter fullscreen for PRIMARY(0)/SECONDARY(1), or exit with -1.
      * Both virtual displays stay full-size; AA UI shows one and stacks the other.
      * Appended at end so older system_server stubs keep prior transaction ordinals.

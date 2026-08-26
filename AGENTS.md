@@ -157,6 +157,16 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 
 ## 5. 编码与改动硬规则
 
+### 开发规范补充
+
+任何代码增删改，须先经**全局链路评估**（进程边界、IPC、钩子、生命周期、持久化契约等；见 [docs/EXECUTION.md](docs/EXECUTION.md)），确认必要性后再实施。严禁未经充分论证随意加代码，避免非必要依赖与潜在风险。
+
+1. **审慎变更，杜绝冗余** — 只改任务所需；不引入与目标无关的抽象、依赖或文档。
+2. **缺陷修复须溯本求源** — 不满足于表面现象的临时修补。须追查根因：引入时机、触发条件、原始设计意图及当时的全局考量；从根源消除缺陷，避免「打补丁式」修复导致代码熵增。
+3. **源头治理，长效维护** — 方案应立足系统整体架构，在源头清理与重构，而非层层叠加补丁；防范补丁累积造成的复杂度飙升与可维护性下降，保持代码库清晰、健壮、可演进。
+
+### 具体约束
+
 - **最小改动**：只改任务所需文件；不擅自加 Compose、CI、大范围重构或无关文档。
 - **语言**：新逻辑优先 Kotlin；Car SDK 路径（如 `AaDisplayActivity`、`AaActivityService`）可保持 Java。
 - **新钩子**：`object` 继承 `BaseHook` / `AaHook`；`tagName` 使用 `AAD_*` 前缀；日志标签沿用 `AADisplay_*` / `AAD_*`。
@@ -228,6 +238,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 
 | 需求 | 从这里开始 |
 |------|------------|
+| 开发规范 / 改动原则 | §5「开发规范补充」；全局链路见 [docs/EXECUTION.md](docs/EXECUTION.md) |
 | 全链路执行顺序（AI） | [docs/EXECUTION.md](docs/EXECUTION.md) |
 | Xposed 入口 / 包路由 | `xposed/XposedInit.kt` |
 | 系统 VirtualDisplay / Binder 桥 | `xposed/hook/AndroidHook.kt`、`CoreManagerService.kt` |
@@ -241,6 +252,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 | 车机画面与触控 | `ui/aa/AaDisplayActivity*.java/kt`、`AaMainFragment.kt` |
 | 显示会话策略（Delay Destroy / keep-awake） | `ui/window/DisplaySessionPolicy.kt` |
 | 虚拟屏多应用栈（Max 3） | `ui/aa/split/PaneAppStack.kt`、`SplitDisplayController.kt` 及同目录协作类 |
+| **应用 Open/Close 链路与卡顿** | [docs/OPEN_CLOSE_LAG.md](docs/OPEN_CLOSE_LAG.md) |
 | 分屏 VD / restore / reclaim | `SplitVdLifecycle.kt`、`SplitLaunchRestore.kt`、`SplitOwnership.kt` |
 | 手机状态页（LSPosed 打开） | `ui/main/MainActivity.kt` |
 | 分屏快照 | `util/LastSplitStore.kt` |

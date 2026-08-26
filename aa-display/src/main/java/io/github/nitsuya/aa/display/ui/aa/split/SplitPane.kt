@@ -71,7 +71,29 @@ object SplitPane {
      */
     const val DIVIDER_TOUCH_END_INSET_DP = 80
 
+    /** Divider tap-to-swap max press (must stay below [DIVIDER_TAP_STACK_MIN_MS]). */
+    const val DIVIDER_TAP_SWAP_MAX_MS = 480L
+
+    /** Divider long-press min hold before Recent opens on UP. */
+    const val DIVIDER_TAP_STACK_MIN_MS = 550L
+
+    /** Ratio delta below this with tiny finger jitter still counts as tap-swap. */
+    const val DIVIDER_TAP_RATIO_SLOP = 0.025f
+
+    /**
+     * Long-press for Recent on UP: Handler timeout **or** input hold duration.
+     * Cold launch / busy main thread can delay [postDelayed]; input timestamps stay accurate.
+     */
+    fun qualifiesDividerLongPress(runnableFired: Boolean, heldMs: Long): Boolean =
+        runnableFired || heldMs >= DIVIDER_TAP_STACK_MIN_MS
+
     fun clampRatio(ratio: Float): Float = ratio.coerceIn(MIN_RATIO, MAX_RATIO)
+
+    /** Divider gap in px — shared by shell layout and VD pane sizing ([SplitVdLifecycle]). */
+    fun dividerPx(densityDpi: Int): Int {
+        val dpi = densityDpi.coerceAtLeast(160)
+        return (DIVIDER_DP * dpi / 160f).toInt().coerceAtLeast(8)
+    }
 
     fun isValid(pane: Int): Boolean = pane == PRIMARY || pane == SECONDARY
 

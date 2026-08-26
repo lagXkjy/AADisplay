@@ -87,13 +87,21 @@ class SplitDividerView @JvmOverloads constructor(
     private val peelTabThicknessPx = SplitPane.PEEL_TAB_THICKNESS_DP * density
     private val dotGap = 7f * density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-    private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
+    /**
+     * Slightly above the system default so a firm hold is less likely to miss
+     * the timeout and fall through to tap-swap on UP.
+     */
+    private val longPressTimeout =
+        ViewConfiguration.getLongPressTimeout().toLong()
+            .coerceAtLeast(SplitPane.DIVIDER_TAP_STACK_MIN_MS)
 
     private var tracking = false
     private var dragging = false
     private var longPressFired = false
     private var downX = 0f
     private var downY = 0f
+    private var downUptimeMs = 0L
+    private var downRatio = SplitPane.DEFAULT_RATIO
     private var lastRatio = SplitPane.DEFAULT_RATIO
     /** Unclamped ratio used for fullscreen enter/exit decisions. */
     private var lastRawRatio = SplitPane.DEFAULT_RATIO
@@ -330,6 +338,8 @@ class SplitDividerView @JvmOverloads constructor(
                 longPressFired = false
                 downX = event.x
                 downY = event.y
+                downUptimeMs = event.downTime
+                downRatio = lastRatio
                 parent.requestDisallowInterceptTouchEvent(true)
                 removeCallbacks(longPressRunnable)
                 postDelayed(longPressRunnable, longPressTimeout)
@@ -341,11 +351,17 @@ class SplitDividerView @JvmOverloads constructor(
                 if (!dragging && dist > touchSlop) {
                     dragging = true
                     removeCallbacks(longPressRunnable)
+                    longPressFired = false
                 }
-                if (!dragging || longPressFired) return true
+                if (!dragging) return true
                 // Preview unclamped; settle decides enter-FS / exit-FS / clamp.
                 val raw = rawRatioFromEvent(event, parentView)
                 lastRawRatio = raw
+                // Stay silent inside tap-ratio slop so a press that barely exceeds
+                // touchSlop does not flash a shrink before tap-swap on UP.
+                if (abs(raw - downRatio) <= SplitPane.DIVIDER_TAP_RATIO_SLOP) {
+                    return true
+                }
                 if (abs(raw - lastRatio) > 0.002f) {
                     lastRatio = raw
                     onRatioChanged?.invoke(raw)
@@ -355,8 +371,11 @@ class SplitDividerView @JvmOverloads constructor(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (tracking) {
                     val wasDragging = dragging
-                    val wasLongPress = longPressFired
+                    val runnableLongPress = longPressFired
                     val isUp = event.actionMasked == MotionEvent.ACTION_UP
+                    val heldMs = (event.eventTime - downUptimeMs).coerceAtLeast(0L)
+                    val wasLongPress =
+                        SplitPane.qualifiesDividerLongPress(runnableLongPress, heldMs)
                     // Final sample before clearing tracking (setRatio may run from layout).
                     if (wasDragging && !wasLongPress) {
                         lastRawRatio = rawRatioFromEvent(event, parentView)
@@ -368,13 +387,18 @@ class SplitDividerView @JvmOverloads constructor(
                     longPressFired = false
                     parent.requestDisallowInterceptTouchEvent(false)
                     when {
-                        isUp && wasLongPress -> {
-                            // longPressFired blocks onRatioChanged — peel may still have
-                            // morph/preview if host set it; cancel peel preview only.
-                            if (wasDragging && peelMode) onPeelCancelled?.invoke()
+                        isUp && wasLongPress && !wasDragging -> {
+                            if (!runnableLongPress) {
+                                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                            }
                             onStackClick?.invoke()
                         }
-                        isUp && !wasDragging -> {
+                        isUp && shouldSwapOnUp(wasDragging, wasLongPress, heldMs, event.x, event.y) -> {
+                            // Undo any micro-drag preview so swap inverts the pre-press ratio.
+                            if (wasDragging) {
+                                lastRatio = downRatio
+                                lastRawRatio = downRatio
+                            }
                             performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                             onSwapClick?.invoke()
                             performClick()
@@ -386,6 +410,51 @@ class SplitDividerView @JvmOverloads constructor(
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    /**
+     * Tap-swap: press within [DIVIDER_TAP_SWAP_MAX_MS] (slightly longer if slop-breached
+     * drag with tiny ratio change). Holds at/above [DIVIDER_TAP_STACK_MIN_MS] are Recent.
+     */
+    private fun shouldSwapOnUp(
+        wasDragging: Boolean,
+        wasLongPress: Boolean,
+        heldMs: Long,
+        upX: Float,
+        upY: Float,
+    ): Boolean {
+        if (wasLongPress) return false
+        if (heldMs >= SplitPane.DIVIDER_TAP_STACK_MIN_MS) return false
+        val maxMs = tapSwapMaxMs(wasDragging)
+        if (heldMs > maxMs) return false
+        if (!wasDragging) return true
+        if (abs(lastRawRatio - downRatio) <= SplitPane.DIVIDER_TAP_RATIO_SLOP) {
+            return true
+        }
+        return isTapLikeSwap(wasDragging, wasLongPress, heldMs, upX, upY)
+    }
+
+    private fun tapSwapMaxMs(wasDragging: Boolean): Long =
+        if (wasDragging) {
+            SplitPane.DIVIDER_TAP_SWAP_MAX_MS + 80L
+        } else {
+            SplitPane.DIVIDER_TAP_SWAP_MAX_MS
+        }
+
+    private fun isTapLikeSwap(
+        wasDragging: Boolean,
+        wasLongPress: Boolean,
+        heldMs: Long,
+        upX: Float,
+        upY: Float,
+    ): Boolean {
+        if (wasLongPress) return false
+        val maxMs = tapSwapMaxMs(wasDragging)
+        if (heldMs > maxMs) return false
+        if (!wasDragging) return true
+        val dist = hypot((upX - downX).toDouble(), (upY - downY).toDouble()).toFloat()
+        if (dist > touchSlop * 3f) return false
+        return abs(lastRawRatio - downRatio) <= SplitPane.DIVIDER_TAP_RATIO_SLOP
     }
 
     private fun settleDrag() {

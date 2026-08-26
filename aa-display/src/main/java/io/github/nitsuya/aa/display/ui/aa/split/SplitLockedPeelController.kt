@@ -28,6 +28,8 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
     private var longPressFired = false
     private var downX = 0f
     private var downY = 0f
+    private var downUptimeMs = 0L
+    private var downRatio = 0f
     private var lastRawRatio = 0f
 
     private val touchSlop: Int by lazy {
@@ -35,6 +37,7 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
     }
     private val longPressTimeout: Long by lazy {
         ViewConfiguration.getLongPressTimeout().toLong()
+            .coerceAtLeast(SplitPane.DIVIDER_TAP_STACK_MIN_MS)
     }
 
     private val longPressRunnable = Runnable {
@@ -100,7 +103,9 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
                 longPressFired = false
                 downX = event.x
                 downY = event.y
+                downUptimeMs = event.downTime
                 lastRawRatio = rawRatio(event)
+                downRatio = lastRawRatio
                 // Re-assert once per gesture so OEM keyguard re-occlusion does not stick.
                 val aaUiId = c.mAaUiDisplayId
                 if (aaUiId != Display.INVALID_DISPLAY) {
@@ -119,8 +124,9 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
                 if (!dragging && dist > touchSlop) {
                     dragging = true
                     c.mHandler.removeCallbacks(longPressRunnable)
+                    longPressFired = false
                 }
-                if (dragging && !longPressFired) {
+                if (dragging) {
                     lastRawRatio = rawRatio(event)
                 }
                 return true
@@ -128,8 +134,11 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (!tracking) return false
                 val wasDragging = dragging
-                val wasLongPress = longPressFired
+                val runnableLongPress = longPressFired
                 val isUp = event.actionMasked == MotionEvent.ACTION_UP
+                val heldMs = (event.eventTime - downUptimeMs).coerceAtLeast(0L)
+                val wasLongPress =
+                    SplitPane.qualifiesDividerLongPress(runnableLongPress, heldMs)
                 if (wasDragging && !wasLongPress) {
                     lastRawRatio = rawRatio(event)
                 }
@@ -138,8 +147,9 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
                 dragging = false
                 longPressFired = false
                 when {
-                    isUp && wasLongPress -> openRecent()
-                    isUp && !wasDragging -> tapSwapFullscreenPane()
+                    isUp && wasLongPress && !wasDragging -> openRecent()
+                    isUp && shouldSwapOnUp(wasDragging, wasLongPress, heldMs, event.x, event.y) ->
+                        tapSwapFullscreenPane()
                     isUp && wasDragging -> settleDrag()
                 }
                 return true
@@ -160,6 +170,50 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
         val h = c.mHeight.coerceAtLeast(1).toFloat()
         val ratio = if (c.isSideBySide) event.x / w else event.y / h
         return ratio.coerceIn(0f, 1f)
+    }
+
+    private fun shouldSwapOnUp(
+        wasDragging: Boolean,
+        wasLongPress: Boolean,
+        heldMs: Long,
+        upX: Float,
+        upY: Float,
+    ): Boolean {
+        if (wasLongPress) return false
+        if (heldMs >= SplitPane.DIVIDER_TAP_STACK_MIN_MS) return false
+        val maxMs = tapSwapMaxMs(wasDragging)
+        if (heldMs > maxMs) return false
+        if (!wasDragging) return true
+        if (kotlin.math.abs(lastRawRatio - downRatio) <= SplitPane.DIVIDER_TAP_RATIO_SLOP) {
+            return true
+        }
+        return isTapLikeSwap(wasDragging, wasLongPress, heldMs, upX, upY)
+    }
+
+    private fun tapSwapMaxMs(wasDragging: Boolean): Long =
+        if (wasDragging) {
+            SplitPane.DIVIDER_TAP_SWAP_MAX_MS + 80L
+        } else {
+            SplitPane.DIVIDER_TAP_SWAP_MAX_MS
+        }
+
+    private fun isTapLikeSwap(
+        wasDragging: Boolean,
+        wasLongPress: Boolean,
+        heldMs: Long,
+        upX: Float,
+        upY: Float,
+    ): Boolean {
+        if (wasLongPress) return false
+        val maxMs = tapSwapMaxMs(wasDragging)
+        if (heldMs > maxMs) return false
+        if (!wasDragging) return true
+        val dist = hypot(
+            (upX - downX).toDouble(),
+            (upY - downY).toDouble(),
+        ).toFloat()
+        if (dist > touchSlop * 3f) return false
+        return kotlin.math.abs(lastRawRatio - downRatio) <= SplitPane.DIVIDER_TAP_RATIO_SLOP
     }
 
     private fun settleDrag() {
