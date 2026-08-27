@@ -15,6 +15,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewOutlineProvider
 import android.widget.FrameLayout
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -41,6 +42,10 @@ class SplitDividerView @JvmOverloads constructor(
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
 ) : View(context, attrs, defStyleAttr) {
+
+    private companion object {
+        private const val TAG = "AADisplay_SplitDivider"
+    }
 
     var sideBySide: Boolean = true
 
@@ -333,6 +338,7 @@ class SplitDividerView @JvmOverloads constructor(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 if (isOnEndInset(event)) return false
+                if (parentView.width <= 0 || parentView.height <= 0) return false
                 tracking = true
                 dragging = false
                 longPressFired = false
@@ -348,7 +354,12 @@ class SplitDividerView @JvmOverloads constructor(
             MotionEvent.ACTION_MOVE -> {
                 if (!tracking) return false
                 val dist = hypot((event.x - downX).toDouble(), (event.y - downY).toDouble()).toFloat()
-                if (!dragging && dist > touchSlop) {
+                val heldMs = (event.eventTime - downUptimeMs).coerceAtLeast(0L)
+                if (!dragging &&
+                    SplitPane.shouldBeginDividerDrag(
+                        dist, touchSlop.toFloat(), longPressFired, heldMs,
+                    )
+                ) {
                     dragging = true
                     removeCallbacks(longPressRunnable)
                     longPressFired = false
@@ -386,14 +397,25 @@ class SplitDividerView @JvmOverloads constructor(
                     dragging = false
                     longPressFired = false
                     parent.requestDisallowInterceptTouchEvent(false)
-                    when {
-                        isUp && wasLongPress && !wasDragging -> {
+                    val dist = hypot(
+                        (event.x - downX).toDouble(),
+                        (event.y - downY).toDouble(),
+                    ).toFloat()
+                    val ratioDelta = lastRawRatio - downRatio
+                    val shouldSwap = SplitPane.shouldDividerSwapOnUp(
+                        wasDragging, wasLongPress, heldMs, dist, touchSlop.toFloat(), ratioDelta,
+                    )
+                    val branch = when {
+                        isUp && SplitPane.qualifiesDividerRecentOnUp(
+                            wasLongPress, wasDragging, dist, touchSlop.toFloat(), ratioDelta,
+                        ) -> {
                             if (!runnableLongPress) {
                                 performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                             }
                             onStackClick?.invoke()
+                            "recent"
                         }
-                        isUp && shouldSwapOnUp(wasDragging, wasLongPress, heldMs, event.x, event.y) -> {
+                        isUp && shouldSwap -> {
                             // Undo any micro-drag preview so swap inverts the pre-press ratio.
                             if (wasDragging) {
                                 lastRatio = downRatio
@@ -402,59 +424,26 @@ class SplitDividerView @JvmOverloads constructor(
                             performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                             onSwapClick?.invoke()
                             performClick()
+                            "swap"
                         }
-                        wasDragging -> settleDrag()
+                        wasDragging -> {
+                            settleDrag()
+                            "settle"
+                        }
+                        else -> "none"
                     }
+                    logDebug(
+                        TAG,
+                        "divider UP heldMs=$heldMs wasDragging=$wasDragging " +
+                            "longPressFired=$runnableLongPress wasLongPress=$wasLongPress " +
+                            "shouldSwap=$shouldSwap dist=${dist.toInt()} " +
+                            "ratioDelta=${"%.3f".format(ratioDelta)} branch=$branch",
+                    )
                 }
                 return true
             }
         }
         return super.onTouchEvent(event)
-    }
-
-    /**
-     * Tap-swap: press within [DIVIDER_TAP_SWAP_MAX_MS] (slightly longer if slop-breached
-     * drag with tiny ratio change). Holds at/above [DIVIDER_TAP_STACK_MIN_MS] are Recent.
-     */
-    private fun shouldSwapOnUp(
-        wasDragging: Boolean,
-        wasLongPress: Boolean,
-        heldMs: Long,
-        upX: Float,
-        upY: Float,
-    ): Boolean {
-        if (wasLongPress) return false
-        if (heldMs >= SplitPane.DIVIDER_TAP_STACK_MIN_MS) return false
-        val maxMs = tapSwapMaxMs(wasDragging)
-        if (heldMs > maxMs) return false
-        if (!wasDragging) return true
-        if (abs(lastRawRatio - downRatio) <= SplitPane.DIVIDER_TAP_RATIO_SLOP) {
-            return true
-        }
-        return isTapLikeSwap(wasDragging, wasLongPress, heldMs, upX, upY)
-    }
-
-    private fun tapSwapMaxMs(wasDragging: Boolean): Long =
-        if (wasDragging) {
-            SplitPane.DIVIDER_TAP_SWAP_MAX_MS + 80L
-        } else {
-            SplitPane.DIVIDER_TAP_SWAP_MAX_MS
-        }
-
-    private fun isTapLikeSwap(
-        wasDragging: Boolean,
-        wasLongPress: Boolean,
-        heldMs: Long,
-        upX: Float,
-        upY: Float,
-    ): Boolean {
-        if (wasLongPress) return false
-        val maxMs = tapSwapMaxMs(wasDragging)
-        if (heldMs > maxMs) return false
-        if (!wasDragging) return true
-        val dist = hypot((upX - downX).toDouble(), (upY - downY).toDouble()).toFloat()
-        if (dist > touchSlop * 3f) return false
-        return abs(lastRawRatio - downRatio) <= SplitPane.DIVIDER_TAP_RATIO_SLOP
     }
 
     private fun settleDrag() {

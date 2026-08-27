@@ -88,11 +88,71 @@ object SplitPane {
     const val DIVIDER_TAP_RATIO_SLOP = 0.025f
 
     /**
+     * Below [DIVIDER_TAP_STACK_MIN_MS]: suppress swap when hold + micro jitter suggest
+     * a long-press attempt rather than an intentional tap.
+     */
+    const val DIVIDER_TAP_SWAP_ATTEMPT_MS = 400L
+
+    /**
      * Long-press for Recent on UP: Handler timeout **or** input hold duration.
      * Cold launch / busy main thread can delay [postDelayed]; input timestamps stay accurate.
      */
     fun qualifiesDividerLongPress(runnableFired: Boolean, heldMs: Long): Boolean =
         runnableFired || heldMs >= DIVIDER_TAP_STACK_MIN_MS
+
+    /**
+     * Do not enter ratio drag until the long-press window expires — cold-start finger
+     * jitter stays in the long-press lane. Obvious drags ([dist] > 2× slop) still win early.
+     */
+    fun shouldBeginDividerDrag(
+        dist: Float,
+        touchSlop: Float,
+        longPressFired: Boolean,
+        heldMs: Long,
+    ): Boolean {
+        if (longPressFired) return false
+        if (heldMs >= DIVIDER_TAP_STACK_MIN_MS) return false
+        return dist > touchSlop * 2f
+    }
+
+    /** Long-press Recent on UP even when micro jitter set [wasDragging]. */
+    fun qualifiesDividerRecentOnUp(
+        wasLongPress: Boolean,
+        wasDragging: Boolean,
+        dist: Float,
+        touchSlop: Float,
+        ratioDelta: Float,
+    ): Boolean {
+        if (!wasLongPress) return false
+        if (!wasDragging) return true
+        return dist <= touchSlop * 3f && kotlin.math.abs(ratioDelta) <= DIVIDER_TAP_RATIO_SLOP
+    }
+
+    /** Tap-to-swap on UP — shared by [SplitDividerView] and [SplitLockedPeelController]. */
+    fun shouldDividerSwapOnUp(
+        wasDragging: Boolean,
+        wasLongPress: Boolean,
+        heldMs: Long,
+        dist: Float,
+        touchSlop: Float,
+        ratioDelta: Float,
+    ): Boolean {
+        if (wasLongPress) return false
+        if (heldMs >= DIVIDER_TAP_STACK_MIN_MS) return false
+        val maxMs = if (wasDragging) DIVIDER_TAP_SWAP_MAX_MS + 80L else DIVIDER_TAP_SWAP_MAX_MS
+        if (heldMs > maxMs) return false
+        val absRatio = kotlin.math.abs(ratioDelta)
+        if (heldMs >= DIVIDER_TAP_SWAP_ATTEMPT_MS &&
+            dist <= touchSlop * 3f &&
+            absRatio <= DIVIDER_TAP_RATIO_SLOP
+        ) {
+            return false
+        }
+        if (!wasDragging) return true
+        if (absRatio <= DIVIDER_TAP_RATIO_SLOP) return true
+        if (dist > touchSlop * 3f) return false
+        return absRatio <= DIVIDER_TAP_RATIO_SLOP
+    }
 
     fun clampRatio(ratio: Float): Float = ratio.coerceIn(MIN_RATIO, MAX_RATIO)
 

@@ -280,7 +280,14 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             val oldWidth = oldRight - oldLeft
             val oldHeight = oldBottom - oldTop
             if (width <= 0 || height <= 0) return@addOnLayoutChangeListener
-            if (width == oldWidth && height == oldHeight) return@addOnLayoutChangeListener
+            val sizeChanged = width != oldWidth || height != oldHeight
+            if (sizeChanged &&
+                !SplitPane.isFullscreenPane(fullscreenPane) &&
+                !dividerDragging
+            ) {
+                applySplitLayoutWeights(splitRatio, force = true)
+            }
+            if (!sizeChanged) return@addOnLayoutChangeListener
             reportAaUiDisplayId()
             reportHidShellLayout()
             requestDisplay("layout-change")
@@ -288,6 +295,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         // First layout may already have non-zero size before the listener is attached.
         baseBinding.splitContainer.post {
             if (baseBinding.splitContainer.width > 0 && baseBinding.splitContainer.height > 0) {
+                if (!SplitPane.isFullscreenPane(fullscreenPane)) {
+                    applySplitLayoutWeights(splitRatio, force = true)
+                }
                 reportAaUiDisplayId()
                 reportHidShellLayout()
                 requestDisplay("layout")
