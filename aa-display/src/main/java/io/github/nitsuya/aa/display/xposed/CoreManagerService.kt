@@ -658,12 +658,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 onReconnected(profile.width, profile.height, profile.densityDpi)
                 // Exit ColorFade if panes went OFF while AA was disconnected.
                 mSessionPolicy?.keepVirtualDisplayAwake("soft-reconnect")
-                // Ratio is owned by divider drag / restore — do not push AA's echo back
-                // unless it meaningfully differs (avoids resize thrash).
-                val clamped = SplitPane.clampRatio(ratio)
-                if (kotlin.math.abs(clamped - mRatio) >= 0.01f) {
-                    setSplitRatio(clamped)
-                }
+                // Controller retains live ratio across Delay Destroy; AA echo may lag
+                // LastSplitStore — UI reconciles via SPLIT_STATE_CHANGED.
                 listener.onAvailableDisplay(primaryDisplayId, false)
                 return@runMain
             }
@@ -750,6 +746,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun onDestroyDisplay() {
         runMain {
+            mSplitController?.launch?.flushPersistOnAaDisconnect()
             val finishTeardown = {
                 mSplitController?.onDestroy()
                 mSessionPolicy = null

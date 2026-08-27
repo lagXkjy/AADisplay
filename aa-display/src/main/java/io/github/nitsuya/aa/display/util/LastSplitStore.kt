@@ -9,6 +9,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.Properties
+import kotlin.math.abs
 
 /**
  * Durable custom-split snapshot written from system_server ([io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController]).
@@ -120,6 +121,42 @@ object LastSplitStore {
             synchronized(cacheLock) {
                 cachedSnapshot = snapshot
             }
+        }
+        return ok
+    }
+
+    /**
+     * Persist only the split ratio — no ATMS walk, no full snapshot rewrite.
+     * Used when the divider settles so ratio survives AA disconnect before the
+     * 2.5s full-snapshot debounce.
+     */
+    fun saveRatioOnly(
+        primaryRatio: Float,
+        contentResolver: ContentResolver? = null,
+    ): Boolean {
+        synchronized(cacheLock) {
+            cachedSnapshot?.let { prev ->
+                if (abs(prev.primaryRatio - primaryRatio) < 0.001f) return true
+                cachedSnapshot = prev.copy(primaryRatio = primaryRatio)
+            }
+        }
+        var settingsOk = false
+        if (contentResolver != null) {
+            try {
+                Settings.Global.putString(
+                    contentResolver,
+                    SETTINGS_RATIO,
+                    primaryRatio.toString(),
+                )
+                settingsOk = true
+            } catch (e: Throwable) {
+                Log.w(TAG, "settings ratio save failed", e)
+            }
+        }
+        val fileOk = updateRatioInFile(primaryRatio)
+        val ok = settingsOk || fileOk
+        if (ok) {
+            Log.d(TAG, "ratio saved ratio=$primaryRatio")
         }
         return ok
     }
@@ -290,6 +327,28 @@ object LastSplitStore {
             primaryStack = decodeStack(primaryStack),
             secondaryStack = decodeStack(secondaryStack),
         )
+    }
+
+    private fun updateRatioInFile(ratio: Float): Boolean {
+        val file = File(PATH)
+        if (!file.isFile) return false
+        return try {
+            val props = Properties()
+            FileInputStream(file).use { props.load(it) }
+            val existing = props.getProperty(FILE_RATIO)?.toFloatOrNull()
+            if (existing != null && abs(existing - ratio) < 0.001f) return true
+            props.setProperty(FILE_RATIO, ratio.toString())
+            file.parentFile?.mkdirs()
+            FileOutputStream(file).use { out ->
+                props.store(out, "AADisplay last custom split snapshot")
+            }
+            file.setReadable(true, false)
+            file.setWritable(true, true)
+            true
+        } catch (e: Throwable) {
+            Log.w(TAG, "file ratio update failed", e)
+            false
+        }
     }
 
     private fun saveToFile(snapshot: Snapshot): Boolean {

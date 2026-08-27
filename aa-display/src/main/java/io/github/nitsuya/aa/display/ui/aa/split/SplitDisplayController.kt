@@ -187,6 +187,7 @@ class SplitDisplayController(
     internal val mPendingResize = Runnable {
         vd.resizePanesInternal("ratio-throttled")
         scheduleEnsureTasksFillAfterRatioSettle(mPendingShrinkPrimary, mPendingShrinkSecondary)
+        launch.persistRatioNow()
     }
 
     private var packageReceiverRegistered = false
@@ -366,6 +367,7 @@ class SplitDisplayController(
         }
         launch.scheduleReconnectEnsurePasses()
         SplitPresentationGuard.scheduleEvictForeignPresentations(this, "reconnect")
+        notifySplitStateChanged()
     }
 
     private fun scheduleEnsureTasksFillAfterReconnect() {
@@ -461,10 +463,12 @@ class SplitDisplayController(
         // 800→ratioBefore→releaseRatio leaving Window Requested stuck).
         if (SplitPane.isFullscreenPane(mFullscreenPane)) {
             mRatioBeforeFullscreen = clamped
+            launch.persistRatioNow()
             return
         }
         if (abs(clamped - mRatio) < 0.001f) return
         mRatio = clamped
+        launch.persistRatioNow()
         val (shrinkPrimary, shrinkSecondary) = ratioShrinkFlags()
         // Resizing VDs makes tasks churn; suppress reclaim + ATMS stack refresh until settle.
         mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
@@ -527,6 +531,7 @@ class SplitDisplayController(
             )
         }
         scheduleRestoreFocusAfterFullscreen()
+        launch.persistRatioNow()
         launch.schedulePersistSnapshot()
         notifySplitStateChanged()
         logDebug(
@@ -1529,6 +1534,7 @@ class SplitDisplayController(
             // Keep the pre-fullscreen split ratio; do not invert while FS.
         } else {
             mRatio = SplitPane.clampRatio(1f - mRatio)
+            launch.persistRatioNow()
         }
         mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
         vd.resizePanesInternal("swap")

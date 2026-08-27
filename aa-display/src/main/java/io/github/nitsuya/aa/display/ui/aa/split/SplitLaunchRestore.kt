@@ -130,7 +130,17 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         }
         settlementPhase = SettlementPhase.RESTORING
         c.mSuppressReclaimUntil = SystemClock.uptimeMillis() + SplitDisplayController.SUPPRESS_RECLAIM_AFTER_RESTORE_MS
-        c.mRatio = SplitPane.clampRatio(snap.primaryRatio)
+        val snapRatio = SplitPane.clampRatio(snap.primaryRatio)
+        val liveRatio = SplitPane.clampRatio(c.mRatio)
+        // Soft reconnect: controller may still hold the live ratio while the snapshot lagged.
+        c.mRatio = if (
+            c.mPrimary != null && c.mSecondary != null &&
+            kotlin.math.abs(snapRatio - liveRatio) >= 0.01f
+        ) {
+            liveRatio
+        } else {
+            snapRatio
+        }
         c.mRatioBeforeFullscreen = c.mRatio
         c.mFullscreenPane = SplitPane.FULLSCREEN_NONE
         c.vd.resizePanesInternal("restore")
@@ -650,6 +660,22 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         if (pkg.isNotEmpty()) {
             c.mExplicitlyClosedPackages.add(pkg)
         }
+    }
+
+    /** Immediate ratio-only durable write (no ATMS / full snapshot). */
+    fun persistRatioNow() {
+        val ratio = if (SplitPane.isFullscreenPane(c.mFullscreenPane)) {
+            SplitPane.clampRatio(c.mRatioBeforeFullscreen)
+        } else {
+            SplitPane.clampRatio(c.mRatio)
+        }
+        LastSplitStore.saveRatioOnly(ratio, c.context.contentResolver)
+    }
+
+    /** Flush durable snapshot when AA disconnects but VDs may survive Delay Destroy. */
+    fun flushPersistOnAaDisconnect() {
+        persistRatioNow()
+        persistSnapshot(force = true, logSettingsFailures = false)
     }
 
     fun schedulePersistSnapshot() {
