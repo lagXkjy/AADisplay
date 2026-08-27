@@ -2,33 +2,25 @@ package io.github.nitsuya.aa.display.ui.aa.split
 
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
+import android.graphics.drawable.Drawable
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import androidx.core.content.ContextCompat
+import io.github.nitsuya.aa.display.R
 
 /**
  * Phone BT mouse sprite on the AaDisplay shell — tip at [translationX]/[translationY].
- * Small footprint + no touch capture so [SplitDividerView] stays operable.
+ * Lucide mouse-pointer-2 ([R.drawable.ic_hid_cursor_pointer]).
  */
 class HidCursorOverlayView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
 
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        style = Paint.Style.FILL
-    }
-    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.BLACK
-        style = Paint.Style.STROKE
-        strokeJoin = Paint.Join.MITER
-        strokeMiter = 4f
-    }
-    private val arrowPath = Path()
+    private val cursorDrawable: Drawable =
+        ContextCompat.getDrawable(context, R.drawable.ic_hid_cursor_pointer)!!.mutate()
+    private var cursorSizePx = 0
 
     init {
         isClickable = false
@@ -57,22 +49,20 @@ class HidCursorOverlayView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         if (visibility != VISIBLE) return
         val d = resources.displayMetrics.density
-        strokePaint.strokeWidth = 1.25f * d
-        buildArrowPath(d)
-        canvas.drawPath(arrowPath, fillPaint)
-        canvas.drawPath(arrowPath, strokePaint)
+        val sizePx = (CURSOR_SIZE_DP * d).toInt()
+        if (sizePx != cursorSizePx) {
+            cursorSizePx = sizePx
+            cursorDrawable.setBounds(0, 0, sizePx, sizePx)
+        }
+        canvas.save()
+        canvas.translate(-HOTSPOT_X_DP * d, -HOTSPOT_Y_DP * d)
+        cursorDrawable.draw(canvas)
+        canvas.restore()
     }
 
-  /** Classic system pointer — tip at local (0, 0), short rectangular stem in the notch. */
-    private fun buildArrowPath(d: Float) {
-        arrowPath.reset()
-        arrowPath.moveTo(0f, 0f)
-        arrowPath.lineTo(0f, 17f * d)
-        arrowPath.lineTo(4f * d, 12.5f * d)
-        arrowPath.lineTo(4f * d, 15.5f * d)
-        arrowPath.lineTo(7f * d, 15.5f * d)
-        arrowPath.lineTo(7f * d, 12.5f * d)
-        arrowPath.lineTo(13f * d, 15f * d)
-        arrowPath.close()
+    private companion object {
+        const val HOTSPOT_X_DP = 4.04f
+        const val HOTSPOT_Y_DP = 4.69f
+        const val CURSOR_SIZE_DP = 24f
     }
 }

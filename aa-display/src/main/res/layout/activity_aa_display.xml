@@ -4,6 +4,8 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:clipChildren="false"
+    android:clipToPadding="false"
     tools:context=".ui.aa.AaDisplayActivity">
 
     <androidx.fragment.app.FragmentContainerView
@@ -18,8 +20,8 @@
 
     <io.github.nitsuya.aa.display.ui.aa.split.HidCursorOverlayView
         android:id="@+id/hid_cursor_overlay"
-        android:layout_width="24dp"
-        android:layout_height="24dp"
+        android:layout_width="1dp"
+        android:layout_height="1dp"
         android:clickable="false"
         android:elevation="32dp"
         android:focusable="false"
