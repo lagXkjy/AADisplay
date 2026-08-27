@@ -25,7 +25,8 @@ class HidCursorOverlayView @JvmOverloads constructor(
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
         style = Paint.Style.STROKE
-        strokeJoin = Paint.Join.ROUND
+        strokeJoin = Paint.Join.MITER
+        strokeMiter = 4f
     }
     private val arrowPath = Path()
 
@@ -62,15 +63,16 @@ class HidCursorOverlayView @JvmOverloads constructor(
         canvas.drawPath(arrowPath, strokePaint)
     }
 
-    /** Classic upright pointer — tip at local (0, 0), stem runs vertically. */
+  /** Classic system pointer — tip at local (0, 0), short rectangular stem in the notch. */
     private fun buildArrowPath(d: Float) {
         arrowPath.reset()
         arrowPath.moveTo(0f, 0f)
-        arrowPath.lineTo(0f, 16f * d)
-        arrowPath.lineTo(4.5f * d, 12f * d)
-        arrowPath.lineTo(7f * d, 20f * d)
-        arrowPath.lineTo(9.5f * d, 12f * d)
-        arrowPath.lineTo(14f * d, 12f * d)
+        arrowPath.lineTo(0f, 17f * d)
+        arrowPath.lineTo(4f * d, 12.5f * d)
+        arrowPath.lineTo(4f * d, 15.5f * d)
+        arrowPath.lineTo(7f * d, 15.5f * d)
+        arrowPath.lineTo(7f * d, 12.5f * d)
+        arrowPath.lineTo(13f * d, 15f * d)
         arrowPath.close()
     }
 }
