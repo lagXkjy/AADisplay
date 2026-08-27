@@ -107,6 +107,10 @@ object CoreManager : ICoreManager, DeathRecipient {
         getService()?.startActivityOnPane(packageName, userId, pane)
     }
 
+    override fun startActivityOnPaneForUser(packageName: String, userId: Int, pane: Int): Boolean {
+        return getService()?.startActivityOnPaneForUser(packageName, userId, pane) ?: false
+    }
+
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
         getService()?.moveTaskId(taskId, isVirtualDisplay)
     }

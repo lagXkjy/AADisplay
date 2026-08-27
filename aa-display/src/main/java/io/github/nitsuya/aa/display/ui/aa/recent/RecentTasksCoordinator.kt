@@ -125,7 +125,8 @@ class RecentTasksCoordinator(
         runMutation {
             if (pane != null) {
                 if (!pkg.isNullOrBlank()) {
-                    CoreApi.startActivityOnPane(pkg, 0, pane)
+                    // Sync IPC + handler front — VD promote finishes before mutation returns.
+                    CoreApi.startActivityOnPaneForUser(pkg, 0, pane)
                 } else {
                     CoreApi.setFocusedPane(pane)
                     CoreApi.moveTaskToFront(taskId)

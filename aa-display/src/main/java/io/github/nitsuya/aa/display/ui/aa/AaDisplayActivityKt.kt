@@ -63,6 +63,14 @@ object AaDisplayActivityKt {
         }
     }
 
+    /** Back / Esc while Recents overlay is up should dismiss it, not inject into pane VDs. */
+    fun consumeShellBackKey(fragmentManager: FragmentManager): Boolean {
+        val recent = fragmentManager.findFragmentByTag("RecentTask") ?: return false
+        if (!recent.isVisible) return false
+        hideRecentTask(fragmentManager)
+        return true
+    }
+
     /** Same flag as app picker: rail / HID → AaDisplay presentation. */
     private fun setAaUiShellCapture(fragmentManager: FragmentManager, capture: Boolean) {
         val ctx = fragmentManager.fragments.firstOrNull()?.context ?: return

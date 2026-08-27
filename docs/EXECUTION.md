@@ -412,7 +412,7 @@ flowchart TB
 
 前提：键鼠**连手机**；AA 会话活跃（非 Delay Destroy）；改钩子后需**重启**（`system_server`）。实现：`xposed/hook/PhoneHidRedirect.kt`。方控媒体键路径不变。
 
-光标在 **AaDisplay 壳画布**上连续移动（`[左窗][分隔条][右窗]`），不是「靠近缝就传送到另一 VD」。
+光标在 **AaDisplay 壳画布**上连续移动（`[左窗][分隔条][右窗]`），可见箭头由壳上 `HidCursorOverlayView` 自绘（`ACTION_HID_CURSOR`），跨 pane **不**再切换 `setVirtualMousePointerDisplayId`；inject 仍进各 pane VD。
 
 **鼠标**
 
@@ -440,8 +440,9 @@ flowchart TB
 
 **折叠屏注意（如三星 W7023）**
 
-- 系统光标默认画在合盖外屏 / 展开主屏；会话 live 时 `setVirtualMousePointerDisplayId` 绑到 AA VD，并尽力 `forceHideCursor` / 藏实体屏 icon。
-- AA 窗需 Input viewport：VD 带 `VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH`；另 hook `setDisplayViewports` 注入窗 viewport。缺 viewport 时 override 仍会落主屏。
+- 系统实体屏光标：`forceHideCursor` + 藏 icon；可见指针只在 AA 壳 overlay。
+- 可选一次 `setVirtualMousePointerDisplayId` 绑 shell，避免合盖外屏 mapper 画 ghost cursor。
+- AA 窗需 Input viewport：VD 带 `VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH`；另 hook `setDisplayViewports` 注入窗 viewport。
 - 日志标签：`AAD_PhoneHid`（LSPosed Bridge / modules log）。
 
 ### 10.2 方控映射
@@ -496,6 +497,7 @@ flowchart TB
 | `REQUEST_AA_UI_DISPLAY_ID` | system_server → App | peel 找不到 presentation id |
 | `SHOW_RECENT_TASK` | system_server → App | 锁屏 peel 长按；蓝牙键鼠 Ctrl+R/Tab（`PhoneHidRedirect`） |
 | `HID_APPLY_SPLIT_RATIO` | system_server → App | 蓝牙 Ctrl+方向：先改壳布局再 `setSplitRatio` |
+| `HID_CURSOR` | system_server → App | 蓝牙鼠标壳上自绘光标位置（presentation 坐标） |
 
 ---
 

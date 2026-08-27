@@ -2,6 +2,7 @@ package io.github.nitsuya.aa.display.xposed.hook
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Handler
 import android.os.Looper
 import android.os.ServiceManager
 import android.os.SystemClock
@@ -14,6 +15,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.XC_MethodHook
+import io.github.nitsuya.aa.display.ui.aa.split.HidCursorHit
 import io.github.nitsuya.aa.display.ui.aa.split.HidSplitLayout
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
@@ -37,10 +39,11 @@ import java.lang.reflect.Method
  */
 object PhoneHidRedirect {
     private const val TAG = "AAD_PhoneHid"
-    /** [lastPointerBindPane] sentinel while the cursor is on the AaDisplay shell VD. */
-    private const val POINTER_BIND_SHELL = -2
-    /** Relative overshoot at top/bottom (cross gate) before hopping to the sibling VD. */
-    private const val CROSS_HOLD_PX = 28f
+    /** Hide the shell-drawn cursor after pointer idle (re-show on next move). */
+    private const val CURSOR_IDLE_HIDE_MS = 3000L
+    /** Re-assert OS pointer hide — not every relative MOVE. */
+    private const val SUPPRESS_REASSERT_MS = 500L
+    private const val CURSOR_OVERLAY_MIN_MS = 12L
 
     private var installAttempted = false
     private var keyHook: XC_MethodHook.Unhook? = null
@@ -67,20 +70,20 @@ object PhoneHidRedirect {
 
     private var cursorX = 0f
     private var cursorY = 0f
-    /** Always pane-local (within the bound VD), never full-HU canvas. */
+    /** Continuous HU canvas position — relative deltas accumulate here, not pane-local. */
+    private var cursorCanvasX = 0f
+    private var cursorCanvasY = 0f
+    /** Pane-local inject target derived from [cursorCanvasX]/[cursorCanvasY]. */
     private var cursorPane: Int = SplitPane.PRIMARY
     private var cursorInitialized = false
     private var pointerDown = false
     private var pointerDownTime = 0L
+    private var lastCursorOverlayUptime = 0L
+    private var lastSuppressUptime = 0L
+    private var lastPointerActivityUptime = 0L
     private var lastTargetDisplayId = -1
-    private var lastPointerBindPane: Int = -1
-    /**
-     * Extra relative travel past a pane edge required before hopping VD.
-     * While holding the edge, LMB drives the shell divider instead of jumping.
-     */
-    private var seamHoldPx = 0f
-    /** After a pane hop, ignore reverse edge-cross briefly (stops 16↔17 oscillation). */
-    private var seamCooldownUntil = 0L
+    private val cursorIdleHandler = Handler(Looper.getMainLooper())
+    private val cursorIdleHideRunnable = Runnable { maybeHideCursorOnIdle() }
     /** Mouse gesture owned by AaDisplay divider (ratio / Recents / swap). */
     private var dividerGestureActive = false
     private var dividerDownTime = 0L
@@ -118,19 +121,45 @@ object PhoneHidRedirect {
             if (capture) {
                 cancelPaneFinger()
                 dividerGestureActive = false
-                seamHoldPx = 0f
                 val layout = runCatching { CoreManagerService.hidSplitLayout() }.getOrNull()
                 if (layout != null && SplitPane.isValid(cursorPane)) {
-                    val (cx, cy) = layout.toCanvas(cursorPane, cursorX, cursorY)
-                    shellX = cx
-                    shellY = cy
+                    shellX = cursorCanvasX
+                    shellY = cursorCanvasY
                 }
+                snapShellToRecentColumn()
                 applyPointerDisplayToShell()
+                publishHidCursorOverlay(layout, force = true)
             } else {
                 shellGestureActive = false
-                applyPointerDisplay()
+                suppressOsPointerSprite(force = true)
             }
         }.onFailure { logDebug(TAG, "onShellCaptureChanged($capture): ${it.message}") }
+    }
+
+    /** Ctrl+R Recent: park shell cursor on the focused VD stack column (keyboard has no hover). */
+    fun snapShellToRecentColumn() {
+        runCatching {
+            val layout = CoreManagerService.hidSplitLayout() ?: return@runCatching
+            val active = layout.activePanes().toList()
+            val pane = when {
+                layout.focusedPane in active -> layout.focusedPane
+                SplitPane.isValid(cursorPane) && cursorPane in active -> cursorPane
+                else -> active.firstOrNull() ?: SplitPane.PRIMARY
+            }
+            val (cx, cy) = recentColumnCenter(layout, pane)
+            shellX = cx
+            shellY = cy
+        }.onFailure { logDebug(TAG, "snapShellToRecentColumn: ${it.message}") }
+    }
+
+    private fun recentColumnCenter(layout: HidSplitLayout, pane: Int): Pair<Float, Float> {
+        val tw = layout.totalW.toFloat().coerceAtLeast(1f)
+        val th = layout.totalH.toFloat().coerceAtLeast(1f)
+        val x = when (pane) {
+            SplitPane.SECONDARY -> tw * 0.5f
+            else -> tw / 6f
+        }
+        return x to (th * 0.5f)
     }
 
     /** Called from DisplaySessionPolicy / create when AA UI is attached vs Delay Destroy. */
@@ -138,19 +167,17 @@ object PhoneHidRedirect {
         runCatching {
             if (!installAttempted) ensureHooked()
             if (sessionLive == live) {
-                if (live) applyPointerDisplay()
+                if (live) suppressOsPointerSprite(force = true)
                 return@runCatching
             }
             sessionLive = live
             if (live) {
                 cursorInitialized = false
                 pointerDown = false
-                seamHoldPx = 0f
-                lastPointerBindPane = -1
                 dividerGestureActive = false
                 shellGestureActive = false
                 installInputFilter()
-                applyPointerDisplay()
+                suppressOsPointerSprite(force = true)
                 invokeForceHideCursor(true)
                 requestViewportRefresh()
                 log(
@@ -159,10 +186,11 @@ object PhoneHidRedirect {
                 )
             } else {
                 pointerDown = false
-                seamHoldPx = 0f
                 dividerGestureActive = false
                 shellGestureActive = false
                 runCatching { CoreManagerService.clearAaUiShellCapture() }
+                cancelCursorIdleHide()
+                publishHidCursorOverlay(null, visible = false)
                 uninstallInputFilter()
                 invokeForceHideCursor(false)
                 restorePointerDisplay()
@@ -313,7 +341,8 @@ object PhoneHidRedirect {
     private fun injectAaViewportsInto(list: MutableList<Any?>) {
         val primary = CoreManagerService.hidPrimaryDisplayId()
         val secondary = CoreManagerService.hidSecondaryDisplayId()
-        val ids = intArrayOf(primary, secondary).filter { it >= 0 }.distinct()
+        val shell = CoreManagerService.hidAaUiDisplayId()
+        val ids = intArrayOf(primary, secondary, shell).filter { it >= 0 }.distinct()
         if (ids.isEmpty()) return
         val existing = list.mapNotNull { vp ->
             runCatching {
@@ -387,7 +416,7 @@ object PhoneHidRedirect {
         // Re-apply pointer after a short delay once viewports may exist.
         android.os.Handler(Looper.getMainLooper()).postDelayed({
             if (sessionLive) {
-                applyPointerDisplay()
+                suppressOsPointerSprite(force = true)
                 invokeForceHideCursor(true)
             }
         }, 500L)
@@ -535,46 +564,115 @@ object PhoneHidRedirect {
         }
     }
 
-    private fun applyPointerDisplay() {
-        if (CoreManagerService.aaUiShellCapture) {
-            applyPointerDisplayToShell()
-            return
-        }
-        val layout = runCatching { CoreManagerService.hidSplitLayout() }.getOrNull()
-        val pane = when {
-            layout == null -> -1
-            cursorInitialized && SplitPane.isValid(cursorPane) -> cursorPane
-            else -> layout.focusedPane
-        }
-        val displayId = when {
-            pane >= 0 && layout != null -> layout.displayIdOf(pane)
-            else -> runCatching { CoreManagerService.hidTargetDisplayId() }.getOrNull()
-                ?: return
-        }
-        if (displayId < 0) return
-        if (displayId == lastTargetDisplayId && pane == lastPointerBindPane) return
-        invokePointerDisplay(displayId)
-        lastTargetDisplayId = displayId
-        lastPointerBindPane = pane
-        // Hide sprite on physical panels so fold cover/main don't keep a ghost cursor.
+    /**
+     * Hide the OS mouse sprite — visual cursor is [HidCursorOverlayView] on the
+     * AaDisplay presentation (Activity overlay).
+     */
+    private fun suppressOsPointerSprite(force: Boolean = false) {
+        val now = SystemClock.uptimeMillis()
+        if (!force && now - lastSuppressUptime < SUPPRESS_REASSERT_MS) return
+        lastSuppressUptime = now
+        invokeForceHideCursor(true)
         invokePointerIconVisible(false)
+        hidePointerIconOnDisplay(Display.DEFAULT_DISPLAY)
+        hidePointerIconOnDisplay(1)
+        hidePointerIconOnDisplay(CoreManagerService.hidAaUiDisplayId())
+        hidePointerIconOnDisplay(CoreManagerService.hidPrimaryDisplayId())
+        hidePointerIconOnDisplay(CoreManagerService.hidSecondaryDisplayId())
+        val offDisplay = Display.INVALID_DISPLAY
+        if (lastTargetDisplayId != offDisplay) {
+            invokePointerDisplay(offDisplay)
+            lastTargetDisplayId = offDisplay
+        }
+    }
+
+    private fun hidePointerIconOnDisplay(displayId: Int) {
+        if (displayId < 0) return
+        val method = setPointerIconVisibleMethod ?: return
+        val target = pointerIconTarget ?: return
+        runCatching {
+            when (method.parameterTypes.size) {
+                2 -> {
+                    val p0 = method.parameterTypes[0]
+                    val p1 = method.parameterTypes[1]
+                    if (p0 == Int::class.javaPrimitiveType && p1 == Boolean::class.javaPrimitiveType) {
+                        method.invoke(target, displayId, false)
+                    }
+                }
+                else -> { /* global hide handled by invokePointerIconVisible(false) */ }
+            }
+        }.onFailure {
+            logDebug(TAG, "hidePointerIconOnDisplay($displayId): ${it.message}")
+        }
+    }
+
+    private fun applyPointerDisplay() {
+        suppressOsPointerSprite()
     }
 
     private fun applyPointerDisplayToShell() {
-        val shellId = CoreManagerService.hidAaUiDisplayId()
-        if (shellId < 0) return
-        if (shellId == lastTargetDisplayId && lastPointerBindPane == POINTER_BIND_SHELL) return
-        invokePointerDisplay(shellId)
-        lastTargetDisplayId = shellId
-        lastPointerBindPane = POINTER_BIND_SHELL
-        invokePointerIconVisible(false)
+        suppressOsPointerSprite()
+    }
+
+    private fun overlayCanvasPosition(): Pair<Float, Float> = when {
+        dividerGestureActive -> dividerX to dividerY
+        CoreManagerService.aaUiShellCapture || shellGestureActive -> shellX to shellY
+        else -> cursorCanvasX to cursorCanvasY
+    }
+
+    private fun scheduleCursorIdleHide() {
+        lastPointerActivityUptime = SystemClock.uptimeMillis()
+        cursorIdleHandler.removeCallbacks(cursorIdleHideRunnable)
+        cursorIdleHandler.postDelayed(cursorIdleHideRunnable, CURSOR_IDLE_HIDE_MS)
+    }
+
+    private fun cancelCursorIdleHide() {
+        cursorIdleHandler.removeCallbacks(cursorIdleHideRunnable)
+    }
+
+    private fun maybeHideCursorOnIdle() {
+        if (!sessionLive || !cursorInitialized) return
+        if (dividerGestureActive || pointerDown || shellGestureActive ||
+            CoreManagerService.aaUiShellCapture
+        ) {
+            scheduleCursorIdleHide()
+            return
+        }
+        val idle = SystemClock.uptimeMillis() - lastPointerActivityUptime
+        if (idle < CURSOR_IDLE_HIDE_MS) {
+            cursorIdleHandler.postDelayed(
+                cursorIdleHideRunnable,
+                CURSOR_IDLE_HIDE_MS - idle,
+            )
+            return
+        }
+        publishHidCursorOverlay(null, visible = false, idleHide = true)
     }
 
     /**
-     * Split hover: rebind only when [cursorPane] actually changed (pane-local model).
+     * Broadcast shell cursor position to [AaDisplayActivity] ([HidCursorOverlayView]).
+     * Presentation coords via [HidSplitLayout.toShellTouch].
      */
-    private fun shouldRebindPointerDisplay(layout: HidSplitLayout, pane: Int): Boolean {
-        return pane != lastPointerBindPane
+    private fun publishHidCursorOverlay(
+        layout: HidSplitLayout?,
+        visible: Boolean = true,
+        force: Boolean = false,
+        idleHide: Boolean = false,
+    ) {
+        if (!visible) {
+            if (!idleHide) cancelCursorIdleHide()
+            CoreManagerService.notifyHidCursorOverlay(false, 0f, 0f)
+            return
+        }
+        if (!sessionLive || !cursorInitialized) return
+        val lay = layout ?: runCatching { CoreManagerService.hidSplitLayout() }.getOrNull() ?: return
+        val (cx, cy) = overlayCanvasPosition()
+        val (sx, sy) = lay.toShellTouch(cx, cy)
+        val now = SystemClock.uptimeMillis()
+        if (!force && now - lastCursorOverlayUptime < CURSOR_OVERLAY_MIN_MS) return
+        lastCursorOverlayUptime = now
+        CoreManagerService.notifyHidCursorOverlay(true, sx, sy)
+        scheduleCursorIdleHide()
     }
 
     private fun restorePointerDisplay() {
@@ -656,7 +754,7 @@ object PhoneHidRedirect {
                         event.actionMasked == MotionEvent.ACTION_DOWN ||
                         event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS
                     ) {
-                        applyPointerDisplay()
+                        suppressOsPointerSprite(force = true)
                     }
                     runCatching { dispatchPointer(event) }
                     true
@@ -762,6 +860,9 @@ object PhoneHidRedirect {
             ) {
                 return true
             }
+            if (CoreManagerService.aaUiShellCapture) {
+                return CoreManagerService.injectHidAaUiKeyEvent(event)
+            }
             CoreManagerService.injectHidKeyEvent(event)
         } catch (e: Throwable) {
             logDebug(TAG, "dispatchKey: ${e.message}")
@@ -776,14 +877,17 @@ object PhoneHidRedirect {
      */
     private fun handleChromeShortcut(event: KeyEvent): Boolean {
         if (event.metaState and KeyEvent.META_CTRL_ON == 0) return false
+        val shellOverlay = CoreManagerService.aaUiShellCapture
         return when (event.keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_A,
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_W -> {
+                if (shellOverlay) return false
                 CoreManagerService.nudgeHidSplitRatio(-0.05f)
                 true
             }
             KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_D,
             KeyEvent.KEYCODE_DPAD_DOWN -> {
+                if (shellOverlay) return false
                 CoreManagerService.nudgeHidSplitRatio(0.05f)
                 true
             }
@@ -810,7 +914,9 @@ object PhoneHidRedirect {
 
     private fun dispatchPointerInner(event: MotionEvent): Boolean {
         val layout = CoreManagerService.hidSplitLayout() ?: return false
-        ensureCursorPane(layout)
+        if (!cursorInitialized) {
+            initCursorPane(layout)
+        }
 
         // Middle click: jump focus + cursor to the other pane (split only).
         if (event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS &&
@@ -830,19 +936,20 @@ object PhoneHidRedirect {
         val relY = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
         val hasRel = relX != 0f || relY != 0f
 
+        val chromeCapture = CoreManagerService.aaUiShellCapture || shellGestureActive
+
         if (dividerGestureActive && hasRel) {
             val tw = layout.totalW.toFloat().coerceAtLeast(1f)
             val th = layout.totalH.toFloat().coerceAtLeast(1f)
             dividerX = (dividerX + relX).coerceIn(0f, tw - 1f)
             dividerY = (dividerY + relY).coerceIn(0f, th - 1f)
-        } else if ((CoreManagerService.aaUiShellCapture || shellGestureActive) && hasRel) {
+        } else if (chromeCapture && hasRel) {
             val tw = layout.totalW.toFloat().coerceAtLeast(1f)
             val th = layout.totalH.toFloat().coerceAtLeast(1f)
             shellX = (shellX + relX).coerceIn(0f, tw - 1f)
             shellY = (shellY + relY).coerceIn(0f, th - 1f)
         } else if (hasRel) {
-            // Cap per-event deltas — W7023 pointer acceleration=3 yields hundreds of px/event,
-            // which blasted past the seam and flip-flopped setPointerDisplayId 16↔17.
+            // Cap per-event deltas — W7023 pointer acceleration=3 yields hundreds of px/event.
             val step = 32f
             applyRelativeMove(
                 layout,
@@ -850,21 +957,20 @@ object PhoneHidRedirect {
                 relY.coerceIn(-step, step),
             )
         }
+        if (!dividerGestureActive && !chromeCapture) {
+            syncCursorToActivePane(layout)
+        }
+        if (hasRel && !dividerGestureActive) {
+            suppressOsPointerSprite()
+        }
         // No absolute hover updates while an AA pane owns the pointer.
-        // ADB: abs from cover/main fought relative; only after LMB (abs skipped) could
-        // the user approach the divider. Physical abs also warped coords after VD hops.
 
-        if (CoreManagerService.aaUiShellCapture || shellGestureActive) {
+        if (chromeCapture) {
+            if (hasRel) publishHidCursorOverlay(layout, force = true)
             return routeShellOverlay(layout, event)
         }
 
         if (routeDividerIfNeeded(layout, event)) return true
-
-        // Re-bind system cursor when pane changed via relative edge cross.
-        if (cursorPane != lastPointerBindPane && shouldRebindPointerDisplay(layout, cursorPane)) {
-            CoreManagerService.focusHidPane(cursorPane)
-            applyPointerDisplay()
-        }
 
         val pane = cursorPane
         val px = cursorX
@@ -881,18 +987,25 @@ object PhoneHidRedirect {
             MotionEvent.ACTION_DOWN -> {
                 if (event.actionButton == MotionEvent.BUTTON_TERTIARY) return true
                 if (pointerDown) return true
-                if (atSeamEdge(layout)) return startDividerGesture(layout)
+                if (wantsDividerChrome(layout)) return startDividerGesture(layout)
                 pointerDown = true
                 pointerDownTime = SystemClock.uptimeMillis()
                 CoreManagerService.focusHidPane(pane)
-                applyPointerDisplay()
                 return CoreManagerService.injectHidTouchOnPane(
                     pane, MotionEvent.ACTION_DOWN, px, py, pointerDownTime, pointerDownTime,
                 )
             }
+            MotionEvent.ACTION_HOVER_ENTER -> {
+                suppressOsPointerSprite(force = true)
+                publishHidCursorOverlay(layout, force = true)
+                return true
+            }
             MotionEvent.ACTION_MOVE,
             MotionEvent.ACTION_HOVER_MOVE -> {
-                if (!pointerDown) return true
+                if (!pointerDown) {
+                    publishHidCursorOverlay(layout, force = hasRel)
+                    return true
+                }
                 return CoreManagerService.injectHidTouchOnPane(
                     pane, MotionEvent.ACTION_MOVE, px, py, pointerDownTime, SystemClock.uptimeMillis(),
                 )
@@ -912,11 +1025,10 @@ object PhoneHidRedirect {
             else -> {
                 val pressed = event.buttonState and MotionEvent.BUTTON_PRIMARY != 0
                 if (pressed && !pointerDown) {
-                    if (atSeamEdge(layout)) return startDividerGesture(layout)
+                    if (wantsDividerChrome(layout)) return startDividerGesture(layout)
                     pointerDown = true
                     pointerDownTime = SystemClock.uptimeMillis()
                     CoreManagerService.focusHidPane(pane)
-                    applyPointerDisplay()
                     return CoreManagerService.injectHidTouchOnPane(
                         pane, MotionEvent.ACTION_DOWN, px, py, pointerDownTime, pointerDownTime,
                     )
@@ -937,32 +1049,84 @@ object PhoneHidRedirect {
         }
     }
 
-    private fun ensureCursorPane(layout: HidSplitLayout) {
+    /** One-time placement when the HID session goes live — only path that may use pane center. */
+    private fun initCursorPane(layout: HidSplitLayout) {
         val active = layout.activePanes()
-        if (!cursorInitialized || cursorPane !in active.toList()) {
-            cursorPane = when {
-                layout.focusedPane in active.toList() -> layout.focusedPane
-                else -> active.first()
-            }
-            val size = layout.sizeOf(cursorPane)
-            cursorX = (size?.first ?: 2) * 0.5f
-            cursorY = (size?.second ?: 2) * 0.5f
-            cursorInitialized = true
-            pointerDown = false
-            seamHoldPx = 0f
-            lastTargetDisplayId = layout.displayIdOf(cursorPane)
-            return
+        cursorPane = when {
+            layout.focusedPane in active.toList() -> layout.focusedPane
+            else -> active.first()
         }
-        val size = layout.sizeOf(cursorPane) ?: return
-        cursorX = cursorX.coerceIn(0f, (size.first - 1).toFloat())
-        cursorY = cursorY.coerceIn(0f, (size.second - 1).toFloat())
+        val size = layout.sizeOf(cursorPane)
+        cursorX = (size?.first ?: 2) * 0.5f
+        cursorY = (size?.second ?: 2) * 0.5f
+        val (cx, cy) = layout.toCanvas(cursorPane, cursorX, cursorY)
+        cursorCanvasX = cx
+        cursorCanvasY = cy
+        cursorInitialized = true
+        pointerDown = false
+        suppressOsPointerSprite(force = true)
+        publishHidCursorOverlay(layout, force = true)
+    }
+
+    /**
+     * After relative move / layout change: clamp to the current pane, or remap across
+     * fullscreen↔split without teleporting to center.
+     */
+    private fun syncCursorToActivePane(layout: HidSplitLayout) {
+        val active = layout.activePanes()
+        if (cursorPane !in active.toList()) {
+            remapCursorToActivePane(layout, active)
+        }
+        projectCanvasToPane(layout)
+    }
+
+    private fun remapCursorToActivePane(layout: HidSplitLayout, active: IntArray) {
+        val (cx, cy) = layout.clampCanvas(cursorCanvasX, cursorCanvasY)
+        val target = layout.focusedPane.takeIf { it in active.toList() } ?: active.first()
+        val (lx, ly) = layout.paneLocalOf(target, cx, cy)
+        cursorPane = target
+        cursorX = lx
+        cursorY = ly
+        cursorCanvasX = cx
+        cursorCanvasY = cy
+        pointerDown = false
+    }
+
+    /** Map canvas position → pane-local inject coords; focus pane on cross. */
+    private fun projectCanvasToPane(layout: HidSplitLayout) {
+        val (cx, cy) = layout.clampCanvas(cursorCanvasX, cursorCanvasY)
+        cursorCanvasX = cx
+        cursorCanvasY = cy
+        when (val hit = layout.hit(cx, cy, chromeInteract = false)) {
+            is HidCursorHit.Pane -> {
+                val paneChanged = hit.pane != cursorPane
+                cursorPane = hit.pane
+                cursorX = hit.x
+                cursorY = hit.y
+                if (paneChanged) {
+                    if (pointerDown) {
+                        cancelPaneFinger()
+                    }
+                    logDebug(
+                        TAG,
+                        "canvas → pane $cursorPane @ ${cursorX.toInt()},${cursorY.toInt()} " +
+                            "canvas=${cx.toInt()},${cy.toInt()}",
+                    )
+                    CoreManagerService.focusHidPane(cursorPane)
+                    publishHidCursorOverlay(layout, force = true)
+                }
+            }
+            else -> {
+                val (lx, ly) = layout.paneLocalOf(cursorPane, cx, cy)
+                cursorX = lx
+                cursorY = ly
+            }
+        }
     }
 
     /**
      * Place the logical cursor on the edge of [pane] that faces the sibling
-     * (or center). Never keep the previous pane's local X/Y — after a hop that
-     * left cursorX≈primaryW on SECONDARY, the sprite sat on the far right of the
-     * new VD ("坐标拉到很远").
+     * (or center). Used for middle-click pane switch — not seam crosses.
      */
     private fun resetCursorOnPane(
         layout: HidSplitLayout,
@@ -985,172 +1149,47 @@ object PhoneHidRedirect {
             cursorY = if (pane == SplitPane.SECONDARY) 0f else h - 1f
         }
         cursorPane = pane
-        seamHoldPx = 0f
+        val (cx, cy) = layout.toCanvas(cursorPane, cursorX, cursorY)
+        cursorCanvasX = cx
+        cursorCanvasY = cy
     }
 
-    /**
-     * Relative mouse in pane-local space.
-     *
-     * Side-by-side (matches finger divider ends / user sketch):
-     * - **Middle** of the shared edge: hard stop → LMB drags the split bar.
-     * - **Top / bottom** end insets: push across like a multi-monitor seam.
-     * Stacked: same idea on left / right ends of the horizontal seam.
-     */
+    /** Relative mouse in canvas space — free cross-pane movement (extended-desktop model). */
     private fun applyRelativeMove(layout: HidSplitLayout, dx: Float, dy: Float) {
-        val size = layout.sizeOf(cursorPane) ?: return
-        val w = size.first.toFloat().coerceAtLeast(1f)
-        val h = size.second.toFloat().coerceAtLeast(1f)
-        if (!layout.isSplit()) {
-            cursorX = (cursorX + dx).coerceIn(0f, w - 1f)
-            cursorY = (cursorY + dy).coerceIn(0f, h - 1f)
-            seamHoldPx = 0f
-            return
-        }
-
-        val x = cursorX + dx
-        val y = cursorY + dy
-        val now = SystemClock.uptimeMillis()
-
-        if (layout.sideBySide) {
-            val exitPrimary = cursorPane == SplitPane.PRIMARY && x >= w
-            val exitSecondary = cursorPane == SplitPane.SECONDARY && x < 0f
-            if (exitPrimary || exitSecondary) {
-                val yGate = cursorY.coerceIn(0f, h - 1f)
-                if (!pointerDown && isInCrossGate(layout, along = yGate, longSpan = h) &&
-                    now >= seamCooldownUntil
-                ) {
-                    val overshoot = if (exitPrimary) x - (w - 1f) else -x
-                    seamHoldPx += overshoot.coerceIn(0f, 32f)
-                    if (seamHoldPx >= CROSS_HOLD_PX) {
-                        val next =
-                            if (exitPrimary) SplitPane.SECONDARY else SplitPane.PRIMARY
-                        val yRatio = yGate / h
-                        resetCursorOnPane(layout, next, enterFromSeam = true)
-                        val ns = layout.sizeOf(next) ?: return
-                        cursorY = (yRatio * ns.second).coerceIn(0f, ns.second - 1f)
-                        seamCooldownUntil = now + 250L
-                        logDebug(TAG, "cross gate → pane $next y=${cursorY.toInt()}")
-                        return
-                    }
-                    cursorX = if (exitPrimary) w - 1f else 0f
-                    cursorY = y.coerceIn(0f, h - 1f)
-                    return
-                }
-                // Middle band: block for divider chrome.
-                seamHoldPx = 0f
-                cursorX = if (exitPrimary) w - 1f else 0f
-                cursorY = y.coerceIn(0f, h - 1f)
-                return
-            }
-        } else {
-            val exitPrimary = cursorPane == SplitPane.PRIMARY && y >= h
-            val exitSecondary = cursorPane == SplitPane.SECONDARY && y < 0f
-            if (exitPrimary || exitSecondary) {
-                val xGate = cursorX.coerceIn(0f, w - 1f)
-                if (!pointerDown && isInCrossGate(layout, along = xGate, longSpan = w) &&
-                    now >= seamCooldownUntil
-                ) {
-                    val overshoot = if (exitPrimary) y - (h - 1f) else -y
-                    seamHoldPx += overshoot.coerceIn(0f, 32f)
-                    if (seamHoldPx >= CROSS_HOLD_PX) {
-                        val next =
-                            if (exitPrimary) SplitPane.SECONDARY else SplitPane.PRIMARY
-                        val xRatio = xGate / w
-                        resetCursorOnPane(layout, next, enterFromSeam = true)
-                        val ns = layout.sizeOf(next) ?: return
-                        cursorX = (xRatio * ns.first).coerceIn(0f, ns.first - 1f)
-                        seamCooldownUntil = now + 250L
-                        logDebug(TAG, "cross gate → pane $next x=${cursorX.toInt()}")
-                        return
-                    }
-                    cursorX = x.coerceIn(0f, w - 1f)
-                    cursorY = if (exitPrimary) h - 1f else 0f
-                    return
-                }
-                seamHoldPx = 0f
-                cursorX = x.coerceIn(0f, w - 1f)
-                cursorY = if (exitPrimary) h - 1f else 0f
-                return
-            }
-        }
-
-        seamHoldPx = 0f
-        cursorX = x.coerceIn(0f, w - 1f)
-        cursorY = y.coerceIn(0f, h - 1f)
+        val tw = layout.totalW.toFloat().coerceAtLeast(1f)
+        val th = layout.totalH.toFloat().coerceAtLeast(1f)
+        cursorCanvasX = (cursorCanvasX + dx).coerceIn(0f, tw - 1f)
+        cursorCanvasY = (cursorCanvasY + dy).coerceIn(0f, th - 1f)
+        projectCanvasToPane(layout)
     }
 
-    /** Same dp as [SplitPane.DIVIDER_TOUCH_END_INSET_DP] — finger fall-through / mouse cross. */
-    private fun endInsetPx(layout: HidSplitLayout): Float {
-        val dpi = layout.densityDpi.coerceAtLeast(160)
-        return SplitPane.DIVIDER_TOUCH_END_INSET_DP * dpi / 160f
+    /** Near the three-dot grip or fullscreen peel — LMB → shell chrome. */
+    private fun wantsDividerChrome(layout: HidSplitLayout): Boolean {
+        return layout.hit(cursorCanvasX, cursorCanvasY, chromeInteract = true) is HidCursorHit.Divider
     }
-
-    /**
-     * Top/bottom (side-by-side) or left/right (stacked) of the seam — cursor may
-     * cross VDs like a PC extended display. Middle of the seam stays blocked.
-     */
-    private fun isInCrossGate(
-        layout: HidSplitLayout,
-        along: Float,
-        longSpan: Float,
-    ): Boolean {
-        val inset = endInsetPx(layout)
-        if (longSpan <= 2f * inset + 1f) return true
-        return along < inset || along > longSpan - inset
-    }
-
-    /** Near the shared seam **middle** (or fullscreen peel) — LMB hits shell chrome. */
-    private fun atSeamEdge(layout: HidSplitLayout): Boolean {
-        if (!layout.isSplit()) {
-            val (cx, cy) = layout.toCanvas(cursorPane, cursorX, cursorY)
-            return layout.isPeelHit(cx, cy)
-        }
-        val size = layout.sizeOf(cursorPane) ?: return false
-        val band = (layout.dividerHitPx / 2f).coerceAtLeast(16f)
-        val onEdge = if (layout.sideBySide) {
-            when (cursorPane) {
-                SplitPane.PRIMARY -> cursorX >= size.first - band
-                else -> cursorX <= band
-            }
-        } else {
-            when (cursorPane) {
-                SplitPane.PRIMARY -> cursorY >= size.second - band
-                else -> cursorY <= band
-            }
-        }
-        if (!onEdge) return false
-        // Ends are cross gates — not divider chrome (same as SplitDividerView end inset).
-        val along = if (layout.sideBySide) cursorY else cursorX
-        val longSpan =
-            if (layout.sideBySide) size.second.toFloat() else size.first.toFloat()
-        return !isInCrossGate(layout, along, longSpan)
-    }
-
-    private fun shellTouchPoint(layout: HidSplitLayout, x: Float, y: Float): Pair<Float, Float> =
-        layout.toShellTouch(x, y)
-
-    private fun wantsDividerChrome(layout: HidSplitLayout): Boolean = atSeamEdge(layout)
 
     /** Begin divider / peel drag on AaDisplay presentation; always consumes the press. */
     private fun startDividerGesture(layout: HidSplitLayout): Boolean {
         if (!wantsDividerChrome(layout)) return false
         cancelPaneFinger()
-        seamHoldPx = 0f
         dividerGestureActive = true
         dividerDownTime = SystemClock.uptimeMillis()
-        val (cx, cy) = layout.toCanvas(cursorPane, cursorX, cursorY)
-        dividerX = cx
-        dividerY = cy
+        dividerX = cursorCanvasX
+        dividerY = cursorCanvasY
         val (sx, sy) = shellTouchPoint(layout, dividerX, dividerY)
         CoreManagerService.injectHidAaUiTouch(
             MotionEvent.ACTION_DOWN, sx, sy, dividerDownTime, dividerDownTime,
         )
+        publishHidCursorOverlay(layout, force = true)
         return true
     }
 
+    private fun shellTouchPoint(layout: HidSplitLayout, x: Float, y: Float): Pair<Float, Float> =
+        layout.toShellTouch(x, y)
+
     /** Recents / picker: inject onto AaDisplay presentation so overlay stays operable. */
     private fun routeShellOverlay(layout: HidSplitLayout, event: MotionEvent): Boolean {
-        applyPointerDisplayToShell()
+        publishHidCursorOverlay(layout, force = true)
         val pressed = event.buttonState and MotionEvent.BUTTON_PRIMARY != 0 ||
             event.actionMasked == MotionEvent.ACTION_DOWN ||
             event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS
@@ -1225,15 +1264,17 @@ object PhoneHidRedirect {
                 inject(
                     MotionEvent.ACTION_MOVE, dividerX, dividerY, dividerDownTime, SystemClock.uptimeMillis(),
                 )
+                publishHidCursorOverlay(layout, force = true)
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_BUTTON_RELEASE, MotionEvent.ACTION_CANCEL -> {
                 if (!dividerGestureActive) return false
-                dividerGestureActive = false
                 val action =
                     if (event.actionMasked == MotionEvent.ACTION_CANCEL) MotionEvent.ACTION_CANCEL
                     else MotionEvent.ACTION_UP
                 inject(action, dividerX, dividerY, dividerDownTime, SystemClock.uptimeMillis())
+                publishHidCursorOverlay(layout, force = true)
+                dividerGestureActive = false
                 return true
             }
             else -> {
@@ -1262,11 +1303,10 @@ object PhoneHidRedirect {
         if (active.size < 2) return
         cancelPaneFinger()
         dividerGestureActive = false
-        seamCooldownUntil = SystemClock.uptimeMillis() + 400L
         val next = layout.otherPane(cursorPane)
         resetCursorOnPane(layout, next, enterFromSeam = !center)
         CoreManagerService.focusHidPane(cursorPane)
-        applyPointerDisplay()
+        publishHidCursorOverlay(layout, force = true)
         log(TAG, "mouse pane → $cursorPane @ ${cursorX.toInt()},${cursorY.toInt()}")
     }
 

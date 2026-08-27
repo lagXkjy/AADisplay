@@ -110,4 +110,11 @@ interface ICoreManager {
      * broadcasts on Android 13+; relay through system uid like [ACTION_REQUEST_DISPLAY_RECOVERY].
      */
     oneway void notifyCoolwalkFullBleed();
+
+    /**
+     * Recent VD-column tap: synchronous bring-to-front / launch on [pane].
+     * Cancels debounced ATMS settle and runs at handler front (same-stack switch
+     * must finish before the UI reloads). Picker keeps async [startActivityOnPane].
+     */
+    boolean startActivityOnPaneForUser(String packageName, int userId, int pane);
 }

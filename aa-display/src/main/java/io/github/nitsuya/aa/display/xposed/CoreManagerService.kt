@@ -480,6 +480,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 if (!hasSystemContext) return false
                 // Shell overlay must steal HID before the UI broadcast round-trip.
                 setAaUiShellCapture(true)
+                PhoneHidRedirect.snapShellToRecentColumn()
                 systemContext.sendBroadcast(
                     android.content.Intent(AABroadcastConst.ACTION_SHOW_RECENT_TASK)
                 )
@@ -503,6 +504,22 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             } catch (e: Throwable) {
                 logDebug(TAG, "swapHidPanes: ${e.message}")
                 false
+            }
+        }
+
+        /** Phone BT mouse — shell-drawn cursor in [HidCursorOverlayView] (presentation coords). */
+        fun notifyHidCursorOverlay(visible: Boolean, x: Float, y: Float) {
+            if (!hasSystemContext) return
+            try {
+                systemContext.sendBroadcast(
+                    android.content.Intent(AABroadcastConst.ACTION_HID_CURSOR).apply {
+                        putExtra(AABroadcastConst.EXTRA_CURSOR_VISIBLE, visible)
+                        putExtra(AABroadcastConst.EXTRA_CURSOR_X, x)
+                        putExtra(AABroadcastConst.EXTRA_CURSOR_Y, y)
+                    },
+                )
+            } catch (e: Throwable) {
+                logDebug(TAG, "notifyHidCursorOverlay: ${e.message}")
             }
         }
 
@@ -530,6 +547,16 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 mSplitController?.onHidKeyEvent(event) == true
             } catch (e: Throwable) {
                 logDebug(TAG, "injectHidKeyEvent: ${e.message}")
+                false
+            }
+        }
+
+        fun injectHidAaUiKeyEvent(event: KeyEvent): Boolean {
+            return try {
+                mSessionPolicy?.onVirtualDisplayUserInteraction()
+                mSplitController?.onHidKeyEventToAaDisplay(event) == true
+            } catch (e: Throwable) {
+                logDebug(TAG, "injectHidAaUiKeyEvent: ${e.message}")
                 false
             }
         }
@@ -750,6 +777,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun startActivityOnPane(packageName: String, userId: Int, pane: Int) {
         mSplitController?.startActivityOnPaneAsync(packageName, userId, pane)
+    }
+
+    override fun startActivityOnPaneForUser(packageName: String, userId: Int, pane: Int): Boolean {
+        val controller = mSplitController ?: return false
+        return controller.startActivityOnPaneForUser(packageName, userId, pane)
     }
 
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {

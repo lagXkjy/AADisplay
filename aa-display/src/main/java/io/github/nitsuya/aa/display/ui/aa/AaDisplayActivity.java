@@ -1,5 +1,9 @@
 package io.github.nitsuya.aa.display.ui.aa;
 
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.os.Bundle;
 import android.util.Log;
@@ -15,6 +19,7 @@ import android.view.WindowManager;
 import com.google.android.apps.auto.sdk.CarActivity;
 import io.github.nitsuya.aa.display.R;
 import io.github.nitsuya.aa.display.databinding.ActivityAaDisplayBinding;
+import io.github.nitsuya.aa.display.util.AABroadcastConst;
 
 public class AaDisplayActivity extends CarActivity {
     private static final String TAG = "AADisplay_AaActivity";
@@ -23,6 +28,7 @@ public class AaDisplayActivity extends CarActivity {
         0xFFFF & ~(0x0800 | 0x2000 | 0x0400); // screen size, smallest screen size, screen layout
 
     private ActivityAaDisplayBinding mBinding;
+    private BroadcastReceiver mHidCursorReceiver;
 
     protected Window getWindow() {
         return this.c();
@@ -45,7 +51,31 @@ public class AaDisplayActivity extends CarActivity {
                     WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         }
         window.setFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED);
+        registerHidCursorReceiver();
         AaDisplayActivityKt.INSTANCE.showMain(getSupportFragmentManager());
+    }
+
+    private void registerHidCursorReceiver() {
+        mHidCursorReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (mBinding == null) return;
+                if (!AABroadcastConst.ACTION_HID_CURSOR.equals(intent.getAction())) return;
+                if (!intent.getBooleanExtra(AABroadcastConst.EXTRA_CURSOR_VISIBLE, false)) {
+                    mBinding.hidCursorOverlay.hideCursor();
+                    return;
+                }
+                mBinding.hidCursorOverlay.setCursorPosition(
+                        intent.getFloatExtra(AABroadcastConst.EXTRA_CURSOR_X, 0f),
+                        intent.getFloatExtra(AABroadcastConst.EXTRA_CURSOR_Y, 0f)
+                );
+            }
+        };
+        registerReceiver(
+                mHidCursorReceiver,
+                new IntentFilter(AABroadcastConst.ACTION_HID_CURSOR),
+                Context.RECEIVER_NOT_EXPORTED
+        );
     }
 
     @Override
@@ -88,6 +118,11 @@ public class AaDisplayActivity extends CarActivity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent keyEvent) {
+        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            if (AaDisplayActivityKt.INSTANCE.consumeShellBackKey(getSupportFragmentManager())) {
+                return true;
+            }
+        }
         switch (keyCode){
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:
@@ -129,6 +164,10 @@ public class AaDisplayActivity extends CarActivity {
     @Override
     public void onDestroy() {
         Log.d(TAG, "onDestroy");
+        if (mHidCursorReceiver != null) {
+            unregisterReceiver(mHidCursorReceiver);
+            mHidCursorReceiver = null;
+        }
         super.onDestroy();
     }
 

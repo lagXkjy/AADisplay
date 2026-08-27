@@ -95,9 +95,23 @@ class AaRecentTaskFragment :
         registerDirtyReceiver()
         if (skipResumeReloadOnce) {
             skipResumeReloadOnce = false
-            return
+        } else {
+            coordinator?.reloadImmediate()
         }
-        coordinator?.reloadImmediate()
+        focusStackColumn()
+    }
+
+    /** BT keyboard opens Recents without a hover target — claim shell focus on the VD stack column. */
+    private fun focusStackColumn() {
+        if (!isBaseBindingInitialized()) return
+        val rv = when (CoreApi.focusedPane) {
+            SplitPane.SECONDARY -> baseBinding.rvRecentTaskCenter
+            else -> baseBinding.rvRecentTaskLeft
+        }
+        baseBinding.root.isFocusableInTouchMode = true
+        rv.isFocusable = true
+        rv.isFocusableInTouchMode = true
+        baseBinding.root.post { rv.requestFocus() }
     }
 
     override fun onPause() {

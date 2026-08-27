@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- **Recent / 显式关闭不再 forceStop：** close / swipe-off 仅 ATMS `removeTask`；`forceStopPackageAsUser` 保留给 Delay Destroy（180s）`onDestroy`  teardown。
 - **冷启动 / 主线程忙时长按分隔条误对调：** 长按 Recent 以输入 `heldMs≥550ms` 为准（Handler 超时可补震）；去掉 480–550ms fallback tap-swap，避免假长按被交换。
 - **分隔条点按交换 / 拖动 settle 抖动：** tap-swap 窗口 420→480ms，长按前（<550ms）无 slop  breach 也交换；ratio 微变优先 swap 而非 settle；点按交换设 `ratioSettling` + `swapInFlight` 避免重复 layout/rebind；拖动松手 Shell-first layout → `setSplitRatio`，同步清 GPU 预览，去掉 300ms occupancy / 600ms settling。
 - **分屏比例 settle 错位 / 黑边：** Shell 与 VD 共用 `SplitPane.dividerPx`；ratio-settle 仅对 **变窄** 的 pane 做 WM nudge（减黑边且避免双 pane 1px 抖动风暴）。
@@ -18,8 +19,9 @@
 - **分隔条点按偶发不交换：** 放宽 tap-swap 窗口（280→420ms）、轻微滑动仍算点按；交换改 `postUserAction` 优先于 ratio settle 队列。
 - **Recent 卡顿 / 长按误对调：** 分隔条与锁屏 peel 仅短按对调，未满长按超时的“假长按”不再交换；Recent 点选先关面板再异步 launch，关闭/滑动去掉主线程 Binder 与 200ms 缩放动画，提高滑动阈值；`forceStop` 延后以免堵后续置顶；图标 IPC 缩到 64px、手机列最多 8 条；关闭堆栈用 `commitNow`。
 - **退出全屏后中间分屏条点不上（回归修复）：** 回退 `finishLeavingFullscreen` 异步布局与 `resetGesture` 竞态（adb 可见 VD 先缩到 502+770 又被全屏 1280×720 拉回）；恢复同步 `exitFullscreen` + `applySplitLayoutWeights(force)`，并 `requestLayout`。
+- **蓝牙鼠标跨 VD 跳中心（自绘光标）：** 逻辑 inject 已用 canvas 连续坐标；`HidCursorOverlayView` 自绘指针，`forceHideCursor` + 各 VD 藏 OS sprite；不再向 pane 注入 `HOVER_MOVE`（避免 VD 上幽灵系统箭头）。跨 pane 只 `injectHidTouchOnPane`。
 - **蓝牙鼠标分隔条跳变：** 分屏下悬停不再按分隔带扩区抢路由（改由左键按下才命中 seam/peel）；悬停始终落在最近窗 VD，左键在分隔带上拖比例 / 点按对调 / 长按堆栈。
-- **蓝牙鼠标分隔条（保留）：** 移动时才做绝对坐标映射、`toCanvas`、`HID_SHELL_GEOMETRY` 同步；指针仍绑窗 VD（presentation 绑定会干扰车机触控）。
+- **蓝牙鼠标分隔条（保留）：** 移动时才做绝对坐标映射、`toCanvas`、`HID_SHELL_GEOMETRY` 同步；指针由壳上 [HidCursorOverlayView] 自绘（`ACTION_HID_CURSOR`），不再绑窗 VD sprite。
 
 ### Added
 - **手机蓝牙键鼠 → 焦点窗 VD：** `PhoneHidRedirect`（system_server）。AA 会话活跃时偷物理键盘 / 鼠标事件并 `inject` 到焦点 VirtualDisplay（鼠标主键按触控注入）；Delay Destroy 期间归还手机。方控媒体键路径不变。折叠屏：光标会先画在合盖外屏 / 展开主屏，需 `setVirtualMousePointerDisplayId` 绑到 AA VD + 隐藏实体屏光标；绝对坐标按 `event.displayId` 缩放。W7023：AA VD 缺 Input viewport（touch NONE）时 override 仍落主屏——加 `SUPPORTS_TOUCH` + hook `setDisplayViewports` 注入窗 viewport + `forceHideCursor`。双窗：光标在壳画布连续移动，可停在分隔带（不传送到另一 VD）；分隔带拖比例 / 长按堆栈 / 点按对调走 `touchAaDisplay`；堆栈打开后触控继续打壳。键盘：Ctrl+方向/WASD 经壳改比例再 settle VD，Ctrl+R/Tab 开堆栈，Ctrl+S 对调。中键切换对侧窗。

@@ -737,6 +737,17 @@ class SplitDisplayController(
         input.injectInputEvent(displayId, event)
     }
 
+    /** Recents / picker overlay — inject BT keyboard onto AaDisplay presentation. */
+    fun onHidKeyEventToAaDisplay(event: KeyEvent): Boolean {
+        val displayId = resolveAaUiDisplayId()
+        if (displayId == Display.INVALID_DISPLAY) {
+            log(TAG, "onHidKeyEventToAaDisplay: AaDisplayActivity display not found")
+            maybeRecoverAaUiDisplayId()
+            return false
+        }
+        return input.injectKeyEvent(displayId, event)
+    }
+
     /**
      * Peel inject missed the presentation id (report race or latched ATMS miss).
      * Clear the one-shot latch so a later [setAaUiDisplayId] / one ATMS retry can
@@ -1058,6 +1069,18 @@ class SplitDisplayController(
         postUserAction { startActivityOnPaneOnHandler(packageName, userId, pane) }
     }
 
+    /**
+     * Recent VD-column tap — sync IPC; cancels settle and blocks until promote/launch
+     * finishes on [mHandler] (mirrors [reorderPaneStack] + [postUserAction] ordering).
+     */
+    fun startActivityOnPaneForUser(packageName: String, userId: Int, pane: Int): Boolean {
+        cancelBackgroundSettleForUserAction()
+        return ownership.runOnHandlerBlockingAtFront(false) {
+            if (mIsDestroying) return@runOnHandlerBlockingAtFront false
+            startActivityOnPaneOnHandler(packageName, userId, pane)
+        }
+    }
+
     fun startActivityAsync(packageName: String, userId: Int) {
         startActivityOnPaneAsync(packageName, userId, mFocusedPane)
     }
@@ -1354,25 +1377,10 @@ class SplitDisplayController(
         postUserAction { reorderPaneStackOnHandler(pane, packagesTopToBottom.toList()) }
     }
 
-    /** Kill the app process after an explicit close/remove (stack Close, swipe-off, etc.). */
-    private fun forceStopPackageOnClose(packageName: String, trackedUserIds: Set<Int>?) {
-        if (SplitChromePackages.BOUNCE_EXCLUDED.contains(packageName)) return
-        val userIds = trackedUserIds?.takeIf { it.isNotEmpty() } ?: setOf(0)
-        for (userId in userIds) {
-            try {
-                Instances.activityManagerHidden.forceStopPackageAsUser(packageName, userId)
-                logDebug(TAG, "forceStop on close: $packageName user=$userId")
-            } catch (e: Throwable) {
-                log(TAG, "forceStop on close failed: $packageName user=$userId", e)
-            }
-        }
-    }
-
     private fun removeTaskOnHandler(taskId: Int): Boolean {
         val packageName = ownership.findPackageForTask(taskId)
         val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() }
         val onVd = ownership.isTaskOnAaDisplay(taskId)
-        val trackedUserIds = pkg?.let { mTrackedPackageUsers[it]?.toSet() }
         return try {
             if (onVd) {
                 mHandler.removeCallbacks(launch.mDebouncedAtmsSettle)
@@ -1402,20 +1410,12 @@ class SplitDisplayController(
                 launch.schedulePersistSnapshot()
             }
             // ATMS removeTask can block seconds (QQ 音乐车机等) — keep off mHandler.
-            // VD: forceStop first so the pane clears immediately; then removeTask.
-            val users = trackedUserIds
             Thread(
                 {
-                    if (onVd && pkg != null) {
-                        forceStopPackageOnClose(pkg, users)
-                    }
                     try {
                         Instances.iActivityTaskManager.removeTask(taskId)
                     } catch (e: Throwable) {
                         log(TAG, "removeTask ATMS error taskId=$taskId:", e)
-                    }
-                    if (!onVd && pkg != null) {
-                        forceStopPackageOnClose(pkg, users)
                     }
                 },
                 "AADisplay-close",

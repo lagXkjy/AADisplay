@@ -1289,10 +1289,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     private fun applyRemoteRatioOnce() {
         if (!isAdded || view == null || dividerDragging) return
         val fs = tryOrNull { CoreApi.splitFullscreenPane } ?: SplitPane.FULLSCREEN_NONE
-        if (SplitPane.isFullscreenPane(fs)) {
-            applyFullscreenFromRemote(fs)
-            return
-        }
+        // Always reconcile fullscreen first (same as reconcileAfterSwapSettle). A stale local
+        // fullscreenPane blocks applySplitLayoutWeights while server already exited split→full.
+        applyFullscreenFromRemote(fs)
+        if (SplitPane.isFullscreenPane(fs)) return
         val ratio = tryOrNull { CoreApi.splitRatio }?.takeIf { it > 0f } ?: return
         val clamped = SplitPane.clampRatio(ratio)
         if (!appliedRatio.isNaN() &&

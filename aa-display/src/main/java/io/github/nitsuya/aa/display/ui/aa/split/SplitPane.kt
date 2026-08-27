@@ -56,6 +56,13 @@ object SplitPane {
     /** Divider thickness in logical pixels (applied in display pixels via density). */
     const val DIVIDER_DP = 8
 
+    /** Grip dots on [SplitDividerView] — shared with BT mouse chrome hit-test. */
+    const val DIVIDER_DOT_RADIUS_DP = 2.5f
+    const val DIVIDER_DOT_GAP_DP = 7f
+
+    /** Extra padding around the three-dot grip for BT mouse LMB chrome. */
+    const val DIVIDER_GRIP_HIT_EXPAND_DP = 5f
+
     /**
      * Extra hit area on each side of the divider seam (visual stays [DIVIDER_DP]).
      * Applied as view size + negative margins so the divider view itself receives

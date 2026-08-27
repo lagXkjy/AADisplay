@@ -76,6 +76,35 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         }
     }
 
+    /** Like [runOnHandlerBlocking] but jumps ahead of debounced settle / ensure on the queue. */
+    fun <T> runOnHandlerBlockingAtFront(default: T, block: () -> T): T {
+        if (Looper.myLooper() == c.mHandler.looper) return block()
+        val box = arrayOfNulls<Any?>(1)
+        val latch = CountDownLatch(1)
+        val posted = c.mHandler.postAtFrontOfQueue {
+            try {
+                box[0] = block()
+            } catch (e: Throwable) {
+                log(SplitDisplayController.TAG, "runOnHandlerBlockingAtFront failed:", e)
+            } finally {
+                latch.countDown()
+            }
+        }
+        if (!posted) return default
+        return try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                log(SplitDisplayController.TAG, "runOnHandlerBlockingAtFront timeout")
+                default
+            } else {
+                @Suppress("UNCHECKED_CAST")
+                (box[0] as? T) ?: default
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            default
+        }
+    }
+
     fun markOwnership(packageName: String?, displayId: Int) {
         val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return
         c.mVdPackages.add(pkg)

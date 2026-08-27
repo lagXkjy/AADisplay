@@ -144,17 +144,39 @@ data class HidSplitLayout(
     }
 
     /**
-     * Hover hit-test: while the cursor skims the divider band, keep [boundPane]'s VD so
-     * approach / drag-to-seam does not hop to the sibling. Outside the band, use normal
-     * pane geometry.
+     * BT mouse hover — pane pick without chrome (divider grip is LMB-only).
+     * @param boundPane unused; kept for call-site stability.
      */
     fun hitForHover(canvasX: Float, canvasY: Float, boundPane: Int): HidCursorHit {
         val (cx, cy) = clampCanvas(canvasX, canvasY)
-        if (isSplit() && isInDividerBand(cx, cy) && SplitPane.isValid(boundPane)) {
-            val (lx, ly) = paneLocalOf(boundPane, cx, cy)
-            return HidCursorHit.Pane(boundPane, lx, ly)
-        }
         return hit(cx, cy, chromeInteract = false)
+    }
+
+    /**
+     * Three-dot grip on the split seam — BT mouse LMB chrome only (finger uses wide
+     * [SplitDividerView] hit target).
+     */
+    fun isDividerGripHit(canvasX: Float, canvasY: Float): Boolean {
+        if (!isSplit()) return false
+        val (cx, cy) = clampCanvas(canvasX, canvasY)
+        val dpi = densityDpi.coerceAtLeast(160)
+        val dotRadius = SplitPane.DIVIDER_DOT_RADIUS_DP * dpi / 160f
+        val dotGap = SplitPane.DIVIDER_DOT_GAP_DP * dpi / 160f
+        val expand = SplitPane.DIVIDER_GRIP_HIT_EXPAND_DP * dpi / 160f
+        val longHalf = dotGap + dotRadius + expand
+        val div = seamGapPx()
+        val shortHalf = (div / 2f + expand).coerceAtLeast(dotRadius + expand)
+        return if (sideBySide) {
+            val seamX = primaryW + div / 2f
+            val seamY = totalH / 2f
+            cx in (seamX - shortHalf)..(seamX + shortHalf) &&
+                cy in (seamY - longHalf)..(seamY + longHalf)
+        } else {
+            val seamX = totalW / 2f
+            val seamY = primaryH + div / 2f
+            cx in (seamX - longHalf)..(seamX + longHalf) &&
+                cy in (seamY - shortHalf)..(seamY + shortHalf)
+        }
     }
 
     /** Map presentation canvas coords into [pane] local space (clamped). */
@@ -279,13 +301,8 @@ data class HidSplitLayout(
                 cy.coerceIn(0f, size.second - 1f),
             )
         }
-        if (chromeInteract) {
-            val band = dividerBand()
-            if (band != null) {
-                val (start, end) = band
-                val onSeam = if (sideBySide) cx in start..end else cy in start..end
-                if (onSeam) return HidCursorHit.Divider(cx, cy)
-            }
+        if (chromeInteract && isDividerGripHit(cx, cy)) {
+            return HidCursorHit.Divider(cx, cy)
         }
         val div = seamGapPx()
         return if (sideBySide) {
