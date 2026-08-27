@@ -95,6 +95,9 @@ object PhoneHidRedirect {
     private var shellDownTime = 0L
     private var shellX = 0f
     private var shellY = 0f
+    /** Last shell overlay position — stable across divider drag / ratio settle. */
+    private var overlayShellX = 0f
+    private var overlayShellY = 0f
 
     fun ensureHooked() {
         if (!AndroidHook.isReadyForSystemHooks()) return
@@ -620,6 +623,23 @@ object PhoneHidRedirect {
         else -> cursorCanvasX to cursorCanvasY
     }
 
+    private fun refreshOverlayShell(layout: HidSplitLayout) {
+        val (cx, cy) = overlayCanvasPosition()
+        val (sx, sy) = layout.toShellTouch(cx, cy)
+        overlayShellX = sx
+        overlayShellY = sy
+    }
+
+    private fun publishOverlayShell(sx: Float, sy: Float, force: Boolean) {
+        val now = SystemClock.uptimeMillis()
+        if (!force && now - lastCursorOverlayUptime < CURSOR_OVERLAY_MIN_MS) return
+        lastCursorOverlayUptime = now
+        overlayShellX = sx
+        overlayShellY = sy
+        CoreManagerService.notifyHidCursorOverlay(true, sx, sy)
+        scheduleCursorIdleHide()
+    }
+
     private fun scheduleCursorIdleHide() {
         lastPointerActivityUptime = SystemClock.uptimeMillis()
         cursorIdleHandler.removeCallbacks(cursorIdleHideRunnable)
@@ -666,13 +686,13 @@ object PhoneHidRedirect {
         }
         if (!sessionLive || !cursorInitialized) return
         val lay = layout ?: runCatching { CoreManagerService.hidSplitLayout() }.getOrNull() ?: return
-        val (cx, cy) = overlayCanvasPosition()
-        val (sx, sy) = lay.toShellTouch(cx, cy)
-        val now = SystemClock.uptimeMillis()
-        if (!force && now - lastCursorOverlayUptime < CURSOR_OVERLAY_MIN_MS) return
-        lastCursorOverlayUptime = now
-        CoreManagerService.notifyHidCursorOverlay(true, sx, sy)
-        scheduleCursorIdleHide()
+        val (sx, sy) = if (dividerGestureActive) {
+            overlayShellX to overlayShellY
+        } else {
+            refreshOverlayShell(lay)
+            overlayShellX to overlayShellY
+        }
+        publishOverlayShell(sx, sy, force)
     }
 
     private fun restorePointerDisplay() {
@@ -943,6 +963,9 @@ object PhoneHidRedirect {
             val th = layout.totalH.toFloat().coerceAtLeast(1f)
             dividerX = (dividerX + relX).coerceIn(0f, tw - 1f)
             dividerY = (dividerY + relY).coerceIn(0f, th - 1f)
+            cursorCanvasX = dividerX
+            cursorCanvasY = dividerY
+            refreshOverlayShell(layout)
         } else if (chromeCapture && hasRel) {
             val tw = layout.totalW.toFloat().coerceAtLeast(1f)
             val th = layout.totalH.toFloat().coerceAtLeast(1f)
@@ -1113,7 +1136,9 @@ object PhoneHidRedirect {
                             "canvas=${cx.toInt()},${cy.toInt()}",
                     )
                     CoreManagerService.focusHidPane(cursorPane)
-                    publishHidCursorOverlay(layout, force = true)
+                    if (!dividerGestureActive) {
+                        publishHidCursorOverlay(layout, force = true)
+                    }
                 }
             }
             else -> {
@@ -1176,11 +1201,12 @@ object PhoneHidRedirect {
         dividerDownTime = SystemClock.uptimeMillis()
         dividerX = cursorCanvasX
         dividerY = cursorCanvasY
+        refreshOverlayShell(layout)
         val (sx, sy) = shellTouchPoint(layout, dividerX, dividerY)
         CoreManagerService.injectHidAaUiTouch(
             MotionEvent.ACTION_DOWN, sx, sy, dividerDownTime, dividerDownTime,
         )
-        publishHidCursorOverlay(layout, force = true)
+        publishOverlayShell(sx, sy, force = true)
         return true
     }
 
@@ -1234,6 +1260,36 @@ object PhoneHidRedirect {
         }
     }
 
+    /** End divider chrome drag — keep overlay at release point for subsequent hover. */
+    private fun commitDividerCursor(layout: HidSplitLayout) {
+        cursorCanvasX = dividerX
+        cursorCanvasY = dividerY
+        syncPaneLocalFromCanvas(layout)
+    }
+
+    private fun syncPaneLocalFromCanvas(layout: HidSplitLayout) {
+        val (cx, cy) = layout.clampCanvas(cursorCanvasX, cursorCanvasY)
+        cursorCanvasX = cx
+        cursorCanvasY = cy
+        when (val hit = layout.hit(cx, cy, chromeInteract = false)) {
+            is HidCursorHit.Pane -> {
+                val paneChanged = hit.pane != cursorPane
+                cursorPane = hit.pane
+                cursorX = hit.x
+                cursorY = hit.y
+                if (paneChanged) {
+                    if (pointerDown) cancelPaneFinger()
+                    CoreManagerService.focusHidPane(cursorPane)
+                }
+            }
+            else -> {
+                val (lx, ly) = layout.paneLocalOf(cursorPane, cx, cy)
+                cursorX = lx
+                cursorY = ly
+            }
+        }
+    }
+
     /**
      * Seam / peel (or in-progress chrome drag) → [touchAaDisplay] so
      * [SplitDividerView] can drag shell ratio / long-press Recents / tap-swap.
@@ -1260,11 +1316,15 @@ object PhoneHidRedirect {
             }
             MotionEvent.ACTION_MOVE, MotionEvent.ACTION_HOVER_MOVE -> {
                 if (!dividerGestureActive) return false
-                if (!pressed && event.actionMasked == MotionEvent.ACTION_HOVER_MOVE) return true
+                if (!pressed && event.actionMasked == MotionEvent.ACTION_HOVER_MOVE) {
+                    publishOverlayShell(overlayShellX, overlayShellY, force = true)
+                    return true
+                }
+                val (sx, sy) = shellTouchPoint(layout, dividerX, dividerY)
                 inject(
                     MotionEvent.ACTION_MOVE, dividerX, dividerY, dividerDownTime, SystemClock.uptimeMillis(),
                 )
-                publishHidCursorOverlay(layout, force = true)
+                publishOverlayShell(sx, sy, force = true)
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_BUTTON_RELEASE, MotionEvent.ACTION_CANCEL -> {
@@ -1272,17 +1332,21 @@ object PhoneHidRedirect {
                 val action =
                     if (event.actionMasked == MotionEvent.ACTION_CANCEL) MotionEvent.ACTION_CANCEL
                     else MotionEvent.ACTION_UP
+                val (sx, sy) = shellTouchPoint(layout, dividerX, dividerY)
                 inject(action, dividerX, dividerY, dividerDownTime, SystemClock.uptimeMillis())
-                publishHidCursorOverlay(layout, force = true)
+                commitDividerCursor(layout)
                 dividerGestureActive = false
+                publishOverlayShell(sx, sy, force = true)
                 return true
             }
             else -> {
                 if (!dividerGestureActive) return false
                 if (pressed) {
+                    val (sx, sy) = shellTouchPoint(layout, dividerX, dividerY)
                     inject(
                         MotionEvent.ACTION_MOVE, dividerX, dividerY, dividerDownTime, SystemClock.uptimeMillis(),
                     )
+                    publishOverlayShell(sx, sy, force = true)
                 }
                 return true
             }
