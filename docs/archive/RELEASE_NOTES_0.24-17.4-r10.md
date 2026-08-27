@@ -1,3 +1,5 @@
+> **已归档。** 当前用法见 [README.md](../../README.md)。
+
 # AADisplay 0.24#17.4-r10 版本更新
 
 相对上一版 r9，这次重点是「少装 Google 也能顺畅上车」和锁屏下全屏把手可用。
@@ -23,7 +25,4 @@
 
 1. 安装后请在 LSPosed 确认已启用 **System Framework** + **Android Auto**，并重启一次。
 2. 无桌面图标：从 LSPosed → AADisplay 打开激活状态页。
-3. 详细技术变更与真机核对项见 [CHANGELOG.md](CHANGELOG.md)。
-
-通过网盘分享的文件：aa-display-0.24-17.4-r10.apk
-链接: https://pan.baidu.com/s/1NT0TYWEH0u7-r1TdudBoow?pwd=n6st 提取码: n6st
+3. 详细技术变更与真机核对项见 [CHANGELOG.md](../../CHANGELOG.md)。

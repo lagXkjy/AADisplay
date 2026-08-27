@@ -546,4 +546,4 @@ flowchart TB
 | 应用 DPI 不对 | `VdDensityPin` |
 | 隐藏 API | `lib-stub/` + `Instances.kt`（Rikka Refine） |
 
-行为变更与真机回归清单：`CHANGELOG.md`、`RELEASE_NOTES_*`。
+行为变更与真机回归清单：[README.md](../README.md)（用户向）、[CHANGELOG.md](../CHANGELOG.md)、[docs/archive/](archive/)。

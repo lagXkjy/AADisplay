@@ -1,3 +1,5 @@
+> **已归档。** 当前用法见 [README.md](../../README.md)。
+
 # AADisplay 0.24#17.4-r9 版本更新
 
 相对上一版 r8，这次重点是「每窗多应用保活」和一批分屏 / 全屏日常会踩到的问题修复。
@@ -38,4 +40,4 @@
 
 1. 安装后请在 LSPosed 确认已启用 **System Framework** + **Android Auto**，并重启一次。
 2. 无桌面图标：从 LSPosed → AADisplay 打开激活状态页。
-3. 详细技术变更与真机核对项见 [CHANGELOG.md](CHANGELOG.md)。
+3. 详细技术变更与真机核对项见 [CHANGELOG.md](../../CHANGELOG.md)。

@@ -94,7 +94,7 @@
 - **手机锁屏后全屏 peel 拉不出 / 长按无响应：** AaDisplay presentation 无 `ALWAYS_UNLOCKED`，Keyguard 会挡住 `touchAaDisplay` 注入，而双 VD App 仍可点。上报 presentation id 时 `setShouldShowWithInsecureKeyguard(true)` + 尽力打上 `FLAG_ALWAYS_UNLOCKED`；锁屏且全屏时改由 system_server 直接解析 peel（退出 / 点按切换 / 长按广播开 Recent），不依赖 presentation 命中。
 
 ### Changed
-- **Version bump to `0.24#17.4-r10`** (`versionCode` 3066)。用户说明见 `RELEASE_NOTES_0.24-17.4-r10.md`。
+- **Version bump to `0.24#17.4-r10`** (`versionCode` 3066)。用户说明见 [docs/archive/RELEASE_NOTES_0.24-17.4-r10.md](docs/archive/RELEASE_NOTES_0.24-17.4-r10.md)。
 
 ### Verify (真机)
 1. 未装 / 未更新 Google App、Maps、TTS 时，AA FRX 仍能过安装检查并进入车机界面
@@ -128,7 +128,7 @@
 ### Changed
 - **文档 / 命名对齐：** 手机悬浮 UI 已彻底移除；`DisplayWindow` 重命名为 `DisplaySessionPolicy`（仅 Delay Destroy + keep-awake）。同步 `AGENTS.md`，去掉过时的 `SHOW_PHONE_OVERLAY` 描述。
 - **Recent 栈列紧凑 + 点选置顶：** 左/中列每项均分高度，去掉 9:16 高卡片，三应用同屏无需上下滚；整项（含灰底）点击即 `startActivityOnPane` 拉到栈顶并关闭面板（Close 仍只关任务）。
-- **Version bump to `0.24#17.4-r9`** (`versionCode` 3065)。用户说明见 `RELEASE_NOTES_0.24-17.4-r9.md`。
+- **Version bump to `0.24#17.4-r9`** (`versionCode` 3065)。用户说明见 [docs/archive/RELEASE_NOTES_0.24-17.4-r9.md](docs/archive/RELEASE_NOTES_0.24-17.4-r9.md)。
 
 ### Verify (真机)
 1. 左栈依次加 3 个应用，切顶无需重新加载，画面状态保持；三应用同屏可见、无需滚动

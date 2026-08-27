@@ -28,7 +28,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | `aa-display/src/main/assets/xposed_init` | Xposed 入口类名 |
 | `aa-display/src/main/aidl/` | Binder 接口与 parcelable 模型 |
 | `lib-stub/` | 隐藏 Framework API 的 Rikka Refine stubs（`compileOnly`） |
-| `CHANGELOG.md` / `RELEASE_NOTES_*` | 行为变更与真机验证记录 |
+| `CHANGELOG.md` / `docs/archive/` | 行为变更与真机验证记录；**用户说明见 [README.md](README.md)**，历史版本快照见 `docs/archive/` |
 | `settings.gradle.kts` | 仅 `:aa-display`、`:lib-stub` |
 
 ### 主包结构（`io.github.nitsuya.aa.display`）
@@ -153,7 +153,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 4. 在 LSPosed → AADisplay 打开状态页查看激活状态（无桌面图标）
 5. 连接 Android Auto，验证双屏分屏、触控、任务切换、断开后约 180s 延迟销毁
 
-改 AA 钩子后：对照目标 gearhead 版本；确认 DexKit 解析仍命中；查阅 `CHANGELOG.md` / `RELEASE_NOTES_*` 中的稳定性约束（如 display profile lock、TaskView）。
+改 AA 钩子后：对照目标 gearhead 版本；确认 DexKit 解析仍命中；查阅 `CHANGELOG.md`、`README.md` 与 `docs/archive/` 中的稳定性约束（如 display profile lock、TaskView）。
 
 ## 5. 编码与改动硬规则
 
