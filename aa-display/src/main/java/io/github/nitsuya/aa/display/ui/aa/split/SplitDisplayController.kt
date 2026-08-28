@@ -1065,14 +1065,18 @@ class SplitDisplayController(
     }
 
     /**
-     * Recent VD-column tap — sync IPC; cancels settle and blocks until promote/launch
-     * finishes on [mHandler] (mirrors [reorderPaneStack] + [postUserAction] ordering).
+     * Recent / App Picker — sync IPC; cancels settle and blocks until promote/launch
+     * finishes on [mHandler]. If fullscreen on the other pane, reveal [pane] after promote.
      */
     fun startActivityOnPaneForUser(packageName: String, userId: Int, pane: Int): Boolean {
         cancelBackgroundSettleForUserAction()
         return ownership.runOnHandlerBlockingAtFront(false) {
             if (mIsDestroying) return@runOnHandlerBlockingAtFront false
-            startActivityOnPaneOnHandler(packageName, userId, pane)
+            val ok = startActivityOnPaneOnHandler(packageName, userId, pane)
+            if (ok && SplitPane.isFullscreenPane(mFullscreenPane) && mFullscreenPane != pane) {
+                setSplitFullscreen(pane)
+            }
+            ok
         }
     }
 

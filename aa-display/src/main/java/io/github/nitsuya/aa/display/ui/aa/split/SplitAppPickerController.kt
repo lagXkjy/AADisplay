@@ -74,9 +74,9 @@ class SplitAppPickerController(
             onAppPicked?.invoke(pane, pkg)
             launchExecutor.execute {
                 try {
-                    CoreApi.startActivityOnPane(pkg, 0, pane)
+                    CoreApi.startActivityOnPaneForUser(pkg, 0, pane)
                 } catch (t: Throwable) {
-                    logPicker("startActivityOnPane failed pkg=$pkg: ${t.message}")
+                    logPicker("startActivityOnPaneForUser failed pkg=$pkg: ${t.message}")
                 }
             }
         },
