@@ -1072,11 +1072,12 @@ class SplitDisplayController(
         cancelBackgroundSettleForUserAction()
         return ownership.runOnHandlerBlockingAtFront(false) {
             if (mIsDestroying) return@runOnHandlerBlockingAtFront false
-            val ok = startActivityOnPaneOnHandler(packageName, userId, pane)
-            if (ok && SplitPane.isFullscreenPane(mFullscreenPane) && mFullscreenPane != pane) {
+            // Reveal target pane before promote — finishLaunchOnPane keeps mFocusedPane on
+            // mFullscreenPane when FS ≠ pane; switching first avoids refocusing Douyin.
+            if (SplitPane.isFullscreenPane(mFullscreenPane) && mFullscreenPane != pane) {
                 setSplitFullscreen(pane)
             }
-            ok
+            startActivityOnPaneOnHandler(packageName, userId, pane)
         }
     }
 

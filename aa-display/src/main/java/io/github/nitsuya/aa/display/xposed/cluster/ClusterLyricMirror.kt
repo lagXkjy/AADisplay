@@ -22,7 +22,8 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
  *
  * Single-sounder ([AvMediaArbiter.pickWinner]) pauses other music ∪ video.
  * Cluster binds only QQ 车载 / HD / 汽水 via [AvMediaArbiter.pickClusterSource]
- * (whoever among them is PLAYING). Runs in system_server after
+ * (whoever among them is PLAYING), independent of whether video co-plays.
+ * Runs in system_server after
  * [io.github.nitsuya.aa.display.xposed.CoreManagerService.systemReady].
  */
 object ClusterLyricMirror {
@@ -322,8 +323,8 @@ object ClusterLyricMirror {
     }
 
     /**
-     * Prefer the single-sounder when it is a lyric-trio package; otherwise only a
-     * PLAYING preferred session (video/other music sounder → no cluster).
+     * Lyric-trio source for cluster bind — decoupled from [AvMediaArbiter.pickWinner].
+     * When QQ / 汽水 is PLAYING, cluster follows it even if video owns or shares AvMedia.
      */
     private fun resolveClusterPick(
         sessions: List<MediaController>?,
@@ -332,14 +333,11 @@ object ClusterLyricMirror {
         clearConnectLockIfExpired()
         val locked = pickLockedCluster(sessions)
         if (locked != null) return locked
-        if (sounder != null) {
-            if (LyricLineExtractor.isPreferredPackage(sounder.packageName)) {
-                return sounder
-            }
-            // Video or non-trio music owns the speaker — cluster stays off.
-            return null
+        pickClusterUnlocked(sessions)?.let { return it }
+        if (sounder != null && LyricLineExtractor.isPreferredPackage(sounder.packageName)) {
+            return sounder
         }
-        return pickClusterUnlocked(sessions)
+        return null
     }
 
     /** Keep last lyric trio bind while paused until [pausedClear] (unless video took over). */
@@ -708,11 +706,12 @@ object ClusterLyricMirror {
         cancelPendingFlush()
         disarmPositionTick()
         disarmStaleKeepalive()
-        disarmRepick()
         handler.removeCallbacks(trackSwitchSettle)
         handler.removeCallbacks(pausedClear)
         appContext?.let { ClusterLyricStore.clear(it.contentResolver) }
         logDebug(TAG, "clear reason=$reason")
+        // QQ / Luna may resume PLAYING without a session-list change — keep scanning.
+        armRepickIfIdle()
     }
 
     private fun cancelPendingFlush() {
@@ -815,8 +814,9 @@ object ClusterLyricMirror {
 
     private fun armRepickIfIdle() {
         if (repickArmed) return
-        val state = boundController?.playbackState?.state ?: PlaybackState.STATE_NONE
-        if (AvMediaArbiter.isPlayingState(state)) return
+        boundController?.playbackState?.state?.let { state ->
+            if (AvMediaArbiter.isPlayingState(state)) return
+        }
         repickArmed = true
         handler.removeCallbacks(repickRunnable)
         handler.postDelayed(repickRunnable, REPICK_INTERVAL_MS)
