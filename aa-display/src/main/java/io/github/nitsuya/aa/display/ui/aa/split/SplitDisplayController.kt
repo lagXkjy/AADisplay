@@ -15,7 +15,6 @@ import android.view.Display
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
-import android.view.View
 import android.view.WindowManager
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
@@ -165,11 +164,6 @@ class SplitDisplayController(
      */
     @Volatile
     internal var mSuppressReclaimUntil = 0L
-
-    internal var mPrimaryWm: WindowManager? = null
-    internal var mSecondaryWm: WindowManager? = null
-    internal val mPrimaryForceView = View(context)
-    internal val mSecondaryForceView = View(context)
 
     private val mTaskStackListener = SplitTaskStackListener(this)
     internal var mLastResizeAt = 0L
@@ -321,8 +315,6 @@ class SplitDisplayController(
             if (mIsDestroying) return@post
             vd.applyPolicies(SplitPane.PRIMARY, "connect")
             vd.applyPolicies(SplitPane.SECONDARY, "connect")
-            vd.addKeepAwakeOverlay(SplitPane.PRIMARY)
-            vd.addKeepAwakeOverlay(SplitPane.SECONDARY)
             ime.start()
         }
 
@@ -692,8 +684,6 @@ class SplitDisplayController(
             }
         mTrackedPackageUsers.clear()
 
-        vd.removeKeepAwakeOverlay(SplitPane.PRIMARY)
-        vd.removeKeepAwakeOverlay(SplitPane.SECONDARY)
         tryOrNull { mPrimary?.release() }
         tryOrNull { mSecondary?.release() }
         mPrimary = null

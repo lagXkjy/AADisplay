@@ -106,20 +106,6 @@ object AaCoolwalkProjectionHook {
             log(CoolwalkHookEnv.TAG, "AaUiHook: hook Bundle.putParcelable failed", e)
         }
 
-        try {
-            findMethod(Bundle::class.java) {
-                name == "putInt" && parameterCount == 2 &&
-                    parameterTypes[0] == String::class.java &&
-                    (parameterTypes[1] == Int::class.javaPrimitiveType ||
-                        parameterTypes[1] == Integer::class.java)
-            }.hookBefore { param ->
-                zeroPillarWidthIfNeeded(env, param)
-            }
-            logDebug(CoolwalkHookEnv.TAG, "AaUiHook: hooked Bundle.putInt(pillar_width)")
-        } catch (e: Throwable) {
-            log(CoolwalkHookEnv.TAG, "AaUiHook: hook Bundle.putInt failed", e)
-        }
-
         for (method in Bundle::class.java.declaredMethods) {
             if (method.name != "getParcelable") continue
             if (method.parameterCount !in 1..2) continue

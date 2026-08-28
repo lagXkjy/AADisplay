@@ -1,15 +1,11 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
-import android.content.pm.ActivityInfo
-import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.DisplayManagerHidden
 import android.os.Binder
 import android.os.SystemClock
 import android.view.Display
-import android.view.Gravity
 import android.view.Surface
-import android.view.WindowManager
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
@@ -171,50 +167,6 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             log(SplitDisplayController.TAG, "lockPaneDisplayOrientation failed display=$displayId:", e)
         } finally {
             Binder.restoreCallingIdentity(identity)
-        }
-    }
-
-    /** Zero-size overlay anchor on the pane VD (no FLAG_KEEP_SCREEN_ON — DisplaySessionPolicy owns power). */
-    fun addKeepAwakeOverlay(pane: Int) {
-        val vd = if (pane == SplitPane.PRIMARY) c.mPrimary else c.mSecondary
-        val forceView = if (pane == SplitPane.PRIMARY) c.mPrimaryForceView else c.mSecondaryForceView
-        val display = vd?.display ?: return
-        try {
-            val wm = c.context.createDisplayContext(display)
-                .createWindowContext(display, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)
-                .getSystemService(WindowManager::class.java)
-            wm.addView(
-                forceView,
-                WindowManager.LayoutParams(
-                    0, 0,
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                    PixelFormat.TRANSPARENT
-                ).also {
-                    it.gravity = Gravity.START or Gravity.TOP
-                    // Do not force LANDSCAPE from overall HU orientation: a narrow pane is often
-                    // taller than wide; overlay LANDSCAPE would rotate that VD and letterbox.
-                    it.screenOrientation = ActivityInfo.SCREEN_ORIENTATION_NOSENSOR
-                    it.alpha = 0f
-                }
-            )
-            if (pane == SplitPane.PRIMARY) c.mPrimaryWm = wm else c.mSecondaryWm = wm
-        } catch (e: Throwable) {
-            log(SplitDisplayController.TAG, "keepAwake overlay failed pane=$pane:", e)
-        }
-    }
-
-    fun removeKeepAwakeOverlay(pane: Int) {
-        try {
-            if (pane == SplitPane.PRIMARY) {
-                c.mPrimaryWm?.removeView(c.mPrimaryForceView)
-                c.mPrimaryWm = null
-            } else {
-                c.mSecondaryWm?.removeView(c.mSecondaryForceView)
-                c.mSecondaryWm = null
-            }
-        } catch (_: Throwable) {
         }
     }
 }
