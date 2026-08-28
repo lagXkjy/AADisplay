@@ -129,7 +129,33 @@ object AaCoolwalkAutoOpenHook {
                 now + delayMs,
             )
         }
+        val fallbackAt = now + delays.max() + 50L
+        env.mFacetEnsureHandler.postAtTime(
+            { armFullBleedFallbackIfNeeded(env, reason) },
+            CoolwalkHookEnv.FULL_BLEED_RELAUNCH_TOKEN,
+            fallbackAt,
+        )
     }
+
+    /**
+     * After the short full-bleed chain finishes, arm the long AutoOpen retry window only if
+     * AADisplay still has not shown (failure-driven; success path keeps 0ms first hit).
+     */
+    private fun armFullBleedFallbackIfNeeded(env: CoolwalkHookEnv, reason: String) {
+        if (env.mAaDisplayShownThisSession || !env.mAutoOpenArmed) return
+        logDebug(
+            CoolwalkHookEnv.TAG,
+            "AaUiHook: full-bleed short chain exhausted ($reason) → long AutoOpen fallback",
+        )
+        scheduleAutoOpenIfNeeded(
+            env,
+            "full-bleed-fallback:content_bounds:$reason",
+            bypassRearmGap = true,
+        )
+    }
+
+    private fun isAutoOpenNotReady(t: Throwable): Boolean =
+        t is IllegalStateException || t is NullPointerException
 
     private fun tryAutoOpenAaDisplay(env: CoolwalkHookEnv, delayMs: Long) {
         if (env.mAaDisplayShownThisSession) {
@@ -148,12 +174,14 @@ object AaCoolwalkAutoOpenHook {
             logDebug(CoolwalkHookEnv.TAG, "AaUiHook: AutoOpen invoke at $label")
         } catch (e: InvocationTargetException) {
             val cause = e.cause ?: e
-            if (cause is IllegalStateException) {
+            if (isAutoOpenNotReady(cause)) {
                 logDebug(CoolwalkHookEnv.TAG, "AaUiHook: AutoOpen not-ready at $label: ${cause.message}")
             } else {
                 log(CoolwalkHookEnv.TAG, "AaUiHook: AutoOpen invoke failed at $label", cause)
             }
         } catch (e: IllegalStateException) {
+            logDebug(CoolwalkHookEnv.TAG, "AaUiHook: AutoOpen not-ready at $label: ${e.message}")
+        } catch (e: NullPointerException) {
             logDebug(CoolwalkHookEnv.TAG, "AaUiHook: AutoOpen not-ready at $label: ${e.message}")
         } catch (e: Throwable) {
             log(CoolwalkHookEnv.TAG, "AaUiHook: AutoOpen invoke failed at $label", e)
