@@ -109,9 +109,7 @@ object RecentTaskColumns {
                         val isTap = abs((v.getTag(R.id.drag_last_x) as? Float ?: 0f) - event.x) <= 5
                             && abs((v.getTag(R.id.drag_last_y) as? Float ?: 0f) - event.y) <= 5
                         if (!isTap) return@setOnTouchListener false
-                        if (v.id == R.id.rv_recent_task_right) {
-                            focusHandler.post { onExit() }
-                        }
+                        focusHandler.post { onExit() }
                     }
                 }
                 false
