@@ -286,15 +286,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                                 HidShellGeometry(
                                     parentW = w,
                                     parentH = h,
-                                    primaryMain = intent.getIntExtra(
-                                        AABroadcastConst.EXTRA_SHELL_PRIMARY_MAIN,
-                                        w / 2,
-                                    ),
-                                    gap = intent.getIntExtra(AABroadcastConst.EXTRA_SHELL_GAP, 0),
-                                    expand = intent.getIntExtra(
-                                        AABroadcastConst.EXTRA_SHELL_EXPAND,
-                                        0,
-                                    ),
                                     sideBySide = intent.getBooleanExtra(
                                         AABroadcastConst.EXTRA_SHELL_SIDEBYSIDE,
                                         true,
@@ -369,8 +360,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         fun hidSecondaryDisplayId(): Int =
             mSplitController?.secondaryDisplayId?.takeIf { it != Display.INVALID_DISPLAY }
                 ?: Display.INVALID_DISPLAY
-
-        fun hidTargetSize(): Point? = mSplitController?.hidTargetSize()
 
         fun hidSplitLayout(): HidSplitLayout? = mSplitController?.hidSplitLayout()
 
@@ -523,8 +512,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             }
         }
 
-        fun defaultDisplaySize(): Point? = displaySizeFor(Display.DEFAULT_DISPLAY)
-
         fun displaySizeFor(displayId: Int): Point? {
             if (displayId < 0) return null
             return runCatching {
@@ -557,34 +544,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 mSplitController?.onHidKeyEventToAaDisplay(event) == true
             } catch (e: Throwable) {
                 logDebug(TAG, "injectHidAaUiKeyEvent: ${e.message}")
-                false
-            }
-        }
-
-        fun injectHidTouch(
-            action: Int,
-            x: Float,
-            y: Float,
-            downTime: Long,
-            eventTime: Long,
-        ): Boolean {
-            return try {
-                if (action == MotionEvent.ACTION_DOWN) {
-                    mSessionPolicy?.onVirtualDisplayUserInteraction()
-                }
-                mSplitController?.onHidTouch(action, x, y, downTime, eventTime) == true
-            } catch (e: Throwable) {
-                logDebug(TAG, "injectHidTouch: ${e.message}")
-                false
-            }
-        }
-
-        fun injectHidScroll(x: Float, y: Float, vScroll: Float, hScroll: Float): Boolean {
-            return try {
-                mSessionPolicy?.onVirtualDisplayUserInteraction()
-                mSplitController?.onHidScroll(x, y, vScroll, hScroll) == true
-            } catch (e: Throwable) {
-                logDebug(TAG, "injectHidScroll: ${e.message}")
                 false
             }
         }

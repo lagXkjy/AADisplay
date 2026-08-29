@@ -118,7 +118,7 @@ object LyricLineExtractor {
         }
         if (songTitle.isEmpty() && artist.isEmpty()) return null
 
-        val positionMs = estimatePositionMs(controller.playbackState)
+        val positionMs = extrapolatePositionMs(controller.playbackState)
         val rawLyricBlob = findRawLyricBlob(controller.playbackState?.extras, metadata)
         val prepared = rawLyricBlob?.let { cachedLyric(mediaId, it) }
         val unwrapped = prepared?.unwrapped
@@ -266,8 +266,6 @@ object LyricLineExtractor {
         logDebug(TAG, "ignore oversized non-LRC lyric len=${raw.length}")
         return null
     }
-
-    private fun estimatePositionMs(state: PlaybackState?): Long = extrapolatePositionMs(state)
 
     fun extrapolatePositionMs(state: PlaybackState?): Long {
         if (state == null) return 0L

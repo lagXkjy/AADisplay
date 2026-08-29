@@ -1451,9 +1451,6 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 android.content.Intent(AABroadcastConst.ACTION_HID_SHELL_GEOMETRY).apply {
                     putExtra(AABroadcastConst.EXTRA_SHELL_PARENT_W, vis.parentW)
                     putExtra(AABroadcastConst.EXTRA_SHELL_PARENT_H, vis.parentH)
-                    putExtra(AABroadcastConst.EXTRA_SHELL_PRIMARY_MAIN, vis.primaryMain)
-                    putExtra(AABroadcastConst.EXTRA_SHELL_GAP, vis.gap)
-                    putExtra(AABroadcastConst.EXTRA_SHELL_EXPAND, vis.expand)
                     putExtra(AABroadcastConst.EXTRA_SHELL_SIDEBYSIDE, vis.sideBySide)
                     putExtra(AABroadcastConst.EXTRA_FULLSCREEN_PANE, fullscreenPane)
                 },

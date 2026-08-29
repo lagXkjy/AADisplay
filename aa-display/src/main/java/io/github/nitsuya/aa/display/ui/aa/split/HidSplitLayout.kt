@@ -4,9 +4,6 @@ package io.github.nitsuya.aa.display.ui.aa.split
 data class HidShellGeometry(
     val parentW: Int,
     val parentH: Int,
-    val primaryMain: Int,
-    val gap: Int,
-    val expand: Int,
     val sideBySide: Boolean,
     val fullscreenPane: Int,
 )
@@ -33,8 +30,6 @@ data class HidSplitLayout(
     val densityDpi: Int,
     /** Seam gap so primary + gap + secondary == total; 0 → derive from [densityDpi]. */
     val shellGap: Int = 0,
-    /** Measured touch expand per side; <0 → derive from [dividerHitPx]. */
-    val shellExpand: Int = -1,
     /**
      * AaDisplay presentation size when known. Divider / Recents injects scale from
      * [totalW]/[totalH] (VD profile) into this space when they differ.
@@ -45,11 +40,7 @@ data class HidSplitLayout(
     private fun seamGapPx(): Float =
         if (shellGap > 0) shellGap.toFloat() else dividerVisualPx.toFloat()
 
-    private fun seamExpandPx(): Float =
-        if (shellExpand >= 0) shellExpand.toFloat()
-        else ((dividerHitPx - seamGapPx()) / 2f).coerceAtLeast(0f)
-
-    /** Visual seam + touch expand — mouse in this band routes to AaDisplay divider. */
+    /** Visual seam + touch expand — used for peel edge sizing. */
     val dividerHitPx: Int
         get() {
             val dpi = densityDpi.coerceAtLeast(160)
@@ -91,66 +82,6 @@ data class HidSplitLayout(
         }
 
     fun isSplit(): Boolean = activePanes().size >= 2
-
-    /**
-     * Inclusive start / exclusive end of the divider hit band along the split axis,
-     * in AaDisplay presentation (canvas) coordinates.
-     */
-    fun dividerBand(): Pair<Float, Float>? {
-        if (!isSplit()) return null
-        val div = seamGapPx()
-        val expand = seamExpandPx()
-        return if (sideBySide) {
-            val start = (primaryW - expand).coerceAtLeast(0f)
-            val end = (primaryW + div + expand).coerceAtMost(totalW.toFloat())
-            start to end
-        } else {
-            val start = (primaryH - expand).coerceAtLeast(0f)
-            val end = (primaryH + div + expand).coerceAtMost(totalH.toFloat())
-            start to end
-        }
-    }
-
-    fun isInDividerBand(canvasX: Float, canvasY: Float): Boolean {
-        val band = dividerBand() ?: return false
-        val (start, end) = band
-        val (cx, cy) = clampCanvas(canvasX, canvasY)
-        return if (sideBySide) cx in start..end else cy in start..end
-    }
-
-    /**
-     * Cursor is clearly inside [pane] content — not in the divider band and past the seam
-     * margin. Used before rebinding the pointer VD (avoids hopping near the handle).
-     */
-    fun isClearlyInPaneContent(pane: Int, canvasX: Float, canvasY: Float): Boolean {
-        if (!SplitPane.isValid(pane)) return false
-        if (!isSplit()) return true
-        if (isInDividerBand(canvasX, canvasY)) return false
-        val band = dividerBand() ?: return true
-        val (start, end) = band
-        val margin = dividerHitPx * 0.3f
-        val (cx, cy) = clampCanvas(canvasX, canvasY)
-        return if (sideBySide) {
-            when (pane) {
-                SplitPane.PRIMARY -> cx <= start - margin
-                else -> cx >= end + margin
-            }
-        } else {
-            when (pane) {
-                SplitPane.PRIMARY -> cy <= start - margin
-                else -> cy >= end + margin
-            }
-        }
-    }
-
-    /**
-     * BT mouse hover — pane pick without chrome (divider grip is LMB-only).
-     * @param boundPane unused; kept for call-site stability.
-     */
-    fun hitForHover(canvasX: Float, canvasY: Float, boundPane: Int): HidCursorHit {
-        val (cx, cy) = clampCanvas(canvasX, canvasY)
-        return hit(cx, cy, chromeInteract = false)
-    }
 
     /**
      * Three-dot grip on the split seam — BT mouse LMB chrome only (finger uses wide
@@ -246,11 +177,6 @@ data class HidSplitLayout(
         val tw = totalW.toFloat().coerceAtLeast(1f)
         val th = totalH.toFloat().coerceAtLeast(1f)
         return (cx / tw * sw).coerceIn(0f, sw - 1f) to (cy / th * sh).coerceIn(0f, sh - 1f)
-    }
-
-    fun centerOf(pane: Int): Pair<Float, Float> {
-        val size = sizeOf(pane) ?: return (totalW * 0.5f) to (totalH * 0.5f)
-        return toCanvas(pane, size.first * 0.5f, size.second * 0.5f)
     }
 
     /** Edge peel tab thickness (short axis) for fullscreen mouse hit. */

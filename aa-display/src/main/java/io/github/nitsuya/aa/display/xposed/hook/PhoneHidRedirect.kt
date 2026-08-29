@@ -609,10 +609,6 @@ object PhoneHidRedirect {
         }
     }
 
-    private fun applyPointerDisplay() {
-        suppressOsPointerSprite()
-    }
-
     private fun applyPointerDisplayToShell() {
         suppressOsPointerSprite()
     }

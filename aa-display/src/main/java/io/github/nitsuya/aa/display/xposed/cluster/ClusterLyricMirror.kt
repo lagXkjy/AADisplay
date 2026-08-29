@@ -43,8 +43,6 @@ object ClusterLyricMirror {
     private const val START_RETRY_MAX = 8
     /** Re-scan other playing sessions from LRC ticks at most this often. */
     private const val TICK_SWITCH_INTERVAL_MS = 1_000L
-  /** LRC ticks skip art by default; retry when the track still has no JPEG (long intro / static title). */
-    private const val ART_RETRY_ON_TICK_MS = 300L
     /** After track change, poll cover independently of lyric line updates (long intro). */
     private const val ART_BURST_AFTER_TRACK_MS = 60_000L
     /**

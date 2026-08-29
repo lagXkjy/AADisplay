@@ -187,14 +187,6 @@ object ClusterLyricStore {
         return Fresh(title, subtitle, album)
     }
 
-    fun readFreshTitle(cr: ContentResolver): String? = readFresh(cr)?.title
-
-    fun readFreshSubtitle(cr: ContentResolver): String? =
-        readFresh(cr)?.subtitle?.takeIf { it.isNotEmpty() }
-
-    fun readFreshAlbum(cr: ContentResolver): String? =
-        readFresh(cr)?.album?.takeIf { it.isNotEmpty() }
-
     fun readProgress(cr: ContentResolver): Progress? {
         if (readFresh(cr) == null) return null
         val positionMs = Settings.Global.getString(cr, SETTINGS_POSITION_MS)?.toLongOrNull() ?: 0L

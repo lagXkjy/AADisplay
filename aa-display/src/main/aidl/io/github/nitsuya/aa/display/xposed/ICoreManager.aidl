@@ -114,7 +114,7 @@ interface ICoreManager {
     /**
      * Recent VD-column tap: synchronous bring-to-front / launch on [pane].
      * Cancels debounced ATMS settle and runs at handler front (same-stack switch
-     * must finish before the UI reloads). Picker keeps async [startActivityOnPane].
+     * must finish before the UI reloads). Prefer this over async [startActivityOnPane].
      */
     boolean startActivityOnPaneForUser(String packageName, int userId, int pane);
 }

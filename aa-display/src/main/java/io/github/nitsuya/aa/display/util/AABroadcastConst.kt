@@ -74,9 +74,6 @@ interface AABroadcastConst {
         const val EXTRA_CURSOR_Y = "aa.display.extra.CURSOR_Y"
         const val EXTRA_SHELL_PARENT_W = "aa.display.extra.SHELL_PARENT_W"
         const val EXTRA_SHELL_PARENT_H = "aa.display.extra.SHELL_PARENT_H"
-        const val EXTRA_SHELL_PRIMARY_MAIN = "aa.display.extra.SHELL_PRIMARY_MAIN"
-        const val EXTRA_SHELL_GAP = "aa.display.extra.SHELL_GAP"
-        const val EXTRA_SHELL_EXPAND = "aa.display.extra.SHELL_EXPAND"
         const val EXTRA_SHELL_SIDEBYSIDE = "aa.display.extra.SHELL_SIDEBYSIDE"
         /**
          * system_server → AA: IME visibility on a pane VD.

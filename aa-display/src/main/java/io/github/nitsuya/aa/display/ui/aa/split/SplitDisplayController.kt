@@ -140,9 +140,6 @@ class SplitDisplayController(
         mHidShellGeometry = geometry
     }
 
-    fun clearHidShellGeometry() {
-        mHidShellGeometry = null
-    }
     /** Uptime of last peel-inject recovery (latch clear + UI re-report ask). */
     @Volatile
     private var mLastAaUiDisplayIdRecoveryUptime = 0L
@@ -890,33 +887,6 @@ class SplitDisplayController(
         return input.injectKeyEvent(displayId, event)
     }
 
-    fun onHidTouch(
-        action: Int,
-        x: Float,
-        y: Float,
-        downTime: Long,
-        eventTime: Long,
-    ): Boolean {
-        val displayId = resolveHidInjectionDisplayId()
-        if (displayId == Display.INVALID_DISPLAY) return false
-        if (action == MotionEvent.ACTION_DOWN) {
-            paneForDisplayId(displayId)?.let { mFocusedPane = it }
-        }
-        return input.injectTouchAt(displayId, action, x, y, downTime, eventTime)
-    }
-
-    fun onHidScroll(x: Float, y: Float, vScroll: Float, hScroll: Float): Boolean {
-        val displayId = resolveHidInjectionDisplayId()
-        if (displayId == Display.INVALID_DISPLAY) return false
-        return input.injectScrollAt(displayId, x, y, vScroll, hScroll)
-    }
-
-    fun hidTargetSize(): Point? {
-        val displayId = resolveHidInjectionDisplayId()
-        if (displayId == Display.INVALID_DISPLAY) return null
-        return input.displaySizePx(displayId)
-    }
-
     fun hidSizeForPane(pane: Int): Point? {
         val displayId = input.displayIdFor(pane) ?: return null
         return input.displaySizePx(displayId)
@@ -956,7 +926,7 @@ class SplitDisplayController(
      * Pane sizes **must** match the real VirtualDisplays (inject + pointer bind), not the
      * AA UI TextureView metrics. UI density / Coolwalk chrome can differ from [mDensityDpi]
      * and previously made right-edge clicks look hundreds of px early / "wrong resolution".
-     * Shell geometry only supplies fullscreen / expand hints and optional touch scaling.
+     * Shell geometry only supplies fullscreen / orientation hints and optional touch scaling.
      */
     fun hidSplitLayout(): HidSplitLayout {
         val sizes = vd.computePaneSizes()
@@ -992,7 +962,6 @@ class SplitDisplayController(
             totalH = totalH,
             densityDpi = mDensityDpi.coerceAtLeast(160),
             shellGap = gap,
-            shellExpand = geo?.expand ?: -1,
             shellTotalW = geo?.parentW ?: 0,
             shellTotalH = geo?.parentH ?: 0,
         )
@@ -1045,10 +1014,6 @@ class SplitDisplayController(
         launch.schedulePersistSnapshot()
         notifySplitStateChanged()
         return true
-    }
-
-    fun startActivity(packageName: String, userId: Int): Boolean {
-        return startActivityOnPane(packageName, userId, mFocusedPane)
     }
 
     fun startActivityOnPane(packageName: String, userId: Int, pane: Int): Boolean {
@@ -1232,13 +1197,6 @@ class SplitDisplayController(
         return ok
     }
 
-    fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean): Boolean {
-        // Ownership + reclaim run on mHandler; Binder/IO callers must not race them.
-        return ownership.runOnHandlerBlocking(false) {
-            moveTaskIdOnHandler(taskId, if (isVirtualDisplay) mFocusedPane else null)
-        }
-    }
-
     fun moveTaskIdAsync(taskId: Int, isVirtualDisplay: Boolean) {
         postUserAction {
             moveTaskIdOnHandler(taskId, if (isVirtualDisplay) mFocusedPane else null)
@@ -1246,11 +1204,6 @@ class SplitDisplayController(
     }
 
     /** Move [taskId] onto PRIMARY/SECONDARY; [pane] must be a valid [SplitPane]. */
-    fun moveTaskIdToPane(taskId: Int, pane: Int): Boolean {
-        if (!SplitPane.isValid(pane)) return false
-        return ownership.runOnHandlerBlocking(false) { moveTaskIdOnHandler(taskId, targetPane = pane) }
-    }
-
     fun moveTaskIdToPaneAsync(taskId: Int, pane: Int) {
         if (!SplitPane.isValid(pane)) return
         postUserAction { moveTaskIdOnHandler(taskId, targetPane = pane) }
@@ -1326,10 +1279,6 @@ class SplitDisplayController(
         return ownership.bringTaskToFront(taskId)
     }
 
-    fun moveTaskToFront(taskId: Int): Boolean {
-        return ownership.runOnHandlerBlocking(false) { moveTaskToFrontOnHandler(taskId) }
-    }
-
     fun moveTaskToFrontAsync(taskId: Int) {
         postUserAction { moveTaskToFrontOnHandler(taskId) }
     }
@@ -1365,16 +1314,8 @@ class SplitDisplayController(
         return ok
     }
 
-    fun removeTask(taskId: Int): Boolean {
-        return ownership.runOnHandlerBlocking(false) { removeTaskOnHandler(taskId) }
-    }
-
     fun removeTaskAsync(taskId: Int) {
         postUserAction { removeTaskOnHandler(taskId) }
-    }
-
-    fun reorderPaneStackAsync(pane: Int, packagesTopToBottom: Array<out String>) {
-        postUserAction { reorderPaneStackOnHandler(pane, packagesTopToBottom.toList()) }
     }
 
     private fun removeTaskOnHandler(taskId: Int): Boolean {
