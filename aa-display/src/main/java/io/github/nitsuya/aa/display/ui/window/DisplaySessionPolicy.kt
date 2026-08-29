@@ -92,6 +92,12 @@ class DisplaySessionPolicy(
         private const val PSEUDO_OFF_FORCE_MIN_INTERVAL_MS = 8_000L
         /** PowerManager.GO_TO_SLEEP_REASON_TIMEOUT */
         private const val GO_TO_SLEEP_REASON_TIMEOUT = 2
+        /**
+         * After createVirtualDisplay, DisplayManager returns an id before PMS
+         * [PowerGroup] is added for OWN_DISPLAY_GROUP — userActivity NPEs until then.
+         */
+        private const val POWER_GROUP_RETRY_DELAY_MS = 250L
+        private const val POWER_GROUP_RETRY_MAX = 8
     }
 
     private var mDestroyJob: Job? = null
@@ -115,6 +121,11 @@ class DisplaySessionPolicy(
     private var iPowerManagerGoToSleep: Method? = null
     private var mLoggedMissingDisplayUserActivity = false
     private var mLoggedMissingGoToSleep = false
+    /** Soft-fail once: VD exists in DM before PMS registers OWN_DISPLAY_GROUP PowerGroup. */
+    private var mLoggedMissingPowerGroup = false
+    /** After [POWER_GROUP_RETRY_MAX] misses, stop scheduling until a userActivity succeeds. */
+    private var mPowerGroupRetriesExhausted = false
+    private var mPowerGroupRetryJob: Job? = null
     private var mLastPresentationRecoveryAt = 0L
     private val mPhoneUserActivityHooks = mutableListOf<XC_MethodHook.Unhook>()
     @Volatile private var mPhoneUserActivityHookInstalled = false
@@ -335,6 +346,7 @@ class DisplaySessionPolicy(
             stopKeepAwakeLoop()
             stopPseudoOffLoop()
             cancelScreenOffReassertBurst()
+            cancelPowerGroupRetry()
             releasePhoneUserActivityHook()
             if (mScreenReceiverRegistered) {
                 try {
@@ -744,14 +756,21 @@ class DisplaySessionPolicy(
      * IPowerManager.userActivity(displayId, …) — PowerManager only forwards the
      * context display id, which is useless for OWN_DISPLAY_GROUP virtual displays.
      * Only the displayId overload is used; global overloads would wake the phone panel.
+     *
+     * AOSP/OEM [userActivityNoUpdateLocked] NPEs when [PowerGroup] is not yet mapped for
+     * a fresh OWN_DISPLAY_GROUP VD (or after teardown). That is a soft race — already
+     * caught here; never let it spam or abort keep-awake. Retry briefly after create.
      */
-    private fun userActivityOnDisplay(displayId: Int, event: Int) {
+    private fun userActivityOnDisplay(displayId: Int, event: Int): Boolean {
+        if (displayId == Display.INVALID_DISPLAY) return false
         try {
+            // Stale id after release: DM gone → skip before poking PMS.
+            if (Instances.displayManager.getDisplay(displayId) == null) return false
             val service = iPowerManagerService
                 ?: PowerManager::class.java.getDeclaredField("mService").apply {
                     isAccessible = true
                 }.get(Instances.powerManager)?.also { iPowerManagerService = it }
-                ?: return
+                ?: return false
             val method = iPowerManagerUserActivity ?: resolveDisplayUserActivityMethod(service.javaClass)
                 ?.also { iPowerManagerUserActivity = it }
             if (method == null) {
@@ -759,12 +778,64 @@ class DisplaySessionPolicy(
                     mLoggedMissingDisplayUserActivity = true
                     log(TAG, "IPowerManager.userActivity(displayId,…) unavailable; skip to avoid waking phone")
                 }
-                return
+                return false
             }
             method.invoke(service, displayId, SystemClock.uptimeMillis(), event, 0)
+            mPowerGroupRetriesExhausted = false
+            return true
         } catch (e: Throwable) {
+            val cause = (e as? java.lang.reflect.InvocationTargetException)?.cause ?: e
+            if (isMissingPowerGroup(cause)) {
+                if (!mLoggedMissingPowerGroup) {
+                    mLoggedMissingPowerGroup = true
+                    log(
+                        TAG,
+                        "IPowerManager.userActivity(display=$displayId) soft-fail: " +
+                            "PowerGroup not ready (OWN_DISPLAY_GROUP race); will retry",
+                    )
+                }
+                if (!mPowerGroupRetriesExhausted) {
+                    schedulePowerGroupRetry()
+                }
+                return false
+            }
             log(TAG, "IPowerManager.userActivity(display=$displayId) failed:", e)
+            return false
         }
+    }
+
+    private fun isMissingPowerGroup(t: Throwable): Boolean {
+        if (t !is NullPointerException) return false
+        val msg = t.message ?: return false
+        return msg.contains("PowerGroup") || msg.contains("getGroupId")
+    }
+
+    /** Re-assert pane userActivity until PMS has PowerGroups for new OWN_DISPLAY_GROUP VDs. */
+    private fun schedulePowerGroupRetry() {
+        if (mPowerGroupRetryJob?.isActive == true) return
+        mPowerGroupRetryJob = CoroutineScope(Dispatchers.Default).launch {
+            repeat(POWER_GROUP_RETRY_MAX) {
+                delay(POWER_GROUP_RETRY_DELAY_MS)
+                if (!isActive) return@launch
+                val ids = aaPaneDisplayIds()
+                if (ids.isEmpty()) return@launch
+                var anyFail = false
+                for (displayId in ids) {
+                    if (!userActivityOnDisplay(displayId, USER_ACTIVITY_EVENT_TOUCH)) {
+                        anyFail = true
+                    }
+                }
+                if (!anyFail) return@launch
+            }
+            mPowerGroupRetriesExhausted = true
+        }
+    }
+
+    private fun cancelPowerGroupRetry() {
+        mPowerGroupRetryJob?.cancel()
+        mPowerGroupRetryJob = null
+        mPowerGroupRetriesExhausted = false
+        mLoggedMissingPowerGroup = false
     }
 
     private fun resolveDisplayUserActivityMethod(serviceClass: Class<*>): Method? {

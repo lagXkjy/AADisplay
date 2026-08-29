@@ -8,7 +8,6 @@ import android.os.SystemClock
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.json.JSONObject
-import java.lang.reflect.Field
 
 /**
  * Resolves the instrument-cluster ticker string from a real [MediaController].
@@ -48,12 +47,6 @@ object LyricLineExtractor {
     private var cachedUnwrapped: String = ""
     private var cachedLrcIsTimed: Boolean = false
     private var cachedLrcEntries: List<LrcEntry> = emptyList()
-
-    private val metadataBundleField: Field? by lazy {
-        runCatching {
-            MediaMetadata::class.java.getDeclaredField("mBundle").apply { isAccessible = true }
-        }.getOrNull()
-    }
 
     data class Extracted(
         val tickerTitle: String,
@@ -180,10 +173,6 @@ object LyricLineExtractor {
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?.let { return sanitizeAlbum(it) }
-        metadata.bundleCompat()?.getString(MediaMetadata.METADATA_KEY_ALBUM)
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { return sanitizeAlbum(it) }
         // Luna / others: album name often lives in MediaDescription.description.
         metadata.description?.description?.toString()
             ?.trim()
@@ -193,11 +182,6 @@ object LyricLineExtractor {
             ?.trim()
             ?.takeIf { it.isNotEmpty() && !PANEL_ARTIST_SEP.containsMatchIn(it) }
             ?.let { return sanitizeAlbum(it) }
-        val bundle = metadata.bundleCompat() ?: return ""
-        for (key in bundle.keySet()) {
-            if (!key.contains("album", ignoreCase = true)) continue
-            bundle.getString(key)?.trim()?.takeIf { it.isNotEmpty() }?.let { return sanitizeAlbum(it) }
-        }
         return ""
     }
 
@@ -206,10 +190,8 @@ object LyricLineExtractor {
         if (!BuildConfig.DEBUG) return
         val keys = linkedSetOf<String>()
         collectKeys(state?.extras, keys)
-        collectKeys(metadata?.bundleCompat(), keys)
         logDebug(TAG, "extras dump pkg=$packageName keys=${keys.sorted().joinToString()}")
         val v = state?.extras?.nonBlankString(METADATA_KEY_LYRIC)
-            ?: metadata?.bundleCompat()?.nonBlankString(METADATA_KEY_LYRIC)
             ?: metadata?.getString(METADATA_KEY_LYRIC)?.trim()?.takeIf { it.isNotEmpty() }
             ?: return
         logDebug(TAG, "extras lyric-key=$METADATA_KEY_LYRIC len=${v.length} head=${v.take(96)}")
@@ -305,7 +287,6 @@ object LyricLineExtractor {
             ?.takeIf { it.isNotEmpty() }
             ?.let { return it }
         playbackExtras?.nonBlankString(METADATA_KEY_LYRIC)?.let { return it }
-        metadata?.bundleCompat()?.nonBlankString(METADATA_KEY_LYRIC)?.let { return it }
         return null
     }
 
@@ -385,11 +366,6 @@ object LyricLineExtractor {
         for (key in bundle.keySet()) {
             out.add(key)
         }
-    }
-
-    private fun MediaMetadata.bundleCompat(): Bundle? {
-        val field = metadataBundleField ?: return null
-        return runCatching { field.get(this) as? Bundle }.getOrNull()
     }
 
     private fun truncate(text: String): String {
