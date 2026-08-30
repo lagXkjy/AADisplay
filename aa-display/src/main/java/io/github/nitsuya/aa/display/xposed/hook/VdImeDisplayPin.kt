@@ -74,7 +74,7 @@ object VdImeDisplayPin {
                 if (!CoreManagerService.isAaVirtualDisplay(intended)) return@hookAfter
                 val actual = param.result as? Int ?: return@hookAfter
                 if (actual == intended) return@hookAfter
-                log(TAG, "IME window display $actual → $intended (AA VD)")
+                logDebug(TAG, "IME window display $actual → $intended (AA VD)")
                 pinShowDisplay(param.thisObject, intended)
                 param.result = intended
             } catch (_: Throwable) {

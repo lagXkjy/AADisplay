@@ -20,6 +20,7 @@ import io.github.nitsuya.aa.display.xposed.hook.PhoneHidRedirect
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import java.lang.reflect.Method
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -718,7 +719,7 @@ class DisplaySessionPolicy(
         val now = SystemClock.uptimeMillis()
         if (now - mLastPresentationRecoveryAt < PRESENTATION_RECOVERY_MIN_INTERVAL_MS) return
         mLastPresentationRecoveryAt = now
-        log(TAG, "maybeRecoverPresentation[$reason] id=$presentationId phoneOff=$phoneOff off=$presentationOff")
+        logDebug(TAG, "maybeRecoverPresentation[$reason] id=$presentationId phoneOff=$phoneOff off=$presentationOff")
         sendPresentationRecoveryBroadcast()
     }
 
