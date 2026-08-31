@@ -4,7 +4,8 @@
 
 | 文件 | 版本 |
 |------|------|
-| [RELEASE_NOTES_0.24-17.4-r9.md](RELEASE_NOTES_0.24-17.4-r9.md) | 0.24#17.4-r9 |
+| [RELEASE_NOTES_0.24-17.4-r14.md](RELEASE_NOTES_0.24-17.4-r14.md) | 0.24#17.4-r14 |
 | [RELEASE_NOTES_0.24-17.4-r10.md](RELEASE_NOTES_0.24-17.4-r10.md) | 0.24#17.4-r10 |
+| [RELEASE_NOTES_0.24-17.4-r9.md](RELEASE_NOTES_0.24-17.4-r9.md) | 0.24#17.4-r9 |
 
 技术变更与真机核对项仍以 [CHANGELOG.md](../../CHANGELOG.md) 为准。

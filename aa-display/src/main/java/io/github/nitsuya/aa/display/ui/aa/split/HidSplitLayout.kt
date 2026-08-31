@@ -6,7 +6,14 @@ data class HidShellGeometry(
     val parentH: Int,
     val sideBySide: Boolean,
     val fullscreenPane: Int,
-)
+    /** 「收起键盘」in parent coords; empty when hidden. */
+    val imeChipL: Int = 0,
+    val imeChipT: Int = 0,
+    val imeChipR: Int = 0,
+    val imeChipB: Int = 0,
+) {
+    fun hasImeChip(): Boolean = imeChipR > imeChipL && imeChipB > imeChipT
+}
 
 /**
  * Dual-pane geometry for phone BT mouse: one continuous canvas
@@ -36,9 +43,29 @@ data class HidSplitLayout(
      */
     val shellTotalW: Int = 0,
     val shellTotalH: Int = 0,
+    /** 「收起键盘」in shell parent coords (same space as [shellTotalW]/[shellTotalH]). */
+    val imeChipL: Int = 0,
+    val imeChipT: Int = 0,
+    val imeChipR: Int = 0,
+    val imeChipB: Int = 0,
 ) {
     private fun seamGapPx(): Float =
         if (shellGap > 0) shellGap.toFloat() else dividerVisualPx.toFloat()
+
+    fun hasImeChip(): Boolean = imeChipR > imeChipL && imeChipB > imeChipT
+
+    /** Map VD-profile canvas point into shell parent space for chip hit-test. */
+    private fun canvasToShell(cx: Float, cy: Float): Pair<Float, Float> {
+        val sw = (shellTotalW.takeIf { it > 0 } ?: totalW).toFloat().coerceAtLeast(1f)
+        val sh = (shellTotalH.takeIf { it > 0 } ?: totalH).toFloat().coerceAtLeast(1f)
+        return (cx * sw / totalW.coerceAtLeast(1)) to (cy * sh / totalH.coerceAtLeast(1))
+    }
+
+    fun isImeChipHit(canvasX: Float, canvasY: Float): Boolean {
+        if (!hasImeChip()) return false
+        val (sx, sy) = canvasToShell(canvasX, canvasY)
+        return sx >= imeChipL && sx < imeChipR && sy >= imeChipT && sy < imeChipB
+    }
 
     /** Visual seam + touch expand — used for peel edge sizing. */
     val dividerHitPx: Int
@@ -217,6 +244,12 @@ data class HidSplitLayout(
      */
     fun hit(canvasX: Float, canvasY: Float, chromeInteract: Boolean = false): HidCursorHit {
         val (cx, cy) = clampCanvas(canvasX, canvasY)
+        // Soft-keyboard is painted inside the pane TextureView; the shell chip sits on top
+        // visually but HU/HID still hit-test as pane unless we claim the chip rect for Shell.
+        if (isImeChipHit(cx, cy)) {
+            val (sx, sy) = canvasToShell(cx, cy)
+            return HidCursorHit.Shell(sx, sy)
+        }
         if (!isSplit()) {
             if (chromeInteract && isPeelHit(cx, cy)) return HidCursorHit.Divider(cx, cy)
             val pane = activePanes().firstOrNull() ?: SplitPane.PRIMARY

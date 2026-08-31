@@ -48,8 +48,6 @@ internal class SplitImeController(private val c: SplitDisplayController) {
     private var wmiHideIme: Method? = null
     private var immInternal: Any? = null
     private var immHide: Method? = null
-    private var immsInputShown: Field? = null
-    private var imms: Any? = null
 
     private val pollRunnable = object : Runnable {
         override fun run() {
@@ -129,9 +127,8 @@ internal class SplitImeController(private val c: SplitDisplayController) {
             val id = c.input.displayIdFor(pane) ?: continue
             if (isImeWindowVisible(id)) return true to pane
         }
-        if (isImmsInputShown()) {
-            return true to focused
-        }
+        // Do not trust IMMS mInputShown alone — show can be "requested" while the IME
+        // window never lands on the pane (shell would show hide-chip with no keyboard).
         return false to focused
     }
 
@@ -211,16 +208,6 @@ internal class SplitImeController(private val c: SplitDisplayController) {
             }
         }
         return false
-    }
-
-    private fun isImmsInputShown(): Boolean {
-        val field = immsInputShown ?: return false
-        val svc = imms ?: return false
-        return try {
-            field.getBoolean(svc)
-        } catch (_: Throwable) {
-            false
-        }
     }
 
     private fun hideViaWindowManager(displayId: Int): Boolean {
@@ -354,19 +341,6 @@ internal class SplitImeController(private val c: SplitDisplayController) {
         immInternal = svc
         immHide = findNamedMethod(svc, "hideCurrentInputMethod")
             ?: findNamedMethod(svc, "hideSoftInput")
-        val outer = outerInstance(svc) ?: return
-        imms = outer
-        var cls: Class<*>? = outer.javaClass
-        while (cls != null) {
-            try {
-                val f = cls.getDeclaredField("mInputShown")
-                f.isAccessible = true
-                immsInputShown = f
-                break
-            } catch (_: NoSuchFieldException) {
-                cls = cls.superclass
-            }
-        }
     }
 
     private fun localService(className: String): Any? {

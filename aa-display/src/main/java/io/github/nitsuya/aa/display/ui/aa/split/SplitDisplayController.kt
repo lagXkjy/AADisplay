@@ -966,6 +966,10 @@ class SplitDisplayController(
             shellGap = gap,
             shellTotalW = geo?.parentW ?: 0,
             shellTotalH = geo?.parentH ?: 0,
+            imeChipL = geo?.imeChipL ?: 0,
+            imeChipT = geo?.imeChipT ?: 0,
+            imeChipR = geo?.imeChipR ?: 0,
+            imeChipB = geo?.imeChipB ?: 0,
         )
     }
 

@@ -1,5 +1,8 @@
 package io.github.nitsuya.aa.display.xposed.hook
 
+import android.content.Context
+import android.os.Binder
+import android.provider.Settings
 import android.view.Display
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import de.robv.android.xposed.XC_MethodHook
@@ -14,11 +17,18 @@ import java.lang.reflect.Field
  * Rule: client on AA VD → IME window/token on that same VD. OEM / A16 paths that
  * rewrite the target to [Display.DEFAULT_DISPLAY] (fallback when system decorations
  * are off, or Samsung Flip `isFolded` → 0) are corrected only for our pane VDs.
+ *
+ * Soft-keyboard height: with a BT hard keyboard attached, LatinIME's
+ * [android.inputmethodservice.InputMethodService.onEvaluateInputViewShown] returns
+ * false unless `show_ime_with_hard_keyboard` is on — yielding a visible IME token /
+ * shell “收起键盘” chip with `mGivenContentInsets` height 0. While AA VDs are live,
+ * temporarily enable that Secure setting (restore previous value on teardown).
  */
 object VdImeDisplayPin {
     private const val TAG = "AAD_VdImeDisplayPin"
     private const val IMMS = "com.android.server.inputmethod.InputMethodManagerService"
     private const val IME_VIS = "com.android.server.inputmethod.ImeVisibilityStateComputer"
+    private const val SHOW_IME_WITH_HARD_KEYBOARD = "show_ime_with_hard_keyboard"
 
     private var windowToBeAddedHook: XC_MethodHook.Unhook? = null
     private var displayIdToShowHook: XC_MethodHook.Unhook? = null
@@ -32,11 +42,58 @@ object VdImeDisplayPin {
     @Volatile private var displayIdToShowImeField: Field? = null
     @Volatile private var clientFieldLookupDone = false
 
+    @Volatile private var softImeSettingOwned = false
+    @Volatile private var softImeSettingPrevious: Int? = null
+
     fun ensureHooked() {
         if (!AndroidHook.isReadyForSystemHooks()) return
         if (installAttempted) return
         installAttempted = true
         installHooks()
+    }
+
+    /**
+     * AA panes are live — allow soft IME alongside a connected BT hard keyboard.
+     * No-op if the user already enabled [SHOW_IME_WITH_HARD_KEYBOARD].
+     */
+    fun onAaDisplaysActive(context: Context) {
+        ensureHooked()
+        if (softImeSettingOwned) return
+        val cr = context.contentResolver ?: return
+        val identity = Binder.clearCallingIdentity()
+        try {
+            val current = Settings.Secure.getInt(cr, SHOW_IME_WITH_HARD_KEYBOARD, 0)
+            if (current != 0) return
+            softImeSettingPrevious = 0
+            Settings.Secure.putInt(cr, SHOW_IME_WITH_HARD_KEYBOARD, 1)
+            softImeSettingOwned = true
+            log(TAG, "enabled show_ime_with_hard_keyboard for AA session (BT hard kb)")
+        } catch (e: Throwable) {
+            log(TAG, "enable show_ime_with_hard_keyboard failed", e)
+            softImeSettingPrevious = null
+            softImeSettingOwned = false
+        } finally {
+            Binder.restoreCallingIdentity(identity)
+        }
+    }
+
+    /** Restore Secure setting after AA VDs are fully torn down. */
+    fun onAaDisplaysInactive(context: Context) {
+        if (!softImeSettingOwned) return
+        val previous = softImeSettingPrevious
+        softImeSettingOwned = false
+        softImeSettingPrevious = null
+        if (previous == null) return
+        val cr = context.contentResolver ?: return
+        val identity = Binder.clearCallingIdentity()
+        try {
+            Settings.Secure.putInt(cr, SHOW_IME_WITH_HARD_KEYBOARD, previous)
+            log(TAG, "restored show_ime_with_hard_keyboard=$previous")
+        } catch (e: Throwable) {
+            log(TAG, "restore show_ime_with_hard_keyboard failed", e)
+        } finally {
+            Binder.restoreCallingIdentity(identity)
+        }
     }
 
     private fun installHooks() {
@@ -158,7 +215,10 @@ object VdImeDisplayPin {
                 if (!CoreManagerService.isAaVirtualDisplay(target)) return@hookAfter
                 val actual = param.result as? Int ?: return@hookAfter
                 if (actual == target) return@hookAfter
-                // INVALID_DISPLAY (-1) or fallback DEFAULT(0) → keep IME on the pane.
+                // FALLBACK → DEFAULT_DISPLAY(0): pin back to the pane.
+                // Do NOT rewrite INVALID_DISPLAY(-1) from HIDE — that yields mInputShown
+                // without an IME window (shell shows “hide keyboard” with no keyboard).
+                if (actual != Display.DEFAULT_DISPLAY) return@hookAfter
                 logDebug(TAG, "computeImeDisplay $actual → $target (AA VD)")
                 param.result = target
             } catch (_: Throwable) {
@@ -167,50 +227,67 @@ object VdImeDisplayPin {
     }
 
     /**
-     * WMS getDisplayImePolicy: without system decorations A16 often returns FALLBACK/HIDE.
-     * Force DISPLAY_IME_POLICY_LOCAL (0) for AA panes so computeImeDisplayId keeps them.
+     * Without system decorations, [DisplayContent.getImePolicy] often returns FALLBACK/HIDE
+     * *without* calling [WindowManagerService.getDisplayImePolicy]. Hooking only WMS is not
+     * enough — must pin both so computeImeDisplayId keeps the soft keyboard on the pane.
      */
     private fun hookDisplayImePolicy() {
-        val method = AndroidHook.findSystemMethod(
+        var hookedAny = false
+        AndroidHook.findSystemMethod(
+            "com.android.server.wm.DisplayContent",
+            findSuper = true,
+        ) {
+            name == "getImePolicy" && parameterTypes.isEmpty()
+        }?.let { method ->
+            displayImePolicyHook = method.hookAfter { param ->
+                rewriteImePolicyResult(
+                    displayIdOfDisplayContent(param.thisObject) ?: return@hookAfter,
+                    param,
+                )
+            }
+            hookedAny = true
+        }
+        AndroidHook.findSystemMethod(
             "com.android.server.wm.WindowManagerService",
             findSuper = true,
         ) {
             name == "getDisplayImePolicy" &&
                 parameterTypes.size == 1 &&
                 parameterTypes[0] == Int::class.javaPrimitiveType
-        } ?: AndroidHook.findSystemMethod(
-            "com.android.server.wm.DisplayContent",
-            findSuper = true,
-        ) {
-            name == "getImePolicy" && parameterTypes.isEmpty()
-        }
-        if (method == null) {
-            logDebug(TAG, "getDisplayImePolicy/getImePolicy not present")
-            return
-        }
-        displayImePolicyHook = method.hookAfter { param ->
-            try {
-                if (!CoreManagerService.hasAaVirtualDisplays()) return@hookAfter
-                val displayId = when {
-                    method.parameterTypes.isEmpty() -> {
-                        // DisplayContent.getImePolicy — resolve display id from this.
-                        displayIdOfDisplayContent(param.thisObject) ?: return@hookAfter
-                    }
-                    else -> param.args[0] as? Int ?: return@hookAfter
-                }
-                if (!CoreManagerService.isAaVirtualDisplay(displayId)) return@hookAfter
-                val actual = param.result as? Int ?: return@hookAfter
-                if (actual == 0) return@hookAfter // already LOCAL
-                logDebug(TAG, "imePolicy display=$displayId $actual → LOCAL(0)")
-                param.result = 0 // DISPLAY_IME_POLICY_LOCAL
-            } catch (_: Throwable) {
+        }?.let { method ->
+            val unhook = method.hookAfter { param ->
+                rewriteImePolicyResult(param.args[0] as? Int ?: return@hookAfter, param)
             }
+            if (displayImePolicyHook == null) displayImePolicyHook = unhook
+            hookedAny = true
+        }
+        if (!hookedAny) {
+            logDebug(TAG, "getDisplayImePolicy/getImePolicy not present")
+        }
+    }
+
+    private fun rewriteImePolicyResult(displayId: Int, param: XC_MethodHook.MethodHookParam) {
+        try {
+            if (!CoreManagerService.hasAaVirtualDisplays()) return
+            if (!CoreManagerService.isAaVirtualDisplay(displayId)) return
+            val actual = param.result as? Int ?: return
+            // 0 LOCAL already ok. 1 FALLBACK (common when decorations off) → LOCAL.
+            // Leave 2 HIDE alone — forcing LOCAL caused show requests with no IME window.
+            if (actual != 1) return
+            logDebug(TAG, "imePolicy display=$displayId FALLBACK → LOCAL(0)")
+            param.result = 0 // DISPLAY_IME_POLICY_LOCAL
+        } catch (_: Throwable) {
         }
     }
 
     private fun displayIdOfDisplayContent(dc: Any): Int? {
+        findField(dc.javaClass, "mDisplayId")?.let { f ->
+            return runCatching { f.getInt(dc) }.getOrNull()
+        }
         return runCatching {
-            findField(dc.javaClass, "mDisplayId")?.getInt(dc)
+            dc.javaClass.methods.firstOrNull { m ->
+                m.name == "getDisplayId" && m.parameterTypes.isEmpty()
+            }?.invoke(dc) as? Int
         }.getOrNull()
     }
 
@@ -255,10 +332,16 @@ object VdImeDisplayPin {
     }
 
     private fun ensureClientFields(imms: Any) {
-        if (clientFieldLookupDone && curClientField != null) return
-        clientFieldLookupDone = true
-        curClientField = findField(imms.javaClass, "mCurClient")
-        displayIdToShowImeField = findField(imms.javaClass, "mDisplayIdToShowIme")
+        // Retry when the first call happened before mCurClient existed — otherwise
+        // clientDisplayIdField stays null forever and getDisplayIdToShowIme never pins.
+        if (clientFieldLookupDone && curClientField != null && clientDisplayIdField != null) return
+        if (!clientFieldLookupDone) {
+            clientFieldLookupDone = true
+            curClientField = findField(imms.javaClass, "mCurClient")
+            displayIdToShowImeField = findField(imms.javaClass, "mDisplayIdToShowIme")
+                ?: findField(imms.javaClass, "mDisplayIdToShowImeLocked")
+        }
+        if (clientDisplayIdField != null) return
         val client = try {
             curClientField?.get(imms)
         } catch (_: Throwable) {

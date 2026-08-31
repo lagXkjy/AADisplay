@@ -65,8 +65,10 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
         // PUBLIC alone leaves panes in DisplayGroup 0 on Lineage — PaneDisplayGroupForce
         // reassigns after create so ALWAYS_UNLOCKED / lock sync still work.
         //
-        // OWN_FOCUS: pane apps keep a focused window while phone can remain top focus for
-        // untargeted handset input (same as AA GhostActivity).
+        // OWN_FOCUS kept phone as top-focused display for handset input, but on A16 it
+        // also prevented LatinIME from attaching a visible window to the pane (IMMS show
+        // with mInputShown + no TYPE_INPUT_METHOD on the VD). Omit it so the focused
+        // EditText on the pane can own IME the same way as pre-Lineage builds.
         return DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_SECURE or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
@@ -74,7 +76,6 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP or
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED or
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED or
-            DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_OWN_FOCUS or
             // Input viewport so BT mouse cursor can bind via setVirtualMousePointerDisplayId
             // (without this, dumpsys shows touch NONE and override falls back to display 0).
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH

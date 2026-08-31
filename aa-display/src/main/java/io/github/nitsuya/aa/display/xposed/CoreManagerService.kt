@@ -298,6 +298,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                                         AABroadcastConst.EXTRA_FULLSCREEN_PANE,
                                         SplitPane.FULLSCREEN_NONE,
                                     ),
+                                    imeChipL = intent.getIntExtra(AABroadcastConst.EXTRA_IME_CHIP_L, 0),
+                                    imeChipT = intent.getIntExtra(AABroadcastConst.EXTRA_IME_CHIP_T, 0),
+                                    imeChipR = intent.getIntExtra(AABroadcastConst.EXTRA_IME_CHIP_R, 0),
+                                    imeChipB = intent.getIntExtra(AABroadcastConst.EXTRA_IME_CHIP_B, 0),
                                 ),
                             )
                         }
@@ -366,6 +370,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 ?: Display.INVALID_DISPLAY
 
         fun hidSplitLayout(): HidSplitLayout? = mSplitController?.hidSplitLayout()
+
+        /** BT mouse click on shell 「收起键盘」 — do not inject into the pane VD. */
+        fun hideImeFromHid() {
+            runCatching { mSplitController?.hideIme() }
+        }
 
         fun focusHidPane(pane: Int): Boolean {
             val c = mSplitController ?: return false
@@ -663,6 +672,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                                 CommonContextWrapper.createModuleContext(systemContext),
                                 controller,
                             )
+                            runCatching { VdImeDisplayPin.onAaDisplaysActive(systemContext) }
+                                .onFailure { log(TAG, "VdImeDisplayPin session-active failed", it) }
                             runCatching { PhoneHidRedirect.onSessionLiveChanged(true) }
                                 .onFailure { log(TAG, "PhoneHidRedirect session-live failed", it) }
                         }
@@ -720,7 +731,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     override fun onDestroyDisplay() {
         runMain {
             mSplitController?.launch?.flushPersistOnAaDisconnect()
-            val finishTeardown = {
+            val finishTeardown: () -> Unit = {
                 mSplitController?.onDestroy()
                 mSessionPolicy = null
                 mSplitController = null
@@ -729,6 +740,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 CoolwalkRailStore.clear(
                     if (hasSystemContext) systemContext.contentResolver else null,
                 )
+                runCatching { VdImeDisplayPin.onAaDisplaysInactive(systemContext) }
+                    .onFailure { log(TAG, "VdImeDisplayPin session-inactive failed", it) }
             }
             // Session policy is created async after the create callback; destroy before that
             // must still tear down the controller and clear the profile lock.

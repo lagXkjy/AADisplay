@@ -1157,6 +1157,10 @@ object PhoneHidRedirect {
                 if (event.actionButton == MotionEvent.BUTTON_TERTIARY) return true
                 if (pointerDown) return true
                 if (wantsDividerChrome(layout)) return startDividerGesture(layout)
+                if (layout.isImeChipHit(cursorCanvasX, cursorCanvasY)) {
+                    CoreManagerService.hideImeFromHid()
+                    return true
+                }
                 pointerDown = true
                 pointerDownTime = SystemClock.uptimeMillis()
                 CoreManagerService.focusHidPane(pane)
@@ -1195,6 +1199,10 @@ object PhoneHidRedirect {
                 val pressed = event.buttonState and MotionEvent.BUTTON_PRIMARY != 0
                 if (pressed && !pointerDown) {
                     if (wantsDividerChrome(layout)) return startDividerGesture(layout)
+                    if (layout.isImeChipHit(cursorCanvasX, cursorCanvasY)) {
+                        CoreManagerService.hideImeFromHid()
+                        return true
+                    }
                     pointerDown = true
                     pointerDownTime = SystemClock.uptimeMillis()
                     CoreManagerService.focusHidPane(pane)

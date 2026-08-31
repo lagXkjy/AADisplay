@@ -2,36 +2,56 @@
 
 ## Unreleased
 
-### Fixed
-- **Recent / 显式关闭不再 forceStop：** close / swipe-off 仅 ATMS `removeTask`；`forceStopPackageAsUser` 保留给 Delay Destroy（180s）`onDestroy`  teardown。
-- **冷启动 / 主线程忙时长按分隔条误对调：** 长按 Recent 以输入 `heldMs≥550ms` 为准（Handler 超时可补震）；去掉 480–550ms fallback tap-swap，避免假长按被交换。
-- **分隔条点按交换 / 拖动 settle 抖动：** tap-swap 窗口 420→480ms，长按前（<550ms）无 slop  breach 也交换；ratio 微变优先 swap 而非 settle；点按交换设 `ratioSettling` + `swapInFlight` 避免重复 layout/rebind；拖动松手 Shell-first layout → `setSplitRatio`，同步清 GPU 预览，去掉 300ms occupancy / 600ms settling。
-- **分屏比例 settle 错位 / 黑边：** Shell 与 VD 共用 `SplitPane.dividerPx`；ratio-settle 仅对 **变窄** 的 pane 做 WM nudge（减黑边且避免双 pane 1px 抖动风暴）。
-- **Open/Close 交互卡顿（精简热路径）：** ATMS 栈变更的 notify + Recent dirty 合并为单次 `scheduleStackSettle`（200ms）；`AaMainFragment` occupancy 未变时跳过 overlay 刷新；Recent 列 `DiffUtil` 替代全列 `notifyDataSetChanged`；显式 close 后跳过一次 debounced dirty reload（乐观 UI 已更新）。
-- **应用记忆恢复失效（Recent 重构回归）：** VD 显式关闭只记 `mExplicitlyClosedPackages` + debounced persist，不再 `LastSplitStore.dropPackage` 清 durable 快照；手机列关闭不再误伤分屏记忆。用户点选/Recent 启动不再 cancel 进行中的 restore/ensure。`onDestroy`/`verify` 的 force persist 跳过 ATMS refresh，避免断连时空 VD  trim 栈导致写盘 skip。
-- **拖分屏条 VD 内应用分辨率重建卡顿：** ratio settle Shell-first；TextureView 尺寸变化不再触发 `setPaneSurface`→ensure；`ratioSettling` 缩至 180ms 仅挡 rebind；resize 期间跳过 `onTaskMovedToFront` promote。
-- **拖动分屏 / Recent 拖拽栈顺序乱（如汽水抢顶）：** `refreshPanePackagesFromAtms` 不再按 ATMS visible top 覆写栈顶；merge 保留 intentional 顺序（resize 时 ATMS 漏报 buried）；`onTaskMovedToFront` 改 `promoteStackFronts`；ratio settle suppress 延至 2s；Recent 拖拽 reorder 改同步 IPC。
-- **Recent 关闭 VD 要等数秒才消失：** `removeTask` 改后台执行；VD close 先 `forceStop` 再 ATMS `removeTask`（原先 handler 上同步 `removeTask` 阻塞 4～5s 才轮到 forceStop）。
-- **Recent 关闭 VD 栈顶（如 QQ 音乐车机）很慢又自动启动：** 显式 close 记入会话内 `mExplicitlyClosedPackages`，backfill/restore 跳过、不再 wipe `LastSplitStore`；`forceStop` 后台线程，close 路径跳过同步 Av 仲裁。incomplete persist 仅 skip 不清快照（恢复 `persist clear` 回归）。
-- **应用选择器点选闪「请选择应用」：** 点选后保持乐观占位至 launch 确认；去掉 400ms 过早 occupancy sync；Binder/广播仍为空时忽略 downgrade。
-- **应用选择器点选卡顿：** 先 `hide()` + 乐观占位再 `runIO` 启动，避免 Binder 阻塞主线程导致选择页停留数秒。
-- **交换分屏卡顿：** `swapPanes` 不再在 handler 上同步跑两侧 `ensureTasksFillDisplay`（VD nudge + 逐 task resize），改 80ms 后异步 settle；AvMedia 仲裁同样延后。
-- **分隔条点按偶发不交换：** 放宽 tap-swap 窗口（280→420ms）、轻微滑动仍算点按；交换改 `postUserAction` 优先于 ratio settle 队列。
-- **Recent 卡顿 / 长按误对调：** 分隔条与锁屏 peel 仅短按对调，未满长按超时的“假长按”不再交换；Recent 点选先关面板再异步 launch，关闭/滑动去掉主线程 Binder 与 200ms 缩放动画，提高滑动阈值；`forceStop` 延后以免堵后续置顶；图标 IPC 缩到 64px、手机列最多 8 条；关闭堆栈用 `commitNow`。
-- **退出全屏后中间分屏条点不上（回归修复）：** 回退 `finishLeavingFullscreen` 异步布局与 `resetGesture` 竞态（adb 可见 VD 先缩到 502+770 又被全屏 1280×720 拉回）；恢复同步 `exitFullscreen` + `applySplitLayoutWeights(force)`，并 `requestLayout`。
-- **蓝牙鼠标跨 VD 跳中心（自绘光标）：** 逻辑 inject 已用 canvas 连续坐标；`HidCursorOverlayView` 自绘指针，`forceHideCursor` + 各 VD 藏 OS sprite；不再向 pane 注入 `HOVER_MOVE`（避免 VD 上幽灵系统箭头）。跨 pane 只 `injectHidTouchOnPane`。
-- **蓝牙鼠标分隔条跳变：** 分屏下悬停不再按分隔带扩区抢路由（改由左键按下才命中 seam/peel）；悬停始终落在最近窗 VD，左键在分隔带上拖比例 / 点按对调 / 长按堆栈。
-- **蓝牙鼠标分隔条（保留）：** 移动时才做绝对坐标映射、`toCanvas`、`HID_SHELL_GEOMETRY` 同步；指针由壳上 [HidCursorOverlayView] 自绘（`ACTION_HID_CURSOR`），不再绑窗 VD sprite。
+## 0.24#17.4-r14
 
 ### Added
-- **手机蓝牙键鼠 → 焦点窗 VD：** `PhoneHidRedirect`（system_server）。AA 会话活跃时偷物理键盘 / 鼠标事件并 `inject` 到焦点 VirtualDisplay（鼠标主键按触控注入）；Delay Destroy 期间归还手机。方控媒体键路径不变。折叠屏：光标会先画在合盖外屏 / 展开主屏，需 `setVirtualMousePointerDisplayId` 绑到 AA VD + 隐藏实体屏光标；绝对坐标按 `event.displayId` 缩放。W7023：AA VD 缺 Input viewport（touch NONE）时 override 仍落主屏——加 `SUPPORTS_TOUCH` + hook `setDisplayViewports` 注入窗 viewport + `forceHideCursor`。双窗：光标在壳画布连续移动，可停在分隔带（不传送到另一 VD）；分隔带拖比例 / 长按堆栈 / 点按对调走 `touchAaDisplay`；堆栈打开后触控继续打壳。键盘：Ctrl+方向/WASD 经壳改比例再 settle VD，Ctrl+R/Tab 开堆栈，Ctrl+S 对调。中键切换对侧窗。
+- **手机蓝牙键鼠 → 焦点窗 VD：** `PhoneHidRedirect`（system_server）。AA 会话活跃时偷物理键盘 / 鼠标事件并 `inject` 到焦点 VirtualDisplay（鼠标主键按触控注入）；Delay Destroy 期间归还手机。方控媒体键路径不变。折叠屏：光标会先画在合盖外屏 / 展开主屏，需 `setVirtualMousePointerDisplayId` 绑到 AA VD + 隐藏实体屏光标；绝对坐标按 `event.displayId` 缩放。W7023：AA VD 缺 Input viewport（touch NONE）时 override 仍落主屏——加 `SUPPORTS_TOUCH` + hook `setDisplayViewports` 注入窗 viewport + `forceHideCursor`。双窗：光标在壳画布连续移动，可停在分隔带（不传送到另一 VD）；分隔带拖比例 / 长按堆栈 / 点按对调走 `touchAaDisplay`；堆栈打开后触控继续打壳。键盘：Ctrl+方向/WASD 经壳改比例再 settle VD，Ctrl+R/Tab 开堆栈，Ctrl+S 对调。中键切换对侧窗。壳上 `HidCursorOverlayView` 自绘指针。
+
+### Changed
+- **Recent 逻辑重构：** VD 列以 `PaneAppStack` 为顺序唯一源（ATMS 只补 taskId/图标）；新增 `RecentTaskProvider` / `RecentTaskActions` / `RecentTasksCoordinator`；拖拽结束走 `reorderPaneStack` IPC 持久化整栈；操作后重载快照、去掉跨列乐观更新；已打开时再按 Ctrl+R/长按只刷新不关闭；ATMS 变更经 `ACTION_RECENT_TASK_DIRTY` 防抖刷新。
+- **Recent 回归修复：** `RecentTaskProvider` 读路径不再 `trimToAlive` 误清栈，并补 ATMS 在途任务；关闭恢复乐观移除 + 过滤 `mExplicitlyClosedPackages`；× 按钮防 `ItemTouchHelper` 抢触控；`ensurePanePackages` 跳过已关闭包；用户点选/选择器启动时清除关闭标记；Recent「添加应用」改直接调 `AaMainFragment.showAppPickerFromRecent`。
+- **全屏下点选即切侧：** Recent / 应用选择器 `startActivityOnPaneForUser` 若当前全屏在对侧，promote/launch 成功后直接 `setSplitFullscreen` 到目标窗。
+- **Recent VD 列点空白关面板：** 左 / 中 / 右列空白 tap 均可 `onExit`（不再仅右列）。
+- **AutoOpen 短链失败兜底：** full-bleed 短链耗尽且仍未 `AA_DISPLAY_SHOWN` 时武装长 AutoOpen；`IllegalStateException` / `NullPointerException` 均按控制器 not-ready 处理。
+- **Version bump to `0.24#17.4-r14`** (`versionCode` 3074)。用户说明见 [docs/archive/RELEASE_NOTES_0.24-17.4-r14.md](docs/archive/RELEASE_NOTES_0.24-17.4-r14.md)。
+
+### Fixed
+- **LineageOS Android 16 分屏 VD 与手机 PowerGroup 绑死：** `PaneDisplayGroupForce` 将 AA pane LogicalDisplay 拽出 default DisplayGroup 0（否则 `OWN_DISPLAY_GROUP` / `ALWAYS_UNLOCKED` 被忽略，keyguard / ColorFade 同步到车机窗）；挪组后就地同步 `mOverrideDisplayInfo.displayGroupId`（勿清 `mInfo`，A16 `DisplayInfoProxy` 赋 null 会重启 system_server）。
+- **虚拟屏软键盘高度为 0（仅「收起键盘」）：** 蓝牙硬键盘连接时会话期临时打开 `show_ime_with_hard_keyboard`（销毁后恢复）；去掉 `OWN_FOCUS`；IME policy 仅 FALLBACK→LOCAL，不改写 HIDE/INVALID；壳芯片只认 VD 上真实 IME 窗（不再信 `mInputShown`）。
+- **「收起键盘」点到空格：** HU 触控仍落 TextureView——芯片矩形内改走 `hideIme`；蓝牙鼠标经 `HidSplitLayout` 芯片几何同样收键盘。
+- **Recent / 显式关闭不再 forceStop：** close / swipe-off 仅 ATMS `removeTask`；`forceStopPackageAsUser` 保留给 Delay Destroy（180s）`onDestroy` teardown。
+- **冷启动 / 主线程忙时长按分隔条误对调：** 长按 Recent 以输入 `heldMs≥550ms` 为准（Handler 超时可补震）；去掉 480–550ms fallback tap-swap，避免假长按被交换。
+- **分隔条点按交换 / 拖动 settle 抖动：** tap-swap 窗口 420→480ms，长按前（<550ms）无 slop breach 也交换；ratio 微变优先 swap 而非 settle；点按交换设 `ratioSettling` + `swapInFlight` 避免重复 layout/rebind；拖动松手 Shell-first layout → `setSplitRatio`，同步清 GPU 预览，去掉 300ms occupancy / 600ms settling。
+- **分屏比例 settle 错位 / 黑边：** Shell 与 VD 共用 `SplitPane.dividerPx`；ratio-settle 仅对 **变窄** 的 pane 做 WM nudge（减黑边且避免双 pane 1px 抖动风暴）。
+- **Open/Close 交互卡顿（精简热路径）：** ATMS 栈变更的 notify + Recent dirty 合并为单次 `scheduleStackSettle`（200ms）；`AaMainFragment` occupancy 未变时跳过 overlay 刷新；Recent 列 `DiffUtil` 替代全列 `notifyDataSetChanged`；显式 close 后跳过一次 debounced dirty reload（乐观 UI 已更新）。
+- **应用记忆恢复失效（Recent 重构回归）：** VD 显式关闭只记 `mExplicitlyClosedPackages` + debounced persist，不再 `LastSplitStore.dropPackage` 清 durable 快照；手机列关闭不再误伤分屏记忆。用户点选/Recent 启动不再 cancel 进行中的 restore/ensure。`onDestroy`/`verify` 的 force persist 跳过 ATMS refresh，避免断连时空 VD trim 栈导致写盘 skip。
+- **拖分屏条 VD 内应用分辨率重建卡顿：** ratio settle Shell-first；TextureView 尺寸变化不再触发 `setPaneSurface`→ensure；`ratioSettling` 缩至 180ms 仅挡 rebind；resize 期间跳过 `onTaskMovedToFront` promote。
+- **拖动分屏 / Recent 拖拽栈顺序乱（如汽水抢顶）：** `refreshPanePackagesFromAtms` 不再按 ATMS visible top 覆写栈顶；merge 保留 intentional 顺序（resize 时 ATMS 漏报 buried）；`onTaskMovedToFront` 改 `promoteStackFronts`；ratio settle suppress 延至 2s；Recent 拖拽 reorder 改同步 IPC。
+- **Recent 关闭 VD 要等数秒才消失：** `removeTask` 改后台执行；显式 close 记入会话内 `mExplicitlyClosedPackages`，backfill/restore 跳过；close 路径跳过同步 Av 仲裁。incomplete persist 仅 skip 不清快照。
+- **应用选择器点选闪「请选择应用」 / 卡顿：** 点选后保持乐观占位至 launch 确认；先 `hide()` + 乐观占位再 `runIO` 启动；Binder/广播仍为空时忽略 downgrade。
+- **交换分屏卡顿：** `swapPanes` 不再在 handler 上同步跑两侧 `ensureTasksFillDisplay`，改 80ms 后异步 settle；AvMedia 仲裁同样延后。
+- **分隔条点按偶发不交换 / Recent 卡顿 / 长按误对调：** 放宽 tap-swap；未满长按超时的假长按不再交换；Recent 点选先关面板再异步 launch；图标 IPC 缩到 64px、手机列最多 8 条。
+- **退出全屏后中间分屏条点不上（回归修复）：** 恢复同步 `exitFullscreen` + `applySplitLayoutWeights(force)`，并 `requestLayout`。
+- **蓝牙鼠标跨 VD 跳中心 / 分隔条跳变：** `HidCursorOverlayView` 自绘指针，`forceHideCursor` + 各 VD 藏 OS sprite；不再向 pane 注入 `HOVER_MOVE`；悬停不按分隔带扩区抢路由，左键才命中 seam/peel。
+
+### Verify（r14）
+1. 手机蓝牙键鼠：窗内可点；分隔带拖比例 / 短按交换 / 长按 Recent；Ctrl+WASD / S / R；中键切窗；Delay Destroy 后键鼠归还手机
+2. 全屏时在 Recent / 选择器点对侧应用，画面切到该侧全屏
+3. Recent 左/中列空白 tap 可关面板
+4. 偶发冷连不进分屏场景：短链后仍能靠 AutoOpen 长兜底进入
+5. LineageOS A16：息屏 / 解锁后车机分屏窗不被手机 ColorFade / keyguard 拖死
+6. 选应用 / 交换 / Recent 关闭无明显数秒卡顿；断线记忆仍可恢复
+7. 蓝牙硬键盘接入时，VD 内输入框能弹出完整软键盘；点「收起键盘」收起（不点到空格）；断开会话后 `show_ime_with_hard_keyboard` 恢复
+
+## Pre-r13 unsectioned notes
+
+以下条目在 r13 打点时已在树中，但当时仅做了版本号 bump，未单独成节；保留作技术对照。
 
 ### Removed
 - **藏车机媒体壳图标：** 删除 `AaClusterMediaIconHideHook`（不再 hook `queryIntentServices` 过滤本包壳）。全屏投影下桌面列表本就会闪，隐藏收益低且增加 hook 面。
 
 ### Changed
-- **Recent 逻辑重构：** VD 列以 `PaneAppStack` 为顺序唯一源（ATMS 只补 taskId/图标）；新增 `RecentTaskProvider` / `RecentTaskActions` / `RecentTasksCoordinator`；拖拽结束走 `reorderPaneStack` IPC 持久化整栈；操作后重载快照、去掉跨列乐观更新；已打开时再按 Ctrl+R/长按只刷新不关闭；VD 列空白点击仅设焦点；ATMS 变更经 `ACTION_RECENT_TASK_DIRTY` 防抖刷新。
-- **Recent 回归修复：** `RecentTaskProvider` 读路径不再 `trimToAlive` 误清栈，并补 ATMS 在途任务；关闭恢复乐观移除 + 过滤 `mExplicitlyClosedPackages`；× 按钮防 `ItemTouchHelper` 抢触控；`removeTask` 先记关闭再清栈/`LastSplitStore.dropPackage`/`forceStop`；`ensurePanePackages` 跳过已关闭包；用户点选/选择器启动时清除关闭标记；Recent「添加应用」改直接调 `AaMainFragment.showAppPickerFromRecent`（避免 hide 后 post/广播丢失）。 AvMedia（音乐 ∪ 视频）正在播放时不因地图/浏览器压顶或空闲 Av 栈顶而自动丢发声权；仅在**停止播放**、**移出栈**、或**另一 AvMedia 开始 PLAYING** 时让出。同窗 `SplitBuriedPlayback` 仅在栈顶 Av 正在播时 pause 埋栈。**栈恢复 / ensure / 双窗 promote** 走 `enforceSingleSounder`（立即 + 延迟重试），多 Av 同恢只留一个发声；`resumeFront` 若已有其它 Av 在播则跳过。清理：去掉 soft-idle 选主 / 仅音乐埋栈启发式、`eligibleControllers` 无用 layout 参数、重复 isPlaying/isIdle、无调用方的 `CoreManagerService.buriedPackagesOnAaDisplays`。
+- **音视频粘性焦点（r16）：** AvMedia（音乐 ∪ 视频）正在播放时不因地图/浏览器压顶或空闲 Av 栈顶而自动丢发声权；仅在**停止播放**、**移出栈**、或**另一 AvMedia 开始 PLAYING** 时让出。同窗 `SplitBuriedPlayback` 仅在栈顶 Av 正在播时 pause 埋栈。**栈恢复 / ensure / 双窗 promote** 走 `enforceSingleSounder`（立即 + 延迟重试），多 Av 同恢只留一个发声；`resumeFront` 若已有其它 Av 在播则跳过。清理：去掉 soft-idle 选主 / 仅音乐埋栈启发式、`eligibleControllers` 无用 layout 参数、重复 isPlaying/isIdle、无调用方的 `CoreManagerService.buriedPackagesOnAaDisplays`。
 - **音视频互斥 + 仪表三源重定义（r15）：** AvMedia = 音乐 ∪ 视频（抖音）。`AvMediaArbiter.pickWinner` 只保留一个发声源（焦点窗正在播的栈顶优先，否则三源 / 其它音乐 / 视频）；`pauseLosers` 停其它 PLAYING。仪表只跟 QQ 车载 / HD / 汽水里**正在播放**的那一个（`pickClusterSource`）；视频抢到发声权时清空仪表。三源彼此互斥。
 - **同窗叠栈：** 栈顶 AvMedia **正在播放**时对埋栈 AvMedia 显式 `pause`；非 Av / 空闲 Av 压顶时埋栈音视频可续播。
 - **FacetBar 重构文档与试验代码清理：** 新增 [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)（状态机、四路回收、profile settle、坑点）；移除 `ReconnectSizingTrace`、未使用的 `:car` presentation resize 广播、`CoolwalkRailMath` 死代码；`AaDisplayPresentationResize` 改为 AADisplay 进程懒加载 `DrawingSpec` hook 入口；同步 [EXECUTION.md](docs/EXECUTION.md) §5.4。

@@ -220,12 +220,12 @@ Android Auto 绑定 AADisplay 的投影 Service
 
 VD flags（`SplitVdLifecycle.vdFlags`）——**不要加 `VIRTUAL_DISPLAY_FLAG_PRESENTATION`**（抖音 LivePlay 会把 Presentation 贴到另一窗，盖住导航并抢走焦点）：
 
-`PUBLIC | SECURE | OWN_CONTENT_ONLY | TRUSTED | OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS | SUPPORTS_TOUCH`
+`PUBLIC | SECURE | OWN_CONTENT_ONLY | TRUSTED | OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | SUPPORTS_TOUCH`
 
 创建后由 `PaneDisplayGroupForce` 把 LogicalDisplay 挪出 Group 0（Lineage A16 上 PUBLIC + OWN_DISPLAY_GROUP 仍可能卡在 Group 0；同组会跟手机锁屏/ColorFade。`ALWAYS_UNLOCKED` 只对非默认组生效）。
 
 - **需要 `PUBLIC`**：否则 `FLAG_PRIVATE`，LatinIME 等非 owner 无法在窗上建输入法窗（A16：`SHOW_SOFT_INPUT` 超时 / `WM_SET_REMOTE_TARGET_IME_VISIBILITY` 失败）。
-- **`OWN_FOCUS`**：窗应用可有本屏焦点，同时不强制抢走手机顶焦点（同 GhostActivity）。
+- **不要 `OWN_FOCUS`**：A16 上会导致 IMMS 以为已 show（壳出现「收起键盘」）但 VD 上无 `TYPE_INPUT_METHOD` 窗；省略后焦点 EditText 才能正常出键盘。
 - `SUPPORTS_TOUCH`：蓝牙鼠标 viewport / `setVirtualMousePointerDisplayId` 需要。
 
 分屏时 **VD 缓冲 = 窗格 TextureView 尺寸**（HU × ratio − 分隔条）。全屏时两 VD 都是满 HU 缓冲，AA UI 只显示一块、底下那块继续渲染。  
@@ -486,9 +486,12 @@ flowchart TB
 
 `PanePresentationGuard`：`systemReady` 时装一次。拦外包往本窗 VD 贴 `TYPE_PRESENTATION`（典型：抖音 LivePlay + MediaRouter）。
 
-`VdImeDisplayPin`：`systemReady` 时装一次。AA VD 上的 client 要键盘时，IME 窗/token 必须落在同一 VD（纠正 OEM 把目标改写到默认屏，如三星合盖 `isFolded`→0）。
+`VdImeDisplayPin`：`systemReady` 时装一次。AA VD 上的 client 要键盘时，IME 窗/token 必须落在同一 VD（纠正 OEM 把目标改写到默认屏，如三星合盖 `isFolded`→0）。无 decor 时同时 hook `DisplayContent.getImePolicy` + WMS，仅把 **FALLBACK→LOCAL**（勿改写 HIDE/INVALID，否则空 show）。
+另：蓝牙硬键盘连接时 LatinIME 默认不展软键盘（`onEvaluateInputViewShown` → 壳「收起键盘」但 `mImeHeight=0`）。会话期临时打开 `show_ime_with_hard_keyboard`（销毁后恢复）。
+`PaneDisplayGroupForce` 在挪组后**就地**同步 `mOverrideDisplayInfo.displayGroupId`（勿清 `mInfo`：A16 上是 final `DisplayInfoProxy`，赋 null 会 NPE 重启 system_server）。
 
 `PhoneHidRedirect`：`systemReady` 装钩；AA 会话 live 时**仅当检测到外接鼠标**才启用 InputFilter + viewport 注入（键盘可走 key hook）。Delay Destroy / teardown / 拔掉鼠标关闭。操作说明见 §10.1。
+外接键鼠仍可能因 policy `FLAG_WAKE` 点亮手机主屏；**禁止**在 `interceptMotion*` 上改 policyFlags / 吞 `userActivity(0)`（Lineage A16 上会把指针路由打回手机）。
 
 `PaneDisplayGroupForce`：`applyPolicies` 后把窗 LogicalDisplay 挪出 Group 0，使 `ALWAYS_UNLOCKED` 生效、锁屏不同步到车机。
 

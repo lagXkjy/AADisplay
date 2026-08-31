@@ -1459,6 +1459,21 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         if (!isBaseBindingInitialized() || !isAdded) return
         val vis = splitVisual(splitRatio) ?: return
         val ctx = context ?: return
+        val chip = baseBinding.btnHideIme
+        var chipL = 0
+        var chipT = 0
+        var chipR = 0
+        var chipB = 0
+        if (imeChipVisible && chip.isVisible && chip.width > 0 && chip.height > 0) {
+            val locHost = IntArray(2)
+            val locChip = IntArray(2)
+            baseBinding.root.getLocationOnScreen(locHost)
+            chip.getLocationOnScreen(locChip)
+            chipL = locChip[0] - locHost[0]
+            chipT = locChip[1] - locHost[1]
+            chipR = chipL + chip.width
+            chipB = chipT + chip.height
+        }
         try {
             ctx.sendBroadcast(
                 android.content.Intent(AABroadcastConst.ACTION_HID_SHELL_GEOMETRY).apply {
@@ -1466,6 +1481,10 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                     putExtra(AABroadcastConst.EXTRA_SHELL_PARENT_H, vis.parentH)
                     putExtra(AABroadcastConst.EXTRA_SHELL_SIDEBYSIDE, vis.sideBySide)
                     putExtra(AABroadcastConst.EXTRA_FULLSCREEN_PANE, fullscreenPane)
+                    putExtra(AABroadcastConst.EXTRA_IME_CHIP_L, chipL)
+                    putExtra(AABroadcastConst.EXTRA_IME_CHIP_T, chipT)
+                    putExtra(AABroadcastConst.EXTRA_IME_CHIP_R, chipR)
+                    putExtra(AABroadcastConst.EXTRA_IME_CHIP_B, chipB)
                 },
             )
         } catch (_: Throwable) {
@@ -1713,6 +1732,11 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             if (SplitPane.isFullscreenPane(fullscreenPane) && pane != fullscreenPane) {
                 return@setOnTouchListener false
             }
+            // Soft keyboard paints inside this TextureView; the shell 「收起键盘」chip draws
+            // on top but HU events still land here — steal the chip rect before touchPane.
+            if (consumeImeChipTouch(e)) {
+                return@setOnTouchListener true
+            }
             val uptimeMillis = SystemClock.uptimeMillis()
             if (e.actionMasked == MotionEvent.ACTION_DOWN) {
                 setDownTime(uptimeMillis)
@@ -1790,7 +1814,33 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         if (show) {
             baseBinding.btnHideIme.bringToFront()
             positionImeChip()
+        } else {
+            reportHidShellLayout()
         }
+    }
+
+    /**
+     * TextureView forwards every touch into the pane VD. When the hide-IME chip overlaps
+     * the soft keyboard (space bar), claim that screen rect for [CoreApi.hideIme] instead.
+     */
+    private fun consumeImeChipTouch(e: MotionEvent): Boolean {
+        if (!imeChipVisible || !isBaseBindingInitialized()) return false
+        val chip = baseBinding.btnHideIme
+        if (!chip.isVisible || chip.width <= 0 || chip.height <= 0) return false
+        val loc = IntArray(2)
+        chip.getLocationOnScreen(loc)
+        val x = e.rawX
+        val y = e.rawY
+        if (x < loc[0] || x >= loc[0] + chip.width || y < loc[1] || y >= loc[1] + chip.height) {
+            return false
+        }
+        when (e.actionMasked) {
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                applyImeChip(false, imeChipPane)
+                CoreApi.hideIme()
+            }
+        }
+        return true
     }
 
     /** Sit on the AA shell (above TextureView IME pixels) at the bottom of the IME pane. */
@@ -1826,5 +1876,7 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         lp.topMargin = (top + target.height - ch - margin).coerceAtLeast(margin)
         lp.bottomMargin = 0
         chip.layoutParams = lp
+        // HID mouse hit-tests via shell geometry; refresh after layout settles.
+        chip.post { reportHidShellLayout() }
     }
 }

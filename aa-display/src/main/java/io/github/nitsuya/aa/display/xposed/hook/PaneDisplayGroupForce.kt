@@ -82,6 +82,12 @@ object PaneDisplayGroupForce {
                     manualMoveToOwnGroup(mapperObj, display)
                     groupId = readGroupId(display)
                 }
+                // Lineage A16: mBaseDisplayInfo.displayGroupId updates, but
+                // mOverrideDisplayInfo often stays on group 0 — Power/userActivity
+                // then still routes HU touch to the phone PowerGroup.
+                if (groupId != DEFAULT_GROUP && groupId >= 0) {
+                    syncOverrideDisplayGroupId(display, groupId)
+                }
                 log(TAG, "forceOwnGroup id=$displayId → group=$groupId ($reason)")
             }
             if (root != null) {
@@ -154,14 +160,49 @@ object PaneDisplayGroupForce {
                         setInt(base, newGroupId)
                     }
                 }
-                // Invalidate cached DisplayInfo so clients see the new group.
-                findField(display.javaClass, "mInfo")?.apply {
-                    isAccessible = true
-                    set(display, null)
-                }
+                syncOverrideDisplayGroupId(display, newGroupId)
             }
         }
         log(TAG, "manualMove → group=$newGroupId")
+    }
+
+    /**
+     * Keep override / cached DisplayInfo on the same PowerGroup as the LogicalDisplay.
+     *
+     * Never clear [LogicalDisplay.mInfo]: on A16 it is a final DisplayInfoProxy; assigning
+     * the field to null NPEs in getDisplayInfoLocked and reboots system_server. Patch
+     * displayGroupId in place on override, base, and the proxy's current value instead.
+     */
+    private fun syncOverrideDisplayGroupId(display: Any, groupId: Int) {
+        runCatching {
+            var changed = false
+            changed = setDisplayGroupIdField(findFieldValue(display, "mOverrideDisplayInfo"), groupId) || changed
+            changed = setDisplayGroupIdField(findFieldValue(display, "mBaseDisplayInfo"), groupId) || changed
+            val infoObj = findFieldValue(display, "mInfo")
+            if (infoObj != null) {
+                val cached = findMethod(infoObj.javaClass, "get") { m ->
+                    m.parameterTypes.isEmpty()
+                }?.invoke(infoObj)
+                if (cached != null) {
+                    changed = setDisplayGroupIdField(cached, groupId) || changed
+                } else if (infoObj.javaClass.name.endsWith("DisplayInfo")) {
+                    // Pre-proxy LogicalDisplay: mInfo itself is the DisplayInfo.
+                    changed = setDisplayGroupIdField(infoObj, groupId) || changed
+                }
+            }
+            if (changed) {
+                log(TAG, "synced displayGroupId → $groupId (in-place, no mInfo clear)")
+            }
+        }
+    }
+
+    private fun setDisplayGroupIdField(info: Any?, groupId: Int): Boolean {
+        if (info == null) return false
+        val field = findField(info.javaClass, "displayGroupId") ?: return false
+        field.isAccessible = true
+        if (field.getInt(info) == groupId) return false
+        field.setInt(info, groupId)
+        return true
     }
 
     private fun invokeGetDisplay(mapperObj: Any, getDisplay: Method, displayId: Int): Any? {

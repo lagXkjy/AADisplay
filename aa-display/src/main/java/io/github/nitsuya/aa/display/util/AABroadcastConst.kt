@@ -70,6 +70,11 @@ interface AABroadcastConst {
         const val EXTRA_SHELL_PARENT_W = "aa.display.extra.SHELL_PARENT_W"
         const val EXTRA_SHELL_PARENT_H = "aa.display.extra.SHELL_PARENT_H"
         const val EXTRA_SHELL_SIDEBYSIDE = "aa.display.extra.SHELL_SIDEBYSIDE"
+        /** 「收起键盘」chip in shell parent coords; 0-size = hidden. */
+        const val EXTRA_IME_CHIP_L = "aa.display.extra.IME_CHIP_L"
+        const val EXTRA_IME_CHIP_T = "aa.display.extra.IME_CHIP_T"
+        const val EXTRA_IME_CHIP_R = "aa.display.extra.IME_CHIP_R"
+        const val EXTRA_IME_CHIP_B = "aa.display.extra.IME_CHIP_B"
         /**
          * system_server → AA: IME visibility on a pane VD.
          * [EXTRA_PANE] is -1 when hidden; PRIMARY/SECONDARY when showing.

@@ -12,7 +12,7 @@
 
 | 项 | 说明 |
 |----|------|
-| 当前版本 | `0.24#17.4-r13`（`versionCode` 3073） |
+| 当前版本 | `0.24#17.4-r14`（`versionCode` 3074） |
 | 变更记录 | [CHANGELOG.md](CHANGELOG.md) |
 | 历史版本说明 | [docs/archive/](docs/archive/) |
 | 开发者 / AI | [AGENTS.md](AGENTS.md)、运行时链路 [docs/EXECUTION.md](docs/EXECUTION.md) |
