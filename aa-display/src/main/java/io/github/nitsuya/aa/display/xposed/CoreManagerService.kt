@@ -15,6 +15,7 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitDisplayController
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.CoolwalkRailStore
 import io.github.nitsuya.aa.display.util.DisplayProfileSettle
@@ -23,6 +24,7 @@ import android.graphics.Point
 import android.view.Display
 import android.view.KeyEvent
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
+import io.github.nitsuya.aa.display.xposed.hook.PaneDisplayGroupForce
 import io.github.nitsuya.aa.display.xposed.hook.PhoneHidRedirect
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkRailMath
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailPhase
@@ -259,6 +261,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 .onFailure { log(TAG, "VdOrientationFill.ensureHooked failed", it) }
             runCatching { PhoneHidRedirect.ensureHooked() }
                 .onFailure { log(TAG, "PhoneHidRedirect.ensureHooked failed", it) }
+            runCatching { PaneDisplayGroupForce.ensureResolved() }
+                .onFailure { log(TAG, "PaneDisplayGroupForce.ensureResolved failed", it) }
             runCatching { registerAaUiBroadcastReceivers() }
                 .onFailure { log(TAG, "registerAaUiBroadcastReceivers failed", it) }
             runCatching { ClusterLyricMirror.start(systemContext) }
@@ -444,9 +448,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 // Do not call setSplitRatio here — that resizes VDs while TextureViews lag
                 // (shell ratio stays old). Ask AaMainFragment to layout + settle.
                 if (!hasSystemContext) return false
-                systemContext.sendBroadcast(
+                AaSystemBroadcast.toAaDisplay(
+                    systemContext,
                     android.content.Intent(AABroadcastConst.ACTION_HID_APPLY_SPLIT_RATIO)
-                        .putExtra(AABroadcastConst.EXTRA_RATIO, next)
+                        .putExtra(AABroadcastConst.EXTRA_RATIO, next),
                 )
                 mSessionPolicy?.onVirtualDisplayUserInteraction()
                 true
@@ -469,9 +474,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 if (!hasSystemContext) return false
                 // Shell overlay must steal HID before the UI broadcast round-trip.
                 setAaUiShellCapture(true)
-                PhoneHidRedirect.snapShellToRecentColumn()
-                systemContext.sendBroadcast(
-                    android.content.Intent(AABroadcastConst.ACTION_SHOW_RECENT_TASK)
+                PhoneHidRedirect.revealCursorForKeyboardRecent()
+                AaSystemBroadcast.toAaDisplay(
+                    systemContext,
+                    android.content.Intent(AABroadcastConst.ACTION_SHOW_RECENT_TASK),
                 )
                 mSessionPolicy?.onVirtualDisplayUserInteraction()
                 true
@@ -485,7 +491,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             return try {
                 if (!hasSystemContext) return false
                 // Same path as divider tap — optimistic shell layout in AaMainFragment.
-                systemContext.sendBroadcast(
+                AaSystemBroadcast.toAaDisplay(
+                    systemContext,
                     android.content.Intent(AABroadcastConst.ACTION_SPLIT_SWAP),
                 )
                 mSessionPolicy?.onVirtualDisplayUserInteraction()
@@ -496,21 +503,28 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             }
         }
 
-        /** Phone BT mouse — shell-drawn cursor in [HidCursorOverlayView] (presentation coords). */
-        fun notifyHidCursorOverlay(visible: Boolean, x: Float, y: Float) {
-            if (!hasSystemContext) return
-            try {
-                systemContext.sendBroadcast(
-                    android.content.Intent(AABroadcastConst.ACTION_HID_CURSOR).apply {
-                        putExtra(AABroadcastConst.EXTRA_CURSOR_VISIBLE, visible)
-                        putExtra(AABroadcastConst.EXTRA_CURSOR_X, x)
-                        putExtra(AABroadcastConst.EXTRA_CURSOR_Y, y)
-                    },
-                )
-            } catch (e: Throwable) {
-                logDebug(TAG, "notifyHidCursorOverlay: ${e.message}")
+        /** Phone BT mouse — shell cursor tip in presentation coords (AA UI pulls each frame). */
+        @Volatile private var hidCursorVisible = false
+        @Volatile private var hidCursorX = 0f
+        @Volatile private var hidCursorY = 0f
+        @Volatile private var hidCursorGen = 0
+
+        fun publishHidCursorState(visible: Boolean, x: Float = 0f, y: Float = 0f) {
+            hidCursorVisible = visible
+            if (visible) {
+                hidCursorX = x
+                hidCursorY = y
             }
+            hidCursorGen++
         }
+
+        fun hidCursorOverlaySnapshot(): FloatArray =
+            floatArrayOf(
+                if (hidCursorVisible) 1f else 0f,
+                hidCursorX,
+                hidCursorY,
+                hidCursorGen.toFloat(),
+            )
 
         fun displaySizeFor(displayId: Int): Point? {
             if (displayId < 0) return null
@@ -740,6 +754,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         return controller.startActivityOnPaneForUser(packageName, userId, pane)
     }
 
+    override fun getHidCursorOverlay(): FloatArray = hidCursorOverlaySnapshot()
+
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
         mSplitController?.moveTaskIdAsync(taskId, isVirtualDisplay)
     }
@@ -860,9 +876,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     private fun sendAaDisplayBroadcastFromSystem(action: String) {
         if (!hasSystemContext) return
         try {
-            systemContext.sendBroadcast(
-                android.content.Intent(action).setPackage(BuildConfig.APPLICATION_ID),
-            )
+            AaSystemBroadcast.toAaDisplay(systemContext, android.content.Intent(action))
         } catch (e: Throwable) {
             log(TAG, "sendAaDisplayBroadcastFromSystem failed action=$action", e)
         }

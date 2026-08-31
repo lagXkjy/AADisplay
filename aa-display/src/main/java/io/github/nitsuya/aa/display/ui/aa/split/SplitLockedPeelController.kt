@@ -7,6 +7,7 @@ import android.view.Display
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
@@ -207,7 +208,10 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
 
     private fun openRecent() {
         try {
-            c.context.sendBroadcast(Intent(AABroadcastConst.ACTION_SHOW_RECENT_TASK))
+            AaSystemBroadcast.toAaDisplay(
+                c.context,
+                Intent(AABroadcastConst.ACTION_SHOW_RECENT_TASK),
+            )
             logDebug(SplitDisplayController.TAG, "lockedPeel long-press → SHOW_RECENT_TASK")
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "lockedPeel openRecent failed:", e)

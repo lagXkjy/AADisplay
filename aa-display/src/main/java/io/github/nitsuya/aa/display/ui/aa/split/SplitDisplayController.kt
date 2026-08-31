@@ -19,6 +19,7 @@ import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.PmCaches
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
@@ -750,7 +751,10 @@ class SplitDisplayController(
         mLastAaUiDisplayIdRecoveryUptime = now
         mAaUiDisplayIdLookupFailed = false
         try {
-            context.sendBroadcast(Intent(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID))
+            AaSystemBroadcast.toAaDisplay(
+                context,
+                Intent(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID),
+            )
             logDebug(TAG, "maybeRecoverAaUiDisplayId: asked UI to re-report")
         } catch (e: Throwable) {
             log(TAG, "maybeRecoverAaUiDisplayId broadcast failed", e)
@@ -1385,7 +1389,10 @@ class SplitDisplayController(
 
     private fun notifySwapFailed() {
         try {
-            context.sendBroadcast(Intent(AABroadcastConst.ACTION_SPLIT_SWAP_FAILED))
+            AaSystemBroadcast.toAaDisplay(
+                context,
+                Intent(AABroadcastConst.ACTION_SPLIT_SWAP_FAILED),
+            )
         } catch (e: Throwable) {
             logDebug(TAG, "notifySwapFailed: ${e.message}")
         }

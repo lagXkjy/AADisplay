@@ -43,6 +43,12 @@ class AaRecentTaskFragment :
         )
         coord.bind(cols)
         coordinator = coord
+        // Match SplitAppPickerController: above peel (elevation 8) and consume empty taps
+        // so Coolwalk rail inject does not fall through to peel (fullscreen swap) / panes.
+        // Divider disable is owned by AaDisplayActivityKt.setMainChromeBlocked.
+        baseBinding.root.elevation = 32f
+        baseBinding.root.isClickable = true
+        baseBinding.root.setOnClickListener { hide() }
         baseBinding.btnAddAppLeft.setOnClickListener {
             openAppPickerAndClose(SplitPane.PRIMARY)
         }

@@ -413,7 +413,8 @@ object CoolwalkRailMath {
 
     fun railHitWidthPx(snapshot: RailSnapshot): Int {
         val fullW = layoutWidthPx(snapshot)
-        val observed = snapshot.touchRailWidthPx
+        // Starved GhFacetBar is 1×H — never treat that as the hit band.
+        val observed = snapshot.touchRailWidthPx.takeIf { it > 1 } ?: 0
         if (fullW > 0) {
             val range = railPxRange(fullW)
             if (observed in range) return observed

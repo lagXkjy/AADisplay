@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Binder
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import android.os.PowerManager
 import android.os.SystemClock
 import android.os.SystemProperties
@@ -733,9 +734,7 @@ class DisplaySessionPolicy(
 
     private fun sendAaDisplayBroadcast(action: String, label: String) {
         try {
-            mContext.sendBroadcast(
-                Intent(action).setPackage(BuildConfig.APPLICATION_ID),
-            )
+            AaSystemBroadcast.toAaDisplay(mContext, Intent(action))
         } catch (e: Throwable) {
             log(TAG, "sendAaDisplayBroadcast[$label] failed:", e)
         }

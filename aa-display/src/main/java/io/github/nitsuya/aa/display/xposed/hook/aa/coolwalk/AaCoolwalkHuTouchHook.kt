@@ -168,13 +168,22 @@ object AaCoolwalkHuTouchHook {
                 ensureRailObservationFromDisplays(env)
             }
             val railTarget = isRailTargetCarDisplay(env, param.args[0])
-            val rail = CoolwalkRailCoordinator.railHitWidthPx()
+            val railBase = CoolwalkRailCoordinator.railHitWidthPx()
+            // Picker/Recents: cover full absolute facet band even if touchRail not reported yet.
+            val rail = if (env.mAaUiRailConsume) {
+                maxOf(railBase, CoolwalkRailMath.absoluteFacetRailBand().last)
+            } else {
+                railBase
+            }
             val action = motion.actionMasked
             val downInRailBand = motion.getX(0) < rail
             val downInRail = if (railTarget) true else downInRailBand
             if (action == MotionEvent.ACTION_DOWN) {
                 env.mHuRailGesture = downInRail
-                env.mHuPeelGesture = downInRail &&
+                // Recents / picker owns the shell — never treat rail as peel (would swap
+                // fullscreen panes via SplitDividerView under a low-elevation overlay).
+                env.mHuPeelGesture = !env.mAaUiRailConsume &&
+                    downInRail &&
                     SplitPane.isFullscreenPane(env.mCachedFullscreenPane) &&
                     isPeelHandleHitBand(env, motion)
             }
@@ -205,7 +214,17 @@ object AaCoolwalkHuTouchHook {
                 env.mRailHostDownTime = now
             }
             val down = env.mRailHostDownTime.takeIf { it > 0L } ?: now
-            val xInset = CoolwalkRailMath.compositorLeftInsetPx(CoolwalkRailCoordinator.current()).toFloat()
+            val fs = env.mCachedFullscreenPane
+            val peel = env.mHuPeelGesture
+            val railToAaUi = env.mAaUiRailConsume
+            // Picker / Recents: AaDisplay presentation is already full-HU (1920 etc.).
+            // Subtracting compositor blX shifts left-rail taps off the overlay → dead strip.
+            // Peel still needs inset when content-slot compositor is active (doc §10.11).
+            val xInset = if (railToAaUi) {
+                0f
+            } else {
+                CoolwalkRailMath.compositorLeftInsetPx(CoolwalkRailCoordinator.current()).toFloat()
+            }
             val toInject = rewriteMotionEvent(
                 source = motion,
                 downTime = down,
@@ -215,9 +234,6 @@ object AaCoolwalkHuTouchHook {
             )
             var retainInject = false
             try {
-                val fs = env.mCachedFullscreenPane
-                val peel = env.mHuPeelGesture
-                val railToAaUi = env.mAaUiRailConsume
                 if (action == MotionEvent.ACTION_MOVE) {
                     queuePendingRailMove(env, toInject)
                     retainInject = true
@@ -271,7 +287,8 @@ object AaCoolwalkHuTouchHook {
         railToAaUi: Boolean,
     ): Boolean {
         return when {
-            peel || railToAaUi -> CoreManager.tryTouchAaDisplay(event)
+            // Picker / Recents first — never pane while shell capture is on.
+            railToAaUi || peel -> CoreManager.tryTouchAaDisplay(event)
             SplitPane.isFullscreenPane(fs) -> CoreManager.tryTouchPane(fs, event)
             else -> CoreManager.tryTouchPrimaryPane(event)
         }

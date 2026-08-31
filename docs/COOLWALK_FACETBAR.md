@@ -17,7 +17,9 @@ Android Auto Coolwalk 在 HU 左侧保留一条 **竖向导航轨**（FacetBar�
 | **View** | `gh_coolwalk_*facet*` 图标列 | GONE + 0 宽，兄弟内容 MATCH_PARENT |
 | **Profile** | 分屏 VD 按 content slot 创建（如 720、1828） | 回收后按 **full HU** settle（800、1920…） |
 | **Presentation** | `DrawingSpec` 宽 = content slot | 加宽到 full HU |
-| **触控** | `x < rail` 命中 FacetBar VD | 偷渡到 pane / peel / AA UI（坐标需减 compositor inset） |
+| `x < rail` 且 **应用选择器 / Recent 打开** | `touchAaDisplay`，**不减** compositor inset（presentation 已是满 HU；减 inset 会让左侧点偏/点不到） |
+| `x < rail` 且全屏 peel 命中带 | `touchAaDisplay`，减 compositor inset（§10.11） |
+| 其余 `x < rail` | `touchPrimaryPane` / 可见全屏 pane，减 inset |
 
 各层不同步时会出现：**左侧黑条**、**右侧 gutter**、**全屏 peel 条点不动**、**软重连 content/full 来回跳**。
 

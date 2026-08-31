@@ -67,11 +67,6 @@ interface AABroadcastConst {
          * ([HidSplitLayout] must match [AaMainFragment] divider position).
          */
         const val ACTION_HID_SHELL_GEOMETRY = "aa.display.action.HID_SHELL_GEOMETRY"
-        /** system_server → AA: phone BT mouse cursor on the shell (presentation coords). */
-        const val ACTION_HID_CURSOR = "aa.display.action.HID_CURSOR"
-        const val EXTRA_CURSOR_VISIBLE = "aa.display.extra.CURSOR_VISIBLE"
-        const val EXTRA_CURSOR_X = "aa.display.extra.CURSOR_X"
-        const val EXTRA_CURSOR_Y = "aa.display.extra.CURSOR_Y"
         const val EXTRA_SHELL_PARENT_W = "aa.display.extra.SHELL_PARENT_W"
         const val EXTRA_SHELL_PARENT_H = "aa.display.extra.SHELL_PARENT_H"
         const val EXTRA_SHELL_SIDEBYSIDE = "aa.display.extra.SHELL_SIDEBYSIDE"

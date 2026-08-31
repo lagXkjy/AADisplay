@@ -117,4 +117,11 @@ interface ICoreManager {
      * must finish before the UI reloads). Prefer this over async [startActivityOnPane].
      */
     boolean startActivityOnPaneForUser(String packageName, int userId, int pane);
+
+    /**
+     * Phone BT mouse cursor on AaDisplay shell (pull model).
+     * Returns float[4]: visible (0/1), x, y, generation. Prefer this over
+     * ACTION_HID_CURSOR broadcasts — AMS batching made the sprite jump.
+     */
+    float[] getHidCursorOverlay();
 }

@@ -1,11 +1,14 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
+import android.content.Context
 import android.hardware.display.DisplayManager
 import android.hardware.display.DisplayManagerHidden
 import android.os.Binder
+import android.os.ServiceManager
 import android.os.SystemClock
 import android.view.Display
 import android.view.Surface
+import io.github.nitsuya.aa.display.xposed.hook.PaneDisplayGroupForce
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
@@ -51,6 +54,19 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
         // to attach a ty=PRESENTATION window onto "presentation" displays; with the flag
         // set, PRIMARY is offered as a target while the task stays on SECONDARY, covering
         // 高德 and killing key focus. Apps launched *on* the VD still work without it.
+        //
+        // Do NOT set VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS. Android 16 removed
+        // IWindowManager#setShouldShowSystemDecors; omitting this create-time bit is the
+        // supported equivalent of the old setShouldShowSystemDecors(id, false).
+        //
+        // PUBLIC is required so non-owner windows (LatinIME) can attach to the pane.
+        // Without it FLAG_PRIVATE blocks soft-keyboard windows → SHOW_SOFT_INPUT timeouts
+        // (A16 dumpsys: PHASE_WM_SET_REMOTE_TARGET_IME_VISIBILITY / 10s client timeout).
+        // PUBLIC alone leaves panes in DisplayGroup 0 on Lineage — PaneDisplayGroupForce
+        // reassigns after create so ALWAYS_UNLOCKED / lock sync still work.
+        //
+        // OWN_FOCUS: pane apps keep a focused window while phone can remain top focus for
+        // untargeted handset input (same as AA GhostActivity).
         return DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_SECURE or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
@@ -58,6 +74,7 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP or
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED or
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED or
+            DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_OWN_FOCUS or
             // Input viewport so BT mouse cursor can bind via setVirtualMousePointerDisplayId
             // (without this, dumpsys shows touch NONE and override falls back to display 0).
             DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH
@@ -109,11 +126,20 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             val resizeHotPath = reason.startsWith("resize-")
             val imeAlready = c.mImePolicyAppliedDisplays.contains(displayId)
             if (!(resizeHotPath && imeAlready)) {
-                Instances.iWindowManager.apply {
-                    setDisplayImePolicy(displayId, imePolicy)
-                    setShouldShowWithInsecureKeyguard(displayId, false)
-                    setShouldShowSystemDecors(displayId, false)
-                }
+                val iwm = Instances.iWindowManager
+                // Independent calls: a missing A16 AIDL must not abort IME / keyguard policy.
+                runCatching { iwm.setDisplayImePolicy(displayId, imePolicy) }
+                    .onFailure {
+                        logDebug(SplitDisplayController.TAG, "setDisplayImePolicy: ${it.message}")
+                    }
+                runCatching { iwm.setShouldShowWithInsecureKeyguard(displayId, false) }
+                    .onFailure {
+                        logDebug(
+                            SplitDisplayController.TAG,
+                            "setShouldShowWithInsecureKeyguard: ${it.message}",
+                        )
+                    }
+                forceHideSystemDecors(displayId)
                 c.mImePolicyAppliedDisplays.add(displayId)
             }
             // Narrow side-by-side panes are taller than wide (e.g. 278×480). Landscape apps
@@ -122,9 +148,94 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
             // Inverse: fullscreen 800×480 + portrait app → FIXED_ORIENTATION pillarbox
             // (VdOrientationFill so the activity fills the pane instead).
             lockPaneDisplayOrientation(displayId, reason)
+            // Lineage A16: OWN_DISPLAY_GROUP flag alone (esp. with PUBLIC) leaves panes in
+            // Group 0 → phone keyguard/ColorFade sync. Force displayGroupName + reassign.
+            // Re-assert shortly after — PUBLIC can trigger a later mapper pass back to 0.
+            if (!reason.startsWith("resize-")) {
+                PaneDisplayGroupForce.forceOwnGroup(displayId, reason)
+                c.mHandler.postDelayed({
+                    if (!c.mIsDestroying) {
+                        PaneDisplayGroupForce.forceOwnGroup(displayId, "reassert-$reason")
+                    }
+                }, 750L)
+            }
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "applyPolicies failed pane=$pane:", e)
         }
+    }
+
+    /**
+     * Keep system decorations off pane VDs (status / nav / launcher).
+     *
+     * Pre-A16: [IWindowManager.setShouldShowSystemDecors].
+     * A16+: AIDL removed; [vdFlags] already omits
+     * [DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS]
+     * (create-time equivalent). Still write
+     * [DisplayWindowSettings.setShouldShowSystemDecorsLocked] when present so OEM
+     * TRUSTED defaults cannot re-enable decorations — same policy, not a soft skip.
+     */
+    private fun forceHideSystemDecors(displayId: Int) {
+        val iwm = Instances.iWindowManager as Any
+        val aidl = iwm.javaClass.methods.firstOrNull { m ->
+            m.name == "setShouldShowSystemDecors" &&
+                m.parameterTypes.size == 2 &&
+                m.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                m.parameterTypes[1] == Boolean::class.javaPrimitiveType
+        }
+        if (aidl != null) {
+            runCatching { aidl.invoke(iwm, displayId, false) }
+                .onFailure {
+                    logDebug(SplitDisplayController.TAG, "setShouldShowSystemDecors: ${it.message}")
+                }
+            return
+        }
+        val identity = Binder.clearCallingIdentity()
+        try {
+            val wms = ServiceManager.getService(Context.WINDOW_SERVICE) ?: return
+            val settings = fieldWalk(wms, "mDisplayWindowSettings")
+            val setLocked = settings?.javaClass?.methods?.firstOrNull { m ->
+                m.name == "setShouldShowSystemDecorsLocked" &&
+                    m.parameterTypes.size == 2 &&
+                    m.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                    m.parameterTypes[1] == Boolean::class.javaPrimitiveType
+            }
+            if (setLocked != null && settings != null) {
+                setLocked.invoke(settings, displayId, false)
+                return
+            }
+            val internal = wms.javaClass.methods.firstOrNull { m ->
+                m.name == "setShouldShowSystemDecorsInternalLocked" &&
+                    m.parameterTypes.size == 2 &&
+                    m.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                    m.parameterTypes[1] == Boolean::class.javaPrimitiveType
+            }
+            if (internal != null) {
+                internal.invoke(wms, displayId, false)
+                return
+            }
+            logDebug(
+                SplitDisplayController.TAG,
+                "systemDecors: no runtime setter; vdFlags omit SHOULD_SHOW id=$displayId",
+            )
+        } catch (e: Throwable) {
+            logDebug(SplitDisplayController.TAG, "forceHideSystemDecors: ${e.message}")
+        } finally {
+            Binder.restoreCallingIdentity(identity)
+        }
+    }
+
+    private fun fieldWalk(obj: Any, name: String): Any? {
+        var cls: Class<*>? = obj.javaClass
+        while (cls != null) {
+            try {
+                val f = cls.getDeclaredField(name)
+                f.isAccessible = true
+                return f.get(obj)
+            } catch (_: NoSuchFieldException) {
+                cls = cls.superclass
+            }
+        }
+        return null
     }
 
     /**

@@ -220,7 +220,13 @@ Android Auto 绑定 AADisplay 的投影 Service
 
 VD flags（`SplitVdLifecycle.vdFlags`）——**不要加 `VIRTUAL_DISPLAY_FLAG_PRESENTATION`**（抖音 LivePlay 会把 Presentation 贴到另一窗，盖住导航并抢走焦点）：
 
-`PUBLIC | SECURE | OWN_CONTENT_ONLY | TRUSTED | OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED`
+`PUBLIC | SECURE | OWN_CONTENT_ONLY | TRUSTED | OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS | SUPPORTS_TOUCH`
+
+创建后由 `PaneDisplayGroupForce` 把 LogicalDisplay 挪出 Group 0（Lineage A16 上 PUBLIC + OWN_DISPLAY_GROUP 仍可能卡在 Group 0；同组会跟手机锁屏/ColorFade。`ALWAYS_UNLOCKED` 只对非默认组生效）。
+
+- **需要 `PUBLIC`**：否则 `FLAG_PRIVATE`，LatinIME 等非 owner 无法在窗上建输入法窗（A16：`SHOW_SOFT_INPUT` 超时 / `WM_SET_REMOTE_TARGET_IME_VISIBILITY` 失败）。
+- **`OWN_FOCUS`**：窗应用可有本屏焦点，同时不强制抢走手机顶焦点（同 GhostActivity）。
+- `SUPPORTS_TOUCH`：蓝牙鼠标 viewport / `setVirtualMousePointerDisplayId` 需要。
 
 分屏时 **VD 缓冲 = 窗格 TextureView 尺寸**（HU × ratio − 分隔条）。全屏时两 VD 都是满 HU 缓冲，AA UI 只显示一块、底下那块继续渲染。  
 不要改回「两窗都满幅再 crop」——半窗会变成全屏布局的中心切片 + 黑边。
@@ -412,7 +418,7 @@ flowchart TB
 
 前提：键鼠**连手机**；AA 会话活跃（非 Delay Destroy）；改钩子后需**重启**（`system_server`）。实现：`xposed/hook/PhoneHidRedirect.kt`。方控媒体键路径不变。
 
-光标在 **AaDisplay 壳画布**上连续移动（`[左窗][分隔条][右窗]`），可见箭头由壳上 `HidCursorOverlayView` 自绘（`ACTION_HID_CURSOR`），跨 pane **不**再切换 `setVirtualMousePointerDisplayId`；inject 仍进各 pane VD。
+光标在 **AaDisplay 壳画布**上连续移动（`[左窗][分隔条][右窗]`），可见箭头由壳上 `HidCursorOverlayView` 自绘（system_server 写内存坐标，AA UI 每帧 `getHidCursorOverlay` pull；勿再走 `ACTION_HID_CURSOR` 广播），跨 pane **不**再切换 `setVirtualMousePointerDisplayId`；inject 仍进各 pane VD。
 
 **鼠标**
 
@@ -443,6 +449,7 @@ flowchart TB
 - 系统实体屏光标：`forceHideCursor` + 藏 icon；可见指针只在 AA 壳 overlay。
 - 可选一次 `setVirtualMousePointerDisplayId` 绑 shell，避免合盖外屏 mapper 画 ghost cursor。
 - AA 窗需 Input viewport：VD 带 `VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH`；另 hook `setDisplayViewports` 注入窗 viewport。
+- **懒启用（A16）**：无外接鼠标时**不**装 `InputFilter`、**不**注入 AA VIRTUAL viewport。检测必须用 `(sources and SOURCE) == SOURCE`（`!= 0` 会把触屏误判成鼠标，因共享 `CLASS_POINTER`）。插拔鼠标热开/关；纯键盘走 key hook。
 - 日志标签：`AAD_PhoneHid`（LSPosed Bridge / modules log）。
 
 ### 10.2 方控映射
@@ -481,7 +488,9 @@ flowchart TB
 
 `VdImeDisplayPin`：`systemReady` 时装一次。AA VD 上的 client 要键盘时，IME 窗/token 必须落在同一 VD（纠正 OEM 把目标改写到默认屏，如三星合盖 `isFolded`→0）。
 
-`PhoneHidRedirect`：`systemReady` 装钩；AA 会话 live 时启用 InputFilter + 键拦截，Delay Destroy / teardown 关闭。操作说明见 §10.1。
+`PhoneHidRedirect`：`systemReady` 装钩；AA 会话 live 时**仅当检测到外接鼠标**才启用 InputFilter + viewport 注入（键盘可走 key hook）。Delay Destroy / teardown / 拔掉鼠标关闭。操作说明见 §10.1。
+
+`PaneDisplayGroupForce`：`applyPolicies` 后把窗 LogicalDisplay 挪出 Group 0，使 `ALWAYS_UNLOCKED` 生效、锁屏不同步到车机。
 
 ---
 

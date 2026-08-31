@@ -649,6 +649,19 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         appPicker.show(pane)
     }
 
+    /**
+     * Recents / picker covering the shell: disable peel/divider so Coolwalk rail
+     * inject and pass-through hits cannot swap fullscreen or eat left-column taps
+     * (divider elevation 8 sits above a zero-elevation overlay otherwise).
+     */
+    fun setOverlayBlocksChrome(blocked: Boolean) {
+        if (!isBaseBindingInitialized()) return
+        baseBinding.splitDivider.isEnabled = !blocked
+        if (blocked) {
+            baseBinding.splitDivider.resetGesture()
+        }
+    }
+
     private fun enterFullscreen(pane: Int) {
         if (!SplitPane.isFullscreenPane(pane)) return
         fullscreenPane = pane

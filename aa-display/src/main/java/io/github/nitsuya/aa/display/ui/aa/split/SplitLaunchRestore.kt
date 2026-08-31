@@ -7,8 +7,8 @@ import android.os.Binder
 import android.os.SystemClock
 import android.view.Display
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
-import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.util.LastSplitStore
 import io.github.nitsuya.aa.display.util.PmResolveCache
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
@@ -40,9 +40,9 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             notifySplitStateChangedImmediate()
         }
         try {
-            c.context.sendBroadcast(
-                Intent(AABroadcastConst.ACTION_RECENT_TASK_DIRTY)
-                    .setPackage(BuildConfig.APPLICATION_ID),
+            AaSystemBroadcast.toAaDisplay(
+                c.context,
+                Intent(AABroadcastConst.ACTION_RECENT_TASK_DIRTY),
             )
         } catch (e: Throwable) {
             logDebug(SplitDisplayController.TAG, "recent dirty broadcast failed: ${e.message}")
@@ -562,10 +562,11 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
 
     fun openPickerForPane(pane: Int) {
         try {
-            c.context.sendBroadcast(
+            AaSystemBroadcast.toAaDisplay(
+                c.context,
                 Intent(AABroadcastConst.ACTION_OPEN_SPLIT_PICKER).apply {
                     putExtra(AABroadcastConst.EXTRA_PANE, pane)
-                }
+                },
             )
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "openPickerForPane failed pane=$pane:", e)
@@ -574,7 +575,8 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
 
     fun notifySplitStateChangedImmediate() {
         try {
-            c.context.sendBroadcast(
+            AaSystemBroadcast.toAaDisplayAndGearhead(
+                c.context,
                 Intent(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED).apply {
                     putExtra(
                         AABroadcastConst.EXTRA_PRIMARY_PACKAGE,
@@ -586,7 +588,7 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                     )
                     putExtra(AABroadcastConst.EXTRA_FULLSCREEN_PANE, c.mFullscreenPane)
                     putExtra(AABroadcastConst.EXTRA_RATIO, c.mRatio)
-                }
+                },
             )
         } catch (e: Throwable) {
             logDebug(SplitDisplayController.TAG, "notifySplitStateChanged failed: ${e.message}")

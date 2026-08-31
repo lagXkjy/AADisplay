@@ -1,12 +1,9 @@
 package io.github.nitsuya.aa.display.ui.aa;
 
-import android.content.BroadcastReceiver;
-import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.Choreographer;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -17,9 +14,9 @@ import android.view.WindowInsetsController;
 import android.view.WindowManager;
 
 import com.google.android.apps.auto.sdk.CarActivity;
+import io.github.nitsuya.aa.display.CoreApiKt;
 import io.github.nitsuya.aa.display.R;
 import io.github.nitsuya.aa.display.databinding.ActivityAaDisplayBinding;
-import io.github.nitsuya.aa.display.util.AABroadcastConst;
 
 public class AaDisplayActivity extends CarActivity {
     private static final String TAG = "AADisplay_AaActivity";
@@ -28,7 +25,31 @@ public class AaDisplayActivity extends CarActivity {
         0xFFFF & ~(0x0800 | 0x2000 | 0x0400); // screen size, smallest screen size, screen layout
 
     private ActivityAaDisplayBinding mBinding;
-    private BroadcastReceiver mHidCursorReceiver;
+    private boolean mHidCursorPolling;
+    private float mLastHidCursorGen = Float.NaN;
+    private final Choreographer.FrameCallback mHidCursorPoll = new Choreographer.FrameCallback() {
+        @Override
+        public void doFrame(long frameTimeNanos) {
+            if (!mHidCursorPolling || mBinding == null) return;
+            try {
+                float[] s = CoreApiKt.getCoreApi().getHidCursorOverlay();
+                if (s != null && s.length >= 4) {
+                    if (s[3] != mLastHidCursorGen) {
+                        mLastHidCursorGen = s[3];
+                        if (s[0] > 0.5f) {
+                            mBinding.hidCursorOverlay.setCursorPosition(s[1], s[2]);
+                        } else {
+                            mBinding.hidCursorOverlay.hideCursor();
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            if (mHidCursorPolling) {
+                Choreographer.getInstance().postFrameCallback(this);
+            }
+        }
+    };
 
     protected Window getWindow() {
         return this.c();
@@ -51,31 +72,23 @@ public class AaDisplayActivity extends CarActivity {
                     WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         }
         window.setFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED);
-        registerHidCursorReceiver();
         AaDisplayActivityKt.INSTANCE.showMain(getSupportFragmentManager());
     }
 
-    private void registerHidCursorReceiver() {
-        mHidCursorReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                if (mBinding == null) return;
-                if (!AABroadcastConst.ACTION_HID_CURSOR.equals(intent.getAction())) return;
-                if (!intent.getBooleanExtra(AABroadcastConst.EXTRA_CURSOR_VISIBLE, false)) {
-                    mBinding.hidCursorOverlay.hideCursor();
-                    return;
-                }
-                mBinding.hidCursorOverlay.setCursorPosition(
-                        intent.getFloatExtra(AABroadcastConst.EXTRA_CURSOR_X, 0f),
-                        intent.getFloatExtra(AABroadcastConst.EXTRA_CURSOR_Y, 0f)
-                );
-            }
-        };
-        registerReceiver(
-                mHidCursorReceiver,
-                new IntentFilter(AABroadcastConst.ACTION_HID_CURSOR),
-                Context.RECEIVER_NOT_EXPORTED
-        );
+    private void startHidCursorPolling() {
+        if (mHidCursorPolling) return;
+        mHidCursorPolling = true;
+        mLastHidCursorGen = Float.NaN;
+        Choreographer.getInstance().postFrameCallback(mHidCursorPoll);
+    }
+
+    private void stopHidCursorPolling() {
+        if (!mHidCursorPolling) return;
+        mHidCursorPolling = false;
+        Choreographer.getInstance().removeFrameCallback(mHidCursorPoll);
+        if (mBinding != null) {
+            mBinding.hidCursorOverlay.hideCursor();
+        }
     }
 
     @Override
@@ -97,6 +110,7 @@ public class AaDisplayActivity extends CarActivity {
     public void onResume() {
         super.onResume();
         Log.d(TAG, "onResume");
+        startHidCursorPolling();
         try {
             // Keep in sync with AABroadcastConst.ACTION_AA_DISPLAY_SHOWN
             sendBroadcast(new android.content.Intent("aa.display.action.AA_DISPLAY_SHOWN"));
@@ -107,6 +121,7 @@ public class AaDisplayActivity extends CarActivity {
     @Override
     public void onPause() {
         Log.d(TAG, "onPause");
+        stopHidCursorPolling();
         super.onPause();
     }
 
@@ -164,10 +179,7 @@ public class AaDisplayActivity extends CarActivity {
     @Override
     public void onDestroy() {
         Log.d(TAG, "onDestroy");
-        if (mHidCursorReceiver != null) {
-            unregisterReceiver(mHidCursorReceiver);
-            mHidCursorReceiver = null;
-        }
+        stopHidCursorPolling();
         super.onDestroy();
     }
 

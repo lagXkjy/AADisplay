@@ -34,8 +34,11 @@ object AaDisplayActivityKt {
                 add<AaRecentTaskFragment>(R.id.fragment_container_view, "RecentTask")
             }
             setAaUiShellCapture(fragmentManager, true)
+            setMainChromeBlocked(fragmentManager, true)
         } else {
             (fragment as? AaRecentTaskFragment)?.requestReload()
+            setAaUiShellCapture(fragmentManager, true)
+            setMainChromeBlocked(fragmentManager, true)
         }
     }
 
@@ -55,6 +58,7 @@ object AaDisplayActivityKt {
                 }
             }
             setAaUiShellCapture(fragmentManager, false)
+            setMainChromeBlocked(fragmentManager, false)
         }
         // commitNow during the touch/click that opened hide stalls the UI and can break picker taps.
         val posted = fragment.view?.post(removeNow) == true
@@ -83,6 +87,13 @@ object AaDisplayActivityKt {
             )
         } catch (_: Throwable) {
         }
+    }
+
+    private fun setMainChromeBlocked(fragmentManager: FragmentManager, blocked: Boolean) {
+        fragmentManager.fragments
+            .filterIsInstance<AaMainFragment>()
+            .firstOrNull()
+            ?.setOverlayBlocksChrome(blocked)
     }
 
 }

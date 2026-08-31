@@ -33,9 +33,16 @@ import java.lang.reflect.Method
  * Missing hooks or InputFilter → feature degrades (keys-only or off); never crashes
  * system_server. Steering-wheel media path is independent.
  *
- * - Keys: [PhoneWindowManager.interceptKeyBeforeQueueing] consume + inject (fallback).
- * - Pointer: [InputManagerService.setInputFilter] steal mouse/touchpad; primary-button
- *   gestures become [SOURCE_TOUCHSCREEN] inject. Best-effort pointer-display API.
+ * Android 16: InputFilter + AA VIRTUAL viewports are installed only while an
+ * external mouse/touchpad is present. Always-on filter (older behavior) let phone
+ * finger events traverse the filter path and confused multi-viewport routing so
+ * taps landed on pane VDs. Source checks must use full-constant match
+ * (sources and SOURCE) == SOURCE — nonzero AND falsely treats touchscreen as mouse
+ * because both share CLASS_POINTER.
+ *
+ * Keys: PhoneWindowManager.interceptKeyBeforeQueueing consume + inject (fallback).
+ * Pointer: InputManagerService.setInputFilter steal mouse/touchpad; primary-button
+ * gestures become SOURCE_TOUCHSCREEN inject. Best-effort pointer-display API.
  */
 object PhoneHidRedirect {
     private const val TAG = "AAD_PhoneHid"
@@ -43,7 +50,6 @@ object PhoneHidRedirect {
     private const val CURSOR_IDLE_HIDE_MS = 3000L
     /** Re-assert OS pointer hide — not every relative MOVE. */
     private const val SUPPRESS_REASSERT_MS = 500L
-    private const val CURSOR_OVERLAY_MIN_MS = 12L
 
     private var installAttempted = false
     private var keyHook: XC_MethodHook.Unhook? = null
@@ -52,6 +58,7 @@ object PhoneHidRedirect {
     @Volatile private var filterInstalled = false
     /** After a hard failure constructing/installing the filter, do not retry this boot. */
     @Volatile private var filterPermanentlyFailed = false
+    @Volatile private var deviceListenerRegistered = false
 
     private var imsInstance: Any? = null
     private var setInputFilterMethod: Method? = null
@@ -78,12 +85,15 @@ object PhoneHidRedirect {
     private var cursorInitialized = false
     private var pointerDown = false
     private var pointerDownTime = 0L
-    private var lastCursorOverlayUptime = 0L
     private var lastSuppressUptime = 0L
     private var lastPointerActivityUptime = 0L
     private var lastTargetDisplayId = -1
     private val cursorIdleHandler = Handler(Looper.getMainLooper())
     private val cursorIdleHideRunnable = Runnable { maybeHideCursorOnIdle() }
+    /** Absolute pointer sample (some BT stacks omit AXIS_RELATIVE_*). */
+    private var lastAbsSampleValid = false
+    private var lastAbsX = 0f
+    private var lastAbsY = 0f
     /** Mouse gesture owned by AaDisplay divider (ratio / Recents / swap). */
     private var dividerGestureActive = false
     private var dividerDownTime = 0L
@@ -107,6 +117,7 @@ object PhoneHidRedirect {
             resolveInputManager()
             hookKeyIntercept()
             hookDisplayViewports()
+            registerExternalHidDeviceListener()
         }.onFailure { log(TAG, "ensureHooked failed (HID redirect disabled)", it) }
         log(
             TAG,
@@ -119,7 +130,7 @@ object PhoneHidRedirect {
     }
 
     fun onShellCaptureChanged(capture: Boolean) {
-        if (!sessionLive) return
+        if (!sessionLive || !filterInstalled) return
         runCatching {
             if (capture) {
                 cancelPaneFinger()
@@ -129,14 +140,32 @@ object PhoneHidRedirect {
                     shellX = cursorCanvasX
                     shellY = cursorCanvasY
                 }
-                snapShellToRecentColumn()
+                // Finger / steering Recents only need shell capture for touch routing.
+                // Do NOT force-show the HID arrow here — that was for Ctrl+R and made
+                // long-press Recents flash a mouse cursor. Keyboard path calls
+                // [revealCursorForKeyboardRecent] after snap.
                 applyPointerDisplayToShell()
-                publishHidCursorOverlay(layout, force = true)
             } else {
                 shellGestureActive = false
                 suppressOsPointerSprite(force = true)
             }
         }.onFailure { logDebug(TAG, "onShellCaptureChanged($capture): ${it.message}") }
+    }
+
+    /**
+     * Ctrl+R / HID keyboard Recents: park the shell cursor on the focused stack column
+     * and show the overlay so the user sees where keyboard focus lands.
+     */
+    fun revealCursorForKeyboardRecent() {
+        if (!sessionLive || !filterInstalled) return
+        runCatching {
+            snapShellToRecentColumn()
+            val layout = CoreManagerService.hidSplitLayout()
+            if (!cursorInitialized && layout != null) {
+                initCursorPane(layout)
+            }
+            publishHidCursorOverlay(layout, force = true)
+        }.onFailure { logDebug(TAG, "revealCursorForKeyboardRecent: ${it.message}") }
     }
 
     /** Ctrl+R Recent: park shell cursor on the focused VD stack column (keyboard has no hover). */
@@ -170,7 +199,7 @@ object PhoneHidRedirect {
         runCatching {
             if (!installAttempted) ensureHooked()
             if (sessionLive == live) {
-                if (live) suppressOsPointerSprite(force = true)
+                if (live) maybeEnableHidForExternalPointer("session-same")
                 return@runCatching
             }
             sessionLive = live
@@ -179,27 +208,137 @@ object PhoneHidRedirect {
                 pointerDown = false
                 dividerGestureActive = false
                 shellGestureActive = false
-                installInputFilter()
-                suppressOsPointerSprite(force = true)
-                invokeForceHideCursor(true)
-                requestViewportRefresh()
+                // A16: do NOT install InputFilter / inject AA viewports until a real
+                // external mouse/keyboard is present — otherwise phone touchscreen is
+                // routed through the filter+VIRTUAL viewports and lands on pane VDs.
+                maybeEnableHidForExternalPointer("session-live")
                 log(
                     TAG,
-                    "session live — HID on (filter=$filterInstalled keyHook=${keyHook != null})"
+                    "session live — HID armed (filter=$filterInstalled " +
+                        "extPointer=${hasExternalPointerDevice()} keyHook=${keyHook != null})",
                 )
             } else {
                 pointerDown = false
                 dividerGestureActive = false
                 shellGestureActive = false
+                lastAbsSampleValid = false
                 runCatching { CoreManagerService.clearAaUiShellCapture() }
                 cancelCursorIdleHide()
                 publishHidCursorOverlay(null, visible = false)
-                uninstallInputFilter()
-                invokeForceHideCursor(false)
-                restorePointerDisplay()
+                disableHidRedirect("session-end")
                 log(TAG, "session not live — HID redirect off")
             }
         }.onFailure { log(TAG, "onSessionLiveChanged($live) failed", it) }
+    }
+
+    /**
+     * Enable InputFilter + AA viewports only while an external **pointer** exists.
+     * Keyboard-only uses [hookKeyIntercept] without installing the global filter —
+     * A16 phone touch must never go through InputFilter+VIRTUAL viewports.
+     */
+    private fun maybeEnableHidForExternalPointer(reason: String) {
+        if (!sessionLive) return
+        if (!hasExternalPointerDevice()) {
+            // Drop filter/viewports; key hook still works if an external keyboard is present.
+            if (filterInstalled) {
+                disableHidRedirect("no-ext-pointer/$reason")
+            }
+            return
+        }
+        installInputFilter()
+        suppressOsPointerSprite(force = true)
+        invokeForceHideCursor(true)
+        requestViewportRefresh()
+        logDebug(TAG, "HID enabled ($reason) filter=$filterInstalled")
+    }
+
+    private fun disableHidRedirect(reason: String) {
+        uninstallInputFilter()
+        invokeForceHideCursor(false)
+        restorePointerDisplay()
+        logDebug(TAG, "HID disabled ($reason)")
+    }
+
+    /** External mouse / touchpad / trackball (not the phone touchpanel). */
+    private fun hasExternalPointerDevice(): Boolean {
+        return try {
+            InputDevice.getDeviceIds().any { id ->
+                if (id <= 0) return@any false
+                val d = InputDevice.getDevice(id) ?: return@any false
+                if (d.isVirtual) return@any false
+                // Built-in touchscreen shares SOURCE_CLASS_POINTER with MOUSE; require
+                // full source match + isExternal so finger panels never arm the filter.
+                if (!d.isExternal) return@any false
+                hasFullSource(d.sources, InputDevice.SOURCE_MOUSE) ||
+                    hasFullSource(d.sources, InputDevice.SOURCE_MOUSE_RELATIVE) ||
+                    hasFullSource(d.sources, InputDevice.SOURCE_TOUCHPAD) ||
+                    hasFullSource(d.sources, InputDevice.SOURCE_TRACKBALL)
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun hasExternalKeyboardDevice(): Boolean {
+        return try {
+            InputDevice.getDeviceIds().any { id ->
+                if (id <= 0) return@any false
+                val d = InputDevice.getDevice(id) ?: return@any false
+                if (d.isVirtual) return@any false
+                d.isExternal && hasFullSource(d.sources, InputDevice.SOURCE_KEYBOARD)
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Android source constants include a class nibble (e.g. MOUSE and TOUCHSCREEN both
+     * have CLASS_POINTER). `(sources and MOUSE) != 0` is true for the touchscreen —
+     * always compare the full constant.
+     */
+    private fun hasFullSource(sources: Int, source: Int): Boolean =
+        (sources and source) == source
+
+    private fun isFingerTouchscreenSource(sources: Int): Boolean =
+        hasFullSource(sources, InputDevice.SOURCE_TOUCHSCREEN) &&
+            !hasFullSource(sources, InputDevice.SOURCE_MOUSE) &&
+            !hasFullSource(sources, InputDevice.SOURCE_MOUSE_RELATIVE)
+
+    /** Hot-plug BT mouse/keyboard → enable/disable InputFilter without AA reconnect. */
+    private fun registerExternalHidDeviceListener() {
+        if (deviceListenerRegistered) return
+        runCatching {
+            val im = resolveInputManagerApi() ?: return@runCatching
+            val listener = object : android.hardware.input.InputManager.InputDeviceListener {
+                override fun onInputDeviceAdded(deviceId: Int) {
+                    maybeEnableHidForExternalPointer("device-add:$deviceId")
+                }
+                override fun onInputDeviceRemoved(deviceId: Int) {
+                    maybeEnableHidForExternalPointer("device-rm:$deviceId")
+                }
+                override fun onInputDeviceChanged(deviceId: Int) {
+                    maybeEnableHidForExternalPointer("device-chg:$deviceId")
+                }
+            }
+            im.registerInputDeviceListener(listener, Handler(Looper.getMainLooper()))
+            deviceListenerRegistered = true
+            log(TAG, "InputDeviceListener registered for lazy HID")
+        }.onFailure { log(TAG, "InputDeviceListener register failed", it) }
+    }
+
+    private fun resolveInputManagerApi(): android.hardware.input.InputManager? {
+        runCatching {
+            val at = Class.forName("android.app.ActivityThread")
+            val thread = at.getMethod("currentActivityThread").invoke(null) ?: return@runCatching null
+            val ctx = at.getMethod("getSystemContext").invoke(thread) as? Context
+            ctx?.getSystemService(android.hardware.input.InputManager::class.java)?.let { return it }
+        }
+        return runCatching {
+            val m = android.hardware.input.InputManager::class.java.getDeclaredMethod("getInstance")
+            m.isAccessible = true
+            m.invoke(null) as? android.hardware.input.InputManager
+        }.getOrNull()
     }
 
     fun isRedirectActive(): Boolean =
@@ -323,7 +462,10 @@ object PhoneHidRedirect {
         if (viewportHook != null) return
         viewportHook = method.hookBefore { param ->
             try {
-                if (!sessionLive) return@hookBefore
+                // Only inject AA viewports when HID filter is actually stealing the mouse.
+                // Always-on VIRTUAL viewports on A16 confuse the phone touchscreen mapper.
+                if (!sessionLive || !filterInstalled) return@hookBefore
+                if (!hasExternalPointerDevice()) return@hookBefore
                 val arg = param.args.getOrNull(0) ?: return@hookBefore
                 val list = when (arg) {
                     is MutableList<*> -> @Suppress("UNCHECKED_CAST") (arg as MutableList<Any?>)
@@ -491,6 +633,8 @@ object PhoneHidRedirect {
                 if (!isRedirectActive()) return@hookBefore
                 // When InputFilter is installed it already steals keys; avoid double-inject.
                 if (filterInstalled) return@hookBefore
+                // Without an external keyboard/mouse, never steal phone hardware keys.
+                if (!hasExternalKeyboardDevice() && !hasExternalPointerDevice()) return@hookBefore
                 val event = param.args[0] as? KeyEvent ?: return@hookBefore
                 if (!shouldStealKey(event)) return@hookBefore
                 if (dispatchKey(event)) {
@@ -627,12 +771,12 @@ object PhoneHidRedirect {
     }
 
     private fun publishOverlayShell(sx: Float, sy: Float, force: Boolean) {
-        val now = SystemClock.uptimeMillis()
-        if (!force && now - lastCursorOverlayUptime < CURSOR_OVERLAY_MIN_MS) return
-        lastCursorOverlayUptime = now
         overlayShellX = sx
         overlayShellY = sy
-        CoreManagerService.notifyHidCursorOverlay(true, sx, sy)
+        lastPointerActivityUptime = SystemClock.uptimeMillis()
+        // In-process state only — AaDisplayActivity polls via getHidCursorOverlay each
+        // frame. Broadcasts were AMS-batched and looked like segment jumps.
+        CoreManagerService.publishHidCursorState(true, sx, sy)
         scheduleCursorIdleHide()
     }
 
@@ -677,7 +821,7 @@ object PhoneHidRedirect {
     ) {
         if (!visible) {
             if (!idleHide) cancelCursorIdleHide()
-            CoreManagerService.notifyHidCursorOverlay(false, 0f, 0f)
+            CoreManagerService.publishHidCursorState(false)
             return
         }
         if (!sessionLive || !cursorInitialized) return
@@ -823,36 +967,24 @@ object PhoneHidRedirect {
             if (event.deviceId <= 0) return false
             val source = event.source
             // Never steal pure finger touchscreen (phone / cover panel).
-            if (source and InputDevice.SOURCE_TOUCHSCREEN != 0 &&
-                source and InputDevice.SOURCE_MOUSE == 0 &&
-                source and InputDevice.SOURCE_MOUSE_RELATIVE == 0
-            ) {
-                return false
-            }
+            if (isFingerTouchscreenSource(source)) return false
             val device = runCatching { InputDevice.getDevice(event.deviceId) }.getOrNull()
             if (device != null) {
                 if (device.isVirtual) return false
+                if (!device.isExternal) return false
                 val ds = device.sources
+                if (isFingerTouchscreenSource(ds)) return false
                 // External cursor / mouse / touchpad (BT Keyboard Mouse on W7023).
-                if (ds and InputDevice.SOURCE_MOUSE != 0 ||
-                    ds and InputDevice.SOURCE_MOUSE_RELATIVE != 0 ||
-                    ds and InputDevice.SOURCE_TOUCHPAD != 0 ||
-                    ds and InputDevice.SOURCE_TRACKBALL != 0
+                if (hasFullSource(ds, InputDevice.SOURCE_MOUSE) ||
+                    hasFullSource(ds, InputDevice.SOURCE_MOUSE_RELATIVE) ||
+                    hasFullSource(ds, InputDevice.SOURCE_TOUCHPAD) ||
+                    hasFullSource(ds, InputDevice.SOURCE_TRACKBALL)
                 ) {
                     return true
                 }
-                // CURSOR class devices may only expose CLASS_POINTER in event.source.
-                if (device.isExternal && source and InputDevice.SOURCE_CLASS_POINTER != 0) {
-                    return true
-                }
             }
-            source and InputDevice.SOURCE_CLASS_POINTER != 0 &&
-                (
-                    source and InputDevice.SOURCE_MOUSE != 0 ||
-                        source and InputDevice.SOURCE_TOUCHPAD != 0 ||
-                        source and InputDevice.SOURCE_TRACKBALL != 0 ||
-                        source and InputDevice.SOURCE_MOUSE_RELATIVE != 0
-                    )
+            // Event-level sources only when we already know device is external (above).
+            false
         } catch (_: Throwable) {
             false
         }
@@ -950,42 +1082,60 @@ object PhoneHidRedirect {
 
         val relX = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
         val relY = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
-        val hasRel = relX != 0f || relY != 0f
+        var dx = relX
+        var dy = relY
+        var hasDelta = relX != 0f || relY != 0f
+        // Many BT combo devices report absolute pointer samples without RELATIVE axes;
+        // ignoring them makes the shell cursor advance only on sparse relative ticks → jump.
+        val actionMasked = event.actionMasked
+        if (!hasDelta &&
+            (actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
+                actionMasked == MotionEvent.ACTION_MOVE ||
+                actionMasked == MotionEvent.ACTION_HOVER_ENTER)
+        ) {
+            val ax = event.x
+            val ay = event.y
+            if (lastAbsSampleValid) {
+                dx = ax - lastAbsX
+                dy = ay - lastAbsY
+                hasDelta = dx != 0f || dy != 0f
+            }
+            lastAbsX = ax
+            lastAbsY = ay
+            lastAbsSampleValid = true
+        } else if (hasDelta) {
+            lastAbsX = event.x
+            lastAbsY = event.y
+            lastAbsSampleValid = true
+        }
 
         val chromeCapture = CoreManagerService.aaUiShellCapture || shellGestureActive
 
-        if (dividerGestureActive && hasRel) {
+        if (dividerGestureActive && hasDelta) {
             val tw = layout.totalW.toFloat().coerceAtLeast(1f)
             val th = layout.totalH.toFloat().coerceAtLeast(1f)
-            dividerX = (dividerX + relX).coerceIn(0f, tw - 1f)
-            dividerY = (dividerY + relY).coerceIn(0f, th - 1f)
+            dividerX = (dividerX + dx).coerceIn(0f, tw - 1f)
+            dividerY = (dividerY + dy).coerceIn(0f, th - 1f)
             cursorCanvasX = dividerX
             cursorCanvasY = dividerY
             refreshOverlayShell(layout)
-        } else if (chromeCapture && hasRel) {
+        } else if (chromeCapture && hasDelta) {
             val tw = layout.totalW.toFloat().coerceAtLeast(1f)
             val th = layout.totalH.toFloat().coerceAtLeast(1f)
-            shellX = (shellX + relX).coerceIn(0f, tw - 1f)
-            shellY = (shellY + relY).coerceIn(0f, th - 1f)
-        } else if (hasRel) {
-            // Cap per-event deltas — W7023 pointer acceleration=3 yields hundreds of px/event.
-            val step = 32f
-            applyRelativeMove(
-                layout,
-                relX.coerceIn(-step, step),
-                relY.coerceIn(-step, step),
-            )
+            shellX = (shellX + dx).coerceIn(0f, tw - 1f)
+            shellY = (shellY + dy).coerceIn(0f, th - 1f)
+        } else if (hasDelta) {
+            applyRelativeMove(layout, dx, dy)
         }
         if (!dividerGestureActive && !chromeCapture) {
             syncCursorToActivePane(layout)
         }
-        if (hasRel && !dividerGestureActive) {
+        if (hasDelta && !dividerGestureActive) {
             suppressOsPointerSprite()
         }
-        // No absolute hover updates while an AA pane owns the pointer.
 
         if (chromeCapture) {
-            if (hasRel) publishHidCursorOverlay(layout, force = true)
+            if (hasDelta) publishHidCursorOverlay(layout, force = false)
             return routeShellOverlay(layout, event)
         }
 
@@ -1010,6 +1160,7 @@ object PhoneHidRedirect {
                 pointerDown = true
                 pointerDownTime = SystemClock.uptimeMillis()
                 CoreManagerService.focusHidPane(pane)
+                publishHidCursorOverlay(layout, force = false)
                 return CoreManagerService.injectHidTouchOnPane(
                     pane, MotionEvent.ACTION_DOWN, px, py, pointerDownTime, pointerDownTime,
                 )
@@ -1021,10 +1172,8 @@ object PhoneHidRedirect {
             }
             MotionEvent.ACTION_MOVE,
             MotionEvent.ACTION_HOVER_MOVE -> {
-                if (!pointerDown) {
-                    publishHidCursorOverlay(layout, force = hasRel)
-                    return true
-                }
+                publishHidCursorOverlay(layout, force = false)
+                if (!pointerDown) return true
                 return CoreManagerService.injectHidTouchOnPane(
                     pane, MotionEvent.ACTION_MOVE, px, py, pointerDownTime, SystemClock.uptimeMillis(),
                 )
@@ -1037,6 +1186,7 @@ object PhoneHidRedirect {
                 val action =
                     if (event.actionMasked == MotionEvent.ACTION_CANCEL) MotionEvent.ACTION_CANCEL
                     else MotionEvent.ACTION_UP
+                publishHidCursorOverlay(layout, force = false)
                 return CoreManagerService.injectHidTouchOnPane(
                     pane, action, px, py, pointerDownTime, SystemClock.uptimeMillis(),
                 )
@@ -1048,21 +1198,25 @@ object PhoneHidRedirect {
                     pointerDown = true
                     pointerDownTime = SystemClock.uptimeMillis()
                     CoreManagerService.focusHidPane(pane)
+                    publishHidCursorOverlay(layout, force = false)
                     return CoreManagerService.injectHidTouchOnPane(
                         pane, MotionEvent.ACTION_DOWN, px, py, pointerDownTime, pointerDownTime,
                     )
                 }
                 if (!pressed && pointerDown) {
                     pointerDown = false
+                    publishHidCursorOverlay(layout, force = false)
                     return CoreManagerService.injectHidTouchOnPane(
                         pane, MotionEvent.ACTION_UP, px, py, pointerDownTime, SystemClock.uptimeMillis(),
                     )
                 }
                 if (pointerDown) {
+                    publishHidCursorOverlay(layout, force = false)
                     return CoreManagerService.injectHidTouchOnPane(
                         pane, MotionEvent.ACTION_MOVE, px, py, pointerDownTime, SystemClock.uptimeMillis(),
                     )
                 }
+                if (hasDelta) publishHidCursorOverlay(layout, force = false)
                 return true
             }
         }
@@ -1211,7 +1365,6 @@ object PhoneHidRedirect {
 
     /** Recents / picker: inject onto AaDisplay presentation so overlay stays operable. */
     private fun routeShellOverlay(layout: HidSplitLayout, event: MotionEvent): Boolean {
-        publishHidCursorOverlay(layout, force = true)
         val pressed = event.buttonState and MotionEvent.BUTTON_PRIMARY != 0 ||
             event.actionMasked == MotionEvent.ACTION_DOWN ||
             event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS
@@ -1226,10 +1379,18 @@ object PhoneHidRedirect {
                 dividerGestureActive = false
                 shellGestureActive = true
                 shellDownTime = SystemClock.uptimeMillis()
+                // Cursor overlay already coalesced on relative move; force only on click.
+                publishHidCursorOverlay(layout, force = true)
                 return inject(MotionEvent.ACTION_DOWN, shellX, shellY, shellDownTime, shellDownTime)
             }
             MotionEvent.ACTION_MOVE, MotionEvent.ACTION_HOVER_MOVE -> {
-                if (!shellGestureActive) return true
+                if (!shellGestureActive) {
+                    // Hover while picker open: coalesced overlay only (no force flood).
+                    if (event.actionMasked == MotionEvent.ACTION_HOVER_MOVE) {
+                        publishHidCursorOverlay(layout, force = false)
+                    }
+                    return true
+                }
                 if (!pressed && event.actionMasked == MotionEvent.ACTION_HOVER_MOVE) return true
                 return inject(
                     MotionEvent.ACTION_MOVE, shellX, shellY, shellDownTime, SystemClock.uptimeMillis(),

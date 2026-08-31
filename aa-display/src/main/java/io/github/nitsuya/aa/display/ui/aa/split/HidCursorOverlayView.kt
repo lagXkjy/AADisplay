@@ -31,10 +31,14 @@ class HidCursorOverlayView @JvmOverloads constructor(
 
     fun setCursorPosition(x: Float, y: Float) {
         val moved = translationX != x || translationY != y
+        if (!moved && visibility == VISIBLE) return
         translationX = x
         translationY = y
-        if (visibility != VISIBLE) visibility = VISIBLE
-        if (moved) invalidate()
+        if (visibility != VISIBLE) {
+            visibility = VISIBLE
+            invalidate()
+        }
+        // translationX/Y already dirty the view for HW accelerate; skip full redraw.
     }
 
     fun hideCursor() {

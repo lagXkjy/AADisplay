@@ -34,4 +34,18 @@ public final class DisplayManagerHidden {
      * (needed for {@code setVirtualMousePointerDisplayId} to paint the cursor there).
      */
     public static final int VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH = 1 << 6;
+
+    /**
+     * @hide Virtual display should support system decorations (status/nav/launcher).
+     * AADisplay pane VDs must never set this — see SplitVdLifecycle.vdFlags().
+     * On Android 16+ this create-time flag replaces IWindowManager#setShouldShowSystemDecors.
+     */
+    public static final int VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS = 1 << 9;
+
+    /**
+     * @hide Display maintains its own focus and touch mode (per-display focus).
+     * Required so pane apps can keep a focused window while the phone remains
+     * the top focused display for untargeted / handset input.
+     */
+    public static final int VIRTUAL_DISPLAY_FLAG_OWN_FOCUS = 1 << 14;
 }

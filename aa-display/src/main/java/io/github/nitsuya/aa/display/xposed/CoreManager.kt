@@ -111,6 +111,15 @@ object CoreManager : ICoreManager, DeathRecipient {
         return getService()?.startActivityOnPaneForUser(packageName, userId, pane) ?: false
     }
 
+    override fun getHidCursorOverlay(): FloatArray {
+        return try {
+            getService()?.hidCursorOverlay ?: floatArrayOf(0f, 0f, 0f, 0f)
+        } catch (e: Throwable) {
+            Log.e(TAG, "getHidCursorOverlay failed", e)
+            floatArrayOf(0f, 0f, 0f, 0f)
+        }
+    }
+
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
         getService()?.moveTaskId(taskId, isVirtualDisplay)
     }

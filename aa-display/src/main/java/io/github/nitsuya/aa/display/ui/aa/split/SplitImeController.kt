@@ -7,6 +7,7 @@ import android.view.Display
 import android.view.KeyEvent
 import android.view.WindowManager
 import io.github.nitsuya.aa.display.util.AABroadcastConst
+import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
@@ -285,11 +286,12 @@ internal class SplitImeController(private val c: SplitDisplayController) {
 
     private fun broadcast(pane: Int) {
         try {
-            c.context.sendBroadcast(
+            AaSystemBroadcast.toAaDisplay(
+                c.context,
                 Intent(AABroadcastConst.ACTION_IME_VISIBILITY).putExtra(
                     AABroadcastConst.EXTRA_PANE,
                     pane,
-                )
+                ),
             )
         } catch (e: Throwable) {
             logDebug(SplitDisplayController.TAG, "ime broadcast: ${e.message}")

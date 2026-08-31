@@ -7,6 +7,7 @@ import com.github.kyuubiran.ezxhelper.init.InitFields
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.AaHook
 import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 
 /**
  * Without Maps, AA would show [NAV_FALLBACK_CLASS] and Coolwalk can crash.
@@ -41,7 +42,14 @@ object AaNavFallbackHook : AaHook() {
             )
             log(tagName, "disabled $NAV_FALLBACK_CLASS")
         }.onFailure { e ->
-            log(tagName, "disable $NAV_FALLBACK_CLASS failed", e)
+            // Newer AA builds drop this component — expected, not an E-level failure.
+            if (e is IllegalArgumentException &&
+                e.message?.contains("does not exist", ignoreCase = true) == true
+            ) {
+                logDebug(tagName, "nav fallback absent on this AA build")
+            } else {
+                log(tagName, "disable $NAV_FALLBACK_CLASS failed", e)
+            }
         }
     }
 }

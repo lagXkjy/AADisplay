@@ -2,13 +2,16 @@ package io.github.nitsuya.aa.display.xposed.hook
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.pm.IPackageManager
 import com.github.kyuubiran.ezxhelper.utils.*
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.xposed.BridgeService
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.qauxv.util.Initiator
 import java.io.File
 import java.lang.reflect.Method
@@ -107,12 +110,41 @@ object AndroidHook : BaseHook() {
         return true
     }
 
+    /**
+     * Android 14+ logs a full stack for every non-protected broadcast from uid 1000.
+     * Our internal `aa.display.action.*` signals are intentional; skip the WTF dump.
+     */
+    private fun hookSuppressAaDisplayBroadcastWtf(cl: ClassLoader) {
+        val hooked = runCatching {
+            findMethod("com.android.server.am.BroadcastController", cl, false) {
+                name == "checkBroadcastFromSystem"
+            }.hookBefore { param ->
+                for (arg in param.args) {
+                    val intent = arg as? Intent ?: continue
+                    val action = intent.action ?: continue
+                    if (action.startsWith(AaSystemBroadcast.ACTION_PREFIX)) {
+                        param.result = null
+                        return@hookBefore
+                    }
+                }
+            }
+            true
+        }.getOrElse { e ->
+            logDebug(tagName, "checkBroadcastFromSystem hook skip: ${e.message}")
+            false
+        }
+        if (hooked) {
+            log(tagName, "whitelisted aa.display.action.* for checkBroadcastFromSystem")
+        }
+    }
+
     override fun init(lpparam: XC_LoadPackage.LoadPackageParam) {
         isSystemServerProcessCached = readIsSystemServerProcess()
         systemServerClassLoader = lpparam.classLoader
         isSystemServerHooked = true
         Initiator.init(lpparam.classLoader)
         log(tagName, "xposed init")
+        hookSuppressAaDisplayBroadcastWtf(lpparam.classLoader)
         var serviceManagerHook: XC_MethodHook.Unhook? = null
         serviceManagerHook = findMethod("android.os.ServiceManager") {
             name == "addService"
