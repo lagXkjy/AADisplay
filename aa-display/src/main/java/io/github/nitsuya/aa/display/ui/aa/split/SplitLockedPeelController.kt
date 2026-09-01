@@ -8,6 +8,7 @@ import android.view.MotionEvent
 import android.view.ViewConfiguration
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.AaSystemBroadcast
+import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
@@ -19,8 +20,8 @@ import kotlin.math.hypot
  * is dropped while pane VDs (ALWAYS_UNLOCKED) still work.
  *
  * While the keyguard is locked and we are in fullscreen, interpret peel gestures here
- * (same semantics as [SplitDividerView] peel mode) and drive the controller / UI
- * broadcasts directly — no presentation hit-test required.
+ * (same semantics as [SplitDividerView] peel mode). Live preview is published to
+ * [CoreManagerService.publishLockedPeelPreview] for AaDisplayActivity to pull.
  */
 internal class SplitLockedPeelController(private val c: SplitDisplayController) {
 
@@ -47,7 +48,7 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
         }
     }
 
-    /** True when phone keyguard is showing (secure or swipe). */
+    /** True when phone keyguard is showing (secure or swipe) — includes screen-on lock UI. */
     fun isPhoneKeyguardLocked(): Boolean {
         return try {
             val km = c.context.getSystemService(KeyguardManager::class.java) ?: return false
@@ -134,6 +135,7 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
                 }
                 if (dragging) {
                     lastRawRatio = rawRatio(event)
+                    publishPreview(lastRawRatio)
                 }
                 return true
             }
@@ -158,13 +160,20 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
                 ).toFloat()
                 val ratioDelta = lastRawRatio - downRatio
                 when {
-                    isUp && SplitPane.qualifiesDividerRecentOnUp(
-                        wasLongPress, wasDragging, dist, touchSlop.toFloat(), ratioDelta,
-                    ) -> openRecent()
+                    // Drag (incl. peel-out-then-back) never opens Recent — heldMs≥550
+                    // used to false-trigger qualifiesDividerRecentOnUp after cancel.
+                    isUp && wasDragging -> settleDrag()
+                    isUp && wasLongPress -> {
+                        publishPreviewCancel()
+                        openRecent()
+                    }
                     isUp && SplitPane.shouldDividerSwapOnUp(
                         wasDragging, wasLongPress, heldMs, dist, touchSlop.toFloat(), ratioDelta,
-                    ) -> tapSwapFullscreenPane()
-                    isUp && wasDragging -> settleDrag()
+                    ) -> {
+                        publishPreviewCancel()
+                        tapSwapFullscreenPane()
+                    }
+                    else -> publishPreviewCancel()
                 }
                 return true
             }
@@ -177,6 +186,15 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
         tracking = false
         dragging = false
         longPressFired = false
+        publishPreviewCancel()
+    }
+
+    private fun publishPreview(ratio: Float) {
+        CoreManagerService.publishLockedPeelPreview(active = true, ratio = ratio)
+    }
+
+    private fun publishPreviewCancel() {
+        CoreManagerService.publishLockedPeelPreview(active = false)
     }
 
     private fun rawRatio(event: MotionEvent): Float {
@@ -187,8 +205,12 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
     }
 
     private fun settleDrag() {
-        if (lastRawRatio < SplitPane.FULLSCREEN_EXIT_RATIO) return
+        if (lastRawRatio < SplitPane.FULLSCREEN_EXIT_RATIO) {
+            publishPreviewCancel()
+            return
+        }
         val release = SplitPane.clampRatio(lastRawRatio)
+        publishPreviewCancel()
         // Same order as AaMainFragment.exitFullscreen: stash ratio then one exit resize.
         c.setSplitRatio(release)
         c.setSplitFullscreen(SplitPane.FULLSCREEN_NONE)

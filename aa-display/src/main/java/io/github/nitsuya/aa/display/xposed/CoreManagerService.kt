@@ -517,6 +517,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         @Volatile private var hidCursorX = 0f
         @Volatile private var hidCursorY = 0f
         @Volatile private var hidCursorGen = 0
+        /** Locked fullscreen peel preview — UI pulls via [hidCursorOverlaySnapshot]. */
+        @Volatile private var lockedPeelPreviewActive = false
+        @Volatile private var lockedPeelPreviewRatio = 0.5f
 
         fun publishHidCursorState(visible: Boolean, x: Float = 0f, y: Float = 0f) {
             hidCursorVisible = visible
@@ -527,12 +530,20 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             hidCursorGen++
         }
 
+        fun publishLockedPeelPreview(active: Boolean, ratio: Float = 0.5f) {
+            lockedPeelPreviewActive = active
+            if (active) lockedPeelPreviewRatio = ratio
+            hidCursorGen++
+        }
+
         fun hidCursorOverlaySnapshot(): FloatArray =
             floatArrayOf(
                 if (hidCursorVisible) 1f else 0f,
                 hidCursorX,
                 hidCursorY,
                 hidCursorGen.toFloat(),
+                if (lockedPeelPreviewActive) 1f else 0f,
+                lockedPeelPreviewRatio,
             )
 
         fun displaySizeFor(displayId: Int): Point? {

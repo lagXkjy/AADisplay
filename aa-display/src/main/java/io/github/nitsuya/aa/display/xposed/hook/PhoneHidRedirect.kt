@@ -134,7 +134,7 @@ object PhoneHidRedirect {
         runCatching {
             if (capture) {
                 cancelPaneFinger()
-                dividerGestureActive = false
+                endDividerGesture(cancel = true)
                 val layout = runCatching { CoreManagerService.hidSplitLayout() }.getOrNull()
                 if (layout != null && SplitPane.isValid(cursorPane)) {
                     shellX = cursorCanvasX
@@ -206,7 +206,7 @@ object PhoneHidRedirect {
             if (live) {
                 cursorInitialized = false
                 pointerDown = false
-                dividerGestureActive = false
+                endDividerGesture(cancel = true)
                 shellGestureActive = false
                 // A16: do NOT install InputFilter / inject AA viewports until a real
                 // external mouse/keyboard is present — otherwise phone touchscreen is
@@ -219,7 +219,7 @@ object PhoneHidRedirect {
                 )
             } else {
                 pointerDown = false
-                dividerGestureActive = false
+                endDividerGesture(cancel = true)
                 shellGestureActive = false
                 lastAbsSampleValid = false
                 runCatching { CoreManagerService.clearAaUiShellCapture() }
@@ -1351,10 +1351,31 @@ object PhoneHidRedirect {
         return layout.hit(cursorCanvasX, cursorCanvasY, chromeInteract = true) is HidCursorHit.Divider
     }
 
+    /**
+     * End divider/peel inject with UP/CANCEL. Clearing [dividerGestureActive] alone
+     * leaves SplitDividerView tracking.
+     */
+    private fun endDividerGesture(cancel: Boolean) {
+        if (!dividerGestureActive) return
+        val action = if (cancel) MotionEvent.ACTION_CANCEL else MotionEvent.ACTION_UP
+        val now = SystemClock.uptimeMillis()
+        runCatching {
+            val layout = CoreManagerService.hidSplitLayout()
+            val (sx, sy) = if (layout != null) {
+                shellTouchPoint(layout, dividerX, dividerY)
+            } else {
+                dividerX to dividerY
+            }
+            CoreManagerService.injectHidAaUiTouch(action, sx, sy, dividerDownTime, now)
+        }
+        dividerGestureActive = false
+    }
+
     /** Begin divider / peel drag on AaDisplay presentation; always consumes the press. */
     private fun startDividerGesture(layout: HidSplitLayout): Boolean {
         if (!wantsDividerChrome(layout)) return false
         cancelPaneFinger()
+        endDividerGesture(cancel = true)
         dividerGestureActive = true
         dividerDownTime = SystemClock.uptimeMillis()
         dividerX = cursorCanvasX
@@ -1384,7 +1405,7 @@ object PhoneHidRedirect {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_BUTTON_PRESS -> {
                 if (event.actionButton == MotionEvent.BUTTON_TERTIARY) return true
                 cancelPaneFinger()
-                dividerGestureActive = false
+                endDividerGesture(cancel = true)
                 shellGestureActive = true
                 shellDownTime = SystemClock.uptimeMillis()
                 // Cursor overlay already coalesced on relative move; force only on click.
@@ -1472,17 +1493,18 @@ object PhoneHidRedirect {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_BUTTON_PRESS -> {
                 if (event.actionButton == MotionEvent.BUTTON_TERTIARY) return false
-                if (dividerGestureActive) return true
-                if (!wantsDividerChrome(layout)) {
-                    dividerGestureActive = false
-                    return false
-                }
+                if (dividerGestureActive) endDividerGesture(cancel = true)
+                if (!wantsDividerChrome(layout)) return false
                 return startDividerGesture(layout)
             }
             MotionEvent.ACTION_MOVE, MotionEvent.ACTION_HOVER_MOVE -> {
                 if (!dividerGestureActive) return false
-                if (!pressed && event.actionMasked == MotionEvent.ACTION_HOVER_MOVE) {
-                    publishOverlayShell(overlayShellX, overlayShellY, force = true)
+                // Some BT stacks drop BUTTON_RELEASE and only send HOVER_MOVE with buttonState=0.
+                if (!pressed) {
+                    val (sx, sy) = shellTouchPoint(layout, dividerX, dividerY)
+                    endDividerGesture(cancel = false)
+                    commitDividerCursor(layout)
+                    publishOverlayShell(sx, sy, force = true)
                     return true
                 }
                 val (sx, sy) = shellTouchPoint(layout, dividerX, dividerY)
@@ -1494,13 +1516,10 @@ object PhoneHidRedirect {
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_BUTTON_RELEASE, MotionEvent.ACTION_CANCEL -> {
                 if (!dividerGestureActive) return false
-                val action =
-                    if (event.actionMasked == MotionEvent.ACTION_CANCEL) MotionEvent.ACTION_CANCEL
-                    else MotionEvent.ACTION_UP
+                val cancel = event.actionMasked == MotionEvent.ACTION_CANCEL
                 val (sx, sy) = shellTouchPoint(layout, dividerX, dividerY)
-                inject(action, dividerX, dividerY, dividerDownTime, SystemClock.uptimeMillis())
+                endDividerGesture(cancel = cancel)
                 commitDividerCursor(layout)
-                dividerGestureActive = false
                 publishOverlayShell(sx, sy, force = true)
                 return true
             }
@@ -1512,6 +1531,9 @@ object PhoneHidRedirect {
                         MotionEvent.ACTION_MOVE, dividerX, dividerY, dividerDownTime, SystemClock.uptimeMillis(),
                     )
                     publishOverlayShell(sx, sy, force = true)
+                } else {
+                    endDividerGesture(cancel = false)
+                    commitDividerCursor(layout)
                 }
                 return true
             }
@@ -1531,7 +1553,7 @@ object PhoneHidRedirect {
         val active = layout.activePanes()
         if (active.size < 2) return
         cancelPaneFinger()
-        dividerGestureActive = false
+        endDividerGesture(cancel = true)
         val next = layout.otherPane(cursorPane)
         resetCursorOnPane(layout, next, enterFromSeam = !center)
         CoreManagerService.focusHidPane(cursorPane)

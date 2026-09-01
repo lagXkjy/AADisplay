@@ -96,4 +96,12 @@ object AaDisplayActivityKt {
             ?.setOverlayBlocksChrome(blocked)
     }
 
+    /** Locked peel preview from [CoreApi.getHidCursorOverlay] indices 4–5. */
+    fun applyLockedPeelPreview(fragmentManager: FragmentManager, active: Boolean, ratio: Float) {
+        fragmentManager.fragments
+            .filterIsInstance<AaMainFragment>()
+            .firstOrNull()
+            ?.applyLockedPeelPreview(active, ratio)
+    }
+
 }

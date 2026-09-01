@@ -113,10 +113,10 @@ object CoreManager : ICoreManager, DeathRecipient {
 
     override fun getHidCursorOverlay(): FloatArray {
         return try {
-            getService()?.hidCursorOverlay ?: floatArrayOf(0f, 0f, 0f, 0f)
+            getService()?.hidCursorOverlay ?: floatArrayOf(0f, 0f, 0f, 0f, 0f, 0.5f)
         } catch (e: Throwable) {
             Log.e(TAG, "getHidCursorOverlay failed", e)
-            floatArrayOf(0f, 0f, 0f, 0f)
+            floatArrayOf(0f, 0f, 0f, 0f, 0f, 0.5f)
         }
     }
 

@@ -2,8 +2,9 @@ package io.github.nitsuya.aa.display.ui.aa;
 
 import android.content.res.Configuration;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
-import android.view.Choreographer;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -23,13 +24,18 @@ public class AaDisplayActivity extends CarActivity {
     /** Keep rotation/locale/etc but allow HU display-size updates after Coolwalk reconnect. */
     private static final int IGNORE_CONFIG_EXCEPT_DISPLAY_SIZE =
         0xFFFF & ~(0x0800 | 0x2000 | 0x0400); // screen size, smallest screen size, screen layout
+    /** Shell cursor + locked-peel preview pull while keyguard may pause Choreographer. */
+    private static final long SHELL_STATE_POLL_MS = 16L;
 
     private ActivityAaDisplayBinding mBinding;
     private boolean mHidCursorPolling;
     private float mLastHidCursorGen = Float.NaN;
-    private final Choreographer.FrameCallback mHidCursorPoll = new Choreographer.FrameCallback() {
+    private boolean mLastLockedPeelActive;
+    private float mLastLockedPeelRatio = Float.NaN;
+    private final Handler mShellPollHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mShellPoll = new Runnable() {
         @Override
-        public void doFrame(long frameTimeNanos) {
+        public void run() {
             if (!mHidCursorPolling || mBinding == null) return;
             try {
                 float[] s = CoreApiKt.getCoreApi().getHidCursorOverlay();
@@ -42,11 +48,23 @@ public class AaDisplayActivity extends CarActivity {
                             mBinding.hidCursorOverlay.hideCursor();
                         }
                     }
+                    // Locked peel: system_server writes ratio; pull here (AMS broadcasts wait for PIN).
+                    if (s.length >= 6) {
+                        boolean peelActive = s[4] > 0.5f;
+                        float peelRatio = s[5];
+                        if (peelActive != mLastLockedPeelActive
+                                || (peelActive && peelRatio != mLastLockedPeelRatio)) {
+                            mLastLockedPeelActive = peelActive;
+                            mLastLockedPeelRatio = peelRatio;
+                            AaDisplayActivityKt.INSTANCE.applyLockedPeelPreview(
+                                    getSupportFragmentManager(), peelActive, peelRatio);
+                        }
+                    }
                 }
             } catch (Throwable ignored) {
             }
             if (mHidCursorPolling) {
-                Choreographer.getInstance().postFrameCallback(this);
+                mShellPollHandler.postDelayed(this, SHELL_STATE_POLL_MS);
             }
         }
     };
@@ -73,28 +91,35 @@ public class AaDisplayActivity extends CarActivity {
         }
         window.setFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED);
         AaDisplayActivityKt.INSTANCE.showMain(getSupportFragmentManager());
+        // Keep pull alive across keyguard lock (onPause) — locked peel preview needs it.
+        startHidCursorPolling();
     }
 
     private void startHidCursorPolling() {
         if (mHidCursorPolling) return;
         mHidCursorPolling = true;
         mLastHidCursorGen = Float.NaN;
-        Choreographer.getInstance().postFrameCallback(mHidCursorPoll);
+        mLastLockedPeelActive = false;
+        mLastLockedPeelRatio = Float.NaN;
+        mShellPollHandler.post(mShellPoll);
     }
 
     private void stopHidCursorPolling() {
         if (!mHidCursorPolling) return;
         mHidCursorPolling = false;
-        Choreographer.getInstance().removeFrameCallback(mHidCursorPoll);
+        mShellPollHandler.removeCallbacks(mShellPoll);
         if (mBinding != null) {
             mBinding.hidCursorOverlay.hideCursor();
         }
+        mLastLockedPeelActive = false;
+        mLastLockedPeelRatio = Float.NaN;
     }
 
     @Override
     public void onStart() {
         super.onStart();
         Log.d(TAG, "onStart");
+        startHidCursorPolling();
     }
 
     @Override
@@ -121,7 +146,11 @@ public class AaDisplayActivity extends CarActivity {
     @Override
     public void onPause() {
         Log.d(TAG, "onPause");
-        stopHidCursorPolling();
+        // Do not stop shell-state polling here: keyguard lock pauses the activity but
+        // locked-fullscreen peel still needs getHidCursorOverlay pull for GPU preview.
+        if (mBinding != null) {
+            mBinding.hidCursorOverlay.hideCursor();
+        }
         super.onPause();
     }
 

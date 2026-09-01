@@ -944,6 +944,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             // Peel tab is only the entry; morph to the normal split divider chrome.
             baseBinding.tvDisplayPrimary.visibility = View.VISIBLE
             baseBinding.tvDisplaySecondary.visibility = View.VISIBLE
+            // Drop fullscreen elevation so clipBounds can reveal the buried TV.
+            primary.elevation = 0f
+            secondary.elevation = 0f
             divider.setPeelDragSplitVisual(true)
             if (sideBySide) {
                 dividerLp.width = vis.touchSpan
@@ -1055,13 +1058,9 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     }
 
     /**
-     * Behind fullscreen pane must not eat touches or be composited; both panes
-     * active in split. INVISIBLE (not GONE) keeps the SurfaceTexture alive.
-     *
-     * While either TextureView still lacks a Surface, keep both VISIBLE: applying
-     * LastSplit fullscreen in [initViews] used to hide the back pane before
-     * [onSurfaceTextureAvailable], so [requestDisplay] waited forever, VDs never
-     * created, and restore fell back to "tap to choose".
+     * Behind fullscreen pane must not eat touches; keep both TextureViews VISIBLE so
+     * the buried VD keeps producing frames under keyguard (INVISIBLE stalled BufferQueue).
+     * Z-order is pane elevation; peel [clipBounds] reveals the back buffer.
      */
     private fun syncPaneTouchEnabled(visibleFullscreenPane: Int) {
         val primaryTv = baseBinding.tvDisplayPrimary
@@ -1078,15 +1077,38 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
                 primaryTv.isEnabled = true
                 primaryTv.visibility = View.VISIBLE
                 secondaryTv.isEnabled = false
-                secondaryTv.visibility = View.INVISIBLE
+                secondaryTv.visibility = View.VISIBLE
             }
             else -> {
                 primaryTv.isEnabled = false
-                primaryTv.visibility = View.INVISIBLE
+                primaryTv.visibility = View.VISIBLE
                 secondaryTv.isEnabled = true
                 secondaryTv.visibility = View.VISIBLE
             }
         }
+    }
+
+    /** Locked-phone peel preview from [CoreManagerService.publishLockedPeelPreview] (UI pull). */
+    fun applyLockedPeelPreview(active: Boolean, ratio: Float) {
+        if (!isBaseBindingInitialized() || !isAdded) return
+        if (!active) {
+            if (!dividerDragging && !dragPreviewActive) return
+            dividerDragging = false
+            clearDragPreview()
+            if (SplitPane.isFullscreenPane(fullscreenPane)) {
+                applyFullscreenLayout(fullscreenPane)
+            }
+            return
+        }
+        if (!SplitPane.isFullscreenPane(fullscreenPane)) return
+        if (!dividerDragging) {
+            ratioAtDragStart = SplitPane.clampRatio(
+                if (appliedRatio.isNaN()) splitRatio else appliedRatio
+            )
+        }
+        dividerDragging = true
+        splitRatio = ratio
+        applyDragPreview(ratio)
     }
 
     private fun setupPaneSurfaces() {

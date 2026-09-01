@@ -120,8 +120,7 @@ interface ICoreManager {
 
     /**
      * Phone BT mouse cursor on AaDisplay shell (pull model).
-     * Returns float[4]: visible (0/1), x, y, generation. Prefer this over
-     * ACTION_HID_CURSOR broadcasts — AMS batching made the sprite jump.
+     * Returns float[6]: visible (0/1), x, y, generation, lockedPeelActive (0/1), lockedPeelRatio.
      */
     float[] getHidCursorOverlay();
 }
