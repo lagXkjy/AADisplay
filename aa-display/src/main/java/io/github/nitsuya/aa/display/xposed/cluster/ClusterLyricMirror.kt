@@ -452,6 +452,7 @@ object ClusterLyricMirror {
                     extracted.artist != lastArtist)
 
         if (trackChanged) {
+            LyricLineExtractor.clearLyricCache()
             phase = Phase.TrackSwitching
             lastArtRetryElapsedMs = 0L
             artBurstUntilElapsedMs = SystemClock.elapsedRealtime() + ART_BURST_AFTER_TRACK_MS
@@ -612,6 +613,7 @@ object ClusterLyricMirror {
         val ctx = appContext
         if (ctx != null) {
             ClusterLyricStore.publish(ctx.contentResolver, title, panelArtist, album)
+            ClusterLyricStore.publishTrackMediaId(ctx.contentResolver, mediaId)
             if (warmStartPending) {
                 ClusterLyricMediaService.warmStart(ctx)
                 warmStartPending = false

@@ -169,6 +169,7 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             ClusterLyricStore.SETTINGS_ALBUM,
             ClusterArtStore.SETTINGS_ART_MEDIA_ID,
             ClusterArtStore.SETTINGS_ART_REVISION,
+            ClusterLyricStore.SETTINGS_TRACK_MEDIA_ID,
             ClusterLyricStore.SETTINGS_POSITION_MS,
         ).forEach { key ->
             runCatching {
@@ -224,10 +225,15 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         val artMediaId = Settings.Global.getString(cr, ClusterArtStore.SETTINGS_ART_MEDIA_ID)
             ?.trim()
             .orEmpty()
+        val trackMediaId = Settings.Global.getString(cr, ClusterLyricStore.SETTINGS_TRACK_MEDIA_ID)
+            ?.trim()
+            .orEmpty()
         val artRevision = ClusterArtStore.readRevision(cr)
+        val artReady = artMediaId.isNotEmpty() &&
+            (trackMediaId.isEmpty() || artMediaId == trackMediaId)
         val progress = ClusterLyricStore.readProgress(cr)
         val durationMs = progress?.durationMs ?: 0L
-        val artFileMissing = ClusterArtStore.artUriString(artRevision) == null
+        val artFileMissing = !artReady || ClusterArtStore.artUriString(artRevision) == null
         if (title == lastTitle &&
             subtitle == lastSubtitle &&
             album == lastAlbum &&
@@ -250,10 +256,13 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         ) {
             return
         }
-        val shellMediaId = MEDIA_ID_PREFIX + artMediaId.ifEmpty {
-            (album.ifEmpty { subtitle }).hashCode().toUInt().toString(16)
+        val shellMediaId = when {
+            artReady -> MEDIA_ID_PREFIX + artMediaId
+            lastShellMediaId.isNotEmpty() -> lastShellMediaId
+            else -> MEDIA_ID_PREFIX + (album.ifEmpty { subtitle }).hashCode().toUInt().toString(16)
         }
-        val artChanged = artMediaId != lastArtMediaId || artRevision != lastArtRevision
+        val artChanged = (artReady && artMediaId != lastArtMediaId) ||
+            (artReady && artRevision != lastArtRevision)
         val lyricOnly = sess.isActive &&
             lastDurationMs >= 0L &&
             durationMs == lastDurationMs &&
@@ -265,11 +274,11 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         lastTitle = title
         lastSubtitle = subtitle
         lastAlbum = album
-        lastArtMediaId = artMediaId
-        lastArtRevision = artRevision
-        // Stable per track (CarPlay-style persistent id). Do not fold artRevision
-        // in — a late cover would look like a new song and reset the HU clock.
-        lastShellMediaId = shellMediaId
+        if (artReady) {
+            lastArtMediaId = artMediaId
+            lastArtRevision = artRevision
+            lastShellMediaId = shellMediaId
+        }
         val builder = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
             .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, title)
@@ -290,11 +299,20 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
         // A13 gearhead Glide can open the world-readable system JPEG; A16 priv_app is
         // SELinux-denied on that path — cover still reaches HU via egress getBitmap
         // rewrite + full-MediaInfo ByteArray inject (CoreApi JPEG).
-        ClusterArtStore.artUriString(artRevision).let { uri ->
-            if (uri == null) return@let
-            builder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, uri)
-            builder.putString(MediaMetadataCompat.METADATA_KEY_ART_URI, uri)
-            builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI, uri)
+        if (artReady) {
+            ClusterArtStore.artUriString(artRevision).let { uri ->
+                if (uri == null) return@let
+                builder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, uri)
+                builder.putString(MediaMetadataCompat.METADATA_KEY_ART_URI, uri)
+                builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI, uri)
+            }
+        } else if (lastArtMediaId.isNotEmpty() && lastArtRevision > 0L) {
+            ClusterArtStore.artUriString(lastArtRevision).let { uri ->
+                if (uri == null) return@let
+                builder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, uri)
+                builder.putString(MediaMetadataCompat.METADATA_KEY_ART_URI, uri)
+                builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI, uri)
+            }
         }
         val meta = builder.build()
         if (lyricOnly) {

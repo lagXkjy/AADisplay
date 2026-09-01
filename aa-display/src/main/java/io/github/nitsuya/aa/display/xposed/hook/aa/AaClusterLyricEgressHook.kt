@@ -1,17 +1,20 @@
 package io.github.nitsuya.aa.display.xposed.hook.aa
 
 import android.content.ContentResolver
+import android.net.Uri
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.PlaybackState
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.Settings
 import android.support.v4.media.session.PlaybackStateCompat
 import android.view.View
 import android.widget.TextView
 import com.github.kyuubiran.ezxhelper.init.InitFields
 import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
+import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.callbacks.XC_LoadPackage
@@ -24,6 +27,7 @@ import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType
+import java.io.ByteArrayInputStream
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 
@@ -112,6 +116,7 @@ object AaClusterLyricEgressHook : AaHook() {
     private var lastHuAlbum: String? = null
     private var lastHuDuration: Long = -1L
     private var lastHuArtLen: Int = -1
+    private var lastHuArtRevision: Long = -1L
     private val reenteringPlayback = ThreadLocal.withInitial { false }
     @Volatile
     private var pendingLyricOnlyUntilElapsedMs = 0L
@@ -199,7 +204,37 @@ object AaClusterLyricEgressHook : AaHook() {
             "android.support.v4.media.MediaMetadataCompat",
             lpparam.classLoader,
         )
+        hookClusterArtUriLoader()
         hookGearheadStatusBarAndHu()
+    }
+
+    /**
+     * A16 gearhead [GH.BitmapSyncWorker] loads album art via [ContentResolver.openInputStream]
+     * on the file URI — not [MediaMetadata.getBitmap]. SELinux blocks priv_app from
+     * `/data/system/aadisplay_cluster_art.jpg`; serve Binder JPEG instead.
+     */
+    private fun hookClusterArtUriLoader() {
+        try {
+            findMethod(ContentResolver::class.java) {
+                name == "openInputStream" &&
+                    parameterCount == 1 &&
+                    parameterTypes[0] == Uri::class.java
+            }.hookBefore { param ->
+                val uri = param.args[0] as? Uri ?: return@hookBefore
+                if (!isClusterArtFileUri(uri)) return@hookBefore
+                val jpeg = fetchClusterArtJpeg(allowHoldover = true) ?: return@hookBefore
+                param.result = ByteArrayInputStream(jpeg)
+                logDebug(tagName, "openInputStream cluster art via binder bytes=${jpeg.size}")
+            }
+            log(tagName, "hooked ContentResolver.openInputStream for cluster art")
+        } catch (e: Throwable) {
+            log(tagName, "hook cluster art openInputStream failed", e)
+        }
+    }
+
+    private fun isClusterArtFileUri(uri: Uri): Boolean {
+        if (uri.scheme != "file") return false
+        return uri.path?.contains("aadisplay_cluster_art") == true
     }
 
     private fun hookPlatformMediaMetadata() {
@@ -409,20 +444,56 @@ object AaClusterLyricEgressHook : AaHook() {
     private var cachedArtJpeg: ByteArray? = null
 
     @Volatile
-    private var cachedArtJpegAtElapsedMs: Long = 0L
+    private var cachedArtRevision: Long = -1L
 
-    private fun fetchClusterArtJpeg(): ByteArray? {
-        val now = SystemClock.elapsedRealtime()
-        cachedArtJpeg?.takeIf { it.isNotEmpty() && now - cachedArtJpegAtElapsedMs in 0L until 2_000L }
-            ?.let { return it }
+    private fun invalidateClusterArtCache() {
+        cachedArtJpeg = null
+        cachedArtRevision = -1L
+    }
+
+    private fun clusterArtMatchesTrack(cr: ContentResolver): Boolean {
+        val artMediaId = Settings.Global.getString(cr, ClusterArtStore.SETTINGS_ART_MEDIA_ID)
+            ?.trim()
+            .orEmpty()
+        if (artMediaId.isEmpty()) return false
+        val trackMediaId = Settings.Global.getString(cr, ClusterLyricStore.SETTINGS_TRACK_MEDIA_ID)
+            ?.trim()
+            .orEmpty()
+        // Boot / legacy gap before mirror publishes track id — do not block all art.
+        if (trackMediaId.isEmpty()) return true
+        return artMediaId == trackMediaId
+    }
+
+    private fun fetchClusterArtJpeg(allowHoldover: Boolean = false): ByteArray? {
+        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return null
+        val revision = ClusterArtStore.readRevision(cr)
+        if (cachedArtJpeg != null && cachedArtRevision == revision && revision > 0L) {
+            return cachedArtJpeg
+        }
+        if (!clusterArtMatchesTrack(cr)) {
+            if (allowHoldover && cachedArtJpeg?.isNotEmpty() == true) {
+                logDebug(tagName, "fetchClusterArtJpeg holdover bytes=${cachedArtJpeg!!.size}")
+                return cachedArtJpeg
+            }
+            invalidateClusterArtCache()
+            return null
+        }
         // Prefer Binder (system_server memory). Local file open fails under A16 SELinux.
         val jpeg = runCatching { io.github.nitsuya.aa.display.CoreApi.clusterArtJpeg }
             .getOrNull()
             ?.takeIf { it.isNotEmpty() }
-            ?: ClusterArtStore.loadJpegBytes()?.takeIf { it.isNotEmpty() }
-            ?: return null
+            ?: ClusterArtStore.loadJpegBytes(cr)?.takeIf { it.isNotEmpty() }
+        if (jpeg == null) {
+            if (allowHoldover && cachedArtJpeg?.isNotEmpty() == true) {
+                logDebug(tagName, "fetchClusterArtJpeg holdover bytes=${cachedArtJpeg!!.size}")
+                return cachedArtJpeg
+            }
+            invalidateClusterArtCache()
+            logDebug(tagName, "fetchClusterArtJpeg miss binder+local rev=$revision")
+            return null
+        }
         cachedArtJpeg = jpeg
-        cachedArtJpegAtElapsedMs = now
+        cachedArtRevision = revision
         return jpeg
     }
 
@@ -670,16 +741,25 @@ object AaClusterLyricEgressHook : AaHook() {
                             return
                         }
                         // Empty art on the wire usually means "omitted" (lyric tick), not
-                        // "cleared". Only treat as a real change when a non-empty payload
-                        // differs, or we have never established art state for this track.
+                        // "cleared". Only treat as unchanged when we have successfully
+                        // delivered art before (>0). Setting lastHuArtLen=0 on a failed
+                        // A16 inject made every later tick lyric-only forever.
+                        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull()
+                        val artRevision = cr?.let { ClusterArtStore.readRevision(it) } ?: 0L
+                        val artRevisionChanged =
+                            artRevision > 0L && artRevision != lastHuArtRevision
+                        if (artRevisionChanged) {
+                            invalidateClusterArtCache()
+                        }
                         val artUnchanged =
                             if (incomingArtLen == 0) {
-                                lastHuArtLen >= 0
+                                lastHuArtLen > 0 && !artRevisionChanged
                             } else {
                                 incomingArtLen == lastHuArtLen
                             }
                         val lyricOnly =
-                            lastHuArtist == artist &&
+                            !artRevisionChanged &&
+                                lastHuArtist == artist &&
                                 lastHuAlbum == album &&
                                 lastHuDuration == duration &&
                                 lastHuDuration >= 0L &&
@@ -696,14 +776,17 @@ object AaClusterLyricEgressHook : AaHook() {
                         param.args[0] = fresh.title
                         injectShellAlbumArg(param, fresh)
                         // Full MediaInfo only — lyric ticks must stay small on A13 Binder.
-                        // Do not clobber lastHuArtLen with omitted (0) art on lyric ticks.
-                        if (!lyricOnly) {
-                            lastHuArtLen = if (incomingArtLen == 0) {
-                                injectShellArtArg(param)?.size ?: 0
-                            } else {
-                                incomingArtLen
+                        // Retry inject while art never reached HU (A16 Binder path) or rev bumps.
+                        if (!lyricOnly || lastHuArtLen <= 0 || artRevisionChanged) {
+                            if (incomingArtLen == 0 || artRevisionChanged) {
+                                injectShellArtArg(param)
+                                    ?.takeIf { it.isNotEmpty() }
+                                    ?.let { lastHuArtLen = it.size }
+                            } else if (!lyricOnly) {
+                                lastHuArtLen = incomingArtLen
                             }
                         }
+                        lastHuArtRevision = artRevision
                         lastHuArtist = artist
                         lastHuAlbum = album
                         lastHuDuration = duration
@@ -796,8 +879,12 @@ object AaClusterLyricEgressHook : AaHook() {
         if (param.args.size <= 3) return null
         val current = param.args[3] as? ByteArray
         if (current != null && current.isNotEmpty()) return current
-        val jpeg = fetchClusterArtJpeg() ?: return null
-        if (jpeg.isEmpty()) return null
+        var jpeg = fetchClusterArtJpeg(allowHoldover = false)
+        if (jpeg == null && cachedArtJpeg?.isNotEmpty() == true) {
+            jpeg = cachedArtJpeg
+            logDebug(tagName, "inject HU art holdover bytes=${jpeg!!.size}")
+        }
+        if (jpeg == null || jpeg.isEmpty()) return null
         param.args[3] = jpeg
         logDebug(tagName, "inject HU art bytes=${jpeg.size}")
         return jpeg

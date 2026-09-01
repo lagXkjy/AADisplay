@@ -41,6 +41,12 @@ object LyricLineExtractor {
         """\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]\s*(.*)""",
     )
 
+    private val CREDIT_LINE = Regex(
+        """(?i)(作词|作曲|编曲|制作|录音|混音|母带|统筹|协力|编辑|配唱|监制|producer|composed|arranged|mastered|recording\s*studio|vocals?\s*producer|digital\s*editing|production\s*coordination)""",
+    )
+
+    private val INSTRUMENTAL_HINT = Regex("""纯音乐|请您欣赏|instrumental|no\s*lyrics?""", RegexOption.IGNORE_CASE)
+
     /** Avoid re-unwrap / re-regex / re-parse of the same lyric blob every 300ms position tick. */
     private var cachedLrcMediaId: String = ""
     private var cachedLrcRaw: String = ""
@@ -91,6 +97,15 @@ object LyricLineExtractor {
     private fun isQqMusicPackage(packageName: String): Boolean =
         packageName == QQ_CAR_PKG || packageName == QQ_PAD_PKG
 
+    /** Drop cached LRC on track change so a reused mediaId cannot flash the previous song. */
+    fun clearLyricCache() {
+        cachedLrcMediaId = ""
+        cachedLrcRaw = ""
+        cachedUnwrapped = ""
+        cachedLrcIsTimed = false
+        cachedLrcEntries = emptyList()
+    }
+
     fun extract(controller: MediaController): Extracted? {
         val metadata = controller.metadata ?: return null
         val songTitle = metadata.getString(MediaMetadata.METADATA_KEY_TITLE)?.trim().orEmpty()
@@ -104,7 +119,7 @@ object LyricLineExtractor {
         val durationMs = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION).coerceAtLeast(0L)
         val baseId = metadata.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)?.trim().orEmpty()
         val mediaId = when {
-            baseId.isNotEmpty() -> baseId
+            baseId.isNotEmpty() && baseId != "0" -> baseId
             songTitle.isNotEmpty() || artist.isNotEmpty() ->
                 "$artist|$songTitle|$album|$durationMs"
             else -> return null
@@ -215,8 +230,19 @@ object LyricLineExtractor {
         cachedLrcRaw = raw
         val unwrapped = unwrapLyricPayload(raw)
         cachedUnwrapped = unwrapped
+        if (INSTRUMENTAL_HINT.containsMatchIn(unwrapped)) {
+            cachedLrcIsTimed = false
+            cachedLrcEntries = emptyList()
+            return PreparedLyric(unwrapped, null)
+        }
         cachedLrcIsTimed = looksLikeLrc(unwrapped)
-        cachedLrcEntries = if (cachedLrcIsTimed) parseLrc(unwrapped) else emptyList()
+        val parsed = if (cachedLrcIsTimed) parseLrc(unwrapped) else emptyList()
+        cachedLrcEntries = if (cachedLrcIsTimed && parsed.any { !isCreditOrProductionLine(it.text) }) {
+            parsed
+        } else {
+            cachedLrcIsTimed = false
+            emptyList()
+        }
         return PreparedLyric(
             unwrapped,
             if (cachedLrcIsTimed) cachedLrcEntries else null,
@@ -234,7 +260,7 @@ object LyricLineExtractor {
 
         if (timedEntries != null) {
             val line = lineAtPosition(timedEntries, positionMs)
-            if (!line.isNullOrBlank()) {
+            if (!line.isNullOrBlank() && !isCreditOrProductionLine(line)) {
                 return ResolvedLyric(line, fromLrc = true)
             }
             return null
@@ -242,7 +268,8 @@ object LyricLineExtractor {
 
         if (raw.length <= MAX_CHARS * 2 && !raw.contains('\n')) {
             val plain = raw.trim()
-            if (plain == songTitle || plain == artist) return null
+            if (plain.isEmpty() || plain == songTitle || plain == artist) return null
+            if (isCreditOrProductionLine(plain) || INSTRUMENTAL_HINT.containsMatchIn(plain)) return null
             return ResolvedLyric(plain, fromLrc = false)
         }
         logDebug(TAG, "ignore oversized non-LRC lyric len=${raw.length}")
@@ -366,6 +393,17 @@ object LyricLineExtractor {
         for (key in bundle.keySet()) {
             out.add(key)
         }
+    }
+
+    private fun isCreditOrProductionLine(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty()) return true
+        if (CREDIT_LINE.containsMatchIn(t)) return true
+        if (INSTRUMENTAL_HINT.containsMatchIn(t)) return true
+        // QQ credit blocks: "Name1/Name2/Name3 @ STUDIO ..."
+        if (t.count { it == '/' } >= 2 && t.length > 36) return true
+        if (t.contains('@') && t.contains("studio", ignoreCase = true)) return true
+        return false
     }
 
     private fun truncate(text: String): String {

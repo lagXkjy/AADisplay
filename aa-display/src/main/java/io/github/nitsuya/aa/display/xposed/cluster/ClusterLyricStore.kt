@@ -17,6 +17,8 @@ object ClusterLyricStore {
     /** Car panel artist line — typically「歌名 — 歌手」. */
     const val SETTINGS_SUBTITLE = "aadisplay_cluster_np_subtitle"
     const val SETTINGS_ALBUM = "aadisplay_cluster_np_album"
+    /** Current bound track [MediaMetadata.METADATA_KEY_MEDIA_ID] — art must match before HU/cluster display. */
+    const val SETTINGS_TRACK_MEDIA_ID = "aadisplay_cluster_np_track_media_id"
     const val SETTINGS_UPDATED_MS = "aadisplay_cluster_np_updated_ms"
     const val SETTINGS_POSITION_MS = "aadisplay_cluster_np_position_ms"
     const val SETTINGS_DURATION_MS = "aadisplay_cluster_np_duration_ms"
@@ -92,6 +94,15 @@ object ClusterLyricStore {
         }
     }
 
+    fun publishTrackMediaId(cr: ContentResolver, mediaId: String) {
+        val id = mediaId.trim()
+        runCatching {
+            Settings.Global.putString(cr, SETTINGS_TRACK_MEDIA_ID, id)
+        }.onFailure { e ->
+            log(TAG, "publishTrackMediaId failed", e)
+        }
+    }
+
     /** Push playback position / duration from the bound QQ / Luna session (may run every 300ms). */
     fun publishProgress(
         cr: ContentResolver,
@@ -163,6 +174,7 @@ object ClusterLyricStore {
             Settings.Global.putString(cr, SETTINGS_TITLE, "")
             Settings.Global.putString(cr, SETTINGS_SUBTITLE, "")
             Settings.Global.putString(cr, SETTINGS_ALBUM, "")
+            Settings.Global.putString(cr, SETTINGS_TRACK_MEDIA_ID, "")
             Settings.Global.putString(cr, SETTINGS_UPDATED_MS, "0")
             Settings.Global.putString(cr, SETTINGS_POSITION_MS, "0")
             Settings.Global.putString(cr, SETTINGS_DURATION_MS, "0")

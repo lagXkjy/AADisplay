@@ -926,7 +926,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun getHidCursorOverlay(): FloatArray = hidCursorOverlaySnapshot()
 
-    override fun getClusterArtJpeg(): ByteArray? = ClusterArtStore.loadJpegBytes()
+    override fun getClusterArtJpeg(): ByteArray? =
+        if (hasSystemContext) {
+            ClusterArtStore.loadJpegBytes(systemContext.contentResolver)
+        } else {
+            ClusterArtStore.loadJpegBytes()
+        }
 
     override fun setVdDensityDpi(dpi: Int) {
         runMainSync { persistVdDensityDpiLocked(dpi) }

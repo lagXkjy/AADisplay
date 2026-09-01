@@ -40,6 +40,8 @@ object ClusterArtStore {
     private const val ART_MISS_SLOW_INTERVAL_MS = 2_000L
     private const val ART_MISS_SLOW_AFTER = 10
     private const val ART_MISS_GIVE_UP_AFTER = 30
+    /** QQ car often ships a ~221px / ~1.4KB grey note tile before the real cover URI lands. */
+    private const val MIN_ART_JPEG_BYTES = 3_000
 
     private const val METADATA_KEY_ALBUM_ART = "android.media.metadata.ALBUM_ART"
     private const val METADATA_KEY_ART = "android.media.metadata.ART"
@@ -112,7 +114,7 @@ object ClusterArtStore {
         val cachedId = Settings.Global.getString(resolver, SETTINGS_ART_MEDIA_ID)?.trim().orEmpty()
         if (cachedId != mediaId) return true
         val file = artFile()
-        return !file.exists() || file.length() <= 0L
+        return !file.exists() || file.length() < MIN_ART_JPEG_BYTES
     }
 
     /** Tick burst: widen retry interval after repeated misses for the same track. */
@@ -162,7 +164,7 @@ object ClusterArtStore {
         /** Tick burst after track change — re-encode even when JPEG size matches. */
         forceRescan: Boolean = false,
     ) {
-        if (mediaId.isEmpty()) return
+        if (mediaId.isEmpty() || mediaId == "0") return
         // Same track already has JPEG — skip re-encode / revision churn (Glide spam).
         if (!forceRescan && !needsArtForMediaId(resolver, mediaId)) {
             return
@@ -198,17 +200,17 @@ object ClusterArtStore {
             } else {
                 sessionBitmapRaw
             }
-        // Same-app track change (e.g. Luna): drop stale JPEG immediately. QQ car↔HD
-        // handoff keeps the 2s deferred window when the new session has no art yet.
+        // Same-app track change (e.g. Luna): mark published art stale but keep the on-disk
+        // JPEG until the new cover overwrites it — immediate clear() caused HU grey flash.
         if (mediaChanged && sessionBitmap == null && !qqHandoff) {
             if (transitionClearedForMediaId != mediaId) {
                 logDebug(
                     TAG,
-                    "stale art written=$lastWrittenMediaId cached=$cachedId -> $mediaId (immediate clear)",
+                    "stale art written=$lastWrittenMediaId cached=$cachedId -> $mediaId (invalidate publish)",
                 )
                 transitionClearedForMediaId = mediaId
                 lastWrittenMediaId = ""
-                clear(resolver)
+                invalidatePublishedArt(resolver)
             }
         }
         val gen = ++publishGen
@@ -217,8 +219,9 @@ object ClusterArtStore {
                 sessionBitmap?.recycle()
                 return@post
             }
-            val bitmap = sessionBitmap ?: extractUriArt(resolver, metadata)
-            if (bitmap == null) {
+            val jpegBytes = resolveArtJpeg(resolver, metadata, sessionBitmap, mediaId)
+            sessionBitmap?.recycle()
+            if (jpegBytes == null) {
                 handler.post {
                     if (gen != publishGen) return@post
                     if (sourceChanged) {
@@ -233,8 +236,6 @@ object ClusterArtStore {
                 }
                 return@post
             }
-            val jpegBytes = encodeJpeg(bitmap, mediaId)
-            if (jpegBytes == null || jpegBytes.isEmpty()) return@post
             if (gen != publishGen) return@post
             val prior = cachedJpegBytes
             if (!forceRescan &&
@@ -269,15 +270,26 @@ object ClusterArtStore {
 
     /**
      * system_server source for Binder. Returns a copy so callers cannot mutate the cache.
-     * Empty when no cover is published.
+     * Empty when no cover is published for the current track.
      */
-    fun loadJpegBytes(): ByteArray? {
-        cachedJpegBytes?.takeIf { it.isNotEmpty() }?.let { return it.copyOf() }
+    fun loadJpegBytes(resolver: ContentResolver? = null): ByteArray? {
+        val artMediaId = resolver?.let {
+            Settings.Global.getString(it, SETTINGS_ART_MEDIA_ID)?.trim().orEmpty()
+        }.orEmpty()
+        if (artMediaId.isEmpty()) {
+            cachedJpegBytes = null
+            cachedJpegMediaId = ""
+            return null
+        }
+        cachedJpegBytes?.takeIf { it.isNotEmpty() && it.size >= MIN_ART_JPEG_BYTES && cachedJpegMediaId == artMediaId }
+            ?.let { return it.copyOf() }
         val file = artFile()
         if (!file.exists() || file.length() <= 0L) return null
         val bytes = runCatching { file.readBytes() }.getOrNull()?.takeIf { it.isNotEmpty() }
             ?: return null
+        if (bytes.size < MIN_ART_JPEG_BYTES) return null
         cachedJpegBytes = bytes
+        cachedJpegMediaId = artMediaId
         return bytes.copyOf()
     }
 
@@ -339,6 +351,19 @@ object ClusterArtStore {
             if (gen != publishGen) return@post
             artFile().delete()
             File(ART_TMP_PATH).delete()
+        }
+    }
+
+    /** Track switch: drop published id so loadJpegBytes won't serve stale; keep file until overwrite. */
+    private fun invalidatePublishedArt(resolver: ContentResolver) {
+        cancelPendingClear()
+        cachedJpegBytes = null
+        cachedJpegMediaId = ""
+        runCatching {
+            Settings.Global.putString(resolver, SETTINGS_ART_MEDIA_ID, "")
+            notifyArtObservers(resolver)
+        }.onFailure { e ->
+            log(TAG, "invalidatePublishedArt failed", e)
         }
     }
 
@@ -445,31 +470,65 @@ object ClusterArtStore {
 
     private fun extractSessionBitmaps(metadata: MediaMetadata?): Bitmap? {
         if (metadata == null) return null
-        metadata.getBitmap(METADATA_KEY_ART)?.let { ownedCopy(it) }?.let { return it }
+        // Prefer album keys — DISPLAY_ICON is often QQ's grey note placeholder.
         metadata.getBitmap(METADATA_KEY_ALBUM_ART)?.let { ownedCopy(it) }?.let { return it }
-        metadata.getBitmap(METADATA_KEY_DISPLAY_ICON)?.let { ownedCopy(it) }?.let { return it }
-        metadata.description?.iconBitmap?.let { ownedCopy(it) }?.let { return it }
+        metadata.getBitmap(METADATA_KEY_ART)?.let { ownedCopy(it) }?.let { return it }
         return null
     }
 
+    /**
+     * Session bitmap first; if QQ only published the grey tile, fall back to HTTP/content URI.
+     */
+    private fun resolveArtJpeg(
+        resolver: ContentResolver,
+        metadata: MediaMetadata?,
+        sessionBitmap: Bitmap?,
+        mediaId: String,
+    ): ByteArray? {
+        sessionBitmap?.let { bmp ->
+            val jpeg = encodeJpeg(bmp, mediaId)
+            if (jpeg != null && !isPlaceholderJpeg(jpeg)) {
+                logDebug(TAG, "art from session mediaId=$mediaId bytes=${jpeg.size}")
+                return jpeg
+            }
+            if (jpeg != null) {
+                logDebug(TAG, "ignore placeholder session art mediaId=$mediaId bytes=${jpeg.size}")
+            }
+        }
+        extractUriArt(resolver, metadata)?.let { uriBmp ->
+            val jpeg = encodeJpeg(uriBmp, mediaId)
+            uriBmp.recycle()
+            if (jpeg != null && !isPlaceholderJpeg(jpeg)) {
+                logDebug(TAG, "art from uri mediaId=$mediaId bytes=${jpeg.size}")
+                return jpeg
+            }
+            if (jpeg != null) {
+                logDebug(TAG, "ignore placeholder uri art mediaId=$mediaId bytes=${jpeg.size}")
+            }
+        }
+        return null
+    }
+
+    private fun isPlaceholderJpeg(jpeg: ByteArray): Boolean = jpeg.size < MIN_ART_JPEG_BYTES
+
     private fun extractUriArt(resolver: ContentResolver, metadata: MediaMetadata?): Bitmap? {
         if (metadata == null) return null
-        metadata.getString(METADATA_KEY_ART_URI)
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { loadUri(resolver, it) }
-            ?.let { return it }
         metadata.getString(METADATA_KEY_ALBUM_ART_URI)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?.let { loadUri(resolver, it) }
             ?.let { return it }
-        metadata.getString(METADATA_KEY_DISPLAY_ICON_URI)
+        metadata.getString(METADATA_KEY_ART_URI)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?.let { loadUri(resolver, it) }
             ?.let { return it }
         metadata.description?.iconUri?.toString()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { loadUri(resolver, it) }
+            ?.let { return it }
+        metadata.getString(METADATA_KEY_DISPLAY_ICON_URI)
+            ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?.let { loadUri(resolver, it) }
             ?.let { return it }
