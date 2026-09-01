@@ -93,5 +93,109 @@
 
         </FrameLayout>
 
+        <FrameLayout
+            android:id="@+id/mcv_dpi"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_info_card"
+            android:elevation="2dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="@dimen/content_padding">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="虚拟屏 DPI"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_text_secondary"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="留空 = 自动（车机上报值）；有效范围 120–640"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_text_secondary"
+                    android:textSize="12sp" />
+
+                <EditText
+                    android:id="@+id/et_vd_density_dpi"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:hint="留空 = 自动"
+                    android:imeOptions="actionDone"
+                    android:importantForAutofill="no"
+                    android:inputType="number"
+                    android:maxLength="3"
+                    android:maxLines="1"
+                    android:textColor="@color/color_text_primary"
+                    android:textSize="14sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btn_apply_vd_density_dpi"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="8dp"
+                        android:layout_weight="1"
+                        android:minHeight="40dp"
+                        android:text="应用" />
+
+                    <Button
+                        android:id="@+id/btn_reset_vd_density_dpi"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:minHeight="40dp"
+                        android:text="恢复自动" />
+
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tv_vd_density_saved"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_text_primary"
+                    android:textSize="14sp"
+                    tools:text="已保存：自动" />
+
+                <TextView
+                    android:id="@+id/tv_vd_density_hu"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_text_primary"
+                    android:textSize="14sp"
+                    tools:text="车机协商：320 dpi" />
+
+                <TextView
+                    android:id="@+id/tv_vd_density_session"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_text_primary"
+                    android:textSize="14sp"
+                    tools:text="当前会话：320 dpi" />
+
+            </LinearLayout>
+
+        </FrameLayout>
+
     </LinearLayout>
 </ScrollView>

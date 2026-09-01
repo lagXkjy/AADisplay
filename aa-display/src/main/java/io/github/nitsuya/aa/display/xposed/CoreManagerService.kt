@@ -18,6 +18,7 @@ import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.CoolwalkRailStore
+import io.github.nitsuya.aa.display.util.DisplayDpiStore
 import io.github.nitsuya.aa.display.util.DisplayProfileSettle
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterArtStore
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
@@ -37,6 +38,7 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.duzhaokun123.template.utils.runIO
 import io.github.duzhaokun123.template.utils.runMain
 import io.github.qauxv.ui.CommonContextWrapper
+import java.util.concurrent.CountDownLatch
 
 class CoreManagerService private constructor() : ICoreManager.Stub() {
 
@@ -79,10 +81,47 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         }
 
         private var mLockedDisplayProfile: DisplayProfile? = null
+        /** Last HU-reported density from gearhead before manual override. */
+        @Volatile
+        private var mLastReportedHostDensityDpi = 0
         /** Soft-reconnect: rail VD may appear shortly after first create call. */
         private const val RAIL_SETTLE_RETRY_MS = 450L
         private val mMainHandler = Handler(Looper.getMainLooper())
         private val mRailSettleRetryRunnable = Runnable { retryRailAwareSettle() }
+
+        /** Binder setters must finish before the client reads back (see MainActivity DPI UI). */
+        private fun runMainSync(block: () -> Unit) {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                block()
+                return
+            }
+            val latch = CountDownLatch(1)
+            var error: Throwable? = null
+            mMainHandler.post {
+                try {
+                    block()
+                } catch (t: Throwable) {
+                    error = t
+                } finally {
+                    latch.countDown()
+                }
+            }
+            latch.await()
+            error?.let { throw it }
+        }
+
+        private fun persistVdDensityDpiLocked(dpi: Int) {
+            if (!hasSystemContext) {
+                log(TAG, "setVdDensityDpi aborted: systemContext not initialized")
+                return
+            }
+            val normalized = DisplayDpiStore.normalize(dpi)
+            val ok = DisplayDpiStore.save(normalized, systemContext.contentResolver)
+            if (!ok) {
+                log(TAG, "setVdDensityDpi persist failed dpi=$normalized")
+            }
+            applyDensityOverrideLive()
+        }
 
         private fun sanitizeDisplayProfile(width: Int, height: Int, densityDpi: Int): DisplayProfile {
             return DisplayProfile(
@@ -90,6 +129,72 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 height = height.coerceAtLeast(1),
                 densityDpi = densityDpi.coerceAtLeast(1)
             )
+        }
+
+        private fun contentResolverOrNull() =
+            if (hasSystemContext) systemContext.contentResolver else null
+
+        /**
+         * Prefer live DisplayManager HU density over the client-reported value.
+         * AaMainFragment's DisplayContext metrics often stay at the previous dpi across
+         * emulator / HU density changes until something forces a configuration refresh;
+         * system_server can already see VirtualDevice / CarActivity at the new dpi.
+         */
+        private fun resolveReportedHostDensityDpi(clientReported: Int): Int {
+            val observed = if (hasSystemContext) {
+                DisplayProfileSettle.observeHuReportedDensityDpi(systemContext)
+            } else {
+                0
+            }
+            val host = when {
+                observed > 0 && clientReported > 0 && observed != clientReported -> {
+                    logDebug(
+                        TAG,
+                        "host dpi client=$clientReported observed=$observed (using observed)",
+                    )
+                    observed
+                }
+                observed > 0 -> observed
+                else -> clientReported
+            }
+            if (host > 0) {
+                mLastReportedHostDensityDpi = host
+                if (hasSystemContext) {
+                    DisplayDpiStore.saveLastHuReported(host, systemContext.contentResolver)
+                }
+            }
+            return host
+        }
+
+        private fun resolveEffectiveDensityDpi(reportedHostDpi: Int): Int {
+            val override = DisplayDpiStore.loadConfigured(contentResolverOrNull())
+            if (override > 0) return override
+            val host = reportedHostDpi.takeIf { it > 0 }
+                ?: mLastReportedHostDensityDpi.takeIf { it > 0 }
+                ?: DisplayDpiStore.loadLastHuReported(contentResolverOrNull())
+            return host.coerceAtLeast(1)
+        }
+
+        /** Apply configured override / latest host dpi to a live AA session. */
+        private fun applyDensityOverrideLive() {
+            val controller = mSplitController ?: return
+            val profile = mLockedDisplayProfile ?: return
+            val configured = DisplayDpiStore.loadConfigured(contentResolverOrNull())
+            val host = mLastReportedHostDensityDpi.takeIf { it > 0 }
+                ?: DisplayDpiStore.loadLastHuReported(contentResolverOrNull())
+            val newDpi = if (configured > 0) {
+                configured
+            } else {
+                host.coerceAtLeast(1)
+            }
+            if (newDpi == profile.densityDpi && controller.mDensityDpi == newDpi) return
+            mLockedDisplayProfile = profile.copy(densityDpi = newDpi)
+            logDebug(
+                TAG,
+                "vdDensityDpi live apply: ${profile.densityDpi} -> $newDpi " +
+                    "configured=$configured host=$host controller=${controller.mDensityDpi}",
+            )
+            controller.onReconnected(profile.width, profile.height, newDpi)
         }
 
         private fun cancelRailSettleRetry() {
@@ -336,8 +441,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             mSplitController != null && mSessionPolicy?.isAaSessionLive == true
 
         /**
-         * True while app picker / Recents covers the shell — phone BT mouse must
-         * inject via [touchAaDisplay], not pane VDs. Driven by [ACTION_AA_UI_RAIL_CONSUME].
+         * True while app picker / Recents covers the shell.
+         * Rail / HID → [touchAaDisplay]; [SplitLockedPeelController] must not consume.
+         * Driven by [ACTION_AA_UI_RAIL_CONSUME].
          */
         @Volatile
         var aaUiShellCapture: Boolean = false
@@ -351,6 +457,29 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             if (aaUiShellCapture == capture) return
             aaUiShellCapture = capture
             logDebug(TAG, "aaUiShellCapture=$capture")
+            if (capture) {
+                mSplitController?.lockedPeel?.reset()
+                // Presentation needs ALWAYS_UNLOCKED / own group so FacetBar→touchAaDisplay
+                // reaches Recents under phone keyguard (panes already have this at create).
+                val aaUiId = mSplitController?.aaUiDisplayId() ?: Display.INVALID_DISPLAY
+                if (aaUiId != Display.INVALID_DISPLAY && aaUiId != Display.DEFAULT_DISPLAY) {
+                    mSplitController?.lockedPeel?.applyAaUiDisplayKeyguardPolicy(
+                        aaUiId,
+                        "shell-capture",
+                    )
+                    mSplitController?.mHandler?.postDelayed({
+                        if (!aaUiShellCapture) return@postDelayed
+                        val id = mSplitController?.aaUiDisplayId() ?: return@postDelayed
+                        if (id == Display.INVALID_DISPLAY || id == Display.DEFAULT_DISPLAY) {
+                            return@postDelayed
+                        }
+                        mSplitController?.lockedPeel?.applyAaUiDisplayKeyguardPolicy(
+                            id,
+                            "shell-capture-reassert",
+                        )
+                    }, 750L)
+                }
+            }
             PhoneHidRedirect.onShellCaptureChanged(capture)
         }
 
@@ -647,10 +776,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 log(TAG, "onCreateSplitDisplay aborted: systemContext not initialized")
                 return@runMain
             }
+            val hostDpi = resolveReportedHostDensityDpi(densityDpi)
+            val effectiveDpi = resolveEffectiveDensityDpi(hostDpi)
             val profile = resolveDisplayProfile(
                 width = width,
                 height = height,
-                densityDpi = densityDpi,
+                densityDpi = effectiveDpi,
                 newSession = mSplitController == null
             )
             mSplitController?.apply {
@@ -661,6 +792,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 setPaneSurface(SplitPane.SECONDARY, secondarySurface)
                 // Always kick resize/policies/ensure after surface rebind (null→live).
                 onReconnected(profile.width, profile.height, profile.densityDpi)
+                // Density-only HU changes can leave controller/profile briefly desynced when
+                // the client still echoes a stale dpi; re-assert effective density.
+                applyDensityOverrideLive()
                 // Exit ColorFade if panes went OFF while AA was disconnected.
                 mSessionPolicy?.keepVirtualDisplayAwake("soft-reconnect")
                 // Controller retains live ratio across Delay Destroy; AA echo may lag
@@ -793,6 +927,23 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     override fun getHidCursorOverlay(): FloatArray = hidCursorOverlaySnapshot()
 
     override fun getClusterArtJpeg(): ByteArray? = ClusterArtStore.loadJpegBytes()
+
+    override fun setVdDensityDpi(dpi: Int) {
+        runMainSync { persistVdDensityDpiLocked(dpi) }
+    }
+
+    override fun getVdDensityDpi(): Int {
+        if (!hasSystemContext) return 0
+        return DisplayDpiStore.loadConfigured(systemContext.contentResolver)
+    }
+
+    override fun getEffectiveVdDensityDpi(): Int = getDensityDpi()
+
+    override fun getReportedHostDensityDpi(): Int {
+        if (mLastReportedHostDensityDpi > 0) return mLastReportedHostDensityDpi
+        if (!hasSystemContext) return 0
+        return DisplayDpiStore.loadLastHuReported(systemContext.contentResolver)
+    }
 
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
         mSplitController?.moveTaskIdAsync(taskId, isVirtualDisplay)

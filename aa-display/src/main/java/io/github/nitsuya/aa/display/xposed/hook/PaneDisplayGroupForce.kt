@@ -102,6 +102,75 @@ object PaneDisplayGroupForce {
         }
     }
 
+    /**
+     * AaDisplayActivity presentation (Gearhead PRIVATE VD): same Lineage A16 trap as
+     * panes — stays in DisplayGroup 0 without ALWAYS_UNLOCKED, so phone keyguard drops
+     * [IInputManager.inject] (FacetBar → touchAaDisplay dead under lock; peel used
+     * SplitLockedPeelController as a bypass). Call when Recents / picker opens.
+     */
+    fun forceInteractiveUnderKeyguard(displayId: Int, reason: String) {
+        if (displayId == Display.INVALID_DISPLAY || displayId == Display.DEFAULT_DISPLAY) return
+        forceOwnGroup(displayId, reason)
+        ensureResolved()
+        val mapperObj = mapper ?: return
+        val getDisplay = getDisplayLocked ?: return
+        val root = syncRoot
+        val flag = alwaysUnlockedDisplayFlag() ?: return
+        val identity = Binder.clearCallingIdentity()
+        try {
+            fun doPatch() {
+                val display = invokeGetDisplay(mapperObj, getDisplay, displayId) ?: return
+                var changed = false
+                changed = orDisplayFlags(findFieldValue(display, "mBaseDisplayInfo"), flag) || changed
+                changed = orDisplayFlags(findFieldValue(display, "mOverrideDisplayInfo"), flag) || changed
+                val infoObj = findFieldValue(display, "mInfo")
+                if (infoObj != null) {
+                    val cached = findMethod(infoObj.javaClass, "get") { m ->
+                        m.parameterTypes.isEmpty()
+                    }?.invoke(infoObj)
+                    if (cached != null) {
+                        changed = orDisplayFlags(cached, flag) || changed
+                    } else if (infoObj.javaClass.name.endsWith("DisplayInfo")) {
+                        changed = orDisplayFlags(infoObj, flag) || changed
+                    }
+                }
+                if (changed) {
+                    log(TAG, "ALWAYS_UNLOCKED id=$displayId ($reason)")
+                }
+            }
+            if (root != null) {
+                synchronized(root) { doPatch() }
+            } else {
+                doPatch()
+            }
+        } catch (e: Throwable) {
+            log(TAG, "forceInteractiveUnderKeyguard($displayId) failed", e)
+        } finally {
+            Binder.restoreCallingIdentity(identity)
+        }
+    }
+
+    private fun orDisplayFlags(info: Any?, flag: Int): Boolean {
+        if (info == null) return false
+        val field = findField(info.javaClass, "flags") ?: return false
+        field.isAccessible = true
+        val cur = field.getInt(info)
+        if (cur and flag != 0) return false
+        field.setInt(info, cur or flag)
+        return true
+    }
+
+    private fun alwaysUnlockedDisplayFlag(): Int? {
+        return try {
+            Class.forName("android.view.Display")
+                .getField("FLAG_ALWAYS_UNLOCKED")
+                .getInt(null)
+        } catch (_: Throwable) {
+            // AOSP Display.FLAG_ALWAYS_UNLOCKED — not VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED.
+            1 shl 9
+        }
+    }
+
     private fun manualMoveToOwnGroup(mapperObj: Any, display: Any) {
         val groupsObj = findFieldValue(mapperObj, "mDisplayGroups") ?: return
         @Suppress("UNCHECKED_CAST")

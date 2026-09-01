@@ -334,6 +334,11 @@ class SplitDividerView @JvmOverloads constructor(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // setOverlayBlocksChrome disables us while Recents/picker is up.
+        if (!isEnabled) {
+            if (tracking) resetGesture()
+            return false
+        }
         val parentView = parent as? View ?: return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {

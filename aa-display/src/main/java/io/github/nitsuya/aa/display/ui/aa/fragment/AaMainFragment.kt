@@ -1455,6 +1455,8 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
     /**
      * Prefer density of the Display hosting the AA shell (HU / projection), not the phone
      * default metrics — phones and HUs vary; never hardcode a single dpi.
+     * Prefer [Display.getRealMetrics] over [Context.createDisplayContext]: the latter can
+     * keep a stale Configuration after the emulator / HU density changes.
      */
     private fun resolveHostDensityDpi(): Int {
         val display = baseBinding.splitContainer.display
@@ -1462,18 +1464,24 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
             ?: context?.display
         if (display != null && display.displayId != Display.DEFAULT_DISPLAY) {
             runCatching {
+                val metrics = android.util.DisplayMetrics()
+                @Suppress("DEPRECATION")
+                display.getRealMetrics(metrics)
+                if (metrics.densityDpi > 0) return metrics.densityDpi
+            }
+            runCatching {
+                val metrics = android.util.DisplayMetrics()
+                @Suppress("DEPRECATION")
+                display.getMetrics(metrics)
+                if (metrics.densityDpi > 0) return metrics.densityDpi
+            }
+            runCatching {
                 val dpi = requireContext()
                     .createDisplayContext(display)
                     .resources
                     .displayMetrics
                     .densityDpi
                 if (dpi > 0) return dpi
-            }
-            runCatching {
-                val metrics = android.util.DisplayMetrics()
-                @Suppress("DEPRECATION")
-                display.getRealMetrics(metrics)
-                if (metrics.densityDpi > 0) return metrics.densityDpi
             }
         }
         return resources.displayMetrics.densityDpi.coerceAtLeast(1)

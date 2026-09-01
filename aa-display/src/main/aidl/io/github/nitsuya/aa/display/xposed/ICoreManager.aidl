@@ -130,4 +130,13 @@ interface ICoreManager {
      * (SELinux); use this for HU MediaInfo / getBitmap rewrite.
      */
     byte[] getClusterArtJpeg();
+
+    /** 0 = auto (unset). Valid override: 120..640. Persists + applies live if session active. */
+    void setVdDensityDpi(int dpi);
+    /** Configured override; 0 when auto/unset. */
+    int getVdDensityDpi();
+    /** Live session DPI from SplitDisplayController; 0 when no active VD session. */
+    int getEffectiveVdDensityDpi();
+    /** Last HU-reported density before manual override; 0 when unknown. */
+    int getReportedHostDensityDpi();
 }

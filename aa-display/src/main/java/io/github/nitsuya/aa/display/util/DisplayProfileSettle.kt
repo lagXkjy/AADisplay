@@ -2,6 +2,7 @@ package io.github.nitsuya.aa.display.util
 
 import android.content.Context
 import android.hardware.display.DisplayManager
+import android.util.DisplayMetrics
 import android.view.Display
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkRailMath
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailPhase
@@ -52,6 +53,32 @@ internal object DisplayProfileSettle {
             val w = runCatching { display.mode.physicalWidth }.getOrNull() ?: continue
             val h = runCatching { display.mode.physicalHeight }.getOrNull() ?: continue
             if (isPlausibleRailStrip(w, h) && w > best) best = w
+        }
+        return best
+    }
+
+    /**
+     * Live HU / gearhead presentation densityDpi (system_server can see private VDs).
+     * Prefer real-sized VirtualDevice / CarActivity displays over 1px FacetBar/Dashboard.
+     * Client [Display.createDisplayContext] often lags after emulator DPI changes.
+     */
+    fun observeHuReportedDensityDpi(context: Context): Int {
+        val dm = context.getSystemService(DisplayManager::class.java) ?: return 0
+        var best = 0
+        for (display in dm.displays) {
+            if (display.displayId == Display.DEFAULT_DISPLAY) continue
+            val name = runCatching { display.name }.getOrNull() ?: continue
+            if (name.startsWith("AADisplay-")) continue
+            if (isRailDisplayName(name)) continue
+            if (name.contains("Dashboard", ignoreCase = true)) continue
+            val w = runCatching { display.mode.physicalWidth }.getOrNull() ?: continue
+            val h = runCatching { display.mode.physicalHeight }.getOrNull() ?: continue
+            if (w <= 1 || h <= 1) continue
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            runCatching { display.getRealMetrics(metrics) }.getOrNull() ?: continue
+            val dpi = metrics.densityDpi
+            if (dpi > 0) best = dpi
         }
         return best
     }

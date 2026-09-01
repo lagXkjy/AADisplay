@@ -129,6 +129,46 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
+    override fun setVdDensityDpi(dpi: Int) {
+        val remote = getService()
+        if (remote == null) {
+            Log.e(TAG, "setVdDensityDpi skipped; service unavailable dpi=$dpi")
+            return
+        }
+        try {
+            remote.setVdDensityDpi(dpi)
+        } catch (e: Throwable) {
+            Log.e(TAG, "setVdDensityDpi failed dpi=$dpi", e)
+        }
+    }
+
+    override fun getVdDensityDpi(): Int {
+        return try {
+            getService()?.vdDensityDpi ?: 0
+        } catch (e: Throwable) {
+            Log.e(TAG, "getVdDensityDpi failed", e)
+            0
+        }
+    }
+
+    override fun getEffectiveVdDensityDpi(): Int {
+        return try {
+            getService()?.effectiveVdDensityDpi ?: 0
+        } catch (e: Throwable) {
+            Log.e(TAG, "getEffectiveVdDensityDpi failed", e)
+            0
+        }
+    }
+
+    override fun getReportedHostDensityDpi(): Int {
+        return try {
+            getService()?.reportedHostDensityDpi ?: 0
+        } catch (e: Throwable) {
+            Log.e(TAG, "getReportedHostDensityDpi failed", e)
+            0
+        }
+    }
+
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
         getService()?.moveTaskId(taskId, isVirtualDisplay)
     }

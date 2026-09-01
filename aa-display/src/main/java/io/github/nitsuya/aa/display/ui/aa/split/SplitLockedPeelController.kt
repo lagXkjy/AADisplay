@@ -9,19 +9,20 @@ import android.view.ViewConfiguration
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
+import io.github.nitsuya.aa.display.xposed.hook.PaneDisplayGroupForce
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import kotlin.math.hypot
 
 /**
- * Phone keyguard occludes Gearhead's AaDisplay presentation (no
- * [ALWAYS_UNLOCKED]), so Coolwalk peel inject via [SplitDisplayController.onTouchAaDisplay]
- * is dropped while pane VDs (ALWAYS_UNLOCKED) still work.
+ * Phone keyguard occludes Gearhead's AaDisplay presentation unless it is pulled out of
+ * DisplayGroup 0 with [Display.FLAG_ALWAYS_UNLOCKED] (see [applyAaUiDisplayKeyguardPolicy]).
+ * Pane VDs already get that at create time; presentation does not.
  *
- * While the keyguard is locked and we are in fullscreen, interpret peel gestures here
- * (same semantics as [SplitDividerView] peel mode). Live preview is published to
- * [CoreManagerService.publishLockedPeelPreview] for AaDisplayActivity to pull.
+ * While keyguard is locked and we are in fullscreen **and** inject is still occluded,
+ * interpret peel gestures here (same semantics as [SplitDividerView] peel mode). Live
+ * preview is published to [CoreManagerService.publishLockedPeelPreview] for AaDisplayActivity.
  */
 internal class SplitLockedPeelController(private val c: SplitDisplayController) {
 
@@ -34,7 +35,7 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
     private var downRatio = 0f
     private var lastRawRatio = 0f
 
-    /** Skip repeated WMS keyguard patch on every peel DOWN when already applied this session. */
+    /** Skip repeated DMS keyguard patch on every peel DOWN when already applied this session. */
     private var keyguardPolicyAppliedDisplayId = Display.INVALID_DISPLAY
 
     private val touchSlop: Int by lazy {
@@ -62,9 +63,9 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
     }
 
     /**
-     * Allow AaDisplay presentation to stay interactive under keyguard.
-     * Insecure: [IWindowManager.setShouldShowWithInsecureKeyguard].
-     * Secure: best-effort [Display.FLAG_ALWAYS_UNLOCKED] on DisplayContent.
+     * Make AaDisplay presentation injectable under keyguard (FacetBar → touchAaDisplay,
+     * Recents / picker, peel). Lineage A16: [PaneDisplayGroupForce.forceInteractiveUnderKeyguard]
+     * (own group + ALWAYS_UNLOCKED); plus insecure-keyguard WMS show.
      */
     fun applyAaUiDisplayKeyguardPolicy(displayId: Int, reason: String) {
         if (displayId == Display.INVALID_DISPLAY || displayId == Display.DEFAULT_DISPLAY) return
@@ -78,7 +79,16 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
                     "setShouldShowWithInsecureKeyguard failed id=$displayId: ${e.message}"
                 )
             }
-            patchDisplayAlwaysUnlocked(displayId)
+            runCatching {
+                PaneDisplayGroupForce.forceInteractiveUnderKeyguard(displayId, reason)
+            }.onFailure {
+                log(
+                    SplitDisplayController.TAG,
+                    "forceInteractiveUnderKeyguard failed id=$displayId",
+                    it,
+                )
+            }
+            keyguardPolicyAppliedDisplayId = displayId
             logDebug(
                 SplitDisplayController.TAG,
                 "applyAaUiDisplayKeyguardPolicy id=$displayId reason=$reason"
@@ -93,6 +103,11 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
      * (caller must not also inject into the presentation).
      */
     fun tryHandle(event: MotionEvent): Boolean {
+        // Recents / picker owns the shell — never peel-swap under the overlay.
+        if (CoreManagerService.aaUiShellCapture) {
+            if (tracking) reset()
+            return false
+        }
         if (!isPhoneKeyguardLocked()) {
             if (tracking) reset()
             return false
@@ -103,6 +118,11 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                // Only the peel tab — Coolwalk may also route the wider rail band here.
+                val density = c.mDensityDpi.coerceAtLeast(160) / 160f
+                if (!SplitPane.peelHitContains(event.x, event.y, c.mWidth, c.mHeight, density)) {
+                    return false
+                }
                 tracking = true
                 dragging = false
                 longPressFired = false
@@ -111,13 +131,11 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
                 downUptimeMs = event.downTime
                 lastRawRatio = rawRatio(event)
                 downRatio = lastRawRatio
-                // Re-assert once per display per session so OEM keyguard re-occlusion does not stick.
                 val aaUiId = c.mAaUiDisplayId
                 if (aaUiId != Display.INVALID_DISPLAY &&
                     aaUiId != keyguardPolicyAppliedDisplayId
                 ) {
                     applyAaUiDisplayKeyguardPolicy(aaUiId, "locked-peel")
-                    keyguardPolicyAppliedDisplayId = aaUiId
                 }
                 c.mHandler.removeCallbacks(longPressRunnable)
                 c.mHandler.postDelayed(longPressRunnable, longPressTimeout)
@@ -244,56 +262,6 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
             logDebug(SplitDisplayController.TAG, "lockedPeel long-press → SHOW_RECENT_TASK")
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "lockedPeel openRecent failed:", e)
-        }
-    }
-
-    /**
-     * Best-effort: OR [Display.FLAG_ALWAYS_UNLOCKED] onto the presentation's
-     * DisplayInfo so secure keyguard does not occlude AaDisplay chrome.
-     */
-    private fun patchDisplayAlwaysUnlocked(displayId: Int) {
-        val flag = alwaysUnlockedDisplayFlag() ?: return
-        try {
-            val wms = Class.forName("android.view.WindowManagerGlobal")
-                .getDeclaredMethod("getWindowManagerService")
-                .apply { isAccessible = true }
-                .invoke(null) ?: return
-            val root = runCatching { wms.javaClass.getField("mRoot").get(wms) }.getOrNull()
-                ?: return
-            val displayContent = root.javaClass.methods.firstOrNull { m ->
-                m.name == "getDisplayContent" &&
-                    m.parameterTypes.size == 1 &&
-                    m.parameterTypes[0] == Int::class.javaPrimitiveType
-            }?.invoke(root, displayId) ?: return
-            val info = runCatching {
-                displayContent.javaClass.methods.firstOrNull { m ->
-                    m.name == "getDisplayInfo" && m.parameterTypes.isEmpty()
-                }?.invoke(displayContent)
-                    ?: displayContent.javaClass.getField("mDisplayInfo").get(displayContent)
-            }.getOrNull() ?: return
-            val flagsField = info.javaClass.getField("flags")
-            val cur = flagsField.getInt(info)
-            if (cur and flag != 0) return
-            flagsField.setInt(info, cur or flag)
-            logDebug(
-                SplitDisplayController.TAG,
-                "patchDisplayAlwaysUnlocked id=$displayId flag=0x${Integer.toHexString(flag)}"
-            )
-        } catch (e: Throwable) {
-            logDebug(
-                SplitDisplayController.TAG,
-                "patchDisplayAlwaysUnlocked unavailable: ${e.message}"
-            )
-        }
-    }
-
-    private fun alwaysUnlockedDisplayFlag(): Int? {
-        return try {
-            Class.forName("android.view.Display")
-                .getField("FLAG_ALWAYS_UNLOCKED")
-                .getInt(null)
-        } catch (_: Throwable) {
-            null
         }
     }
 }

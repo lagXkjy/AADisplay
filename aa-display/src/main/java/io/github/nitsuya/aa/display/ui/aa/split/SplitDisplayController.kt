@@ -758,9 +758,9 @@ class SplitDisplayController(
      * Relay flush-left peel / AA UI touches into the AaDisplayActivity presentation
      * display (not a pane VirtualDisplay).
      *
-     * While the phone keyguard is locked, Gearhead's presentation is often occluded
-     * (unlike ALWAYS_UNLOCKED pane VDs) — peel inject is dropped. Handle fullscreen
-     * peel gestures in [lockedPeel] instead so exit / swap / Recent still work.
+     * Under phone keyguard, [lockedPeel.applyAaUiDisplayKeyguardPolicy] (own group +
+     * ALWAYS_UNLOCKED) keeps inject alive for Recents / FacetBar. If still occluded
+     * while fullscreen, [lockedPeel] handles peel gestures without presentation hit-test.
      */
     fun onTouchAaDisplay(event: MotionEvent) {
         if (lockedPeel.tryHandle(event)) return
