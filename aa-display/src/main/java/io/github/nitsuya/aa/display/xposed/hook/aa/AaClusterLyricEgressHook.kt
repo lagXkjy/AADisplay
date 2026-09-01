@@ -35,9 +35,10 @@ import java.lang.reflect.Method
  * (and other real players) keep their own Title for non-cluster UI / steering.
  *
  * StatusBar [setTitle] is updated in-place (no layout switch). HU metadata push
- * injects lyric line and album. Same-track lyric-only lines open a short HU
- * PlaybackStatus window: at most one natural packet, then [pushPlaybackNow] if
- * none arrived after MediaInfo (push = Store whole-second position + 1s).
+ * injects lyric line, album, and album-art JPEG (Binder — not file URI). Same-track
+ * lyric-only lines open a short HU PlaybackStatus window: at most one natural
+ * packet, then [pushPlaybackNow] if none arrived after MediaInfo (push = Store
+ * whole-second position + 1s).
  */
 object AaClusterLyricEgressHook : AaHook() {
     override val tagName: String = "AAD_AaClusterLyricEgressHook"
@@ -375,9 +376,9 @@ object AaClusterLyricEgressHook : AaHook() {
     ) {
         if (key.isNullOrEmpty() || key !in artUriKeys) return
         if (!isClusterShellMetadata(param.thisObject)) return
-        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return
-        val revision = ClusterArtStore.readRevision(cr)
-        param.result = ClusterArtStore.artUriString(revision) ?: return
+        // Do not hand Glide a file:///data/system/... URI — priv_app is SELinux-denied
+        // on system_data_file (AVC open). Art is served via getBitmap / HU ByteArray.
+        param.result = null
     }
 
     private fun rewriteArtArg(
@@ -386,8 +387,24 @@ object AaClusterLyricEgressHook : AaHook() {
     ) {
         if (key.isNullOrEmpty() || key !in artKeys) return
         if (!isClusterShellMetadata(param.thisObject)) return
-        val cr = runCatching { InitFields.appContext.contentResolver }.getOrNull() ?: return
-        param.result = ClusterArtStore.loadBitmap(cr) ?: return
+        param.result = loadClusterArtBitmap() ?: return
+    }
+
+    private fun loadClusterArtBitmap(): android.graphics.Bitmap? {
+        val jpeg = fetchClusterArtJpeg() ?: return null
+        if (jpeg.isEmpty()) return null
+        return runCatching {
+            android.graphics.BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+        }.getOrNull()?.takeIf { !it.isRecycled }
+    }
+
+    private fun fetchClusterArtJpeg(): ByteArray? {
+        // Prefer Binder (system_server memory). Local file open fails in gearhead.
+        runCatching { io.github.nitsuya.aa.display.CoreApi.clusterArtJpeg }
+            .getOrNull()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { return it }
+        return ClusterArtStore.loadJpegBytes()?.takeIf { it.isNotEmpty() }
     }
 
     private var compatGetString: java.lang.reflect.Method? = null
@@ -622,13 +639,20 @@ object AaClusterLyricEgressHook : AaHook() {
                         val song = param.args[0] as? String
                         val artist = param.args[1] as? String
                         val album = param.args[2] as? String
-                        val artLen = (param.args[3] as? ByteArray)?.size ?: 0
                         val duration = (param.args[4] as? Number)?.toLong() ?: -1L
                         val fresh = clusterFreshForHu(song, artist)
                         if (fresh == null) {
                             pendingLyricOnlyUntilElapsedMs = 0L
                             return
                         }
+                        // setTitle is swallowed in-place; Gearhead may keep the previous
+                        // song on this push. Always write the current lyric line.
+                        param.args[0] = fresh.title
+                        injectShellAlbumArg(param, fresh)
+                        // Fill art before lyric-only gate — empty file URI must not
+                        // look like "unchanged no-art" forever under SELinux.
+                        injectShellArtArg(param)
+                        val artLen = (param.args[3] as? ByteArray)?.size ?: 0
                         val artUnchanged =
                             artLen == lastHuArtLen ||
                                 (artLen == 0 && lastHuArtLen <= 0)
@@ -649,10 +673,6 @@ object AaClusterLyricEgressHook : AaHook() {
                         lastHuAlbum = album
                         lastHuDuration = duration
                         lastHuArtLen = artLen
-                        // setTitle is swallowed in-place; Gearhead may keep the previous
-                        // song on this push. Always write the current lyric line.
-                        param.args[0] = fresh.title
-                        injectShellAlbumArg(param, fresh)
                     }
 
                     override fun afterHookedMethod(param: MethodHookParam) {
@@ -731,6 +751,25 @@ object AaClusterLyricEgressHook : AaHook() {
         param.args[2] = album
         logDebug(tagName, "inject HU album=$album")
         return album
+    }
+
+    /**
+     * HU MediaInfo art is a raw JPEG [ByteArray]. Gearhead cannot open the system
+     * file URI; fill empty art from system_server via [CoreApi].
+     */
+    private fun injectShellArtArg(param: XC_MethodHook.MethodHookParam): ByteArray? {
+        if (param.args.size <= 3) return null
+        val current = param.args[3] as? ByteArray
+        if (current != null && current.isNotEmpty()) {
+            lastHuArtLen = current.size
+            return current
+        }
+        val jpeg = fetchClusterArtJpeg() ?: return null
+        if (jpeg.isEmpty()) return null
+        param.args[3] = jpeg
+        lastHuArtLen = jpeg.size
+        logDebug(tagName, "inject HU art bytes=${jpeg.size}")
+        return jpeg
     }
 
     private fun applyStatusBarTitleInPlace(controller: Any, title: CharSequence): Boolean {

@@ -120,6 +120,15 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
+    override fun getClusterArtJpeg(): ByteArray? {
+        return try {
+            getService()?.clusterArtJpeg
+        } catch (e: Throwable) {
+            Log.e(TAG, "getClusterArtJpeg failed", e)
+            null
+        }
+    }
+
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
         getService()?.moveTaskId(taskId, isVirtualDisplay)
     }

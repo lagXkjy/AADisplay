@@ -284,16 +284,11 @@ class ClusterLyricMediaService : MediaBrowserServiceCompat() {
             builder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durationMs)
         }
         lastDurationMs = durationMs
-        // URI-only in the live session — never putBitmap here. SystemUI / Bluetooth
-        // parcel session metadata across Binder; reusing one Bitmap for multiple keys
-        // (or recycling while still referenced) crashes with "Can't parcel a recycled bitmap".
-        // Gearhead reads art via [AaClusterLyricEgressHook] from [ClusterArtStore] file cache.
-        ClusterArtStore.artUriString(artRevision).let { uri ->
-            if (uri == null) return@let
-            builder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, uri)
-            builder.putString(MediaMetadataCompat.METADATA_KEY_ART_URI, uri)
-            builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI, uri)
-        }
+        // Never put file:///data/system/... ART_URI — gearhead Glide is SELinux-denied
+        // (priv_app ↛ system_data_file). Cover reaches HU via AaClusterLyricEgressHook
+        // getBitmap rewrite + metadata-push ByteArray inject (CoreApi JPEG).
+        // Do not putBitmap here either: SystemUI / Bluetooth parcel session metadata
+        // and recycled multi-key bitmaps crash with "Can't parcel a recycled bitmap".
         val meta = builder.build()
         if (lyricOnly) {
             sess.setMetadata(meta)

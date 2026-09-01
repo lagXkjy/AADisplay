@@ -19,6 +19,7 @@ import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.CoolwalkRailStore
 import io.github.nitsuya.aa.display.util.DisplayProfileSettle
+import io.github.nitsuya.aa.display.xposed.cluster.ClusterArtStore
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
 import android.graphics.Point
 import android.view.Display
@@ -779,6 +780,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     override fun getHidCursorOverlay(): FloatArray = hidCursorOverlaySnapshot()
+
+    override fun getClusterArtJpeg(): ByteArray? = ClusterArtStore.loadJpegBytes()
 
     override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
         mSplitController?.moveTaskIdAsync(taskId, isVirtualDisplay)

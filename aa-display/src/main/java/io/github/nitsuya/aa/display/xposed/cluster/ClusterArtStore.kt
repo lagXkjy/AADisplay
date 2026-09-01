@@ -19,8 +19,10 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * Album-art bridge: system_server writes a world-readable JPEG under `/data/system`;
- * gearhead / `:cluster` load the same path (app cache is SELinux-blocked from system_server).
+ * Album-art bridge: system_server encodes JPEG under `/data/system` and keeps an
+ * in-process byte cache. Gearhead cannot open that path under enforcing SELinux
+ * (`priv_app` ↛ `system_data_file`); egress / `:cluster` must fetch bytes via
+ * [io.github.nitsuya.aa.display.CoreApi.getClusterArtJpeg] instead of `file://`.
  */
 object ClusterArtStore {
     const val SETTINGS_ART_MEDIA_ID = "aadisplay_cluster_np_art_media_id"
@@ -65,6 +67,16 @@ object ClusterArtStore {
 
     @Volatile
     private var cachedRevision: Long = 0L
+
+    /**
+     * system_server in-memory JPEG for Binder fetch. Gearhead / `:cluster` cannot
+     * open [ART_PATH] under enforcing SELinux; this is the cross-process source.
+     */
+    @Volatile
+    private var cachedJpegBytes: ByteArray? = null
+
+    @Volatile
+    private var cachedJpegMediaId: String = ""
 
     /** Last package that owned the on-disk JPEG; empty after [clear]. */
     @Volatile
@@ -151,6 +163,10 @@ object ClusterArtStore {
         forceRescan: Boolean = false,
     ) {
         if (mediaId.isEmpty()) return
+        // Same track already has JPEG — skip re-encode / revision churn (Glide spam).
+        if (!forceRescan && !needsArtForMediaId(resolver, mediaId)) {
+            return
+        }
         val pkg = packageName.trim()
         val cachedId = Settings.Global.getString(resolver, SETTINGS_ART_MEDIA_ID)?.trim().orEmpty()
         val mediaChanged = mediaId.isNotEmpty() && (
@@ -220,10 +236,19 @@ object ClusterArtStore {
             val jpegBytes = encodeJpeg(bitmap, mediaId)
             if (jpegBytes == null || jpegBytes.isEmpty()) return@post
             if (gen != publishGen) return@post
-            val file = artFile()
+            val prior = cachedJpegBytes
+            if (!forceRescan &&
+                cachedJpegMediaId == mediaId &&
+                prior != null &&
+                prior.contentEquals(jpegBytes)
+            ) {
+                return@post
+            }
             val wrote = atomicWriteJpeg(jpegBytes)
             if (!wrote) return@post
             if (gen != publishGen) return@post
+            cachedJpegBytes = jpegBytes
+            cachedJpegMediaId = mediaId
             handler.post {
                 if (gen != publishGen) return@post
                 cancelPendingClear()
@@ -234,7 +259,7 @@ object ClusterArtStore {
                     noteArtSaved(mediaId)
                     if (pkg.isNotEmpty()) lastArtPackage = pkg
                     val revision = bumpRevision(resolver)
-                    logDebug(TAG, "art saved mediaId=$mediaId bytes=${file.length()} rev=$revision")
+                    logDebug(TAG, "art saved mediaId=$mediaId bytes=${jpegBytes.size} rev=$revision")
                 }.onFailure { e ->
                     log(TAG, "publish art failed mediaId=$mediaId", e)
                 }
@@ -242,16 +267,41 @@ object ClusterArtStore {
         }
     }
 
+    /**
+     * system_server source for Binder. Returns a copy so callers cannot mutate the cache.
+     * Empty when no cover is published.
+     */
+    fun loadJpegBytes(): ByteArray? {
+        cachedJpegBytes?.takeIf { it.isNotEmpty() }?.let { return it.copyOf() }
+        val file = artFile()
+        if (!file.exists() || file.length() <= 0L) return null
+        val bytes = runCatching { file.readBytes() }.getOrNull()?.takeIf { it.isNotEmpty() }
+            ?: return null
+        cachedJpegBytes = bytes
+        return bytes.copyOf()
+    }
+
     fun loadBitmap(resolver: ContentResolver? = null): Bitmap? {
         val revision = resolver?.let { readRevision(it) } ?: 0L
+        if (revision > 0L) {
+            cachedBitmap?.takeIf { !it.isRecycled && cachedRevision == revision }?.let { return it }
+        }
+        // Prefer in-memory JPEG (system_server) — avoids SELinux open of [ART_PATH].
+        val fromMem = cachedJpegBytes?.takeIf { it.isNotEmpty() }?.let { bytes ->
+            runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
+        }?.takeIf { !it.isRecycled }
+        if (fromMem != null) {
+            evictBitmapCache()
+            cachedBitmap = fromMem
+            cachedRevision = if (revision > 0L) revision else System.currentTimeMillis()
+            return fromMem
+        }
         val file = artFile()
         if (!file.exists() || file.length() <= 0L) {
             evictBitmapCache()
             return null
         }
-        if (revision > 0L) {
-            cachedBitmap?.takeIf { !it.isRecycled && cachedRevision == revision }?.let { return it }
-        } else {
+        if (revision <= 0L) {
             val mtime = file.lastModified()
             cachedBitmap?.takeIf { !it.isRecycled && cachedRevision == mtime }?.let { return it }
         }
@@ -271,6 +321,8 @@ object ClusterArtStore {
         cancelPendingClear()
         val gen = ++publishGen
         evictBitmapCache()
+        cachedJpegBytes = null
+        cachedJpegMediaId = ""
         lastArtPackage = ""
         transitionClearedForMediaId = ""
         resetArtMiss()

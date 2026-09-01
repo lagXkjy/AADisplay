@@ -123,4 +123,11 @@ interface ICoreManager {
      * Returns float[6]: visible (0/1), x, y, generation, lockedPeelActive (0/1), lockedPeelRatio.
      */
     float[] getHidCursorOverlay();
+
+    /**
+     * Cluster lyric album-art JPEG from system_server memory/disk cache.
+     * Empty when unset. Gearhead must not open `/data/system/aadisplay_cluster_art.jpg`
+     * (SELinux); use this for HU MediaInfo / getBitmap rewrite.
+     */
+    byte[] getClusterArtJpeg();
 }
