@@ -179,9 +179,15 @@ object AaCoolwalkHuTouchHook {
             val downInRailBand = motion.getX(0) < rail
             val downInRail = if (railTarget) true else downInRailBand
             if (action == MotionEvent.ACTION_DOWN) {
+                // Broadcast cache can lag :car after soft reconnect / projection crash;
+                // one Binder read per DOWN keeps peel routing aligned with system_server.
+                refreshFullscreenPaneCache(env)
                 env.mHuRailGesture = downInRail
                 // Recents / picker owns the shell — never treat rail as peel (would swap
                 // fullscreen panes via SplitDividerView under a low-elevation overlay).
+                // Outside the peel tab hit band, fullscreen left-rail must stay on the
+                // pane VD (direct inject) — routing the whole rail to AaDisplay would
+                // risk a dead strip when presentation/TV pass-through lags.
                 env.mHuPeelGesture = !env.mAaUiRailConsume &&
                     downInRail &&
                     SplitPane.isFullscreenPane(env.mCachedFullscreenPane) &&
@@ -265,7 +271,7 @@ object AaCoolwalkHuTouchHook {
                                 else -> "touchPrimaryPane"
                             }) +
                             " x=${motion.x} y=${motion.y} injectX=${motion.x - xInset} " +
-                            "inset=$xInset rail=$rail peel=$peel " +
+                            "inset=$xInset rail=$rail peel=$peel fs=$fs " +
                             "facetTarget=$railTarget picker=$railToAaUi",
                     )
                 }
@@ -289,9 +295,27 @@ object AaCoolwalkHuTouchHook {
         return when {
             // Picker / Recents first — never pane while shell capture is on.
             railToAaUi || peel -> CoreManager.tryTouchAaDisplay(event)
+            // Fullscreen but outside peel tab: keep direct pane inject so the left
+            // content strip stays live (AaDisplay TV pass-through is an extra failure mode).
             SplitPane.isFullscreenPane(fs) -> CoreManager.tryTouchPane(fs, event)
             else -> CoreManager.tryTouchPrimaryPane(event)
         }
+    }
+
+    /** Sync Coolwalk rail fullscreen cache from system_server (DOWN / rare). */
+    private fun refreshFullscreenPaneCache(env: CoolwalkHookEnv) {
+        val live = try {
+            CoreManager.splitFullscreenPane
+        } catch (_: Throwable) {
+            return
+        }
+        if (live == env.mCachedFullscreenPane) return
+        logDebug(
+            CoolwalkHookEnv.TAG,
+            "AaUiHook: fullscreen cache ${env.mCachedFullscreenPane}→$live",
+        )
+        env.mCachedFullscreenPane = live
+        env.mSplitStateSeen = true
     }
 
     private fun queuePendingRailMove(env: CoolwalkHookEnv, event: MotionEvent) {
@@ -331,9 +355,12 @@ object AaCoolwalkHuTouchHook {
     private fun isPeelHandleHitBand(env: CoolwalkHookEnv, motion: MotionEvent): Boolean {
         val x = motion.getX(0)
         val y = motion.getY(0)
+        // Must match SplitDividerView on the AaDisplay presentation (HU dpi), not the
+        // phone DisplayMetrics — phone density oversizes; raw DP-as-px undersizes.
+        val density = resolveHuDensityForPeelHit()
         val layoutW = env.layoutWidthPx()
         val layoutH = env.layoutHeightPx()
-        if (SplitPane.peelHitContains(x, y, layoutW, layoutH)) return true
+        if (SplitPane.peelHitContains(x, y, layoutW, layoutH, density)) return true
         // Soft reconnect: this process may still hold previous HU layout (e.g. 720H)
         // while touches are on a shorter car (480H) — peel center then misses.
         val live = CoolwalkRailCoordinator.observeLiveVirtualDeviceHuSize() ?: return false
@@ -342,7 +369,32 @@ object AaCoolwalkHuTouchHook {
         ) {
             return false
         }
-        return SplitPane.peelHitContains(x, y, live.first, live.second)
+        return SplitPane.peelHitContains(x, y, live.first, live.second, density)
+    }
+
+    /**
+     * Density for peel hit geometry in HU pixels. Prefer a non-default landscape
+     * display's metrics; fall back to the 213dpi pin used by AADisplay VDs.
+     */
+    private fun resolveHuDensityForPeelHit(): Float {
+        try {
+            val dm = InitFields.appContext.getSystemService(DisplayManager::class.java)
+            if (dm != null) {
+                for (display in dm.displays) {
+                    if (display.displayId == Display.DEFAULT_DISPLAY) continue
+                    val metrics = android.util.DisplayMetrics()
+                    display.getRealMetrics(metrics)
+                    if (metrics.widthPixels >= metrics.heightPixels &&
+                        metrics.heightPixels in 400..1200 &&
+                        metrics.density >= 0.75f
+                    ) {
+                        return metrics.density
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return 213f / 160f
     }
 
     private fun clearUntrustedRailObservation(env: CoolwalkHookEnv) {

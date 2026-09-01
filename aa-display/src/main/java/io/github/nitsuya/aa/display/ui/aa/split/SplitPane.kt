@@ -182,12 +182,23 @@ object SplitPane {
      * (centered on the long axis). Shared by AA UI geometry and `:car` steal routing.
      * When [parentW]/[parentH] are unknown (≤0), returns true so steal still tries
      * [ICoreManager.touchAaDisplay] rather than falling through to a pane inject.
+     *
+     * [density] must match [SplitDividerView] peel layout (`dp * density`) — treating
+     * DP as raw px undersized the Coolwalk band vs the real tab and routed handle
+     * taps into the pane VD (dead handle, live left strip elsewhere).
      */
-    fun peelHitContains(x: Float, y: Float, parentW: Int, parentH: Int): Boolean {
+    fun peelHitContains(
+        x: Float,
+        y: Float,
+        parentW: Int,
+        parentH: Int,
+        density: Float = 1f,
+    ): Boolean {
         if (parentW <= 0 || parentH <= 0) return true
         val sideBySide = parentW >= parentH
+        val d = density.coerceAtLeast(0.5f)
         val hit = (
-            PEEL_TAB_LENGTH_DP + 2f * PEEL_TAB_HIT_EXPAND_DP
+            (PEEL_TAB_LENGTH_DP + 2f * PEEL_TAB_HIT_EXPAND_DP) * d
             ).coerceAtMost(if (sideBySide) parentH.toFloat() else parentW.toFloat())
         val half = hit / 2f
         return if (sideBySide) {
