@@ -50,6 +50,15 @@ object PhoneHidRedirect {
     private const val CURSOR_IDLE_HIDE_MS = 3000L
     /** Re-assert OS pointer hide — not every relative MOVE. */
     private const val SUPPRESS_REASSERT_MS = 500L
+    /**
+     * After BT mouse add/change: abs samples + viewports churn for a few seconds.
+     * Soft-clamp deltas only inside this window (not permanently).
+     */
+    private const val POINTER_HOTPLUG_SETTLE_MS = 4000L
+    /** Abs-synthesized |dx|/|dy| above this fraction of canvas → remap jump, drop frame. */
+    private const val ABS_REMAP_JUMP_FRAC = 0.35f
+    /** Per-event soft clamp while [pointerHotplugSettleUntil] is armed. */
+    private const val SETTLE_DELTA_CLAMP_FRAC = 0.12f
 
     private var installAttempted = false
     private var keyHook: XC_MethodHook.Unhook? = null
@@ -59,6 +68,8 @@ object PhoneHidRedirect {
     /** After a hard failure constructing/installing the filter, do not retry this boot. */
     @Volatile private var filterPermanentlyFailed = false
     @Volatile private var deviceListenerRegistered = false
+    /** Uptime deadline — soft-clamp pointer deltas after external mouse hot-plug. */
+    @Volatile private var pointerHotplugSettleUntil = 0L
 
     private var imsInstance: Any? = null
     private var setInputFilterMethod: Method? = null
@@ -222,6 +233,7 @@ object PhoneHidRedirect {
                 endDividerGesture(cancel = true)
                 shellGestureActive = false
                 lastAbsSampleValid = false
+                pointerHotplugSettleUntil = 0L
                 runCatching { CoreManagerService.clearAaUiShellCapture() }
                 cancelCursorIdleHide()
                 publishHidCursorOverlay(null, visible = false)
@@ -245,7 +257,13 @@ object PhoneHidRedirect {
             }
             return
         }
+        val wasInstalled = filterInstalled
         installInputFilter()
+        // First filter install (hot-plug or session-live with mouse already paired)
+        // still remaps viewports — arm settle even without a fresh device-add.
+        if (filterInstalled && !wasInstalled) {
+            notePointerHotplug("filter-on/$reason")
+        }
         suppressOsPointerSprite(force = true)
         invokeForceHideCursor(true)
         requestViewportRefresh()
@@ -256,6 +274,8 @@ object PhoneHidRedirect {
         uninstallInputFilter()
         invokeForceHideCursor(false)
         restorePointerDisplay()
+        pointerHotplugSettleUntil = 0L
+        lastAbsSampleValid = false
         logDebug(TAG, "HID disabled ($reason)")
     }
 
@@ -305,6 +325,62 @@ object PhoneHidRedirect {
             !hasFullSource(sources, InputDevice.SOURCE_MOUSE) &&
             !hasFullSource(sources, InputDevice.SOURCE_MOUSE_RELATIVE)
 
+    /**
+     * BT HID add/change: drop stale abs baseline (viewport remap) and arm a short
+     * soft-clamp window. Does not swallow primary-button events.
+     */
+    private fun notePointerHotplug(reason: String) {
+        lastAbsSampleValid = false
+        val now = SystemClock.uptimeMillis()
+        if (now >= pointerHotplugSettleUntil) {
+            pointerHotplugSettleUntil = now + POINTER_HOTPLUG_SETTLE_MS
+            logDebug(TAG, "pointer hotplug settle armed ($reason) ${POINTER_HOTPLUG_SETTLE_MS}ms")
+        } else {
+            logDebug(TAG, "pointer abs baseline reset ($reason)")
+        }
+    }
+
+    private fun isExternalPointerDeviceId(deviceId: Int): Boolean {
+        return try {
+            if (deviceId <= 0) return false
+            val d = InputDevice.getDevice(deviceId) ?: return false
+            if (d.isVirtual || !d.isExternal) return false
+            hasFullSource(d.sources, InputDevice.SOURCE_MOUSE) ||
+                hasFullSource(d.sources, InputDevice.SOURCE_MOUSE_RELATIVE) ||
+                hasFullSource(d.sources, InputDevice.SOURCE_TOUCHPAD) ||
+                hasFullSource(d.sources, InputDevice.SOURCE_TRACKBALL)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Drop abs remap jumps; soft-clamp all deltas only during hot-plug settle.
+     * Relative-axis devices are untouched outside the settle window.
+     */
+    private fun sanitizePointerDelta(
+        layout: HidSplitLayout,
+        dx: Float,
+        dy: Float,
+        fromAbs: Boolean,
+    ): Pair<Float, Float> {
+        val tw = layout.totalW.toFloat().coerceAtLeast(1f)
+        val th = layout.totalH.toFloat().coerceAtLeast(1f)
+        if (fromAbs) {
+            val jumpX = tw * ABS_REMAP_JUMP_FRAC
+            val jumpY = th * ABS_REMAP_JUMP_FRAC
+            if (kotlin.math.abs(dx) > jumpX || kotlin.math.abs(dy) > jumpY) {
+                logDebug(TAG, "drop abs remap jump dx=${dx.toInt()} dy=${dy.toInt()}")
+                return 0f to 0f
+            }
+        }
+        val now = SystemClock.uptimeMillis()
+        if (now >= pointerHotplugSettleUntil) return dx to dy
+        val maxX = tw * SETTLE_DELTA_CLAMP_FRAC
+        val maxY = th * SETTLE_DELTA_CLAMP_FRAC
+        return dx.coerceIn(-maxX, maxX) to dy.coerceIn(-maxY, maxY)
+    }
+
     /** Hot-plug BT mouse/keyboard → enable/disable InputFilter without AA reconnect. */
     private fun registerExternalHidDeviceListener() {
         if (deviceListenerRegistered) return
@@ -312,12 +388,22 @@ object PhoneHidRedirect {
             val im = resolveInputManagerApi() ?: return@runCatching
             val listener = object : android.hardware.input.InputManager.InputDeviceListener {
                 override fun onInputDeviceAdded(deviceId: Int) {
+                    if (sessionLive && isExternalPointerDeviceId(deviceId)) {
+                        notePointerHotplug("device-add:$deviceId")
+                    }
                     maybeEnableHidForExternalPointer("device-add:$deviceId")
                 }
                 override fun onInputDeviceRemoved(deviceId: Int) {
                     maybeEnableHidForExternalPointer("device-rm:$deviceId")
                 }
                 override fun onInputDeviceChanged(deviceId: Int) {
+                    // BT stacks fire Changed while descriptors / viewports settle.
+                    if (sessionLive &&
+                        hasExternalPointerDevice() &&
+                        (isExternalPointerDeviceId(deviceId) || filterInstalled)
+                    ) {
+                        notePointerHotplug("device-chg:$deviceId")
+                    }
                     maybeEnableHidForExternalPointer("device-chg:$deviceId")
                 }
             }
@@ -1085,6 +1171,7 @@ object PhoneHidRedirect {
         var dx = relX
         var dy = relY
         var hasDelta = relX != 0f || relY != 0f
+        var fromAbs = false
         // Many BT combo devices report absolute pointer samples without RELATIVE axes;
         // ignoring them makes the shell cursor advance only on sparse relative ticks → jump.
         val actionMasked = event.actionMasked
@@ -1099,6 +1186,7 @@ object PhoneHidRedirect {
                 dx = ax - lastAbsX
                 dy = ay - lastAbsY
                 hasDelta = dx != 0f || dy != 0f
+                fromAbs = hasDelta
             }
             lastAbsX = ax
             lastAbsY = ay
@@ -1107,6 +1195,12 @@ object PhoneHidRedirect {
             lastAbsX = event.x
             lastAbsY = event.y
             lastAbsSampleValid = true
+        }
+        if (hasDelta) {
+            val sanitized = sanitizePointerDelta(layout, dx, dy, fromAbs = fromAbs)
+            dx = sanitized.first
+            dy = sanitized.second
+            hasDelta = dx != 0f || dy != 0f
         }
 
         val chromeCapture = CoreManagerService.aaUiShellCapture || shellGestureActive
