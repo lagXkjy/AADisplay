@@ -31,6 +31,14 @@ object AaCoolwalkHuTouchHook {
     @Volatile
     private var lastEnsureRailUptimeMs = 0L
 
+    /** Cached HU density for peel hit geometry — never resolve DisplayManager on the touch path. */
+    @Volatile
+    private var cachedHuDensityForPeel = 0f
+
+    /** :car env for session-boundary fullscreen re-sync (HuTouch only installs there). */
+    @Volatile
+    private var installedEnv: CoolwalkHookEnv? = null
+
     private val carDisplayIdAccessorNames = setOf(
         "getDisplayId", "displayId", "getId", "id", "getAndroidDisplayId", "androidDisplayId",
     )
@@ -68,11 +76,24 @@ object AaCoolwalkHuTouchHook {
     private val ptePointerBuffers = ThreadLocal.withInitial { PtePointerBuffers() }
 
     fun install(env: CoolwalkHookEnv, lpparam: XC_LoadPackage.LoadPackageParam) {
+        installedEnv = env
         syncServerRailSnapshot()
         hookHuTouchDispatchRedirect(env)
         ensureRailObservationFromDisplays(env)
         registerSplitStateReceiver(env)
         registerAaUiRailConsumeReceiver(env)
+    }
+
+    /**
+     * Soft reconnect / server ReconnectSettling: invalidate peel routing truth and
+     * refresh fullscreen cache off the touch path (keeps last pane as optimistic).
+     */
+    fun onRailSessionBoundary(reason: String) {
+        val env = installedEnv ?: return
+        env.mSplitStateSeen = false
+        cachedHuDensityForPeel = 0f
+        logDebug(CoolwalkHookEnv.TAG, "AaUiHook: invalidate fullscreen cache ($reason)")
+        scheduleFullscreenPaneCacheRefresh(env, force = true)
     }
 
     private fun syncServerRailSnapshot() {
@@ -179,9 +200,12 @@ object AaCoolwalkHuTouchHook {
             val downInRailBand = motion.getX(0) < rail
             val downInRail = if (railTarget) true else downInRailBand
             if (action == MotionEvent.ACTION_DOWN) {
-                // Broadcast cache can lag :car after soft reconnect / projection crash;
-                // one Binder read per DOWN keeps peel routing aligned with system_server.
-                refreshFullscreenPaneCache(env)
+                // DOWN must not Binder-query fullscreen (EXECUTION §4) — that stuttered
+                // every peel tap. Trust ACTION_SPLIT_STATE_CHANGED + async warmup;
+                // soft reconnect posts a non-blocking refresh when state was never seen.
+                if (!env.mSplitStateSeen) {
+                    scheduleFullscreenPaneCacheRefresh(env)
+                }
                 env.mHuRailGesture = downInRail
                 // Recents / picker owns the shell — never treat rail as peel (would swap
                 // fullscreen panes via SplitDividerView under a low-elevation overlay).
@@ -302,20 +326,29 @@ object AaCoolwalkHuTouchHook {
         }
     }
 
-    /** Sync Coolwalk rail fullscreen cache from system_server (DOWN / rare). */
-    private fun refreshFullscreenPaneCache(env: CoolwalkHookEnv) {
-        val live = try {
-            CoreManager.splitFullscreenPane
-        } catch (_: Throwable) {
-            return
+    /**
+     * Non-blocking fullscreen cache sync. Never call from the HU touch steal path
+     * synchronously — Binder round-trip stalls peel taps.
+     *
+     * @param force after soft reconnect: always Binder-read even if a broadcast raced
+     *   and set [CoolwalkHookEnv.mSplitStateSeen] before this runnable runs.
+     */
+    private fun scheduleFullscreenPaneCacheRefresh(env: CoolwalkHookEnv, force: Boolean = false) {
+        env.mFacetEnsureHandler.post {
+            if (!force && env.mSplitStateSeen) return@post
+            val live = try {
+                CoreManager.splitFullscreenPane
+            } catch (_: Throwable) {
+                return@post
+            }
+            env.mSplitStateSeen = true
+            if (live == env.mCachedFullscreenPane) return@post
+            logDebug(
+                CoolwalkHookEnv.TAG,
+                "AaUiHook: fullscreen cache ${env.mCachedFullscreenPane}→$live",
+            )
+            env.mCachedFullscreenPane = live
         }
-        if (live == env.mCachedFullscreenPane) return
-        logDebug(
-            CoolwalkHookEnv.TAG,
-            "AaUiHook: fullscreen cache ${env.mCachedFullscreenPane}→$live",
-        )
-        env.mCachedFullscreenPane = live
-        env.mSplitStateSeen = true
     }
 
     private fun queuePendingRailMove(env: CoolwalkHookEnv, event: MotionEvent) {
@@ -357,7 +390,7 @@ object AaCoolwalkHuTouchHook {
         val y = motion.getY(0)
         // Must match SplitDividerView on the AaDisplay presentation (HU dpi), not the
         // phone DisplayMetrics — phone density oversizes; raw DP-as-px undersizes.
-        val density = resolveHuDensityForPeelHit()
+        val density = resolveHuDensityForPeelHitCached()
         val layoutW = env.layoutWidthPx()
         val layoutH = env.layoutHeightPx()
         if (SplitPane.peelHitContains(x, y, layoutW, layoutH, density)) return true
@@ -372,9 +405,18 @@ object AaCoolwalkHuTouchHook {
         return SplitPane.peelHitContains(x, y, live.first, live.second, density)
     }
 
+    private fun resolveHuDensityForPeelHitCached(): Float {
+        val cached = cachedHuDensityForPeel
+        if (cached >= 0.75f) return cached
+        val resolved = resolveHuDensityForPeelHit()
+        cachedHuDensityForPeel = resolved
+        return resolved
+    }
+
     /**
      * Density for peel hit geometry in HU pixels. Prefer a non-default landscape
      * display's metrics; fall back to the 213dpi pin used by AADisplay VDs.
+     * Touch path must use [resolveHuDensityForPeelHitCached].
      */
     private fun resolveHuDensityForPeelHit(): Float {
         try {
@@ -696,14 +738,7 @@ object AaCoolwalkHuTouchHook {
             )
             env.mSplitStateReceiver = receiver
             logDebug(CoolwalkHookEnv.TAG, "AaUiHook: registered SPLIT_STATE_CHANGED for rail fullscreen cache")
-            env.mFacetEnsureHandler.post {
-                if (env.mSplitStateSeen) return@post
-                env.mCachedFullscreenPane = try {
-                    CoreManager.splitFullscreenPane
-                } catch (_: Throwable) {
-                    env.mCachedFullscreenPane
-                }
-            }
+            scheduleFullscreenPaneCacheRefresh(env)
         } catch (e: Throwable) {
             log(CoolwalkHookEnv.TAG, "AaUiHook: register SPLIT_STATE_CHANGED failed", e)
         }

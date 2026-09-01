@@ -66,4 +66,9 @@ sealed class RailEvent {
 sealed class RailAction {
     data class NotifyServer(val snapshot: RailSnapshot) : RailAction()
     data class ReclaimAllGutters(val reason: String) : RailAction()
+    /**
+     * Soft reconnect / session reset: :car HU peel must re-sync fullscreen cache
+     * asynchronously (never on the touch steal path).
+     */
+    data class InvalidateHuTouchSession(val reason: String) : RailAction()
 }

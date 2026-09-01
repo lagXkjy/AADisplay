@@ -22,6 +22,7 @@ import io.github.nitsuya.aa.display.util.AABroadcastConst
 import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.PmCaches
+import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
@@ -488,44 +489,71 @@ class SplitDisplayController(
      */
     fun setSplitFullscreen(pane: Int) {
         if (pane != SplitPane.FULLSCREEN_NONE && !SplitPane.isFullscreenPane(pane)) return
-        if (pane == mFullscreenPane) return
+        val prevFullscreen = mFullscreenPane
+        if (pane == prevFullscreen) return
         val exiting = pane == SplitPane.FULLSCREEN_NONE
+        val flipWithinFullscreen =
+            SplitPane.isFullscreenPane(prevFullscreen) && SplitPane.isFullscreenPane(pane)
         if (SplitPane.isFullscreenPane(pane)) {
-            if (!SplitPane.isFullscreenPane(mFullscreenPane)) {
+            if (!SplitPane.isFullscreenPane(prevFullscreen)) {
                 mRatioBeforeFullscreen = mRatio
             }
             mFullscreenPane = pane
             mFocusedPane = pane
+            if (lockedPeel.isPhoneKeyguardLocked()) {
+                val aaUiId = mAaUiDisplayId
+                if (aaUiId != Display.INVALID_DISPLAY) {
+                    lockedPeel.applyAaUiDisplayKeyguardPolicy(aaUiId, "fullscreen-keyguard")
+                }
+            }
         } else {
             mFullscreenPane = SplitPane.FULLSCREEN_NONE
             mRatio = SplitPane.clampRatio(mRatioBeforeFullscreen)
         }
+        // Flip: notify AA shell before ATMS focus work so TextureView z-order updates
+        // immediately (locked-peel path never hits AaMainFragment.enterFullscreen).
+        if (flipWithinFullscreen) {
+            if (lockedPeel.isPhoneKeyguardLocked()) {
+                CoreManagerService.publishLockedFullscreenFlip(mFullscreenPane)
+            }
+            notifySplitStateChanged()
+        }
         mSuppressReclaimUntil = SystemClock.uptimeMillis() + 800L
         mHandler.removeCallbacks(mPendingResize)
-        val reason = if (exiting) "fullscreen-exit" else "fullscreen-enter"
+        val reason = when {
+            exiting -> "fullscreen-exit"
+            flipWithinFullscreen -> "fullscreen-flip"
+            else -> "fullscreen-enter"
+        }
         vd.resizePanesInternal(reason)
-        // Same as swap: VD resize alone often leaves Window Requested at the prior size.
-        val sizes = vd.computePaneSizes()
-        val primaryDisplay = primaryDisplayId
-        val secondaryDisplay = secondaryDisplayId
-        if (primaryDisplay != Display.INVALID_DISPLAY) {
-            ownership.ensureTasksFillDisplay(
-                primaryDisplay, sizes.primaryW, sizes.primaryH, reason
-            )
+        // Flip between two already-full buffers: sizes unchanged — VD nudge on both panes
+        // costs ~600–900ms each on Samsung and must not run on peel tap-swap.
+        if (!flipWithinFullscreen) {
+            val sizes = vd.computePaneSizes()
+            val primaryDisplay = primaryDisplayId
+            val secondaryDisplay = secondaryDisplayId
+            if (primaryDisplay != Display.INVALID_DISPLAY) {
+                ownership.ensureTasksFillDisplay(
+                    primaryDisplay, sizes.primaryW, sizes.primaryH, reason
+                )
+            }
+            if (secondaryDisplay != Display.INVALID_DISPLAY) {
+                ownership.ensureTasksFillDisplay(
+                    secondaryDisplay, sizes.secondaryW, sizes.secondaryH, reason
+                )
+            }
+            scheduleRestoreFocusAfterFullscreen()
+            launch.persistRatioNow()
+            launch.schedulePersistSnapshot()
+            notifySplitStateChanged()
+        } else {
+            mHandler.post { restoreFocusAfterFullscreenFlip(mFullscreenPane) }
+            launch.schedulePersistSnapshot()
         }
-        if (secondaryDisplay != Display.INVALID_DISPLAY) {
-            ownership.ensureTasksFillDisplay(
-                secondaryDisplay, sizes.secondaryW, sizes.secondaryH, reason
-            )
-        }
-        scheduleRestoreFocusAfterFullscreen()
-        launch.persistRatioNow()
-        launch.schedulePersistSnapshot()
-        notifySplitStateChanged()
         logDebug(
             TAG,
             "setSplitFullscreen pane=$mFullscreenPane ratio=$mRatio " +
-                "ratioBefore=$mRatioBeforeFullscreen"
+                "ratioBefore=$mRatioBeforeFullscreen flip=$flipWithinFullscreen",
         )
     }
 
@@ -539,6 +567,23 @@ class SplitDisplayController(
                 FULLSCREEN_FOCUS_TOKEN,
                 now + delay
             )
+        }
+    }
+
+    /** Fullscreen pane flip only — stacks unchanged; skip dual-pane promote + Av settle. */
+    private fun restoreFocusAfterFullscreenFlip(visiblePane: Int) {
+        if (!SplitPane.isFullscreenPane(visiblePane)) return
+        val identity = Binder.clearCallingIdentity()
+        try {
+            val frontPkg = stacks.front(visiblePane) ?: return
+            val displayId = input.displayIdFor(visiblePane) ?: return
+            if (displayId == Display.INVALID_DISPLAY) return
+            ownership.findPackageTaskOnDisplay(frontPkg, displayId, liveOnly = true)
+                ?.let { trySetFocusedTask(it) }
+        } catch (e: Throwable) {
+            log(TAG, "restoreFocusAfterFullscreenFlip failed:", e)
+        } finally {
+            Binder.restoreCallingIdentity(identity)
         }
     }
 

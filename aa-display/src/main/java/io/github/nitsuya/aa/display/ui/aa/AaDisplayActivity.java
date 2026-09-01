@@ -32,6 +32,7 @@ public class AaDisplayActivity extends CarActivity {
     private float mLastHidCursorGen = Float.NaN;
     private boolean mLastLockedPeelActive;
     private float mLastLockedPeelRatio = Float.NaN;
+    private float mLastLockedFlipSeq = Float.NaN;
     private final Handler mShellPollHandler = new Handler(Looper.getMainLooper());
     private final Runnable mShellPoll = new Runnable() {
         @Override
@@ -59,6 +60,12 @@ public class AaDisplayActivity extends CarActivity {
                             AaDisplayActivityKt.INSTANCE.applyLockedPeelPreview(
                                     getSupportFragmentManager(), peelActive, peelRatio);
                         }
+                    }
+                    // Locked peel tap-flip: same pull path — do not wait for delayed broadcast.
+                    if (s.length >= 8 && s[6] != mLastLockedFlipSeq) {
+                        mLastLockedFlipSeq = s[6];
+                        AaDisplayActivityKt.INSTANCE.applyLockedFullscreenFlip(
+                                getSupportFragmentManager(), (int) s[7]);
                     }
                 }
             } catch (Throwable ignored) {
@@ -101,6 +108,7 @@ public class AaDisplayActivity extends CarActivity {
         mLastHidCursorGen = Float.NaN;
         mLastLockedPeelActive = false;
         mLastLockedPeelRatio = Float.NaN;
+        mLastLockedFlipSeq = Float.NaN;
         mShellPollHandler.post(mShellPoll);
     }
 
@@ -113,6 +121,7 @@ public class AaDisplayActivity extends CarActivity {
         }
         mLastLockedPeelActive = false;
         mLastLockedPeelRatio = Float.NaN;
+        mLastLockedFlipSeq = Float.NaN;
     }
 
     @Override

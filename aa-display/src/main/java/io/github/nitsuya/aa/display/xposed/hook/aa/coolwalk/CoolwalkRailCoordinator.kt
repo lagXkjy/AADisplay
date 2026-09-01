@@ -242,6 +242,7 @@ object CoolwalkRailCoordinator {
                     lastEvent = event.reason,
                     updatedUptimeMs = now,
                 )
+                actions += RailAction.InvalidateHuTouchSession(event.reason)
             }
             is RailEvent.GutterReclaim -> {
                 next = next.copy(
@@ -509,6 +510,8 @@ object CoolwalkRailCoordinator {
             when (action) {
                 is RailAction.NotifyServer -> CoreManager.tryReportCoolwalkRailSnapshot(action.snapshot)
                 is RailAction.ReclaimAllGutters -> CoolwalkFacetChrome.reclaimAllWindowGutters(action.reason)
+                is RailAction.InvalidateHuTouchSession ->
+                    AaCoolwalkHuTouchHook.onRailSessionBoundary(action.reason)
             }
         }
     }
@@ -520,6 +523,10 @@ object CoolwalkRailCoordinator {
                 phase = RailPhase.ReconnectSettling,
                 lastEvent = effective.lastEvent,
                 updatedUptimeMs = effective.updatedUptimeMs.coerceAtLeast(snapshot.updatedUptimeMs),
+            )
+            // Server-driven reconnect may skip local ReconnectStarted in :car.
+            AaCoolwalkHuTouchHook.onRailSessionBoundary(
+                effective.lastEvent.ifEmpty { "server-reconnect" },
             )
             return
         }

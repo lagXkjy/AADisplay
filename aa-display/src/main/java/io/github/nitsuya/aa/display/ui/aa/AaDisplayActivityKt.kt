@@ -104,4 +104,12 @@ object AaDisplayActivityKt {
             ?.applyLockedPeelPreview(active, ratio)
     }
 
+    /** Locked peel tap-flip from [CoreApi.getHidCursorOverlay] indices 6–7. */
+    fun applyLockedFullscreenFlip(fragmentManager: FragmentManager, pane: Int) {
+        fragmentManager.fragments
+            .filterIsInstance<AaMainFragment>()
+            .firstOrNull()
+            ?.applyLockedFullscreenFlip(pane)
+    }
+
 }

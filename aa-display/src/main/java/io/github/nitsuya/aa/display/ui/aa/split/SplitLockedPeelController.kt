@@ -34,6 +34,9 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
     private var downRatio = 0f
     private var lastRawRatio = 0f
 
+    /** Skip repeated WMS keyguard patch on every peel DOWN when already applied this session. */
+    private var keyguardPolicyAppliedDisplayId = Display.INVALID_DISPLAY
+
     private val touchSlop: Int by lazy {
         ViewConfiguration.get(c.context).scaledTouchSlop
     }
@@ -108,10 +111,13 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
                 downUptimeMs = event.downTime
                 lastRawRatio = rawRatio(event)
                 downRatio = lastRawRatio
-                // Re-assert once per gesture so OEM keyguard re-occlusion does not stick.
+                // Re-assert once per display per session so OEM keyguard re-occlusion does not stick.
                 val aaUiId = c.mAaUiDisplayId
-                if (aaUiId != Display.INVALID_DISPLAY) {
+                if (aaUiId != Display.INVALID_DISPLAY &&
+                    aaUiId != keyguardPolicyAppliedDisplayId
+                ) {
                     applyAaUiDisplayKeyguardPolicy(aaUiId, "locked-peel")
+                    keyguardPolicyAppliedDisplayId = aaUiId
                 }
                 c.mHandler.removeCallbacks(longPressRunnable)
                 c.mHandler.postDelayed(longPressRunnable, longPressTimeout)
@@ -186,6 +192,7 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
         tracking = false
         dragging = false
         longPressFired = false
+        keyguardPolicyAppliedDisplayId = Display.INVALID_DISPLAY
         publishPreviewCancel()
     }
 

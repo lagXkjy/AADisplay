@@ -664,10 +664,16 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
 
     private fun enterFullscreen(pane: Int) {
         if (!SplitPane.isFullscreenPane(pane)) return
+        val flipping = SplitPane.isFullscreenPane(fullscreenPane)
         fullscreenPane = pane
         clearDragPreview()
-        CoreApi.setSplitFullscreen(pane)
+        // Optimistic shell flip — do not block on Binder before z-order / touch routing updates.
         applyFullscreenLayout(pane)
+        if (flipping) {
+            Thread({ CoreApi.setSplitFullscreen(pane) }, "aad-fs-flip").start()
+        } else {
+            CoreApi.setSplitFullscreen(pane)
+        }
         updateEmptyOverlays()
         baseBinding.root.removeCallbacks(afterOccupancySync)
         baseBinding.root.postDelayed(afterOccupancySync, 300L)
@@ -1109,6 +1115,19 @@ class AaMainFragment : BaseFragment<FragmentAaMainBinding>(FragmentAaMainBinding
         dividerDragging = true
         splitRatio = ratio
         applyDragPreview(ratio)
+    }
+
+    /**
+     * Locked peel tap-flip: pulled from [CoreManagerService] each frame — keyguard delays
+     * [ACTION_SPLIT_STATE_CHANGED] by ~1s; do not wait for the broadcast to swap z-order.
+     */
+    fun applyLockedFullscreenFlip(pane: Int) {
+        if (!isBaseBindingInitialized() || !isAdded) return
+        if (!SplitPane.isFullscreenPane(pane)) return
+        if (fullscreenPane == pane && appliedFullscreenPane == pane) return
+        fullscreenPane = pane
+        applyFullscreenLayout(pane)
+        updateEmptyOverlays()
     }
 
     private fun setupPaneSurfaces() {

@@ -521,6 +521,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         /** Locked fullscreen peel preview — UI pulls via [hidCursorOverlaySnapshot]. */
         @Volatile private var lockedPeelPreviewActive = false
         @Volatile private var lockedPeelPreviewRatio = 0.5f
+        /** Locked peel tap-flip — broadcast is slow under keyguard; AA UI pulls each ~16ms. */
+        @Volatile private var lockedFullscreenFlipSeq = 0
+        @Volatile private var lockedFullscreenFlipPane = SplitPane.FULLSCREEN_NONE
 
         fun publishHidCursorState(visible: Boolean, x: Float = 0f, y: Float = 0f) {
             hidCursorVisible = visible
@@ -537,6 +540,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             hidCursorGen++
         }
 
+        fun publishLockedFullscreenFlip(pane: Int) {
+            lockedFullscreenFlipPane = pane
+            lockedFullscreenFlipSeq++
+            hidCursorGen++
+        }
+
         fun hidCursorOverlaySnapshot(): FloatArray =
             floatArrayOf(
                 if (hidCursorVisible) 1f else 0f,
@@ -545,6 +554,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 hidCursorGen.toFloat(),
                 if (lockedPeelPreviewActive) 1f else 0f,
                 lockedPeelPreviewRatio,
+                lockedFullscreenFlipSeq.toFloat(),
+                lockedFullscreenFlipPane.toFloat(),
             )
 
         fun displaySizeFor(displayId: Int): Point? {
