@@ -484,6 +484,8 @@ flowchart TB
 `VdDensityPin`：`DisplaySessionPolicy` init 时 `ensureHooked`，真正拆 VD 才 `unHook`。  
 把跑在 AA VD 上的进程 `Configuration.densityDpi` 钉成窗 DPI。AA 重连 **不得** `clear` 映射表，否则双窗密度中途掉线。
 
+`VdMetricsMirror`：`systemReady` 时装一次。pinned 包查询 `DEFAULT_DISPLAY` 的 `DisplayInfo` 时，把 `logicalDensityDpi` 改写成当前 VD 有效 DPI（堵 `getDefaultDisplay().getMetrics()` 绕过）。必须 copy 再改，禁止原地 mutate。装钩 / 热路径失败或熔断后静默降级，仅靠 `VdDensityPin`。
+
 `PanePresentationGuard`：`systemReady` 时装一次。拦外包往本窗 VD 贴 `TYPE_PRESENTATION`（典型：抖音 LivePlay + MediaRouter）。
 
 `VdImeDisplayPin`：`systemReady` 时装一次。AA VD 上的 client 要键盘时，IME 窗/token 必须落在同一 VD（纠正 OEM 把目标改写到默认屏，如三星合盖 `isFolded`→0）。无 decor 时同时 hook `DisplayContent.getImePolicy` + WMS，仅把 **FALLBACK→LOCAL**（勿改写 HIDE/INVALID，否则空 show）。
@@ -555,7 +557,7 @@ flowchart TB
 | 仪表横条歌词采得到但推不过去 | `ClusterLyricMediaService`（`:cluster`）、`AaMediaAllowlistHook`、`ClusterLyricStore`、`AaClusterLyricEgressHook` |
 | 抖音盖导航 / 外窗 Presentation | `PanePresentationGuard`、`SplitPresentationGuard` |
 | AA VD 键盘落错屏 / 合盖无键盘 | `VdImeDisplayPin` |
-| 应用 DPI 不对 | `VdDensityPin` |
+| 应用 DPI 不对 | `VdDensityPin`、`VdMetricsMirror` |
 | 隐藏 API | `lib-stub/` + `Instances.kt`（Rikka Refine） |
 
 行为变更与真机回归清单：[README.md](../README.md)（用户向）、[CHANGELOG.md](../CHANGELOG.md)、[docs/archive/](archive/)。

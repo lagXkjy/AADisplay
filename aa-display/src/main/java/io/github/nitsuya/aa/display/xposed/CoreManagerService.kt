@@ -31,6 +31,7 @@ import io.github.nitsuya.aa.display.xposed.hook.PhoneHidRedirect
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.CoolwalkRailMath
 import io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailPhase
 import io.github.nitsuya.aa.display.xposed.hook.VdImeDisplayPin
+import io.github.nitsuya.aa.display.xposed.hook.VdMetricsMirror
 import io.github.nitsuya.aa.display.xposed.hook.VdOrientationFill
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -365,6 +366,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 .onFailure { log(TAG, "VdImeDisplayPin.ensureHooked failed", it) }
             runCatching { VdOrientationFill.ensureHooked() }
                 .onFailure { log(TAG, "VdOrientationFill.ensureHooked failed", it) }
+            runCatching { VdMetricsMirror.ensureHooked() }
+                .onFailure { log(TAG, "VdMetricsMirror.ensureHooked failed", it) }
             runCatching { PhoneHidRedirect.ensureHooked() }
                 .onFailure { log(TAG, "PhoneHidRedirect.ensureHooked failed", it) }
             runCatching { PaneDisplayGroupForce.ensureResolved() }

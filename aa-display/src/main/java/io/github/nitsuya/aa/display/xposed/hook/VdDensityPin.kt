@@ -7,6 +7,7 @@ import com.github.kyuubiran.ezxhelper.utils.getObject
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.XC_MethodHook
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
+import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
 import java.lang.reflect.Field
 import java.lang.reflect.Method
@@ -64,6 +65,30 @@ object VdDensityPin {
     fun clearPackageVirtualDisplay(packageName: String?) {
         val pkg = normalizePackage(packageName) ?: return
         pinnedPackages.remove(pkg)
+    }
+
+    /** True when [packageName] currently has a task pinned to an AA VD. */
+    fun isPackagePinned(packageName: String?): Boolean {
+        val pkg = normalizePackage(packageName) ?: return false
+        return pinnedPackages.contains(pkg)
+    }
+
+    /** Hot-path: any package currently pinned to an AA VD. */
+    fun hasPinnedPackages(): Boolean = pinnedPackages.isNotEmpty()
+
+    /**
+     * True when any package for [uid] is on an AA VD stack.
+     * Fail-closed: lookup errors / system uids → false (do not rewrite metrics).
+     */
+    fun isUidPinned(uid: Int): Boolean {
+        if (uid < 10000) return false
+        if (pinnedPackages.isEmpty()) return false
+        return try {
+            val pkgs = Instances.packageManager.getPackagesForUid(uid) ?: return false
+            pkgs.any { isPackagePinned(it) }
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     /** Keep package DPI pinning in sync when a task moves VD ↔ phone. */
