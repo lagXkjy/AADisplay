@@ -143,7 +143,12 @@ object CoolwalkRailCoordinator {
                     lastEvent = event.reason,
                     updatedUptimeMs = now,
                 )
-                if (next.phase == RailPhase.Bootstrapping) {
+                // FacetBar VD / RailWidthObserved often lands first (RailPresent).
+                // LayoutInfo is the start of reclaim — keep DrawingSpec's Reclaiming
+                // gate, but do not stay on RailPresent or ctor stays at content slot.
+                if (next.phase == RailPhase.Bootstrapping ||
+                    next.phase == RailPhase.RailPresent
+                ) {
                     next = next.copy(phase = RailPhase.Reclaiming)
                 }
             }

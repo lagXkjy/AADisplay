@@ -728,8 +728,18 @@ class DisplaySessionPolicy(
         sendAaDisplayBroadcast(AABroadcastConst.ACTION_REQUEST_DISPLAY_RECOVERY, "recovery")
     }
 
-    fun sendCoolwalkFullBleedBroadcast() {
-        sendAaDisplayBroadcast(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED, "full-bleed")
+    fun sendCoolwalkFullBleedBroadcast(includeGearhead: Boolean = false) {
+        try {
+            val intent = Intent(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED)
+            if (includeGearhead) {
+                intent.putExtra(AABroadcastConst.EXTRA_COOLWALK_RELAUNCH_PRESENTATION, true)
+                AaSystemBroadcast.toAaDisplayAndGearhead(mContext, intent)
+            } else {
+                AaSystemBroadcast.toAaDisplay(mContext, intent)
+            }
+        } catch (e: Throwable) {
+            log(TAG, "sendAaDisplayBroadcast[full-bleed] failed:", e)
+        }
     }
 
     private fun sendAaDisplayBroadcast(action: String, label: String) {

@@ -68,6 +68,7 @@ class CoolwalkHookEnv {
     @Volatile var mAaDisplayShownThisSession = false
     @Volatile var mAutoOpenArmed = false
     var mAutoOpenShownReceiver: android.content.BroadcastReceiver? = null
+    var mFullBleedRelaunchReceiver: android.content.BroadcastReceiver? = null
     var mCarConnectedKickHooked = false
     var mCarConnectedListenerHooked = false
 

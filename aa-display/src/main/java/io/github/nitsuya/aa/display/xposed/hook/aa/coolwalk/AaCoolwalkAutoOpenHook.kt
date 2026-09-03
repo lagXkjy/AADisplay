@@ -28,6 +28,7 @@ object AaCoolwalkAutoOpenHook {
     fun install(env: CoolwalkHookEnv, lpparam: XC_LoadPackage.LoadPackageParam) {
         logDebug(CoolwalkHookEnv.TAG, "AaUiHook: AutoOpen always-on startMethod=${env.startMethod?.name}")
         registerAutoOpenShownReceiver(env)
+        registerFullBleedRelaunchReceiver(env)
         hookCarSystemUiConnectedKick(env)
     }
 
@@ -212,6 +213,42 @@ object AaCoolwalkAutoOpenHook {
             logDebug(CoolwalkHookEnv.TAG, "AaUiHook: registered AA_DISPLAY_SHOWN receiver for AutoOpen cancel")
         } catch (e: Throwable) {
             log(CoolwalkHookEnv.TAG, "AaUiHook: register AA_DISPLAY_SHOWN receiver failed", e)
+        }
+    }
+
+    /**
+     * system_server detects AaDisplayActivity still at content slot after FacetBar starve
+     * and broadcasts [AABroadcastConst.ACTION_COOLWALK_FULL_BLEED]. Relaunch so the next
+     * DrawingSpec is built (and widened) at full HU — requestDisplay alone cannot grow the
+     * Car presentation VD.
+     */
+    private fun registerFullBleedRelaunchReceiver(env: CoolwalkHookEnv) {
+        if (env.mFullBleedRelaunchReceiver != null) return
+        val ctx = InitFields.appContext
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != AABroadcastConst.ACTION_COOLWALK_FULL_BLEED) return
+                if (!intent.getBooleanExtra(
+                        AABroadcastConst.EXTRA_COOLWALK_RELAUNCH_PRESENTATION,
+                        false,
+                    )
+                ) {
+                    return
+                }
+                // "slot" selects the 400ms delay chain so blX can expand before Surface alloc.
+                scheduleFullBleedRelaunch(env, "stuck-slot", force = true)
+            }
+        }
+        try {
+            ctx.registerReceiver(
+                receiver,
+                IntentFilter(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED),
+                Context.RECEIVER_EXPORTED,
+            )
+            env.mFullBleedRelaunchReceiver = receiver
+            logDebug(CoolwalkHookEnv.TAG, "AaUiHook: registered COOLWALK_FULL_BLEED receiver for relaunch")
+        } catch (e: Throwable) {
+            log(CoolwalkHookEnv.TAG, "AaUiHook: register COOLWALK_FULL_BLEED receiver failed", e)
         }
     }
 

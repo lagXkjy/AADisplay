@@ -224,19 +224,45 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 fullHuWidthPx = fullW,
             )
             val next = sanitizeDisplayProfile(settled.width, settled.height, settled.densityDpi)
-            if (next == current) return
-            mLockedDisplayProfile = next
-            logDebug(
-                TAG,
-                "displayProfile relocked(rail-settle): ${current.width}*${current.height} -> " +
-                    "${next.width}*${next.height} rail=$railW full=$fullW"
-            )
-            if (next.width > current.width &&
-                DisplayProfileSettle.isContentSlotVsFull(current.width, next.width)
-            ) {
-                instance.notifyCoolwalkFullBleed()
+            if (next != current) {
+                mLockedDisplayProfile = next
+                logDebug(
+                    TAG,
+                    "displayProfile relocked(rail-settle): ${current.width}*${current.height} -> " +
+                        "${next.width}*${next.height} rail=$railW full=$fullW"
+                )
+                if (next.width > current.width &&
+                    DisplayProfileSettle.isContentSlotVsFull(current.width, next.width)
+                ) {
+                    instance.notifyCoolwalkFullBleed()
+                }
+                mSplitController?.onReconnected(next.width, next.height, next.densityDpi)
             }
-            mSplitController?.onReconnected(next.width, next.height, next.densityDpi)
+            // Profile may already be full HU while Car presentation VD stays at content slot
+            // (DrawingSpec created before reclaim) → facet-bar-sized right gutter.
+            maybeNotifyStuckContentSlotPresentation(mLockedDisplayProfile ?: next)
+        }
+
+        private var lastStuckPresentationNotifyUptimeMs = 0L
+
+        /**
+         * When AaDisplayActivity presentation is still HU−rail but split profile is full HU,
+         * poke full-bleed so gearhead relaunches with a widened DrawingSpec.
+         */
+        private fun maybeNotifyStuckContentSlotPresentation(profile: DisplayProfile) {
+            if (!hasSystemContext) return
+            if (resolveRailWidthPx() > 1) return
+            val presentationW = DisplayProfileSettle.observeAaDisplayPresentationWidthPx(systemContext)
+            if (presentationW <= 0) return
+            if (!DisplayProfileSettle.isContentSlotVsFull(presentationW, profile.width)) return
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastStuckPresentationNotifyUptimeMs < 2_000L) return
+            lastStuckPresentationNotifyUptimeMs = now
+            log(
+                TAG,
+                "CoolwalkRail stuck presentation ${presentationW}px vs profile ${profile.width}px → full-bleed",
+            )
+            instance.notifyStuckContentSlotFullBleed()
         }
 
         private fun resolveRailWidthPx(): Int {
@@ -1066,14 +1092,31 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     override fun getCoolwalkReconnectEpochMs(): Long = coolwalkReconnectEpochMs
 
     override fun notifyCoolwalkFullBleed() {
-        mSessionPolicy?.sendCoolwalkFullBleedBroadcast()
-            ?: sendAaDisplayBroadcastFromSystem(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED)
+        sendCoolwalkFullBleed(includeGearhead = false)
     }
 
-    private fun sendAaDisplayBroadcastFromSystem(action: String) {
+    private fun notifyStuckContentSlotFullBleed() {
+        sendCoolwalkFullBleed(includeGearhead = true)
+    }
+
+    private fun sendCoolwalkFullBleed(includeGearhead: Boolean) {
+        mSessionPolicy?.sendCoolwalkFullBleedBroadcast(includeGearhead)
+            ?: sendAaDisplayBroadcastFromSystem(
+                AABroadcastConst.ACTION_COOLWALK_FULL_BLEED,
+                includeGearhead,
+            )
+    }
+
+    private fun sendAaDisplayBroadcastFromSystem(action: String, includeGearhead: Boolean = false) {
         if (!hasSystemContext) return
         try {
-            AaSystemBroadcast.toAaDisplay(systemContext, android.content.Intent(action))
+            val intent = android.content.Intent(action)
+            if (includeGearhead) {
+                intent.putExtra(AABroadcastConst.EXTRA_COOLWALK_RELAUNCH_PRESENTATION, true)
+                AaSystemBroadcast.toAaDisplayAndGearhead(systemContext, intent)
+            } else {
+                AaSystemBroadcast.toAaDisplay(systemContext, intent)
+            }
         } catch (e: Throwable) {
             log(TAG, "sendAaDisplayBroadcastFromSystem failed action=$action", e)
         }

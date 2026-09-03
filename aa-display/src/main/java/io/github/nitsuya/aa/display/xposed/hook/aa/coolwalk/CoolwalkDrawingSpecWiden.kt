@@ -210,6 +210,7 @@ object CoolwalkDrawingSpecWiden {
      * Widen content-slot widths after reclaim. [RailPhase.ReconnectSettling] with
      * [RailSnapshot.fullHuWidthPx] cleared (true soft reconnect) does not widen;
      * settling with a known full HU still widens (aligned with LayoutInfo / blX).
+     * Bootstrapping / RailPresent stay gated — widening before starve leaves a left bar.
      */
     internal fun resolveTargetWidth(width: Int, snap: RailSnapshot): Int {
         val full = snap.fullHuWidthPx

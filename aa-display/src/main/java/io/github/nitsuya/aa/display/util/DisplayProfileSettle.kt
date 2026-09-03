@@ -84,6 +84,26 @@ internal object DisplayProfileSettle {
     }
 
     /**
+     * Live AaDisplayActivity presentation width (Car SDK VirtualDisplay), or 0 if absent.
+     * system_server can see this private VD; used to detect content-slot stuck after
+     * FacetBar starve (right gutter = fullHu − presentationW).
+     */
+    fun observeAaDisplayPresentationWidthPx(context: Context): Int {
+        val dm = context.getSystemService(DisplayManager::class.java) ?: return 0
+        var best = 0
+        for (display in dm.displays) {
+            if (display.displayId == Display.DEFAULT_DISPLAY) continue
+            val name = runCatching { display.name }.getOrNull() ?: continue
+            if (!name.contains("AaDisplayActivity", ignoreCase = true)) continue
+            val w = runCatching { display.mode.physicalWidth }.getOrNull() ?: continue
+            val h = runCatching { display.mode.physicalHeight }.getOrNull() ?: continue
+            if (w <= 1 || h <= 1) continue
+            if (w > best) best = w
+        }
+        return best
+    }
+
+    /**
      * Best-effort full HU width from live Displays / reported.
      * Skip our own split VDs and the CarActivity presentation — the latter is often
      * still HU−rail while LayoutInfo / content_bounds already know the true full HU.
