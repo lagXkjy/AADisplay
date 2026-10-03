@@ -219,6 +219,14 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
+    override fun setAaDisplayResumed(resumed: Boolean) {
+        getService()?.setAaDisplayResumed(resumed)
+    }
+
+    override fun isAaDisplayTouchActive(): Boolean {
+        return getService()?.isAaDisplayTouchActive ?: false
+    }
+
     override fun getRecentTask(): RecentTask? {
         return getService()?.recentTask
     }

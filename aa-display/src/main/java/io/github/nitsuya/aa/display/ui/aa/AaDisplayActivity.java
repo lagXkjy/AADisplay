@@ -13,6 +13,7 @@ import android.view.WindowManager;
 
 import com.google.android.apps.auto.sdk.CarActivity;
 import io.github.nitsuya.aa.display.R;
+import io.github.nitsuya.aa.display.CoreApiKt;
 import io.github.nitsuya.aa.display.databinding.ActivityAaDisplayBinding;
 
 public class AaDisplayActivity extends CarActivity {
@@ -55,6 +56,11 @@ public class AaDisplayActivity extends CarActivity {
         super.onResume();
         Log.d(TAG, "onResume");
         try {
+            CoreApiKt.getCoreApi().setAaDisplayResumed(true);
+        } catch (android.os.RemoteException e) {
+            Log.e(TAG, "report resumed state failed", e);
+        }
+        try {
             // Keep in sync with AABroadcastConst.ACTION_AA_DISPLAY_SHOWN
             sendBroadcast(new android.content.Intent("aa.display.action.AA_DISPLAY_SHOWN"));
         } catch (Throwable ignored) {
@@ -64,6 +70,11 @@ public class AaDisplayActivity extends CarActivity {
     @Override
     public void onPause() {
         Log.d(TAG, "onPause");
+        try {
+            CoreApiKt.getCoreApi().setAaDisplayResumed(false);
+        } catch (android.os.RemoteException e) {
+            Log.e(TAG, "report paused state failed", e);
+        }
         super.onPause();
     }
 

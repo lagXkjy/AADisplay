@@ -24,13 +24,11 @@ import android.widget.LinearLayout
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.constraintlayout.widget.ConstraintSet
 import com.github.kyuubiran.ezxhelper.init.InitFields
-import com.github.kyuubiran.ezxhelper.utils.argTypes
 import com.github.kyuubiran.ezxhelper.utils.findMethod
 import com.github.kyuubiran.ezxhelper.utils.getIdByName
 import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import com.github.kyuubiran.ezxhelper.utils.loadClass
-import com.github.kyuubiran.ezxhelper.utils.staticMethod
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.service.AaActivityService
@@ -45,6 +43,7 @@ import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType
 import java.lang.reflect.Constructor
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -70,7 +69,8 @@ object AaUiHook: AaHook() {
 
     /** All LayoutInfo ctors with the stable (layoutId,w,h,type,rhd,hasVerticalRail,…) shape. */
     private var layoutInfoConstructors: List<Constructor<*>> = emptyList()
-    private var startMethod: Method? = null
+    private data class CarActivityLauncher(val instanceFactory: Method, val startMethod: Method)
+    private var carActivityLauncher: CarActivityLauncher? = null
     /** LayoutInfo.hasVerticalRail (2nd instance boolean); resolved once after first construct. */
     @Volatile private var hasVerticalRailField: java.lang.reflect.Field? = null
     /** LayoutInfo.layoutResourceId (first instance int); resolved once after first construct. */
@@ -129,13 +129,7 @@ object AaUiHook: AaHook() {
     private val PROJECTION_CONFIG_KEYS = setOf(
         "content_bounds", "contentBounds", "content_insets", "contentInsets"
     )
-    /**
-     * CarSystemUiControllerService.a(Intent) swallows IllegalStateException when the
-     * controller is not ready yet ("Unable to start activity"). A single early attempt
-     * then permanently blocks Auto Open — retry across the connect window instead.
-     * Keep attempts few and spaced so a successful start can cancel before the next retry
-     * (repeated start recreates/refocuses CarActivity and feels janky).
-     */
+    // Launch requests can return without opening while the projection context is not ready.
     private val AUTO_OPEN_DELAYS_MS = longArrayOf(1200L, 4000L, 8000L, 14000L, 22000L)
     private val AUTO_OPEN_TOKEN = Any()
     /** Uptime of the last armed Auto Open session; used to debounce LayoutInfo storms. */
@@ -158,7 +152,6 @@ object AaUiHook: AaHook() {
      * Never DEFAULT_DISPLAY — phone panels must not be treated as FacetBar.
      */
     @Volatile private var mObservedRailDisplayId: Int = Display.INVALID_DISPLAY
-    @Volatile private var mLoggedDashboardStarve = false
 
     override fun isSupportProcess(processName: String): Boolean {
         // Facet/VD UI lives in :projection; Coolwalk writes content_bounds in :car
@@ -220,7 +213,6 @@ object AaUiHook: AaHook() {
         }
 
         val classes = bridge.findClass {
-            searchPackages = listOf("")
             matcher {
                 usingStrings {
                     add(
@@ -242,7 +234,7 @@ object AaUiHook: AaHook() {
                 layoutInfoConstructors.joinToString { "p${it.parameterCount}" }
         )
 
-        startMethod = resolveCarStartActivityMethod()
+        carActivityLauncher = resolveCarActivityLauncher(bridge, lpparam.classLoader)
 
         val pkg = InitFields.appContext.packageName
         val res = InitFields.appContext.resources
@@ -306,7 +298,7 @@ object AaUiHook: AaHook() {
             registerAaUiRailConsumeReceiver()
             return
         }
-        log(tagName, "AaUiHook: AutoOpen always-on startMethod=${startMethod?.name}")
+        log(tagName, "AaUiHook: AutoOpen always-on startMethod=${carActivityLauncher?.startMethod}")
         // Zero rail-column dimens first so LayoutInfo / VD allocation sees full HU width.
         hookRailWidthDimens()
         hookVirtualDisplaySizing()
@@ -951,7 +943,16 @@ object AaUiHook: AaHook() {
             val downInRailBand = motion.getX(0) < rail
             val downInRail = if (railTarget) true else downInRailBand
             if (action == MotionEvent.ACTION_DOWN) {
-                mHuRailGesture = downInRail
+                mHuRailGesture = false
+                mHuPeelGesture = false
+                val touchActive = downInRail && try {
+                    CoreManager.isAaDisplayTouchActive()
+                } catch (e: Throwable) {
+                    log(tagName, "AaUiHook: touch readiness query failed", e)
+                    false
+                }
+                if (!touchActive) return
+                mHuRailGesture = true
                 mCachedFullscreenPane = try {
                     CoreManager.splitFullscreenPane
                 } catch (_: Throwable) {
@@ -1320,14 +1321,12 @@ object AaUiHook: AaHook() {
      */
     private fun rewriteVirtualDisplayArgs(name: String?, width: Int, height: Int): Pair<Int, Int>? {
         if (width <= 0 || height <= 0) return null
-        // Coolwalk empty media card Presentation — starve before compositor maps it to HU.
+        // Keep Dashboard at AA's requested size. Shrinking it to 1x1 makes AA 17.7's
+        // Compose layout subtract its internal insets from a one-pixel constraint and crash
+        // with a negative maxHeight during the first projection connection. The placeholder
+        // content is already hidden by AaMediaPlaceholderHook.
         if (name?.equals("Dashboard", ignoreCase = true) == true) {
-            if (width == 1 && height == 1) return null
-            if (!mLoggedDashboardStarve) {
-                mLoggedDashboardStarve = true
-                log(tagName, "AaUiHook: starve Dashboard VD ${width}x$height → 1x1")
-            }
-            return 1 to 1
+            return null
         }
         val railName = name?.contains("FacetBar", ignoreCase = true) == true ||
             name?.contains("GhFacet", ignoreCase = true) == true ||
@@ -1394,34 +1393,48 @@ object AaUiHook: AaHook() {
         return width <= maxRail && height >= width * 2
     }
 
-    private fun resolveCarStartActivityMethod(): Method? {
-        val clazz = try {
-            loadClass("com.google.android.projection.gearhead.service.CarSystemUiControllerService")
-        } catch (e: Throwable) {
-            log(tagName, "AaUiHook: CarSystemUiControllerService missing", e)
-            return null
-        }
-        try {
-            return clazz.staticMethod("a", null, argTypes(Intent::class.java)).also {
-                log(tagName, "AaUiHook: startMethod=a(Intent)")
+    private fun resolveCarActivityLauncher(
+        bridge: DexKitBridge,
+        classLoader: ClassLoader,
+    ): CarActivityLauncher? {
+        return try {
+            val targets = bridge.findMethod {
+                matcher {
+                    usingStrings(
+                        "startCarActivity(intent:%s, activityOptions:%s)",
+                        "Car no longer connected, unable to start %s",
+                    )
+                }
+            }.filter {
+                Modifier.isPublic(it.modifiers) && !Modifier.isStatic(it.modifiers) &&
+                    it.returnTypeName == "void" && it.paramCount == 2 &&
+                    it.paramTypeNames[0] == Intent::class.java.name
             }
+            val target = targets.singleOrNull()
+                ?: throw NoSuchMethodException("Car activity launch targets=${targets.size}")
+            val wrappers = target.callers.filter {
+                it.declaredClassName == target.declaredClassName &&
+                    Modifier.isPublic(it.modifiers) && !Modifier.isStatic(it.modifiers) &&
+                    it.returnTypeName == "void" &&
+                    it.paramTypeNames == listOf(Intent::class.java.name)
+            }.distinctBy { it.descriptor }
+            val start = wrappers.singleOrNull()?.getMethodInstance(classLoader)
+                ?: throw NoSuchMethodException("Car activity launch wrappers=${wrappers.size}")
+            val clazz = start.declaringClass
+            val factories = clazz.declaredMethods.filter {
+                Modifier.isPublic(it.modifiers) && Modifier.isStatic(it.modifiers) &&
+                    it.parameterCount == 0 && it.returnType == clazz
+            }
+            val factory = factories.singleOrNull()
+                ?: throw NoSuchMethodException("Car activity instance factories=${factories.size}")
+            start.isAccessible = true
+            factory.isAccessible = true
+            log(tagName, "AaUiHook: launch coordinator=${clazz.name} factory=${factory.name} start=${start.name}")
+            CarActivityLauncher(factory, start)
         } catch (e: Throwable) {
-            log(tagName, "AaUiHook: CarSystemUiControllerService.a missing, scanning static Intent methods", e)
+            log(tagName, "AaUiHook: resolve car activity launcher failed", e)
+            null
         }
-        val candidates = clazz.declaredMethods.filter { m ->
-            java.lang.reflect.Modifier.isStatic(m.modifiers) &&
-                m.parameterTypes.size == 1 &&
-                m.parameterTypes[0] == Intent::class.java &&
-                (m.returnType == Void.TYPE || m.returnType == Void::class.java)
-        }
-        val picked = candidates.firstOrNull()
-        if (picked != null) {
-            picked.isAccessible = true
-            log(tagName, "AaUiHook: startMethod fallback=${picked.name}(Intent) candidates=${candidates.map { it.name }}")
-        } else {
-            log(tagName, "AaUiHook: no static Intent start method on CarSystemUiControllerService")
-        }
-        return picked
     }
 
     private fun aaDisplayLaunchIntent(): Intent = Intent().apply {
@@ -1511,8 +1524,8 @@ object AaUiHook: AaHook() {
     }
 
     private fun scheduleAutoOpenIfNeeded(reason: String = "unknown") {
-        if (startMethod == null) {
-            log(tagName, "AaUiHook: AutoOpen skip ($reason): startMethod null")
+        if (carActivityLauncher == null) {
+            log(tagName, "AaUiHook: AutoOpen skip ($reason): launcher unresolved")
             return
         }
         val now = android.os.SystemClock.uptimeMillis()
@@ -1533,16 +1546,19 @@ object AaUiHook: AaHook() {
     }
 
     private fun tryAutoOpenAaDisplay(delayMs: Long) {
-        // Only stop on real resume (AA_DISPLAY_SHOWN). CarSystemUiControllerService
-        // swallows "Unable to start activity" — invoke can "succeed" without opening,
-        // so do not cancel remaining retries on a bare invoke.
+        // Only AA_DISPLAY_SHOWN confirms resume; a returned launch request does not.
         if (mAaDisplayShownThisSession) {
             markAaDisplayShown("flag")
             return
         }
-        val method = startMethod ?: return
+        val launcher = carActivityLauncher ?: return
         try {
-            method.invoke(null, aaDisplayLaunchIntent())
+            val instance = launcher.instanceFactory.invoke(null)
+            if (instance == null) {
+                log(tagName, "AaUiHook: AutoOpen coordinator not ready at ${delayMs}ms")
+                return
+            }
+            launcher.startMethod.invoke(instance, aaDisplayLaunchIntent())
             log(tagName, "AaUiHook: AutoOpen invoke at ${delayMs}ms")
         } catch (e: Throwable) {
             log(tagName, "AaUiHook: AutoOpen invoke failed at ${delayMs}ms", e)

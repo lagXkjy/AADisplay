@@ -5,6 +5,7 @@ import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
 import android.content.ContextParams
+import android.os.RemoteException
 import android.os.SystemClock
 import android.view.Display
 import android.view.MotionEvent
@@ -46,9 +47,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             }
 
         private var mSessionPolicy: DisplaySessionPolicy? = null
-        private var mSplitController: SplitDisplayController? = null
+        @Volatile private var mSplitController: SplitDisplayController? = null
+        @Volatile private var mAaDisplayResumed = false
         private var mDisplayCreateInProgress = false
-        private var mDestroyDisplayRequested = false
+        @Volatile private var mDestroyDisplayRequested = false
         private var mLastPaneTouchAt = 0L
         private var mLastPaneTouchPane = SplitPane.PRIMARY
         private var mLastPhoneInputLaunchAt = 0L
@@ -206,7 +208,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 if (kotlin.math.abs(clamped - mRatio) >= 0.01f) {
                     setSplitRatio(clamped)
                 }
-                listener.onAvailableDisplay(primaryDisplayId, false)
+                try {
+                    listener.onAvailableDisplay(primaryDisplayId, false)
+                } catch (e: RemoteException) {
+                    log(TAG, "display reconnect callback failed", e)
+                    destroyDisplay(this)
+                }
                 return@runMain
             }
             if (mDisplayCreateInProgress) {
@@ -237,6 +244,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                             )
                         }
                     }
+                } catch (e: RemoteException) {
+                    log(TAG, "display creation callback failed", e)
+                    destroyDisplay(this)
                 } finally {
                     mDisplayCreateInProgress = false
                 }
@@ -369,40 +379,57 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         )
     }
 
+    override fun setAaDisplayResumed(resumed: Boolean) {
+        mAaDisplayResumed = resumed
+    }
+
+    override fun isAaDisplayTouchActive(): Boolean {
+        val controller = mSplitController ?: return false
+        return mAaDisplayResumed && !mDestroyDisplayRequested &&
+            controller.mAaUiDisplayId != Display.INVALID_DISPLAY &&
+            (controller.mPrimarySurface?.isValid == true || controller.mSecondarySurface?.isValid == true)
+    }
+
     override fun onDestroyDisplay() {
-        runMain {
-            if (mDestroyDisplayRequested) {
-                log(TAG, "onDestroyDisplay skipped: destroy already requested")
-                return@runMain
-            }
-            mDestroyDisplayRequested = true
-            val targetController = mSplitController
-            val finishTeardown: () -> Unit = {
-                if (mSplitController !== targetController) {
-                    log(TAG, "onDestroyDisplay ignored: controller changed before teardown")
-                } else {
-                    try {
-                        targetController?.onDestroy()
-                    } catch (e: Throwable) {
-                        log(TAG, "controller onDestroy failed", e)
-                    } finally {
-                        mSessionPolicy = null
-                        mSplitController = null
-                        mDisplayCreateInProgress = false
-                        mDestroyDisplayRequested = false
-                        mLastPaneTouchAt = 0L
-                        mLastPhoneInputLaunchAt = 0L
-                        clearDisplayProfileLock()
-                    }
-                }
-                Unit
-            }
-            val policy = mSessionPolicy
-            if (policy != null) {
-                policy.onDestroy(finishTeardown)
+        mAaDisplayResumed = false
+        runMain { destroyDisplay(mSplitController) }
+    }
+
+    private suspend fun destroyDisplay(targetController: SplitDisplayController?) {
+        if (mSplitController !== targetController) {
+            log(TAG, "onDestroyDisplay ignored: controller changed")
+            return
+        }
+        if (mDestroyDisplayRequested) {
+            log(TAG, "onDestroyDisplay skipped: destroy already requested")
+            return
+        }
+        mDestroyDisplayRequested = true
+        val finishTeardown: () -> Unit = {
+            if (mSplitController !== targetController) {
+                log(TAG, "onDestroyDisplay ignored: controller changed before teardown")
             } else {
-                finishTeardown()
+                try {
+                    targetController?.onDestroy()
+                } catch (e: Throwable) {
+                    log(TAG, "controller onDestroy failed", e)
+                } finally {
+                    mSessionPolicy = null
+                    mSplitController = null
+                    mDisplayCreateInProgress = false
+                    mDestroyDisplayRequested = false
+                    mLastPaneTouchAt = 0L
+                    mLastPhoneInputLaunchAt = 0L
+                    clearDisplayProfileLock()
+                }
             }
+            Unit
+        }
+        val policy = mSessionPolicy
+        if (policy != null) {
+            policy.onDestroy(finishTeardown)
+        } else {
+            finishTeardown()
         }
     }
 

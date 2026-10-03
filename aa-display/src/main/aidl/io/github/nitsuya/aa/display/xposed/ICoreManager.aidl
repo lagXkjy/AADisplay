@@ -81,4 +81,7 @@ interface ICoreManager {
 
     /** Manual car-side fallback: open the phone input bridge for PRIMARY/SECONDARY pane. */
     void launchPhoneInputBridge(int pane);
+
+    void setAaDisplayResumed(boolean resumed);
+    boolean isAaDisplayTouchActive();
 }

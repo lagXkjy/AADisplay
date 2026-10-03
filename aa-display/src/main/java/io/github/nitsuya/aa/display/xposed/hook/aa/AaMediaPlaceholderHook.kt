@@ -17,9 +17,10 @@ import io.github.nitsuya.aa.display.xposed.util.log
  * Coolwalk empty media card is the **Dashboard** presentation
  * (≈304×460 on 800×480 HUs) showing "无法获享媒体内容".
  *
- * VD starve for name=Dashboard lives in [AaUiHook.rewriteVirtualDisplayArgs]
- * (create / Builder / resize). Here: disable [MEDIA_CAR_APP] and hide any
- * leftover Presentation window before first layout.
+ * The Dashboard presentation must retain AA's requested dimensions: Compose subtracts
+ * its own insets while measuring, so a 0x0 window crashes AA 17.7 with a negative
+ * maxHeight. Disable [MEDIA_CAR_APP] and make any leftover window transparent without
+ * changing its visibility or layout size.
  */
 object AaMediaPlaceholderHook : AaHook() {
     override val tagName: String = "AAD_AaMediaPlaceholderHook"
@@ -87,17 +88,14 @@ object AaMediaPlaceholderHook : AaHook() {
 
     private fun hideDashboard(root: View, lp: WindowManager.LayoutParams?) {
         root.alpha = 0f
-        root.visibility = View.GONE
         root.isClickable = false
         root.isFocusable = false
         if (root is ViewGroup) {
             root.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         }
         if (lp != null) {
-            lp.width = 0
-            lp.height = 0
             lp.alpha = 0f
         }
-        log(tagName, "hide Dashboard title=${lp?.title}")
+        log(tagName, "hide Dashboard title=${lp?.title} size=${lp?.width}x${lp?.height}")
     }
 }
