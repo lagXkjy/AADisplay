@@ -13,6 +13,7 @@ import java.io.ByteArrayOutputStream
 import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Source-role (device / spoofed handset) iAP2 state machine over RFCOMM.
@@ -47,6 +48,11 @@ class Iap2Session(
      * Identification (`0x1D00`) immediately after the stream is up.
      */
     private val wired: Boolean = false,
+    /**
+     * Detect/SYN retried out with no peer SYN/ACK. Close the RFCOMM so an inbound
+     * `…cafe` accept is not blocked by a zombie outbound `…caff` socket.
+     */
+    private val onHandshakeStuck: (() -> Unit)? = null,
 ) : NowPlayingEgress {
     private enum class State {
         Idle,
@@ -82,6 +88,8 @@ class Iap2Session(
 
     private val detectSeen = AtomicBoolean(false)
     private val synSent = AtomicBoolean(false)
+    /** Bumped on each transport connect/close so a stale detect-probe cannot drop a new peer. */
+    private val handshakeEpoch = AtomicInteger(0)
     private val startIdentSent = AtomicBoolean(false)
     private val authStarted = AtomicBoolean(false)
     private val wirelessStarted = AtomicBoolean(false)
@@ -158,6 +166,7 @@ class Iap2Session(
             onWiredTransportConnected()
             return
         }
+        val gen: Int
         synchronized(lock) {
             transportUsers++
             resetLocked()
@@ -165,6 +174,7 @@ class Iap2Session(
             // Race-torn Auth used to blacklist 20/32 for the whole process, so the next
             // clean cafe/dial session only had 16B left and never finished Auth.
             rejectedChallengeSizes.clear()
+            gen = handshakeEpoch.incrementAndGet()
         }
         Log.i(CarPlayConsts.TAG, "iAP transport up → detect")
         // DiPlay may pad RFCOMM reads to 512B of repeated detect; we must speak first.
@@ -180,6 +190,7 @@ class Iap2Session(
                     return@Thread
                 }
                 synchronized(lock) {
+                    if (gen != handshakeEpoch.get()) return@Thread
                     if (state != State.Detect && state != State.Negotiate) return@Thread
                     if (peerLsp != null || linkReady) return@Thread
                     if (!detectSeen.get()) {
@@ -197,11 +208,25 @@ class Iap2Session(
                     return@Thread
                 }
                 synchronized(lock) {
+                    if (gen != handshakeEpoch.get()) return@Thread
                     if (state != State.Detect && state != State.Negotiate) return@Thread
                     if (peerLsp != null || linkReady) return@Thread
                     if (!detectSeen.get()) return@Thread
                     maybeSendSynLocked("syn-retry-late-$i")
                 }
+            }
+            val stuck = synchronized(lock) {
+                gen == handshakeEpoch.get() &&
+                    (state == State.Detect || state == State.Negotiate) &&
+                    peerLsp == null &&
+                    !linkReady
+            }
+            if (stuck) {
+                Log.w(
+                    CarPlayConsts.TAG,
+                    "iAP handshake stuck (no SYN/ACK) — drop RFCOMM",
+                )
+                onHandshakeStuck?.invoke()
             }
         }, "iap2-detect-probe").apply { isDaemon = true }.start()
     }
@@ -241,6 +266,7 @@ class Iap2Session(
                         "skip next session rejected=$rejectedChallengeSizes",
                 )
             }
+            handshakeEpoch.incrementAndGet()
             transportUsers = (transportUsers - 1).coerceAtLeast(0)
             if (transportUsers > 0) {
                 false

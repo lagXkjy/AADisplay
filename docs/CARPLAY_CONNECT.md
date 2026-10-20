@@ -118,7 +118,7 @@ sequenceDiagram
 
 - 不改蓝牙适配器名称；尽量 `SCAN_MODE_CONNECTABLE_DISCOVERABLE`。已有 inbound-preferred 车机 bond 时**不弹**系统「可被发现」对话框。
 - BT OFF 时挂 `STATE_CHANGED`，ON 后再 `beginRfcomm`（避免 reboot 永久放弃 → DiPlay SDP `scn=0`）。
-- bonded 扫描 dial `…caff`（按 accessory / wireless-CP UUID 排序）。`INBOUND_PREFERRED`（Audi）：**优先等车机 dial `…cafe`**；bond/ACL 后 **2.5s 一次性** `…caff` fallback；`BOND_BONDING` 禁拨（否则掐 SSP）。**已有 socket / iAP 协商中禁止红 dial**。
+- bonded 扫描 dial `…caff`（按 accessory / wireless-CP UUID 排序）。`INBOUND_PREFERRED`（Audi）：**优先等车机 dial `…cafe`**；仅 **BOND_BONDED**（及 start 时已 bonded）启动 **2.5s 一次性** `…caff` fallback，**等满才置 `headUnitDialPending`**（等待窗内 4s 循环不得出站；ACL 不拨）。`BOND_BONDING` 禁拨（否则掐 SSP）。**已有 socket / iAP 协商中禁止红 dial**；Detect/SYN 重试耗尽无 ACK 则拆 RFCOMM，避免 zombie `…caff` 挡住 cafe。
 - 配对：已知 HU（名 hint / 已 bonded 且含 CarPlay UUID）经 `prepareCarPlayHeadUnit` 由 **system_server** `setPairingConfirmation` 静默确认并 `abortBroadcast`，不弹 Settings；**禁止**在 `PAIRING_REQUEST` 上 `removeBond`（会逼每次重配）。
 - 保留 HFP；**不主动开 A2DP**（部分 HU 会超时提示「无法建立蓝牙」）。
 

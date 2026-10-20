@@ -4,6 +4,7 @@
 
 ### Fixed
 - **断开 CarPlay 后手机音量键失效，关模块也要重启：** 播放采集用 system uid `setStreamMute` 把各流静音，并在音量变化时立刻打回 0。会话 live 以前只在 FGS 销毁时清掉，车机断开后前台服务仍在听，静音就留在 `system_server`。现于媒体链路真正结束后约 4 秒恢复音量（期间若重新 SETUP 则取消）；采集已卸但静音还在时，`setEnabled(false)` 也会清 mute / 细音量。
+- **Audi MIB3 4026 首次连不上 / 断连后 62fps 空转（Xiaomi 15 API 36）：** inbound-preferred 在 2.5s cafe 等待窗内就把 `headUnitDialPending` 置位，4s `dialBonded` 抢拨 `…caff`，SYN 无 ACK 的 zombie socket 挡住车机 `…cafe`。改为等满 2.5s 再置 pending，ACL 不再 schedule dial，SYN 耗尽拆 RFCOMM。HU 走后 4s 停 Host/编码器（FGS 仍 listen）。API 36 `setStreamVolumeIndex` 走 4 参/`AS`；`createAudioRecordSource` 不写死 1 参；mute 日志只在 MUSIC 被抬起时打。可发现改经 system_server `armBluetoothDiscoverable`（须重启换 Stub）。
 
 ## 0.3#17.8-r2 — 有线 USB 归档 · CarPlay-only · 空闲不占 CPU
 

@@ -455,6 +455,14 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
+    override fun armBluetoothDiscoverable() {
+        try {
+            getService()?.armBluetoothDiscoverable()
+        } catch (e: Throwable) {
+            Log.e(TAG, "armBluetoothDiscoverable failed", e)
+        }
+    }
+
     override fun scrollPane(pane: Int, x: Int, y: Int, vScroll: Int, hScroll: Int) {
         try {
             getService()?.scrollPane(pane, x, y, vScroll, hScroll)

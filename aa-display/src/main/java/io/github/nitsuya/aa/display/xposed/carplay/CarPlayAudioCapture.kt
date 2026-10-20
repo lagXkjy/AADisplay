@@ -21,6 +21,7 @@ import android.os.Process
 import android.os.UserHandle
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
+import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -167,6 +168,8 @@ object CarPlayAudioCapture {
     private var speakerDeviceMuted = false
     private var savedSpeakerVolumes: IntArray? = null
     private var savedSpeakerStreamTypes: IntArray? = null
+    /** API 33 3-arg vs API 36 4-arg / setStreamVolumeIndexAS. */
+    @Volatile private var volumeIndexFns: VolumeIndexFns? = null
     private var mediaProjection: MediaProjection? = null
     private var mediaRecord: AudioRecord? = null
     private var speechRecord: AudioRecord? = null
@@ -790,12 +793,8 @@ object CarPlayAudioCapture {
             // Re-zero local OUT devices without rewriting savedSpeakerVolumes.
             rezeroLocalPlaybackDevices()
         }
-        if (touched) {
-            log(
-                TAG,
-                "phone mute re-enforced streams=$streams" +
-                    (restoredVol?.let { " musicWas=$it" } ?: ""),
-            )
+        if (restoredVol != null) {
+            log(TAG, "phone mute re-enforced streams=$streams musicWas=$restoredVol")
         }
     }
 
@@ -968,7 +967,11 @@ object CarPlayAudioCapture {
                 if ((armed.get() && mediaMode == "playback-capture") ||
                     (desired.get() && phoneMuted)
                 ) {
-                    enforcePhoneMute(audioManager)
+                    val am = audioManager ?: return
+                    val vol = runCatching { am.getStreamVolume(AudioManager.STREAM_MUSIC) }.getOrNull()
+                    val muted = runCatching { am.isStreamMute(AudioManager.STREAM_MUSIC) }.getOrNull()
+                    if (vol == 0 && muted == true) return
+                    enforcePhoneMute(am)
                 }
             }
         }
@@ -1002,13 +1005,11 @@ object CarPlayAudioCapture {
             ?: MUTED_STREAMS
         try {
             val audioSystem = Class.forName("android.media.AudioSystem")
-            val setIndex = audioSystem.methods.first { m ->
-                m.name == "setStreamVolumeIndex" && m.parameterTypes.size == 3
-            }
+            val fns = resolveVolumeIndexFns(audioSystem) ?: return
             val devices = localPlaybackDeviceMasks(audioSystem)
             for (stream in streams) {
                 for (device in devices) {
-                    runCatching { setIndex.invoke(null, stream, 0, device) }
+                    fns.setIndex(stream, 0, device)
                 }
             }
         } catch (_: Throwable) {
@@ -1024,12 +1025,8 @@ object CarPlayAudioCapture {
     private fun muteLocalPlaybackDevices(): Boolean {
         return try {
             val audioSystem = Class.forName("android.media.AudioSystem")
-            val getIndex = audioSystem.methods.first { m ->
-                m.name == "getStreamVolumeIndex" && m.parameterTypes.size == 2
-            }
-            val setIndex = audioSystem.methods.first { m ->
-                m.name == "setStreamVolumeIndex" && m.parameterTypes.size == 3
-            }
+            val fns = resolveVolumeIndexFns(audioSystem)
+                ?: throw NoSuchElementException("no setStreamVolumeIndex / setStreamVolumeIndexAS")
             val devices = localPlaybackDeviceMasks(audioSystem)
             if (devices.isEmpty()) return false
             // Prefer streams already validated by mutePhoneStreams; else probe MUTED_STREAMS.
@@ -1041,14 +1038,14 @@ object CarPlayAudioCapture {
                 val before = saved.size
                 for (device in devices) {
                     val cur = runCatching {
-                        getIndex.invoke(null, stream, device) as? Int
+                        fns.getIndex.invoke(null, stream, device) as? Int
                     }.getOrNull()
                     if (cur == null) {
                         ok = false
                         break
                     }
                     saved.add(cur)
-                    if (runCatching { setIndex.invoke(null, stream, 0, device) }.isFailure) {
+                    if (!fns.setIndex(stream, 0, device)) {
                         ok = false
                         break
                     }
@@ -1081,20 +1078,89 @@ object CarPlayAudioCapture {
             ?: MUTED_STREAMS
         try {
             val audioSystem = Class.forName("android.media.AudioSystem")
-            val setIndex = audioSystem.methods.first { m ->
-                m.name == "setStreamVolumeIndex" && m.parameterTypes.size == 3
-            }
+            val fns = resolveVolumeIndexFns(audioSystem) ?: return
             val devices = localPlaybackDeviceMasks(audioSystem)
             var si = 0
             for (stream in streams) {
                 for (device in devices) {
                     if (si >= saved.size) return
-                    runCatching { setIndex.invoke(null, stream, saved[si++], device) }
+                    fns.setIndex(stream, saved[si++], device)
                 }
             }
             log(TAG, "local-device mute restored")
         } catch (e: Throwable) {
             logDebug(TAG, "local-device mute restore failed: ${e.message}")
+        }
+    }
+
+    private class VolumeIndexFns(
+        val getIndex: Method,
+        val setIndex: (stream: Int, index: Int, device: Int) -> Boolean,
+    )
+
+    /**
+     * API 33: `setStreamVolumeIndex(stream, index, device)`.
+     * API 36: 3-arg gone; public `setStreamVolumeIndexAS(stream, index, isPrivileged, device)`
+     * and private 4-arg `setStreamVolumeIndex`.
+     */
+    private fun resolveVolumeIndexFns(audioSystem: Class<*>): VolumeIndexFns? {
+        volumeIndexFns?.let { return it }
+        val methods = LinkedHashMap<String, Method>()
+        for (m in audioSystem.methods + audioSystem.declaredMethods) {
+            methods.putIfAbsent("${m.name}:${m.parameterTypes.joinToString { it.simpleName }}", m)
+        }
+        val all = methods.values
+        val get = all.firstOrNull {
+            it.name == "getStreamVolumeIndex" && it.parameterTypes.size == 2
+        } ?: return null
+        get.isAccessible = true
+        val set3 = all.firstOrNull {
+            it.name == "setStreamVolumeIndex" && it.parameterTypes.size == 3
+        }
+        val setAs = all.firstOrNull {
+            it.name == "setStreamVolumeIndexAS" && it.parameterTypes.size == 4
+        }
+        val set4 = all.firstOrNull {
+            it.name == "setStreamVolumeIndex" && it.parameterTypes.size == 4
+        }
+        val setter = when {
+            set3 != null -> {
+                set3.isAccessible = true
+                { stream: Int, index: Int, device: Int ->
+                    runCatching { set3.invoke(null, stream, index, device) }.isSuccess
+                }
+            }
+            setAs != null -> {
+                setAs.isAccessible = true
+                volumeIndexSetter4(setAs)
+            }
+            set4 != null -> {
+                set4.isAccessible = true
+                volumeIndexSetter4(set4)
+            }
+            else -> return null
+        }
+        val fns = VolumeIndexFns(get, setter)
+        volumeIndexFns = fns
+        return fns
+    }
+
+    private fun volumeIndexSetter4(method: Method): (Int, Int, Int) -> Boolean {
+        val pts = method.parameterTypes
+        return { stream, index, device ->
+            runCatching {
+                when {
+                    pts.size >= 4 &&
+                        pts[2] == java.lang.Boolean.TYPE &&
+                        pts[3] == Integer.TYPE ->
+                        method.invoke(null, stream, index, false, device)
+                    pts.size >= 4 &&
+                        pts[2] == Integer.TYPE &&
+                        pts[3] == java.lang.Boolean.TYPE ->
+                        method.invoke(null, stream, index, device, false)
+                    else -> method.invoke(null, stream, index, false, device)
+                }
+            }.isSuccess
         }
     }
 
@@ -1465,10 +1531,34 @@ object CarPlayAudioCapture {
 
     private fun createAudioRecordSource(policy: Any, mix: Any): AudioRecord? {
         return try {
-            val createRecord = policy.javaClass.methods.first { m ->
-                m.name == "createAudioRecordSource" && m.parameterTypes.size == 1
+            val methods = policy.javaClass.methods.filter {
+                it.name == "createAudioRecordSource" || it.name == "createAudioRecordForMix"
+            }.sortedBy { it.parameterTypes.size }
+            if (methods.isEmpty()) {
+                logDebug(TAG, "createAudioRecordSource: no method on ${policy.javaClass.name}")
+                return null
             }
-            createRecord.invoke(policy, mix) as? AudioRecord
+            for (m in methods) {
+                val rec = runCatching {
+                    val args = Array(m.parameterTypes.size) { i ->
+                        val t = m.parameterTypes[i]
+                        when {
+                            t.isInstance(mix) || t.isAssignableFrom(mix.javaClass) -> mix
+                            t == Integer.TYPE -> 0
+                            t == java.lang.Boolean.TYPE -> false
+                            else -> null
+                        }
+                    }
+                    m.invoke(policy, *args)
+                }.getOrNull() as? AudioRecord
+                if (rec != null) return rec
+            }
+            logDebug(
+                TAG,
+                "createAudioRecordSource: invoke miss signatures=" +
+                    methods.joinToString { it.parameterTypes.joinToString(prefix = "(", postfix = ")") { p -> p.simpleName } },
+            )
+            null
         } catch (e: Throwable) {
             logDebug(TAG, "createAudioRecordSource failed: ${e.message}")
             null

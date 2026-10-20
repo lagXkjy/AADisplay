@@ -223,4 +223,11 @@ interface ICoreManager {
      * Appended at end for Stub ordinals; requires system_server reload (reboot).
      */
     void preferCellularOverUnvalidatedWifi();
+
+    /**
+     * Make the adapter CONNECTABLE_DISCOVERABLE from system_server (has
+     * BLUETOOTH_PRIVILEGED). App uid setScanMode always fails. Appended at end
+     * for Stub ordinals; requires system_server reload (reboot).
+     */
+    void armBluetoothDiscoverable();
 }

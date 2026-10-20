@@ -93,6 +93,32 @@ class CarPlaySourceSession(
         } catch (e: Throwable) {
             Log.e(CarPlayConsts.TAG, "reportCarPlaySessionLive(false) failed", e)
         }
+        releaseHostPipeline(reason)
+    }
+
+    /**
+     * Stop GL / dual VD / MediaCodec after a real HU drop. FGS + cafe/RTSP listen stay.
+     * Next [prepareMediaPipeline] boots Host again.
+     */
+    private fun releaseHostPipeline(reason: String) {
+        if (!mediaPrepared.get() && !CarPlayHostRuntime.isRunning()) return
+        Log.i(CarPlayConsts.TAG, "release host pipeline ($reason)")
+        cancelGlRebindRetry()
+        glCompositor?.onRateReport = null
+        try {
+            glCompositor?.detachEncoder()
+        } catch (_: Throwable) {
+        }
+        tee.setGlExclusive(false)
+        encoder.stop()
+        glCompositor = null
+        CarPlayHostRuntime.stop(reason)
+        mediaPrepared.set(false)
+        airplayDialed.set(false)
+        supplyFps = CarPlayConsts.DEFAULT_VIDEO_FPS
+        badRateWindows = 0
+        goodRateWindows = 0
+        lastDropCount = 0L
     }
 
     fun start() {
@@ -373,6 +399,7 @@ class CarPlaySourceSession(
             onNowPlayingUpdates = { CarPlayNowPlaying.onUpdatesRequested() },
             onFileTransferDatagram = { dg -> CarPlayNowPlaying.onFileTransferDatagram(dg) },
             sourceIdentity = sourceIdentity,
+            onHandshakeStuck = { link.dropCurrentPeer("iap-handshake-stuck") },
         )
         link.start()
     }

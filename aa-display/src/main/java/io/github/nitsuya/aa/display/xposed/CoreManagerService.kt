@@ -1,6 +1,7 @@
 package io.github.nitsuya.aa.display.xposed
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
@@ -1347,6 +1348,43 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         } finally {
             android.os.Binder.restoreCallingIdentity(token)
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun armBluetoothDiscoverable() {
+        if (!hasSystemContext) return
+        val token = android.os.Binder.clearCallingIdentity()
+        try {
+            val adapter = systemContext.getSystemService(BluetoothManager::class.java)?.adapter
+            if (adapter == null || !adapter.isEnabled) return
+            val wanted = BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE
+            if (adapter.scanMode == wanted) return
+            val ok = invokeSetScanMode(adapter, wanted)
+            log(TAG, "armBluetoothDiscoverable ok=$ok scanMode=${adapter.scanMode}")
+        } catch (e: Throwable) {
+            log(TAG, "armBluetoothDiscoverable failed ${e.message}")
+        } finally {
+            android.os.Binder.restoreCallingIdentity(token)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun invokeSetScanMode(adapter: BluetoothAdapter, mode: Int): Boolean {
+        val methods = adapter.javaClass.methods.filter { it.name == "setScanMode" }
+        for (m in methods.sortedBy { it.parameterTypes.size }) {
+            val pts = m.parameterTypes
+            val invoked = runCatching {
+                when {
+                    pts.size == 1 && pts[0] == Integer.TYPE ->
+                        m.invoke(adapter, mode)
+                    pts.size == 2 && pts[0] == Integer.TYPE && pts[1] == Integer.TYPE ->
+                        m.invoke(adapter, mode, 300)
+                    else -> null
+                }
+            }.getOrNull()
+            if (invoked == true || adapter.scanMode == mode) return true
+        }
+        return adapter.scanMode == mode
     }
 
     @Suppress("DEPRECATION")
