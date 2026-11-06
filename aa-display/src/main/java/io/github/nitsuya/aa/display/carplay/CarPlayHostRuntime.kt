@@ -167,6 +167,7 @@ object CarPlayHostRuntime {
             secondarySurface = secondary
             CarPlayInputBridge.shellWidthPx = w
             CarPlayInputBridge.shellHeightPx = h
+            CarPlayInputBridge.densityDpi = dpi
             // Soft reconnect keeps system_server VDs + live ratio; resetting GL to 0.5
             // draws half-strips over 302/968 buffers → black gutters around the divider
             // (seen on DiPlay after HostRuntime restart). Prefer live → snapshot → default.
@@ -175,6 +176,7 @@ object CarPlayHostRuntime {
             syncGlBuffersForRatio(gl, bootRatio, w, h, dpi)
             CarPlayProjectionService.attachGlCompositor(gl)
             CarPlayAppPickerOverlay.bindContext(app)
+            CarPlayImeChip.bind(app)
             CarPlayWheelController.onRecentsToggle = { CarPlayRecentsOverlay.toggle() }
             pendingCreateW = w
             pendingCreateH = h
@@ -302,6 +304,7 @@ object CarPlayHostRuntime {
             pendingCreateRatio = ratio
             CarPlayInputBridge.shellWidthPx = width
             CarPlayInputBridge.shellHeightPx = height
+            CarPlayInputBridge.densityDpi = dpi
             syncGlBuffersForRatio(gl, ratio, width, height, dpi)
             requestCreateSplitDisplay("resize-${width}x$height")
             Log.i(
@@ -331,6 +334,7 @@ object CarPlayHostRuntime {
             val dpi = resolveEncodeDpi()
             if (dpi == pendingCreateDpi && gl.currentDensityDpi() == dpi) return
             pendingCreateDpi = dpi
+            CarPlayInputBridge.densityDpi = dpi
             gl.updateDensityDpi(dpi)
             val w = pendingCreateW.takeIf { it > 0 } ?: CarPlayConsts.ENCODE_WIDTH
             val h = pendingCreateH.takeIf { it > 0 } ?: CarPlayConsts.ENCODE_HEIGHT
@@ -377,6 +381,7 @@ object CarPlayHostRuntime {
             mainHandler.removeCallbacks(vdCreateRetryRunnable)
             vdCreateRetries = 0
             CarPlayAppPickerOverlay.unbind()
+            CarPlayImeChip.unbind()
             CarPlayProjectionService.attachGlCompositor(null)
             runCatching { CoreApi.setPaneSurface(SplitPane.PRIMARY, null) }
             runCatching { CoreApi.setPaneSurface(SplitPane.SECONDARY, null) }

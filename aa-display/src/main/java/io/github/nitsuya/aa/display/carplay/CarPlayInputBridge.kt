@@ -26,6 +26,10 @@ object CarPlayInputBridge {
     @Volatile
     var shellHeightPx: Int = CarPlayConsts.ENCODE_HEIGHT
 
+    /** Encode dpi. Hit tests use dp the same way [SplitPane.dividerPx] does. */
+    @Volatile
+    var densityDpi: Int = CarPlayConsts.ENCODE_UI_DENSITY_DPI
+
     /** Primary pane share of the split display width (matches CoreApi.onCreateSplitDisplay). */
     @Volatile
     var primaryRatio: Float = SplitPane.DEFAULT_RATIO
@@ -45,8 +49,6 @@ object CarPlayInputBridge {
     @Volatile
     var peelPreviewActive: Boolean = false
 
-    /** Half-width of the divider-strip hit zone, as a fraction of shell width. */
-    private const val DIVIDER_ZONE = 0.04f
     /** Peel tab hit band at the left edge while fullscreen (fraction of width). */
     private const val PEEL_ZONE = 0.05f
     private const val RATIO_PREVIEW_INTERVAL_MS = 100L
@@ -75,6 +77,8 @@ object CarPlayInputBridge {
     private var paneDownPane = SplitPane.PRIMARY
     @Volatile
     private var paneMoved = false
+    @Volatile
+    private var imeChipArmed = false
 
     fun injectNormalized(xNorm: Float, yNorm: Float, action: Int) {
         val x = xNorm.coerceIn(0f, 1f)
@@ -90,8 +94,9 @@ object CarPlayInputBridge {
             return
         }
 
-        // CarPlay exclusive: Host chrome (divider / peel / overlays).
+        // CarPlay exclusive: Host chrome (hide-IME chip / divider / peel / overlays).
         if (ProjectionSessionGate.shouldUseCarPlayHost()) {
+            if (handleImeChip(x, y, action)) return
             if (handleChrome(x, y, action)) return
         }
 
@@ -122,6 +127,79 @@ object CarPlayInputBridge {
     }
 
     /**
+     * 「收起键盘」on the encode canvas. The whole gesture is consumed; UP calls
+     * [CoreApi.hideIme] so the tap does not land on the space bar underneath.
+     */
+    private fun handleImeChip(x: Float, y: Float, action: Int): Boolean {
+        val rect = imeChipRect()
+        val inside = rect != null && rect.contains(x * shellWidth(), y * shellHeight())
+        when (action) {
+            MotionEvent.ACTION_DOWN -> {
+                imeChipArmed = inside
+                return imeChipArmed
+            }
+            MotionEvent.ACTION_MOVE -> return imeChipArmed
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                if (!imeChipArmed) return false
+                imeChipArmed = false
+                if (action == MotionEvent.ACTION_UP) {
+                    CarPlayImeChip.dismissLocal()
+                    try {
+                        CoreApi.hideIme()
+                    } catch (e: Throwable) {
+                        Log.w(CarPlayConsts.TAG, "hideIme failed", e)
+                    }
+                }
+                return true
+            }
+            else -> return imeChipArmed
+        }
+    }
+
+    /**
+     * Side-by-side seam only: AA thickness ([SplitPane.DIVIDER_DP] + expand) and
+     * [SplitPane.DIVIDER_TOUCH_END_INSET_DP] dead zones at the top and bottom.
+     * Ends return false so the pane still receives the touch.
+     */
+    private fun dividerSeamHit(xNorm: Float, yNorm: Float): Boolean {
+        val w = shellWidth()
+        val h = shellHeight()
+        val dpi = densityDpi.coerceAtLeast(160)
+        val scale = dpi / 160f
+        val ratio = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+        val (left, gap, _) = CarPlayChromePainter.splitStrip(w, ratio, dpi)
+        val seamX = left + gap / 2f
+        val half = (SplitPane.DIVIDER_DP / 2f + SplitPane.DIVIDER_TOUCH_EXPAND_DP) * scale
+        val inset = SplitPane.DIVIDER_TOUCH_END_INSET_DP * scale
+        val yPx = yNorm * h
+        if (h > inset * 2f && (yPx < inset || yPx > h - inset)) return false
+        return abs(xNorm * w - seamX) <= half
+    }
+
+    private val imeChipBounds = android.graphics.RectF()
+
+    private fun imeChipRect(): android.graphics.RectF? {
+        if (CarPlayRecentsOverlay.isVisible() || CarPlayAppPickerOverlay.isVisible()) return null
+        if (!SplitPane.isValid(CarPlayImeChip.pane)) return null
+        val ok = CarPlayChromePainter.layoutHideImeChip(
+            imeChipBounds,
+            shellWidth(),
+            shellHeight(),
+            densityDpi.coerceAtLeast(160),
+            CarPlayImeChip.pane,
+            SplitPane.isFullscreenPane(fullscreenPane),
+            primaryRatio,
+            CarPlayImeChip.label,
+        )
+        return if (ok) imeChipBounds else null
+    }
+
+    private fun shellWidth(): Int = shellWidthPx.coerceAtLeast(1)
+
+    private fun shellHeight(): Int = shellHeightPx.coerceAtLeast(1)
+
+    /**
      * Divider / peel gestures. Returns true when the event was consumed as chrome
      * (do not forward into a pane).
      */
@@ -133,7 +211,7 @@ object CarPlayInputBridge {
                 chromeArmed = if (inFullscreen) {
                     x < PEEL_ZONE
                 } else {
-                    abs(x - primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)) < DIVIDER_ZONE
+                    dividerSeamHit(x, y)
                 }
                 if (!chromeArmed) return false
                 chromeDragging = false

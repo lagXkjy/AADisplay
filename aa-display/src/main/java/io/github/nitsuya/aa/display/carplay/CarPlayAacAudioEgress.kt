@@ -60,8 +60,9 @@ class CarPlayAacAudioEgress(
      */
     @Volatile var onCadenceGap: (() -> Unit)? = null
 
-    fun start() {
-        if (!running.compareAndSet(false, true)) return
+    /** @return false when TX is already running. */
+    fun start(): Boolean {
+        if (!running.compareAndSet(false, true)) return false
         try {
             CoreApi.setCarPlayAudioEgressEnabled(true)
         } catch (e: Throwable) {
@@ -74,6 +75,7 @@ class CarPlayAacAudioEgress(
             "CarPlay AAC media TX → $host:$dataPort control=$controlPort " +
                 "rate=$sampleRate format=0x${formatBit.toString(16)}",
         )
+        return true
     }
 
     fun stop() {
@@ -108,8 +110,9 @@ class CarPlayAacAudioEgress(
             }
             if (got.isEmpty()) return@repeat
         }
-        // Warm silence AU once — AAC-LC usually needs a few frames before the
-        // first AU appears. TX must never call MediaCodec.
+        // Prime AAC-LC (first frames often yield no AU). TX must never call
+        // MediaCodec. The primed AU is only a mid-session cadence hold —
+        // txLoop does not send it until a real frame has gone out.
         val zeros = ByteArray(frameBytes)
         repeat(8) {
             val au = encoder.encodeExactFrame(zeros)
@@ -183,42 +186,54 @@ class CarPlayAacAudioEgress(
         // @ 48 kHz, so the HU jitter buffer slips ~1 sample/frame and after a
         // minute or two underruns into 杂音 then silence.
         var rtpTimestamp = CarPlayMediaClock.rtpTimestamp(sampleRate)
+        // False until the first captured AU is sent. Opening silence is not put
+        // on the wire — it fills the HU jitter buffer and the mixer drops MainAudio.
+        var paced = false
         try {
             while (running.get()) {
-                val now = System.nanoTime()
-                val sleepNs = nextSendAt - now
-                if (sleepNs > 0L) {
-                    val ms = sleepNs / 1_000_000L
-                    val ns = (sleepNs % 1_000_000L).toInt()
-                    Thread.sleep(ms, ns)
-                } else if (sleepNs < -frameNs * REALIGN_FRAMES) {
-                    val behindMs = -sleepNs / 1_000_000L
-                    nextSendAt = System.nanoTime()
-                    realignCount.incrementAndGet()
-                    peakBehindMs.updateAndGet { maxOf(it, behindMs) }
-                    Log.i(
-                        CarPlayConsts.TAG,
-                        "CarPlay AAC cadence realign behindMs=$behindMs " +
-                            "packet=$packets q=${auQueue.size}",
-                    )
-                    runCatching { onCadenceGap?.invoke() }
-                        .onFailure { e ->
-                            Log.w(CarPlayConsts.TAG, "onCadenceGap failed", e)
-                        }
+                if (paced) {
+                    val now = System.nanoTime()
+                    val sleepNs = nextSendAt - now
+                    if (sleepNs > 0L) {
+                        val ms = sleepNs / 1_000_000L
+                        val ns = (sleepNs % 1_000_000L).toInt()
+                        Thread.sleep(ms, ns)
+                    } else if (sleepNs < -frameNs * REALIGN_FRAMES) {
+                        val behindMs = -sleepNs / 1_000_000L
+                        nextSendAt = System.nanoTime()
+                        realignCount.incrementAndGet()
+                        peakBehindMs.updateAndGet { maxOf(it, behindMs) }
+                        Log.i(
+                            CarPlayConsts.TAG,
+                            "CarPlay AAC cadence realign behindMs=$behindMs " +
+                                "packet=$packets q=${auQueue.size}",
+                        )
+                        runCatching { onCadenceGap?.invoke() }
+                            .onFailure { e ->
+                                Log.w(CarPlayConsts.TAG, "onCadenceGap failed", e)
+                            }
+                    }
+                    // Mildly behind: skip sleep and send ASAP to catch up (no clock snap).
                 }
-                // Mildly behind: skip sleep and send ASAP to catch up (no clock snap).
 
                 var au = auQueue.poll()
                 var usedSilence = false
                 if (au == null) {
+                    if (!paced) {
+                        Thread.sleep(2)
+                        continue
+                    }
                     au = silenceAu
                     usedSilence = au != null
                     if (au == null) {
-                        // Encode warm-up not ready yet.
                         Thread.sleep(2)
                         continue
                     }
                     silenceSends.incrementAndGet()
+                } else if (!paced) {
+                    paced = true
+                    nextSendAt = System.nanoTime()
+                    rtpTimestamp = CarPlayMediaClock.rtpTimestamp(sampleRate)
                 }
 
                 var payload = stripAdtsIfPresent(au)

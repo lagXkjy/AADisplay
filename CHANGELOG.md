@@ -1,10 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.3#17.8-r4 — 奥迪刚连声音、分隔条与键盘、4026 重连
+
+versionCode **3104** / versionName **0.3#17.8-r4**。相对 r2：奥迪认领 MainAudio 后再发 AAC；分隔条命中与收起键盘对齐 AA；断开后恢复手机音量；MIB3 4026 不再被 outbound `…caff` 挡住首次 `…cafe`。
 
 ### Fixed
+- **无线 CarPlay 刚连上声音不稳 / 交换分屏命中过宽 / 没有收起键盘 / 车机要连多次：** 奥迪 AAC 在第一次 `modesChanged` 认领 MainAudio 之后才发 RTP（认领超过约 2s 仍无 200 则照旧开流），开头不再把编码器预热静音帧送到车机。CarPlay 分隔条命中改为与 AA 相同的缝宽和上下 80dp 留白。Host 画布补「收起键盘」，抬手走已有 `hideIme`。握手停在 Detect 的 inbound `…cafe` 也会拆掉，下一次 accept 不再被当成已有会话丢掉。
 - **断开 CarPlay 后手机音量键失效，关模块也要重启：** 播放采集用 system uid `setStreamMute` 把各流静音，并在音量变化时立刻打回 0。会话 live 以前只在 FGS 销毁时清掉，车机断开后前台服务仍在听，静音就留在 `system_server`。现于媒体链路真正结束后约 4 秒恢复音量（期间若重新 SETUP 则取消）；采集已卸但静音还在时，`setEnabled(false)` 也会清 mute / 细音量。
 - **Audi MIB3 4026 首次连不上 / 断连后 62fps 空转（Xiaomi 15 API 36）：** inbound-preferred 在 2.5s cafe 等待窗内就把 `headUnitDialPending` 置位，4s `dialBonded` 抢拨 `…caff`，SYN 无 ACK 的 zombie socket 挡住车机 `…cafe`。改为等满 2.5s 再置 pending，ACL 不再 schedule dial，SYN 耗尽拆 RFCOMM。HU 走后 4s 停 Host/编码器（FGS 仍 listen）。API 36 `setStreamVolumeIndex` 走 4 参/`AS`；`createAudioRecordSource` 不写死 1 参；mute 日志只在 MUSIC 被抬起时打。可发现改经 system_server `armBluetoothDiscoverable`（须重启换 Stub）。
+
+### Changed
+- **Version bump to `0.3#17.8-r4`** (`versionCode` 3104)。
 
 ## 0.3#17.8-r2 — 有线 USB 归档 · CarPlay-only · 空闲不占 CPU
 

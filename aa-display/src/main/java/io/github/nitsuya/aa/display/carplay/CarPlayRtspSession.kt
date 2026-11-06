@@ -93,6 +93,8 @@ class CarPlayRtspSession(
     private companion object {
         /** Min gap between non-forced reclaims (BORROW restore path). */
         private const val MODES_RECLAIM_MIN_GAP_MS = 8_000L
+        /** After the control pump is up, do not hold AAC RTP longer than this for the claim. */
+        private const val AAC_CLAIM_FALLBACK_MS = 2_000L
     }
     /** Phone iAP frames waiting to go out on the RTSP control socket. */
     private val iapTx = ArrayDeque<ByteArray>()
@@ -1208,6 +1210,8 @@ class CarPlayRtspSession(
         if (mib3) {
             // After Wi-Fi iAP auth+burst (~1s). Claiming during AA00/AA05 races the
             // control socket with iAP POSTs and Audi still dies ~12s later.
+            // AAC RTP stays off until this claim (or the fallback): the mixer is
+            // unstable while packets arrive before MainAudio is owned.
             thread(name = "carplay-modes-announce", isDaemon = true) {
                 try {
                     Thread.sleep(1_500L)
@@ -1219,28 +1223,56 @@ class CarPlayRtspSession(
                     ) {
                         Thread.sleep(50L)
                     }
-                } catch (_: InterruptedException) {
-                    return@thread
-                }
-                if (!running.get() || !streaming.get()) return@thread
-                // Audi can drop MainAudio after the first claim / RTP underrun while AAC
-                // still flows. Re-claim on this dedicated thread only (never AAC TX).
-                // One-shot burst only — a forever 30s heartbeat POST modesChanged made the
-                // HU mixer muddy every half-minute; cadence-gap reclaim during track-change
-                // underrun latched mute while RTP kept flowing.
-                announcePhoneModesChanged()
-                for (delayMs in longArrayOf(4_000L, 12_000L, 30_000L)) {
-                    try {
-                        Thread.sleep(delayMs)
-                    } catch (_: InterruptedException) {
-                        return@thread
-                    }
                     if (!running.get() || !streaming.get()) return@thread
-                    scheduleModesReclaimAsync("burst+$delayMs", force = true)
+                    // If the POST hangs, arm RTP anyway so the HU does not drop the stream.
+                    val watchdog = thread(name = "carplay-aac-arm", isDaemon = true) {
+                        try {
+                            Thread.sleep(AAC_CLAIM_FALLBACK_MS)
+                        } catch (_: InterruptedException) {
+                            return@thread
+                        }
+                        if (!running.get() || !streaming.get()) return@thread
+                        startDeferredAac("claim-timeout")
+                    }
+                    var claimed = false
+                    try {
+                        claimed = announcePhoneModesChanged()
+                    } catch (e: Throwable) {
+                        Log.w(CarPlayConsts.TAG, "modesChanged before AAC failed", e)
+                    } finally {
+                        watchdog.interrupt()
+                        if (running.get() && streaming.get()) {
+                            startDeferredAac(if (claimed) "modesChanged" else "modesChanged-fail")
+                        }
+                    }
+                    // Audi can drop MainAudio after the first claim / RTP underrun while AAC
+                    // still flows. Re-claim on this dedicated thread only (never AAC TX).
+                    // One-shot burst only — a forever 30s heartbeat POST modesChanged made the
+                    // HU mixer muddy every half-minute; cadence-gap reclaim during track-change
+                    // underrun latched mute while RTP kept flowing.
+                    for (delayMs in longArrayOf(4_000L, 12_000L, 30_000L)) {
+                        try {
+                            Thread.sleep(delayMs)
+                        } catch (_: InterruptedException) {
+                            return@thread
+                        }
+                        if (!running.get() || !streaming.get()) return@thread
+                        scheduleModesReclaimAsync("burst+$delayMs", force = true)
+                    }
+                } catch (_: InterruptedException) {
+                    if (running.get() && streaming.get()) startDeferredAac("interrupted")
                 }
             }
         }
         return true
+    }
+
+    /** First successful [CarPlayAacAudioEgress.start] wins; later calls are no-ops. */
+    private fun startDeferredAac(reason: String) {
+        val egress = mediaAacEgress.get() ?: return
+        if (egress.start()) {
+            Log.i(CarPlayConsts.TAG, "AAC RTP arm ($reason)")
+        }
     }
 
     /**
@@ -1335,7 +1367,7 @@ class CarPlayRtspSession(
                 }
             }
             mediaAacEgress.getAndSet(egress)?.stop()
-            egress?.start()
+            // start() waits for the modesChanged claim on carplay-modes-announce.
         } catch (e: Throwable) {
             try {
                 localControl.close()

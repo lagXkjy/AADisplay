@@ -2,6 +2,7 @@ package io.github.nitsuya.aa.display.carplay
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
@@ -68,6 +69,7 @@ class CarPlayGlCompositor {
 
     private var overlayTexId = 0
     private var overlayBitmap: Bitmap? = null
+    private val imeChipLayout = RectF()
 
     private var encodeWidth = CarPlayConsts.ENCODE_WIDTH
     private var encodeHeight = CarPlayConsts.ENCODE_HEIGHT
@@ -354,10 +356,7 @@ class CarPlayGlCompositor {
 
     /** Same math as [io.github.nitsuya.aa.display.ui.aa.split.SplitVdLifecycle.computePaneSizes]. */
     private fun splitStripSizes(ratio: Float): Pair<Int, Int> {
-        val gap = SplitPane.dividerPx(densityDpi)
-        val usable = (encodeWidth - gap).coerceAtLeast(2)
-        val left = (usable * ratio).toInt().coerceAtLeast(1)
-        val right = (usable - left).coerceAtLeast(1)
+        val (left, _, right) = CarPlayChromePainter.splitStrip(encodeWidth, ratio, densityDpi)
         return left to right
     }
 
@@ -570,6 +569,26 @@ class CarPlayGlCompositor {
             CarPlayChromePainter.drawPeelTab(canvas, encodeWidth, encodeHeight)
         } else if (seamX >= 0) {
             CarPlayChromePainter.drawSplitDivider(canvas, encodeWidth, encodeHeight, seamX)
+        }
+        if (!showRecents && !showPicker && SplitPane.isValid(CarPlayImeChip.pane)) {
+            if (CarPlayChromePainter.layoutHideImeChip(
+                    imeChipLayout,
+                    encodeWidth,
+                    encodeHeight,
+                    densityDpi,
+                    CarPlayImeChip.pane,
+                    fullscreen,
+                    CarPlayInputBridge.primaryRatio,
+                    CarPlayImeChip.label,
+                )
+            ) {
+                CarPlayChromePainter.drawHideImeChip(
+                    canvas,
+                    imeChipLayout,
+                    densityDpi,
+                    CarPlayImeChip.label,
+                )
+            }
         }
         if (showRecents) {
             CarPlayRecentsOverlay.draw(canvas, encodeWidth, encodeHeight)

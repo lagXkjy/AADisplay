@@ -568,16 +568,34 @@ class CarPlayBluetoothLink(
         }
     }
 
-    /** Close a negotiating outbound socket so inbound `…cafe` can accept (unanswered SYN). */
-    fun dropCurrentPeer(reason: String) {
+    /**
+     * Close a negotiating socket so the next `…cafe` accept is not treated as a
+     * live session. Outbound `…caff` with no SYN/ACK is always closed. Inbound is
+     * kept unless [allowInbound]: a stuck HU-dialed `…cafe` otherwise stays
+     * "live" and the next connect is dropped. [stillNegotiating] is re-checked
+     * under [writeLock] so a link that just became ready is not torn down.
+     */
+    fun dropCurrentPeer(
+        reason: String,
+        allowInbound: Boolean = false,
+        stillNegotiating: () -> Boolean = { true },
+    ) {
+        var inbound = false
         val socket = synchronized(writeLock) {
-            if (peerInbound) {
+            if (peerInbound && !allowInbound) {
                 Log.i(CarPlayConsts.TAG, "RFCOMM drop skipped ($reason) — inbound peer")
                 return
             }
-            clientSocket
+            if (!stillNegotiating()) {
+                Log.i(CarPlayConsts.TAG, "RFCOMM drop skipped ($reason) — link ready")
+                return
+            }
+            inbound = peerInbound
+            val current = clientSocket
+            clientSocket = null
+            current
         } ?: return
-        Log.i(CarPlayConsts.TAG, "RFCOMM drop peer ($reason)")
+        Log.i(CarPlayConsts.TAG, "RFCOMM drop peer ($reason) inbound=$inbound")
         socket.closeQuietly()
     }
 

@@ -399,7 +399,13 @@ class CarPlaySourceSession(
             onNowPlayingUpdates = { CarPlayNowPlaying.onUpdatesRequested() },
             onFileTransferDatagram = { dg -> CarPlayNowPlaying.onFileTransferDatagram(dg) },
             sourceIdentity = sourceIdentity,
-            onHandshakeStuck = { link.dropCurrentPeer("iap-handshake-stuck") },
+            onHandshakeStuck = {
+                link.dropCurrentPeer(
+                    "iap-handshake-stuck",
+                    allowInbound = true,
+                    stillNegotiating = { iap2?.linkReady != true },
+                )
+            },
         )
         link.start()
     }

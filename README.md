@@ -15,7 +15,7 @@
 | **Android Auto** | 车机本身支持 Android Auto（手机装了 AA 时默认走这条） |
 | **无线 CarPlay** | 车机支持 CarPlay（例如 DiPlay 等盒子）；**手机没装 Android Auto 也能用**。目前只在 **Audi MIB3（3874 / 4026）** 与 **DiPlay** 上测过 |
 
-当前版本：**0.3#17.8-r2** · 更新说明见 [CHANGELOG.md](CHANGELOG.md)
+当前版本：**0.3#17.8-r4** · 更新说明见 [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
