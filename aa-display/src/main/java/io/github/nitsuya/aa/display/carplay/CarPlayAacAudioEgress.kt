@@ -180,12 +180,14 @@ class CarPlayAacAudioEgress(
         val ssrc = 0
         val frameNs = SAMPLES_PER_FRAME * 1_000_000_000L / sampleRate
         var nextSendAt = System.nanoTime()
-        CarPlayMediaClock.ensureRunning()
         // One step of exactly 1024 samples per sent AU. Deriving this from
         // microseconds ((n * 1024 * 1e6 / rate) * rate / 1e6) truncates to 1023
         // @ 48 kHz, so the HU jitter buffer slips ~1 sample/frame and after a
         // minute or two underruns into 杂音 then silence.
-        var rtpTimestamp = CarPlayMediaClock.rtpTimestamp(sampleRate)
+        // First packet must be ts=0. RTP is armed only after MainAudio is claimed,
+        // ~2s after the picture; seeding from MediaClock at that moment made Audi
+        // hold the whole stream by that offset (sound late vs the screen).
+        var rtpTimestamp = 0
         // False until the first captured AU is sent. Opening silence is not put
         // on the wire — it fills the HU jitter buffer and the mixer drops MainAudio.
         var paced = false
@@ -233,7 +235,7 @@ class CarPlayAacAudioEgress(
                 } else if (!paced) {
                     paced = true
                     nextSendAt = System.nanoTime()
-                    rtpTimestamp = CarPlayMediaClock.rtpTimestamp(sampleRate)
+                    rtpTimestamp = 0
                 }
 
                 var payload = stripAdtsIfPresent(au)
