@@ -137,15 +137,19 @@
                         android:id="@+id/rb_channel_aa"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:buttonTint="@color/radio_channel_tint"
                         android:minHeight="48dp"
-                        android:text="Android Auto（原路投屏）" />
+                        android:text="Android Auto（原路投屏）"
+                        android:textColor="@color/color_text_primary" />
 
                     <RadioButton
                         android:id="@+id/rb_channel_cp"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:buttonTint="@color/radio_channel_tint"
                         android:minHeight="48dp"
-                        android:text="CarPlay 无线（蓝牙连车机）" />
+                        android:text="CarPlay 无线（蓝牙连车机）"
+                        android:textColor="@color/color_text_primary" />
                 </RadioGroup>
             </LinearLayout>
         </FrameLayout>
