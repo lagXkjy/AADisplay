@@ -27,6 +27,12 @@ android {
                 "kotlin/**",
                 "DebugProbesKt.bin",
                 "kotlin-tooling-metadata.json",
+                // bcprov ships unused PQC Picnic tables + X.509 review strings;
+                // AirPlay only needs Ed25519/X25519 classes (already R8-kept).
+                "org/bouncycastle/pqc/**",
+                "org/bouncycastle/x509/**",
+                // aare-aap / protobuf jars otherwise embed .proto sources in the APK.
+                "**/*.proto",
             )
         )
         jniLibs {

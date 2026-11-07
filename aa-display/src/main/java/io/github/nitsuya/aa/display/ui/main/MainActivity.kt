@@ -32,7 +32,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
             0L -> {
                 baseBinding.ivIcon.setImageResource(R.drawable.ic_error_outline_24)
                 baseBinding.tvActive.text = "未激活"
-                baseBinding.tvVersion.text = ""
+                baseBinding.tvVersion.text = "本包 ${BuildConfig.VERSION_NAME}"
                 setStatusCardColor(getColor(R.color.color_error))
                 val onError = getColor(R.color.color_on_error)
                 baseBinding.tvActive.setTextColor(onError)
@@ -42,14 +42,15 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
             BuildConfig.BUILD_TIME -> {
                 baseBinding.ivIcon.setImageResource(R.drawable.ic_round_check_circle_24)
                 baseBinding.tvActive.text = "已激活"
-                baseBinding.tvVersion.text = CoreApi.versionName
+                baseBinding.tvVersion.text = BuildConfig.VERSION_NAME
             }
 
             else -> {
                 baseBinding.ivIcon.setImageResource(R.drawable.ic_warning_amber_24)
                 baseBinding.tvActive.text = "需要重启"
+                val framework = CoreApi.versionName ?: "—"
                 baseBinding.tvVersion.text =
-                    "system: ${CoreApi.versionName}\nmodule: ${BuildConfig.VERSION_NAME}"
+                    "框架 $framework\n本包 ${BuildConfig.VERSION_NAME}"
                 setStatusCardColor(getColor(R.color.color_warning))
             }
         }

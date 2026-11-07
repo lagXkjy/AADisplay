@@ -34,3 +34,8 @@ dependencies {
     api("com.google.protobuf:protobuf-javalite:3.25.5")
     api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
 }
+
+// src/main/proto is for protoc only — do not ship .proto sources in the library JAR.
+tasks.withType<Jar>().configureEach {
+    exclude("**/*.proto")
+}
