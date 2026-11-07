@@ -99,29 +99,26 @@ data class HidSplitLayout(
     fun isSplit(): Boolean = activePanes().size >= 2
 
     /**
-     * Three-dot grip on the split seam — BT mouse LMB chrome only (finger uses wide
-     * [SplitDividerView] hit target).
+     * Three-dot grip on the split seam — BT mouse LMB chrome only (finger / HU uses
+     * [CarPlayInputBridge] seam + grip gate).
      */
     fun isDividerGripHit(canvasX: Float, canvasY: Float): Boolean {
         if (!isSplit()) return false
         val (cx, cy) = clampCanvas(canvasX, canvasY)
         val dpi = densityDpi.coerceAtLeast(160)
-        val dotRadius = SplitPane.DIVIDER_DOT_RADIUS_DP * dpi / 160f
-        val dotGap = SplitPane.DIVIDER_DOT_GAP_DP * dpi / 160f
         val expand = SplitPane.DIVIDER_GRIP_HIT_EXPAND_DP * dpi / 160f
-        val longHalf = dotGap + dotRadius + expand
         val div = seamGapPx()
-        val shortHalf = (div / 2f + expand).coerceAtLeast(dotRadius + expand)
+        val shortHalf = (div / 2f + expand).coerceAtLeast(
+            SplitPane.DIVIDER_DOT_RADIUS_DP * dpi / 160f + expand,
+        )
         return if (sideBySide) {
             val seamX = primaryW + div / 2f
-            val seamY = totalH / 2f
             cx in (seamX - shortHalf)..(seamX + shortHalf) &&
-                cy in (seamY - longHalf)..(seamY + longHalf)
+                SplitPane.isAlongDividerGrip(cy, totalH.toFloat(), dpi, finger = false)
         } else {
-            val seamX = totalW / 2f
             val seamY = primaryH + div / 2f
-            cx in (seamX - longHalf)..(seamX + longHalf) &&
-                cy in (seamY - shortHalf)..(seamY + shortHalf)
+            cy in (seamY - shortHalf)..(seamY + shortHalf) &&
+                SplitPane.isAlongDividerGrip(cx, totalW.toFloat(), dpi, finger = false)
         }
     }
 

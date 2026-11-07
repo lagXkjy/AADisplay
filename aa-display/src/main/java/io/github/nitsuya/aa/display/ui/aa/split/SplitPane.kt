@@ -67,19 +67,27 @@ object SplitPane {
     const val DIVIDER_GRIP_HIT_EXPAND_DP = 5f
 
     /**
+     * Extra padding around the three-dot grip for finger / HU tap-to-swap.
+     * Wider than mouse so car digitizers can hit the dots, still far from the
+     * seam ends (top/bottom) that must not swap.
+     */
+    const val DIVIDER_GRIP_FINGER_EXPAND_DP = 14f
+
+    /**
      * Extra hit area on each side of the divider seam (visual stays [DIVIDER_DP]).
      * Applied as view size + negative margins so the divider view itself receives
      * touches over adjacent panes (sibling TextureViews would otherwise win).
      * Car HU touch is coarser than phone AA — 40dp keeps the seam grabable on
      * Audi-class digitizers without eating half a pane.
+     * Drag / long-press Recent use this full seam; tap-to-swap is grip-only
+     * ([isAlongDividerGrip]).
      */
     const val DIVIDER_TOUCH_EXPAND_DP = 40
 
     /**
      * Dead zone at each end of the divider along its long axis (top/bottom when
-     * side-by-side). Keeps pane-corner chrome (back, etc.) from swapping splits.
-     * Thickness of the hit target is unchanged ([DIVIDER_TOUCH_EXPAND_DP]).
-     * Kept modest (24dp): car users often grab near the top of the seam.
+     * side-by-side). Keeps pane-corner chrome from arming divider drag.
+     * Tap-to-swap is independently limited to the three-dot grip.
      */
     const val DIVIDER_TOUCH_END_INSET_DP = 24
 
@@ -157,6 +165,31 @@ object SplitPane {
         if (absRatio <= DIVIDER_TAP_RATIO_SLOP) return true
         if (dist > touchSlop * 3f) return false
         return absRatio <= DIVIDER_TAP_RATIO_SLOP
+    }
+
+    /**
+     * Half-length (dp) of the three-dot grip along the seam long axis
+     * (vertical when side-by-side). [finger] uses the coarser HU expand.
+     */
+    fun dividerGripLongHalfDp(finger: Boolean): Float {
+        val expand = if (finger) DIVIDER_GRIP_FINGER_EXPAND_DP else DIVIDER_GRIP_HIT_EXPAND_DP
+        return DIVIDER_DOT_GAP_DP + DIVIDER_DOT_RADIUS_DP + expand
+    }
+
+    /**
+     * Whether [alongPx] on the seam long axis lands on the painted three-dot grip
+     * (centered). Used so tap-to-swap ignores top/bottom of the full seam.
+     */
+    fun isAlongDividerGrip(
+        alongPx: Float,
+        longAxisSizePx: Float,
+        densityDpi: Int,
+        finger: Boolean,
+    ): Boolean {
+        val scale = densityDpi.coerceAtLeast(160) / 160f
+        val half = dividerGripLongHalfDp(finger) * scale
+        val mid = longAxisSizePx / 2f
+        return alongPx in (mid - half)..(mid + half)
     }
 
     fun clampRatio(ratio: Float): Float = ratio.coerceIn(MIN_RATIO, MAX_RATIO)

@@ -127,7 +127,8 @@ class AapInputKeys(context: Context) {
     }
 
     companion object {
-        private const val LONG_PRESS_MS = 550L
+        /** Match [io.github.nitsuya.aa.display.carplay.CarPlayWheelController] long threshold. */
+        private const val LONG_PRESS_MS = 900L
 
         private fun isNextSide(code: Int): Boolean =
             code == AndroidKeyEvent.KEYCODE_MEDIA_NEXT ||

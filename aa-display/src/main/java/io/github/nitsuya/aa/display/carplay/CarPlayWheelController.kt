@@ -51,8 +51,11 @@ object CarPlayWheelController {
     /** Momentary wheel-tick code; [extra] carries the signed wheel delta. */
     const val KNOB_WHEEL = 16
 
-    /** Align with AA divider long-press floor ([SplitPane.DIVIDER_TAP_STACK_MIN_MS]). */
-    private const val LONG_PRESS_MS = 550L
+    /**
+     * Hold before long action. Higher than divider Recent (550ms): rocker ticks and
+     * seek-style holds were too easy to fire swap / Recents at 550ms.
+     */
+    private const val LONG_PRESS_MS = 900L
 
     private val enabled = AtomicBoolean(false)
     private val invertMediaLr = AtomicBoolean(false)

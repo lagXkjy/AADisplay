@@ -54,6 +54,9 @@ object CarPlayInputBridge {
     private var chromeArmed = false
     @Volatile
     private var chromeDragging = false
+    /** DOWN landed on the three-dot grip — only then may UP tap-swap. */
+    @Volatile
+    private var chromeDownOnGrip = false
     @Volatile
     private var chromeDownX = 0f
     @Volatile
@@ -143,6 +146,7 @@ object CarPlayInputBridge {
     /**
      * Side-by-side seam only: AA thickness ([SplitPane.DIVIDER_DP] + expand) and
      * [SplitPane.DIVIDER_TOUCH_END_INSET_DP] dead zones at the top and bottom.
+     * Arms drag / long-press Recent. Tap-to-swap also needs [dividerGripHit].
      * Ends return false so the pane still receives the touch.
      */
     private fun dividerSeamHit(xNorm: Float, yNorm: Float): Boolean {
@@ -159,6 +163,18 @@ object CarPlayInputBridge {
         val yPx = yNorm * h
         if (h > inset * 2f && (yPx < inset || yPx > h - inset)) return false
         return abs(xPx - seamX) <= half
+    }
+
+    /** Three-dot grip on the seam (centered). Finger expand — HU tap-to-swap only. */
+    private fun dividerGripHit(xNorm: Float, yNorm: Float): Boolean {
+        if (!dividerSeamHit(xNorm, yNorm)) return false
+        val h = shellHeight().toFloat()
+        return SplitPane.isAlongDividerGrip(
+            alongPx = yNorm * h,
+            longAxisSizePx = h,
+            densityDpi = densityDpi.coerceAtLeast(160),
+            finger = true,
+        )
     }
 
     /** Debug: how far the finger is from the live seam (encode px). */
@@ -207,6 +223,7 @@ object CarPlayInputBridge {
                 } else {
                     dividerSeamHit(x, y)
                 }
+                chromeDownOnGrip = !inFullscreen && chromeArmed && dividerGripHit(x, y)
                 if (!chromeArmed) {
                     if (!inFullscreen) {
                         val dpi = densityDpi.coerceAtLeast(160)
@@ -231,7 +248,7 @@ object CarPlayInputBridge {
                 ratioAtDown = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
                 Log.i(
                     CarPlayConsts.TAG,
-                    "divider arm x=$x y=$y ratio=$ratioAtDown fs=$inFullscreen",
+                    "divider arm x=$x y=$y grip=$chromeDownOnGrip ratio=$ratioAtDown fs=$inFullscreen",
                 )
                 return true
             }
@@ -268,13 +285,18 @@ object CarPlayInputBridge {
                 val dist = abs(x - chromeDownX)
                 val ratioDelta = abs(x - ratioAtDown)
                 val wasDragging = chromeDragging
+                val downOnGrip = chromeDownOnGrip
                 chromeDragging = false
+                chromeDownOnGrip = false
                 peelPreviewActive = false
 
                 if (inFullscreen) {
                     handlePeelUp(x, heldMs, dist, wasDragging, action == MotionEvent.ACTION_CANCEL)
                 } else {
-                    handleDividerUp(x, heldMs, dist, ratioDelta, wasDragging, action == MotionEvent.ACTION_CANCEL)
+                    handleDividerUp(
+                        x, heldMs, dist, ratioDelta, wasDragging, downOnGrip,
+                        action == MotionEvent.ACTION_CANCEL,
+                    )
                 }
                 return true
             }
@@ -288,6 +310,7 @@ object CarPlayInputBridge {
         dist: Float,
         ratioDelta: Float,
         wasDragging: Boolean,
+        downOnGrip: Boolean,
         cancelled: Boolean,
     ) {
         if (cancelled) {
@@ -301,7 +324,10 @@ object CarPlayInputBridge {
             CarPlayRecentsOverlay.open()
             return
         }
-        if (SplitPane.shouldDividerSwapOnUp(wasDragging, false, heldMs, dist, DRAG_SLOP, ratioDelta)) {
+        // Tap-to-swap only from the three-dot grip — seam ends must not swap.
+        if (downOnGrip &&
+            SplitPane.shouldDividerSwapOnUp(wasDragging, false, heldMs, dist, DRAG_SLOP, ratioDelta)
+        ) {
             performSwap()
             return
         }
