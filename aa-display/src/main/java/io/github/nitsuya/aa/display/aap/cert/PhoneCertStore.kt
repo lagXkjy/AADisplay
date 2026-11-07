@@ -358,10 +358,10 @@ object PhoneCertStore {
         return "-----BEGIN $label-----\n$body\n-----END $label-----\n"
     }
 
-    private fun formatDate(d: Date?): String {
+    fun formatDate(d: Date?): String {
         if (d == null) return "?"
-        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-        fmt.timeZone = TimeZone.getTimeZone("UTC")
+        val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+        fmt.timeZone = TimeZone.getTimeZone("GMT+08:00")
         return fmt.format(d)
     }
 }

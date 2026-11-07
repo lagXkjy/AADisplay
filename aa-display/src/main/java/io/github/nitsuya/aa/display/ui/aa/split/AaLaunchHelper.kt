@@ -39,11 +39,18 @@ internal object AaLaunchHelper {
                         if (addLauncherCategory) {
                             addCategory(Intent.CATEGORY_LAUNCHER)
                         }
+                        // EXCLUDE_FROM_RECENTS: VD launches must not enter the phone Recent/
+                        // "tombstone" list. Without it, MULTIPLE_TASK cold launches + Delay
+                        // Destroy forceStop leave empty Activities=[] shells that stack up
+                        // (Douyin/Amap ×N) even though only one live root remains on the VD.
                         flags = when (mode) {
-                            Mode.COLD -> Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                            Mode.COLD -> Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
                             Mode.REORDER -> Intent.FLAG_ACTIVITY_NEW_TASK or
                                 Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                                Intent.FLAG_ACTIVITY_SINGLE_TOP
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
                         }
                     },
                     android.app.ActivityOptions.makeBasic().apply {

@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
+import android.app.ActivityManager
 import android.app.ActivityTaskManager
 import android.content.ComponentName
 import android.content.Intent
@@ -315,6 +316,9 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             if (displayId == Display.INVALID_DISPLAY) continue
             removePackageTasksOnDisplay(packageName, displayId)
         }
+        // Display-tree scan misses recents-only shells (Activities=[], not on any root stack).
+        // Those are what fill the phone Recent/tombstone list after MULTIPLE_TASK + forceStop.
+        removeRecentTasksForPackage(packageName, emptyOnly = true)
     }
 
     fun removePackageTasksOnDisplay(packageName: String, displayId: Int) {
@@ -326,6 +330,64 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         tasks.filter { taskInfoMatchesPackage(it, packageName, requireTop = false) }.forEach { task ->
             tryOrNull { Instances.iActivityTaskManager.removeTask(task.taskId) }
         }
+    }
+
+    /**
+     * Remove Recent-list entries for [packageName].
+     * @param emptyOnly when true, only Activities=[] / not-running shells (safe before relaunch);
+     *   when false, also drop still-listed live entries (Delay Destroy teardown).
+     */
+    fun removeRecentTasksForPackage(packageName: String, emptyOnly: Boolean) {
+        val pkg = packageName.trim().takeIf { it.isNotEmpty() } ?: return
+        if (SplitChromePackages.BOUNCE_EXCLUDED.contains(pkg)) return
+        val recents = tryOrNull {
+            @Suppress("DEPRECATION")
+            Instances.activityManager.getRecentTasks(
+                100,
+                ActivityManager.RECENT_WITH_EXCLUDED,
+            )
+        }.orEmpty()
+        var removed = 0
+        for (info in recents) {
+            val recentPkg = recentTaskPackage(info) ?: continue
+            if (recentPkg != pkg) continue
+            if (emptyOnly && !isEmptyRecentShell(info)) continue
+            val taskId = when {
+                info.taskId > 0 -> info.taskId
+                info.persistentId > 0 -> info.persistentId
+                info.id > 0 -> info.id
+                else -> continue
+            }
+            tryOrNull { Instances.iActivityTaskManager.removeTask(taskId) }
+            removed++
+        }
+        if (removed > 0) {
+            logDebug(
+                SplitDisplayController.TAG,
+                "removeRecentTasks pkg=$pkg emptyOnly=$emptyOnly removed=$removed",
+            )
+        }
+    }
+
+    /** Sweep empty Recent shells for every tracked VD package (post-forceStop safety net). */
+    fun sweepEmptyRecentShells(packages: Collection<String>) {
+        for (pkg in packages) {
+            removeRecentTasksForPackage(pkg, emptyOnly = true)
+        }
+    }
+
+    private fun recentTaskPackage(info: ActivityManager.RecentTaskInfo): String? {
+        info.topActivity?.packageName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        info.baseActivity?.packageName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        info.origActivity?.packageName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        info.baseIntent?.component?.packageName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        return info.baseIntent?.`package`?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun isEmptyRecentShell(info: ActivityManager.RecentTaskInfo): Boolean {
+        if (info.numActivities <= 0) return true
+        if (!info.isRunning && info.topActivity == null) return true
+        return false
     }
 
     fun findPackageForTask(taskId: Int): String? {

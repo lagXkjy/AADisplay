@@ -691,17 +691,26 @@ class SplitDisplayController(
                 }
             }
         }
-        mTrackedPackageUsers
-            .filterKeys { it.isNotBlank() && !protectedPackages.contains(it) }
-            .forEach { (pkg, userIds) ->
-                userIds.ifEmpty { mutableSetOf(0) }.forEach { userId ->
-                    try {
-                        Instances.activityManagerHidden.forceStopPackageAsUser(pkg, userId)
-                    } catch (e: Throwable) {
-                        log(TAG, "forceStop failed: $pkg", e)
-                    }
+        // Drop Recent-list entries (including empty shells) BEFORE forceStop. forceStop alone
+        // clears Activities but leaves type=undefined sz=0 tombstones on Samsung Recents.
+        val trackedPkgs = mTrackedPackageUsers.keys
+            .filter { it.isNotBlank() && !protectedPackages.contains(it) }
+        for (pkg in trackedPkgs) {
+            ownership.removePackageTasksEverywhere(pkg)
+            ownership.removeRecentTasksForPackage(pkg, emptyOnly = false)
+        }
+        trackedPkgs.forEach { pkg ->
+            val userIds = mTrackedPackageUsers[pkg].orEmpty().ifEmpty { setOf(0) }
+            userIds.forEach { userId ->
+                try {
+                    Instances.activityManagerHidden.forceStopPackageAsUser(pkg, userId)
+                } catch (e: Throwable) {
+                    log(TAG, "forceStop failed: $pkg", e)
                 }
             }
+        }
+        // forceStop can still mint empty Recent shells for any task removeTask missed.
+        ownership.sweepEmptyRecentShells(trackedPkgs)
         mTrackedPackageUsers.clear()
 
         tryOrNull { mPrimary?.release() }

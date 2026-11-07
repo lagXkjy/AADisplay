@@ -95,7 +95,7 @@ object AaCertSettingsUi {
             }
             if (st.notAfter != null) {
                 append("\n可用至 ")
-                append(st.notAfter)
+                append(PhoneCertStore.formatDate(st.notAfter))
             }
             if (st.hasCarService) {
                 append("\n更新 Android Auto 后会自动重新准备；卸掉应用也不影响已准备好的连车信息。")

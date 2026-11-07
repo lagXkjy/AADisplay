@@ -37,6 +37,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
                 val onError = getColor(R.color.color_on_error)
                 baseBinding.tvActive.setTextColor(onError)
                 baseBinding.tvVersion.setTextColor(onError)
+                baseBinding.systemVersion.setTextColor(onError)
             }
 
             BuildConfig.BUILD_TIME -> {
