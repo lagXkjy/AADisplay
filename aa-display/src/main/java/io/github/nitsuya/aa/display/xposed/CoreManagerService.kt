@@ -532,6 +532,20 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun getBuildTime(): Long = BuildConfig.BUILD_TIME
 
+    /**
+     * Client binders die when the app process is killed mid-create/reconnect (USB accessory
+     * rebind, LMK, etc.). [DeadObjectException] must never escape onto system_server main —
+     * Samsung treats that as soft reboot (`P|EX`).
+     */
+    private fun notifyDisplayAvailable(
+        listener: IVirtualDisplayCreatedListener,
+        displayId: Int,
+        create: Boolean,
+    ) {
+        runCatching { listener.onAvailableDisplay(displayId, create) }
+            .onFailure { log(TAG, "onAvailableDisplay dropped (client dead) id=$displayId create=$create", it) }
+    }
+
     override fun onCreateSplitDisplay(
         width: Int,
         height: Int,
@@ -574,7 +588,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 mSessionPolicy?.keepVirtualDisplayAwake("soft-reconnect")
                 // Controller retains live ratio across Delay Destroy; AA echo may lag
                 // LastSplitStore — UI reconciles via SPLIT_STATE_CHANGED.
-                listener.onAvailableDisplay(primaryDisplayId, false)
+                notifyDisplayAvailable(listener, primaryDisplayId, create = false)
                 return@runMain
             }
             if (mDisplayCreateInProgress) {
@@ -594,7 +608,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                         primarySurface,
                         secondarySurface,
                     ) { displayId ->
-                        listener.onAvailableDisplay(displayId, true)
+                        notifyDisplayAvailable(listener, displayId, create = true)
                         ClusterLyricMirror.onAaConnected()
                         // Session policy (delay-destroy / keep-awake) after first frame callback.
                         runMain {

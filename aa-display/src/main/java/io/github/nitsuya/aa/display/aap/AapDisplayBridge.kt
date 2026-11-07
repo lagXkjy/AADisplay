@@ -58,9 +58,17 @@ class AapDisplayBridge(
             onStatus("画面已打开")
             compositor?.primarySurface()?.let { CoreApi.setPaneSurface(SplitPane.PRIMARY, it) }
             compositor?.secondarySurface()?.let { CoreApi.setPaneSurface(SplitPane.SECONDARY, it) }
-            if (create) maybeLaunchDefaults()
+            if (create) {
+                maybeLaunchDefaults()
+                // restoreLastSplit applies fullscreen *after* this callback; without a
+                // delayed CoreApi pull the GL compositor keeps drawing split strips over
+                // two full-size VDs (Douyin pillarbox squashed into a thin right strip).
+                scheduleSyncBridgeLayoutFromCore()
+            }
         }
     }
+
+    private val syncBridgeLayoutRunnable = Runnable { syncBridgeLayoutFromCore() }
 
     val videoWidth: Int get() = width
     val videoHeight: Int get() = height
@@ -148,17 +156,28 @@ class AapDisplayBridge(
         CarPlayImeChip.bind(context)
         CarPlayInputBridge.shellWidthPx = contentW
         CarPlayInputBridge.shellHeightPx = contentH
-        val ratio = resolveRatio()
-        val gap = SplitPane.dividerPx(dpi)
-        val usable = (contentW - gap).coerceAtLeast(2)
-        val left = (usable * ratio).toInt().coerceAtLeast(1)
-        val right = (usable - left).coerceAtLeast(1)
-        gl.syncPaneBuffers(left, right, contentH)
+        val snap = loadSnapshot()
+        val ratio = (snap?.primaryRatio ?: 0.5f).coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+        CarPlayInputBridge.primaryRatio = ratio
+        // Mirror CarPlayHostRuntime: seed Host GL fullscreen from snapshot so restore
+        // cannot leave dual full buffers composited as split (black gutters / thin video).
+        val fs = snap?.fullscreenPane?.takeIf { SplitPane.isFullscreenPane(it) }
+            ?: SplitPane.FULLSCREEN_NONE
+        CarPlayInputBridge.fullscreenPane = fs
+        if (SplitPane.isFullscreenPane(fs)) {
+            gl.syncPaneBuffers(contentW, contentW, contentH)
+        } else {
+            val gap = SplitPane.dividerPx(dpi)
+            val usable = (contentW - gap).coerceAtLeast(2)
+            val left = (usable * ratio).toInt().coerceAtLeast(1)
+            val right = (usable - left).coerceAtLeast(1)
+            gl.syncPaneBuffers(left, right, contentH)
+        }
         ensureEncoderAttached()
         Log.i(
             AapConsts.TAG,
             "AapDisplayBridge content=${contentW}x$contentH inset=${insetX}x$insetY " +
-                "encode=${width}x$height dpi=$dpi",
+                "encode=${width}x$height dpi=$dpi ratio=$ratio fullscreen=$fs",
         )
         try {
             CoreApi.onCreateSplitDisplay(contentW, contentH, dpi, ratio, primary, secondary, vdListener)
@@ -178,17 +197,42 @@ class AapDisplayBridge(
         encoder.requestKeyFrame()
     }
 
-    private fun resolveRatio(): Float {
-        val snap = runCatching { LastSplitStore.load(context.contentResolver) }.getOrNull()
-        val r = snap?.primaryRatio ?: 0.5f
-        return r.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+    private fun loadSnapshot(): LastSplitStore.Snapshot? =
+        runCatching {
+            LastSplitStore.invalidateCache()
+            LastSplitStore.load(context.contentResolver)
+        }.getOrNull()
+
+    private fun scheduleSyncBridgeLayoutFromCore() {
+        main.removeCallbacks(syncBridgeLayoutRunnable)
+        // Immediate + post-restore: system_server restoreLastSplit runs after VD ready.
+        main.post(syncBridgeLayoutRunnable)
+        main.postDelayed(syncBridgeLayoutRunnable, 400L)
+        main.postDelayed(syncBridgeLayoutRunnable, 1200L)
+    }
+
+    private fun syncBridgeLayoutFromCore() {
+        if (!running.get()) return
+        val ratio = runCatching { CoreApi.getSplitRatio() }.getOrNull()
+            ?.takeIf { it > 0f }
+            ?.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+        if (ratio != null) {
+            CarPlayInputBridge.primaryRatio = ratio
+        }
+        val fs = runCatching { CoreApi.getSplitFullscreenPane() }.getOrNull()
+            ?: return
+        if (CarPlayInputBridge.fullscreenPane != fs) {
+            Log.i(AapConsts.TAG, "AapDisplayBridge sync fullscreen $fs (was ${CarPlayInputBridge.fullscreenPane})")
+        }
+        CarPlayInputBridge.fullscreenPane = fs
     }
 
     private fun maybeLaunchDefaults() {
         main.postDelayed({
             if (!running.get()) return@postDelayed
+            syncBridgeLayoutFromCore()
             runCatching {
-                val snap = LastSplitStore.load(context.contentResolver)
+                val snap = loadSnapshot()
                 snap?.primaryPackage?.takeIf { it.isNotBlank() }?.let {
                     CoreApi.startActivityOnPane(it, 0, SplitPane.PRIMARY)
                 }
@@ -202,6 +246,7 @@ class AapDisplayBridge(
     private fun tearDown(reason: String) {
         if (!running.getAndSet(false) && compositor == null) return
         Log.i(AapConsts.TAG, "AapDisplayBridge tearDown $reason")
+        main.removeCallbacks(syncBridgeLayoutRunnable)
         video = null
         runCatching { CoreApi.setPaneSurface(SplitPane.PRIMARY, null) }
         runCatching { CoreApi.setPaneSurface(SplitPane.SECONDARY, null) }
@@ -210,6 +255,7 @@ class AapDisplayBridge(
         compositor = null
         encoder.stop()
         displayId = Display.INVALID_DISPLAY
+        CarPlayInputBridge.fullscreenPane = SplitPane.FULLSCREEN_NONE
         CarPlayAppPickerOverlay.close()
         CarPlayAppPickerOverlay.unbind()
         CarPlayImeChip.unbind()

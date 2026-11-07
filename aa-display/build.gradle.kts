@@ -118,8 +118,6 @@ configurations.all {
 dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
-    implementation("androidx.constraintlayout:constraintlayout:2.2.1")
-    implementation("androidx.recyclerview:recyclerview:1.4.0")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     // Ed25519 / X25519 for AirPlay pair-setup/verify — matching DiPlay (Samsung API 33

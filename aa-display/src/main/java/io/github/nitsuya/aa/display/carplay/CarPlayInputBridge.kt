@@ -1,5 +1,7 @@
 package io.github.nitsuya.aa.display.carplay
 
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
@@ -13,6 +15,13 @@ import kotlin.math.abs
  * Host chrome (divider / peel / Recents / picker) handles first; remaining touches
  * land on the pane VirtualDisplay that owns the touched half ([CoreApi.touchPane]),
  * re-normalized into that pane's pixel space.
+ *
+ * Split seam hit policy (side-by-side):
+ * - Three-dot grip → chrome immediately (tap-swap / drag / long-press Recents).
+ * - Expanded seam band outside the grip → pane first; chrome steals only after
+ *   horizontal drag slop or long-press. Otherwise short taps on left-pane
+ *   top-right / right-pane top-left (app chrome near the seam) were swallowed
+ *   with a no-op restore of [primaryRatio].
  */
 object CarPlayInputBridge {
     @Volatile
@@ -50,6 +59,9 @@ object CarPlayInputBridge {
     /** Normalized move slop before a press becomes a drag (~AA touchSlop × 2). */
     private const val DRAG_SLOP = 0.02f
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val seamLongPressRunnable = Runnable { onSeamLongPress() }
+
     @Volatile
     private var chromeArmed = false
     @Volatile
@@ -57,8 +69,19 @@ object CarPlayInputBridge {
     /** DOWN landed on the three-dot grip — only then may UP tap-swap. */
     @Volatile
     private var chromeDownOnGrip = false
+    /**
+     * Non-grip seam DOWN: pane owns the pointer until drag / long-press steals.
+     * Cleared on UP/CANCEL or when chrome takes over.
+     */
+    @Volatile
+    private var seamPending = false
+    /** Long-press timer stole from the pane; UP should open Recents. */
+    @Volatile
+    private var seamLongPressFired = false
     @Volatile
     private var chromeDownX = 0f
+    @Volatile
+    private var chromeDownY = 0f
     @Volatile
     private var chromeDownAt = 0L
     @Volatile
@@ -75,6 +98,12 @@ object CarPlayInputBridge {
     private var paneDownPane = SplitPane.PRIMARY
     @Volatile
     private var paneMoved = false
+    /**
+     * DOWN landed in the non-grip seam band ([seamPending]). Empty-pane picker must
+     * not fire on that gesture — aborted divider drags were opening the picker.
+     */
+    @Volatile
+    private var paneEmptyPickerSuppressed = false
     @Volatile
     private var imeChipArmed = false
 
@@ -146,7 +175,7 @@ object CarPlayInputBridge {
     /**
      * Side-by-side seam only: AA thickness ([SplitPane.DIVIDER_DP] + expand) and
      * [SplitPane.DIVIDER_TOUCH_END_INSET_DP] dead zones at the top and bottom.
-     * Arms drag / long-press Recent. Tap-to-swap also needs [dividerGripHit].
+     * Grip → chrome immediately. Non-grip expand band → [seamPending] (pane first).
      * Ends return false so the pane still receives the touch.
      */
     private fun dividerSeamHit(xNorm: Float, yNorm: Float): Boolean {
@@ -218,41 +247,85 @@ object CarPlayInputBridge {
         val inFullscreen = SplitPane.isFullscreenPane(fs)
         when (action) {
             MotionEvent.ACTION_DOWN -> {
-                chromeArmed = if (inFullscreen) {
-                    x < PEEL_ZONE
-                } else {
-                    dividerSeamHit(x, y)
+                clearSeamPending(cancelPane = false)
+                chromeDragging = false
+                peelPreviewActive = false
+                seamLongPressFired = false
+                chromeDownX = x
+                chromeDownY = y
+                chromeDownAt = SystemClock.uptimeMillis()
+                ratioAtDown = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+
+                if (inFullscreen) {
+                    chromeArmed = x < PEEL_ZONE
+                    chromeDownOnGrip = false
+                    if (!chromeArmed) return false
+                    Log.i(
+                        CarPlayConsts.TAG,
+                        "divider arm x=$x y=$y grip=false ratio=$ratioAtDown fs=true",
+                    )
+                    return true
                 }
-                chromeDownOnGrip = !inFullscreen && chromeArmed && dividerGripHit(x, y)
-                if (!chromeArmed) {
-                    if (!inFullscreen) {
-                        val dpi = densityDpi.coerceAtLeast(160)
-                        val half = (SplitPane.DIVIDER_DP / 2f + SplitPane.DIVIDER_TOUCH_EXPAND_DP) *
-                            (dpi / 160f)
-                        val delta = dividerSeamDeltaPx(x)
-                        // Only log near-misses so we can tune hit width without spamming.
-                        if (abs(delta) <= half * 3f) {
-                            Log.i(
-                                CarPlayConsts.TAG,
-                                "divider miss x=$x y=$y deltaPx=$delta half=$half " +
-                                    "ratio=$primaryRatio dpi=$dpi ${shellWidth()}x${shellHeight()}",
-                            )
-                        }
+
+                val onSeam = dividerSeamHit(x, y)
+                val onGrip = onSeam && dividerGripHit(x, y)
+                if (!onSeam) {
+                    chromeArmed = false
+                    chromeDownOnGrip = false
+                    val dpi = densityDpi.coerceAtLeast(160)
+                    val half = (SplitPane.DIVIDER_DP / 2f + SplitPane.DIVIDER_TOUCH_EXPAND_DP) *
+                        (dpi / 160f)
+                    val delta = dividerSeamDeltaPx(x)
+                    // Only log near-misses so we can tune hit width without spamming.
+                    if (abs(delta) <= half * 3f) {
+                        Log.i(
+                            CarPlayConsts.TAG,
+                            "divider miss x=$x y=$y deltaPx=$delta half=$half " +
+                                "ratio=$primaryRatio dpi=$dpi ${shellWidth()}x${shellHeight()}",
+                        )
                     }
                     return false
                 }
-                chromeDragging = false
-                peelPreviewActive = false
-                chromeDownX = x
-                chromeDownAt = SystemClock.uptimeMillis()
-                ratioAtDown = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+
+                if (onGrip) {
+                    // Grip: chrome owns immediately (tap-swap / drag / long-press).
+                    chromeArmed = true
+                    chromeDownOnGrip = true
+                    Log.i(
+                        CarPlayConsts.TAG,
+                        "divider arm x=$x y=$y grip=true ratio=$ratioAtDown fs=false",
+                    )
+                    return true
+                }
+
+                // Expanded seam outside grip: pane gets the tap; steal on drag / long-press.
+                chromeArmed = false
+                chromeDownOnGrip = false
+                seamPending = true
+                mainHandler.removeCallbacks(seamLongPressRunnable)
+                mainHandler.postDelayed(
+                    seamLongPressRunnable,
+                    SplitPane.DIVIDER_TAP_STACK_MIN_MS,
+                )
                 Log.i(
                     CarPlayConsts.TAG,
-                    "divider arm x=$x y=$y grip=$chromeDownOnGrip ratio=$ratioAtDown fs=$inFullscreen",
+                    "divider seam pending→pane x=$x y=$y ratio=$ratioAtDown",
                 )
-                return true
+                return false
             }
             MotionEvent.ACTION_MOVE -> {
+                if (seamPending) {
+                    val heldMs = SystemClock.uptimeMillis() - chromeDownAt
+                    val dist = abs(x - chromeDownX)
+                    if (SplitPane.shouldBeginDividerDrag(
+                            dist, DRAG_SLOP, seamLongPressFired, heldMs,
+                        )
+                    ) {
+                        stealSeamToChrome(startDrag = true, x = x)
+                        return true
+                    }
+                    return false
+                }
                 if (!chromeArmed) return false
                 val heldMs = SystemClock.uptimeMillis() - chromeDownAt
                 val dist = abs(x - chromeDownX)
@@ -279,6 +352,11 @@ object CarPlayInputBridge {
             }
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_CANCEL -> {
+                if (seamPending) {
+                    // Short tap / scroll stayed with the pane — do not consume UP.
+                    clearSeamPending(cancelPane = false)
+                    return false
+                }
                 if (!chromeArmed) return false
                 chromeArmed = false
                 val heldMs = SystemClock.uptimeMillis() - chromeDownAt
@@ -286,8 +364,10 @@ object CarPlayInputBridge {
                 val ratioDelta = abs(x - ratioAtDown)
                 val wasDragging = chromeDragging
                 val downOnGrip = chromeDownOnGrip
+                val longPress = seamLongPressFired
                 chromeDragging = false
                 chromeDownOnGrip = false
+                seamLongPressFired = false
                 peelPreviewActive = false
 
                 if (inFullscreen) {
@@ -296,11 +376,58 @@ object CarPlayInputBridge {
                     handleDividerUp(
                         x, heldMs, dist, ratioDelta, wasDragging, downOnGrip,
                         action == MotionEvent.ACTION_CANCEL,
+                        longPressFired = longPress,
                     )
                 }
                 return true
             }
-            else -> return chromeArmed
+            else -> return chromeArmed || seamPending
+        }
+    }
+
+    /** Long-press on non-grip seam: cancel the pane pointer and let chrome own UP → Recents. */
+    private fun onSeamLongPress() {
+        if (!seamPending) return
+        stealSeamToChrome(startDrag = false, x = chromeDownX)
+        seamLongPressFired = true
+        Log.i(CarPlayConsts.TAG, "divider seam long-press steal x=$chromeDownX y=$chromeDownY")
+    }
+
+    /**
+     * Take the pointer from the pane for divider drag / long-press Recents.
+     * Sends [MotionEvent.ACTION_CANCEL] so the app does not keep a stuck DOWN.
+     */
+    private fun stealSeamToChrome(startDrag: Boolean, x: Float) {
+        mainHandler.removeCallbacks(seamLongPressRunnable)
+        if (seamPending) {
+            seamPending = false
+            cancelPanePointer()
+        }
+        chromeArmed = true
+        chromeDownOnGrip = false
+        peelPreviewActive = false
+        if (startDrag) {
+            chromeDragging = true
+            previewRatio(x)
+            Log.i(CarPlayConsts.TAG, "divider seam drag steal x=$x")
+        }
+    }
+
+    private fun clearSeamPending(cancelPane: Boolean) {
+        mainHandler.removeCallbacks(seamLongPressRunnable)
+        if (!seamPending) return
+        seamPending = false
+        if (cancelPane) cancelPanePointer()
+    }
+
+    /** Cancel the in-flight pane gesture at the last DOWN point. */
+    private fun cancelPanePointer() {
+        val w = shellWidthPx.coerceAtLeast(1)
+        val h = shellHeightPx.coerceAtLeast(1)
+        try {
+            routeToPane(paneDownX, paneDownY, MotionEvent.ACTION_CANCEL, w, h)
+        } catch (e: Throwable) {
+            Log.w(CarPlayConsts.TAG, "cancel pane after seam steal failed", e)
         }
     }
 
@@ -312,13 +439,17 @@ object CarPlayInputBridge {
         wasDragging: Boolean,
         downOnGrip: Boolean,
         cancelled: Boolean,
+        longPressFired: Boolean = false,
     ) {
         if (cancelled) {
             primaryRatio = ratioAtDown
             return
         }
-        if (SplitPane.qualifiesDividerLongPress(false, heldMs) &&
-            SplitPane.qualifiesDividerRecentOnUp(true, wasDragging, dist, DRAG_SLOP, ratioDelta)
+        if (SplitPane.qualifiesDividerLongPress(longPressFired, heldMs) &&
+            SplitPane.qualifiesDividerRecentOnUp(
+                longPressFired || heldMs >= SplitPane.DIVIDER_TAP_STACK_MIN_MS,
+                wasDragging, dist, DRAG_SLOP, ratioDelta,
+            )
         ) {
             primaryRatio = ratioAtDown
             CarPlayRecentsOverlay.open()
@@ -456,6 +587,8 @@ object CarPlayInputBridge {
      * Splits the full CarPlay image at [primaryRatio]: left half → PRIMARY pane VD,
      * right half → SECONDARY pane VD, each in its own display pixel space.
      * Short tap on an empty pane opens the app picker (AA empty-pane parity).
+     * HU digitizers often omit MOVE and only jump DOWN→UP — displacement is
+     * checked on UP so a drag is not mistaken for a tap.
      */
     private fun routeToPane(xNorm: Float, yNorm: Float, action: Int, w: Int, h: Int): Boolean {
         val fs = fullscreenPane
@@ -482,6 +615,8 @@ object CarPlayInputBridge {
                 paneDownAt = SystemClock.uptimeMillis()
                 paneDownPane = pane
                 paneMoved = false
+                // handleChrome may have armed seamPending just before this DOWN.
+                paneEmptyPickerSuppressed = seamPending
             }
             MotionEvent.ACTION_MOVE -> {
                 if (abs(xNorm - paneDownX) > DRAG_SLOP || abs(yNorm - paneDownY) > DRAG_SLOP) {
@@ -489,8 +624,15 @@ object CarPlayInputBridge {
                 }
             }
             MotionEvent.ACTION_UP -> {
+                // Cars often skip MOVE; treat DOWN→UP jump as a drag.
+                if (abs(xNorm - paneDownX) > DRAG_SLOP || abs(yNorm - paneDownY) > DRAG_SLOP) {
+                    paneMoved = true
+                }
                 val heldMs = SystemClock.uptimeMillis() - paneDownAt
-                if (!paneMoved && heldMs <= SplitPane.DIVIDER_TAP_SWAP_MAX_MS) {
+                if (!paneMoved &&
+                    !paneEmptyPickerSuppressed &&
+                    heldMs <= SplitPane.DIVIDER_TAP_SWAP_MAX_MS
+                ) {
                     val empty = try {
                         CoreApi.getPanePackage(paneDownPane).isNullOrEmpty()
                     } catch (_: Throwable) {
@@ -501,6 +643,10 @@ object CarPlayInputBridge {
                         return true
                     }
                 }
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                paneMoved = true
+                paneEmptyPickerSuppressed = true
             }
             else -> Unit
         }

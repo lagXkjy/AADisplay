@@ -4,6 +4,9 @@
 
 versionCode **10000** / versionName **1.0**。主版本升至 **1.0**：原生 AAP + 无线 CarPlay 双轨为正式出口；不再绑定 AA/gearhead 版本号；Google gearhead 投影硬下线。
 
+- **AAP 恢复全屏分屏错位：** `restoreLastSplit` 把双 VD 拉满后，`AapDisplayBridge` 未同步 `CarPlayInputBridge.fullscreenPane`，GL 仍按分屏条带画两块满缓冲 → 抖音竖视频挤成细条+黑边。对齐 CarPlay Host：快照预置 fullscreen，VD ready 后延迟从 CoreApi 再拉一次。
+- **分屏缝旁点不动（左屏右上 / 右屏左上）：** 分隔条扩区 40dp 在非三点处短按被 chrome 吃掉却 no-op。改为非 grip 先交窗格，仅水平拖/长按再 steal；三点仍即时 swap/拖/Recent。
+- **拖分隔条误开应用选择器：** 车机常省略 MOVE，空窗短按只看 `paneMoved` 会把拖动当点按；UP 补位移判定，缝区 pending / CANCEL 抑制空窗 picker。
 - **分屏条 / 方向盘误交换：** Host 分隔条 tap-swap 仅三点 grip（`isAlongDividerGrip`）；顶/底缝仍可拖比例与长按 Recent。方控 / AAP 媒体键长按阈值 550→900ms，减少误触发交换。
 - **Release AAP 连不上：** R8 混淆 `aap_protobuf` / AARE 字段名 → TLS 后 `PhoneInfo.instanceId_` 反射失败。ProGuard keep `aap_protobuf.**`、`net.prototux.aare.**`、`GeneratedMessageLite`。
 - **AAP 仪表卡缺封面 / 艺术家 / 专辑 / 进度乱：** `AapNowPlaying` 换句只推 `song` 增量，HU 整卡替换后冲掉其余字段并归零时钟。改为每次 metadata 发完整卡（song+artist+album+duration+art），并在换句后立刻补 Store 外推整秒 **+1s** 的 status（对齐 `CLUSTER_LYRIC_CLOCK` T2-A）。

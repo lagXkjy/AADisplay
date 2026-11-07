@@ -8,6 +8,4 @@
     <color name="color_info_card_bg">#FFFFFF</color>
     <color name="color_text_primary">#DE000000</color>
     <color name="color_text_secondary">#99000000</color>
-    <color name="color_divider">#66FFFFFF</color>
-    <color name="color_recent_label">#FFFFFF</color>
 </resources>

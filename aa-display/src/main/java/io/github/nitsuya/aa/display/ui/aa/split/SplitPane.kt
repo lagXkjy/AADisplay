@@ -79,14 +79,16 @@ object SplitPane {
      * touches over adjacent panes (sibling TextureViews would otherwise win).
      * Car HU touch is coarser than phone AA — 40dp keeps the seam grabable on
      * Audi-class digitizers without eating half a pane.
-     * Drag / long-press Recent use this full seam; tap-to-swap is grip-only
-     * ([isAlongDividerGrip]).
+     * Host finger path ([CarPlayInputBridge]): grip → chrome immediately; expand
+     * band outside grip stays with the pane until drag / long-press steals.
+     * Tap-to-swap is grip-only ([isAlongDividerGrip]).
      */
     const val DIVIDER_TOUCH_EXPAND_DP = 40
 
     /**
      * Dead zone at each end of the divider along its long axis (top/bottom when
-     * side-by-side). Keeps pane-corner chrome from arming divider drag.
+     * side-by-side). Keeps the outermost strip from even becoming a seam-pending
+     * candidate (pane gets the touch immediately).
      * Tap-to-swap is independently limited to the three-dot grip.
      */
     const val DIVIDER_TOUCH_END_INSET_DP = 24

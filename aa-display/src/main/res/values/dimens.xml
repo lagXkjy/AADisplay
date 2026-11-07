@@ -1,5 +1,4 @@
 <resources>
     <dimen name="content_padding">24dp</dimen>
     <dimen name="card_corner">12dp</dimen>
-    <dimen name="recent_app_icon_size">72dp</dimen>
 </resources>
