@@ -1,8 +1,8 @@
 # Changelog
 
-## 1.0#17.8 — AAP 主线里程碑（gearhead 硬下线）
+## 1.0 — AAP 主线里程碑（gearhead 硬下线）
 
-versionCode **10000** / versionName **1.0#17.8**。主版本升至 **1.0**：原生 AAP + 无线 CarPlay 双轨为正式出口；Google gearhead 投影硬下线。
+versionCode **10000** / versionName **1.0**。主版本升至 **1.0**：原生 AAP + 无线 CarPlay 双轨为正式出口；不再绑定 AA/gearhead 版本号；Google gearhead 投影硬下线。
 
 - **Release AAP 连不上：** R8 混淆 `aap_protobuf` / AARE 字段名 → TLS 后 `PhoneInfo.instanceId_` 反射失败。ProGuard keep `aap_protobuf.**`、`net.prototux.aare.**`、`GeneratedMessageLite`。
 - **AAP 仪表卡缺封面 / 艺术家 / 专辑 / 进度乱：** `AapNowPlaying` 换句只推 `song` 增量，HU 整卡替换后冲掉其余字段并归零时钟。改为每次 metadata 发完整卡（song+artist+album+duration+art），并在换句后立刻补 Store 外推整秒 **+1s** 的 status（对齐 `CLUSTER_LYRIC_CLOCK` T2-A）。

@@ -15,7 +15,7 @@
 | **Android Auto（AAP）** | 车机支持 Android Auto；手机装过 AA 时**默认**走这条（本模块直接说 AAP，**不依赖** gearhead 钩子；装 AA 主要为了自动提取证书） |
 | **无线 CarPlay** | 车机支持 CarPlay（例如 DiPlay 等盒子）；**手机没装 Android Auto 也能用**。目前只在 **Audi MIB3（3874 / 4026）** 与 **DiPlay** 上测过 |
 
-当前版本：**1.0#17.8** · 更新说明见 [CHANGELOG.md](CHANGELOG.md)
+当前版本：**1.0** · 更新说明见 [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
@@ -243,7 +243,7 @@ export GRADLE_USER_HOME="$HOME/.gradle"
 ./gradlew :aa-display:assembleRelease
 ```
 
-生成的包在：`aa-display/build/outputs/apk/` 下，文件名类似 `aa-display-0.3-17.8-r1.apk`。
+生成的包在：`aa-display/build/outputs/apk/` 下，文件名类似 `aa-display-1.0.apk`。
 
 ---
 

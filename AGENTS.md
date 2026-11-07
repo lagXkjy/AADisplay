@@ -15,7 +15,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | 运行前提 | Root + LSPosed（或兼容 Xposed）；**System Framework 必选**。出口仅 **AAP / CarPlay**（Google gearhead 投屏已下线）。无 gearhead APK 时默认无线 CarPlay |
 | AA 包名 | `com.google.android.projection.gearhead`（可选；**仅** AAP 证书提取；勿再勾 LSPosed gearhead） |
 | 许可证 | GPLv3（见 `LICENSE`） |
-| 版本号 | `1.0#<AA版本>` / 历史 `0.3#…-rN`（以 `aa-display/build.gradle.kts` 的 `versionName` / `versionCode` 为准） |
+| 版本号 | `1.0`（不再绑定 AA/gearhead 版本）；历史曾用 `0.3#…-rN`（以 `aa-display/build.gradle.kts` 为准） |
 
 本仓库 **无 CI、无有效自动化测试**；真机 + LSPosed + Android Auto 联调是主验证方式。
 
