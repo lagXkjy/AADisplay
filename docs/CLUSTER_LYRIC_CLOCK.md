@@ -21,6 +21,7 @@ QQ / 汽水 MediaSession
 ```
 
 时钟 / 换句语义仍可能受车机对 MediaInfo·PlaybackStatus 的处理影响；AAP 侧实现见 `aap/AapNowPlaying.kt`。
+**AAP 约束：** `MediaPlaybackMetadata` 是整卡替换（非 CarPlay 式字段增量）——每次出站须带齐 song/artist/album/duration/album_art，换句后立刻补 `playback_seconds`（Store 外推整秒 +1s）。
 
 ---
 

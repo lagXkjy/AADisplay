@@ -73,10 +73,19 @@ class CarPlayGlCompositor {
 
     private var encodeWidth = CarPlayConsts.ENCODE_WIDTH
     private var encodeHeight = CarPlayConsts.ENCODE_HEIGHT
+    /**
+     * HUIG content rect inside the codec frame (margins cropped by the HU).
+     * VD / chrome / touch use [layoutWidth]×[layoutHeight]; encoder stays full size.
+     */
+    @Volatile private var contentLeft = 0
+    @Volatile private var contentTop = 0
+    @Volatile private var layoutWidth = 0
+    @Volatile private var layoutHeight = 0
     /** Matches [SplitDisplayController.mDensityDpi] so divider / pane strips == VD buffers. */
     @Volatile
     private var densityDpi: Int = 160
     private val paneBufferW = intArrayOf(0, 0)
+    private val paneBufferH = intArrayOf(0, 0)
     private var fps = CarPlayConsts.DEFAULT_VIDEO_FPS
     private var frameIntervalMs = 1_000L / CarPlayConsts.DEFAULT_VIDEO_FPS
     private var frameIndex = 0L
@@ -170,6 +179,7 @@ class CarPlayGlCompositor {
         ready.await(3, TimeUnit.SECONDS)
         bootError?.let { throw it }
         if (!running.get()) return
+        activeInstance = this
         // Do not start the 60 Hz renderTick until [attachEncoder] — Host can warm
         // dual OES panes without burning GPU while waiting for screen SETUP.
         windowStart = SystemClock.uptimeMillis()
@@ -186,6 +196,28 @@ class CarPlayGlCompositor {
     }
 
     fun currentDensityDpi(): Int = densityDpi
+
+    /**
+     * Place dual-pane + chrome inside the HU-visible content rect of the encode
+     * buffer. Pass zeros / full encode size when the HU reports no margins.
+     */
+    fun setContentRect(left: Int, top: Int, width: Int, height: Int) {
+        contentLeft = left.coerceAtLeast(0)
+        contentTop = top.coerceAtLeast(0)
+        layoutWidth = width.coerceAtLeast(0)
+        layoutHeight = height.coerceAtLeast(0)
+        Log.i(
+            CarPlayConsts.TAG,
+            "CarPlayGlCompositor contentRect=${contentLeft},${contentTop} " +
+                "${layoutW()}x${layoutH()} encode=${encodeWidth}x$encodeHeight",
+        )
+    }
+
+    private fun layoutW(): Int =
+        layoutWidth.takeIf { it > 0 }?.coerceAtMost(encodeWidth) ?: encodeWidth
+
+    private fun layoutH(): Int =
+        layoutHeight.takeIf { it > 0 }?.coerceAtMost(encodeHeight) ?: encodeHeight
 
     /**
      * Keep OES [SurfaceTexture] default buffers in lockstep with VD pane sizes after a
@@ -276,6 +308,7 @@ class CarPlayGlCompositor {
 
     fun stop() {
         if (!running.compareAndSet(true, false)) return
+        if (activeInstance === this) activeInstance = null
         val handler = renderHandler
         val thread = renderThread
         if (handler != null) {
@@ -327,6 +360,7 @@ class CarPlayGlCompositor {
             val st = SurfaceTexture(texId)
             st.setDefaultBufferSize(paneWidth, paneHeight)
             paneBufferW[i] = paneWidth
+            paneBufferH[i] = paneHeight
             st.setOnFrameAvailableListener({
                 synchronized(frameAvailable) { frameAvailable[i] = true }
             }, renderHandler)
@@ -340,11 +374,12 @@ class CarPlayGlCompositor {
 
     private fun applyPaneBufferSize(pane: Int, width: Int, height: Int) {
         if (pane !in 0..1) return
-        if (paneBufferW[pane] == width && encodeHeight == height) return
+        if (paneBufferW[pane] == width && paneBufferH[pane] == height) return
         val st = surfaceTextures[pane] ?: return
         try {
             st.setDefaultBufferSize(width, height)
             paneBufferW[pane] = width
+            paneBufferH[pane] = height
             Log.i(
                 CarPlayConsts.TAG,
                 "CarPlayGlCompositor pane[$pane] buffer → ${width}x$height",
@@ -356,7 +391,7 @@ class CarPlayGlCompositor {
 
     /** Same math as [io.github.nitsuya.aa.display.ui.aa.split.SplitVdLifecycle.computePaneSizes]. */
     private fun splitStripSizes(ratio: Float): Pair<Int, Int> {
-        val (left, _, right) = CarPlayChromePainter.splitStrip(encodeWidth, ratio, densityDpi)
+        val (left, _, right) = CarPlayChromePainter.splitStrip(layoutW(), ratio, densityDpi)
         return left to right
     }
 
@@ -443,6 +478,11 @@ class CarPlayGlCompositor {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
+        val ox = contentLeft.coerceIn(0, (encodeWidth - 1).coerceAtLeast(0))
+        val oy = contentTop.coerceIn(0, (encodeHeight - 1).coerceAtLeast(0))
+        val lw = layoutW()
+        val lh = layoutH()
+
         val fs = CarPlayInputBridge.fullscreenPane
         val seamX: Int
         val chromeFullscreen: Boolean
@@ -451,22 +491,22 @@ class CarPlayGlCompositor {
             // Do not scale into strips (that is split-mode preview).
             val ratio = CarPlayInputBridge.primaryRatio.coerceIn(0f, 1f)
             val gap = SplitPane.dividerPx(densityDpi)
-            val usable = (encodeWidth - gap).coerceAtLeast(2)
+            val usable = (lw - gap).coerceAtLeast(2)
             val leftW = (usable * ratio).toInt().coerceIn(0, usable)
             val rightW = (usable - leftW).coerceAtLeast(0)
-            applyPaneBufferSize(0, encodeWidth, encodeHeight)
-            applyPaneBufferSize(1, encodeWidth, encodeHeight)
-            drawPeelClipPreview(leftW, gap, rightW)
+            applyPaneBufferSize(0, lw, lh)
+            applyPaneBufferSize(1, lw, lh)
+            drawPeelClipPreview(ox, oy, lw, lh, leftW, gap, rightW)
             seamX = leftW + gap / 2
             // Morph peel tab → full split seam while dragging (AA setPeelDragSplitVisual).
             chromeFullscreen = false
         } else if (SplitPane.isFullscreenPane(fs)) {
             // Both VDs stay full-size while fullscreen (AA dual full buffers) so peel
             // can reveal the buried pane without a first-frame buffer resize flash.
-            applyPaneBufferSize(0, encodeWidth, encodeHeight)
-            applyPaneBufferSize(1, encodeWidth, encodeHeight)
+            applyPaneBufferSize(0, lw, lh)
+            applyPaneBufferSize(1, lw, lh)
             val paneIdx = if (fs == SplitPane.PRIMARY) 0 else 1
-            drawPane(paneIdx, 0, 0, encodeWidth, encodeHeight)
+            drawPane(paneIdx, ox, oy, lw, lh)
             seamX = -1
             chromeFullscreen = true
         } else {
@@ -474,14 +514,14 @@ class CarPlayGlCompositor {
             val gap = SplitPane.dividerPx(densityDpi)
             val (leftW, rightW) = splitStripSizes(ratio)
             // Keep ST buffers == VD pane sizes (grow/shrink) every frame is cheap (no-op if same).
-            applyPaneBufferSize(0, leftW, encodeHeight)
-            applyPaneBufferSize(1, rightW, encodeHeight)
-            drawPane(0, 0, 0, leftW, encodeHeight)
-            drawPane(1, leftW + gap, 0, rightW, encodeHeight)
+            applyPaneBufferSize(0, leftW, lh)
+            applyPaneBufferSize(1, rightW, lh)
+            drawPane(0, ox, oy, leftW, lh)
+            drawPane(1, ox + leftW + gap, oy, rightW, lh)
             seamX = leftW + gap / 2
             chromeFullscreen = false
         }
-        drawChromeLayer(seamX, chromeFullscreen)
+        drawChromeLayer(seamX, chromeFullscreen, ox, oy, lw, lh)
 
         // Shared media clock (not frameIndex): audio RTP uses the same epoch so DiPlay
         // can keep lip-sync when audio SETUP starts after the encoder is already running.
@@ -495,22 +535,32 @@ class CarPlayGlCompositor {
     }
 
     /**
-     * Fullscreen peel drag preview: draw both panes at full encode size and
+     * Fullscreen peel drag preview: draw both panes at content size and
      * scissor to L/R strips (Host peel preview).
      * Window scissor origin is bottom-left.
      */
-    private fun drawPeelClipPreview(leftW: Int, gap: Int, rightW: Int) {
+    private fun drawPeelClipPreview(
+        ox: Int,
+        oy: Int,
+        lw: Int,
+        lh: Int,
+        leftW: Int,
+        gap: Int,
+        rightW: Int,
+    ) {
+        // Buffer Y grows down; GL scissor Y grows up from the bottom of the encode frame.
+        val scissorY = (encodeHeight - oy - lh).coerceAtLeast(0)
         GLES20.glEnable(GLES20.GL_SCISSOR_TEST)
         if (leftW > 0) {
-            GLES20.glScissor(0, 0, leftW, encodeHeight)
-            drawPane(0, 0, 0, encodeWidth, encodeHeight)
+            GLES20.glScissor(ox, scissorY, leftW, lh)
+            drawPane(0, ox, oy, lw, lh)
         }
         if (rightW > 0) {
-            val x = (leftW + gap).coerceAtMost(encodeWidth)
-            val w = rightW.coerceAtMost((encodeWidth - x).coerceAtLeast(0))
+            val x = (ox + leftW + gap).coerceAtMost(ox + lw)
+            val w = rightW.coerceAtMost((ox + lw - x).coerceAtLeast(0))
             if (w > 0) {
-                GLES20.glScissor(x, 0, w, encodeHeight)
-                drawPane(1, 0, 0, encodeWidth, encodeHeight)
+                GLES20.glScissor(x, scissorY, w, lh)
+                drawPane(1, ox, oy, lw, lh)
             }
         }
         GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
@@ -524,11 +574,11 @@ class CarPlayGlCompositor {
         // flipV here inverted apps on DiPlay while Canvas chrome/picker stayed mismatched.
         st.getTransformMatrix(texMatrix)
 
-        // NDC viewport for this pane strip.
+        // NDC for this pane strip inside the full encode frame (Y: buffer-top → NDC +1).
         val left = (x.toFloat() / encodeWidth) * 2f - 1f
         val right = ((x + w).toFloat() / encodeWidth) * 2f - 1f
-        val bottom = -1f
-        val top = 1f
+        val top = 1f - (y.toFloat() / encodeHeight) * 2f
+        val bottom = 1f - ((y + h).toFloat() / encodeHeight) * 2f
         Matrix.setIdentityM(mvpMatrix, 0)
         // Scale+translate unit quad (-1..1) into pane NDC.
         val sx = (right - left) / 2f
@@ -557,24 +607,34 @@ class CarPlayGlCompositor {
 
     /**
      * Divider / peel (always) + Recents / picker overlays into one Canvas texture.
-     * [seamX] &lt; 0 means fullscreen peel mode.
+     * [seamX] is local to the content rect; &lt; 0 means fullscreen peel mode.
+     * Drawn into the content rect of the encode frame so HU margin crop keeps chrome aligned.
      */
-    private fun drawChromeLayer(seamX: Int, fullscreen: Boolean) {
+    private fun drawChromeLayer(
+        seamX: Int,
+        fullscreen: Boolean,
+        ox: Int,
+        oy: Int,
+        lw: Int,
+        lh: Int,
+    ) {
         val showPicker = CarPlayAppPickerOverlay.isVisible()
         val showRecents = CarPlayRecentsOverlay.isVisible()
         val bmp = ensureOverlayBitmap()
         val canvas = Canvas(bmp)
         canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+        canvas.save()
+        canvas.translate(ox.toFloat(), oy.toFloat())
         if (fullscreen) {
-            CarPlayChromePainter.drawPeelTab(canvas, encodeWidth, encodeHeight)
+            CarPlayChromePainter.drawPeelTab(canvas, lw, lh)
         } else if (seamX >= 0) {
-            CarPlayChromePainter.drawSplitDivider(canvas, encodeWidth, encodeHeight, seamX)
+            CarPlayChromePainter.drawSplitDivider(canvas, lw, lh, seamX)
         }
         if (!showRecents && !showPicker && SplitPane.isValid(CarPlayImeChip.pane)) {
             if (CarPlayChromePainter.layoutHideImeChip(
                     imeChipLayout,
-                    encodeWidth,
-                    encodeHeight,
+                    lw,
+                    lh,
                     densityDpi,
                     CarPlayImeChip.pane,
                     fullscreen,
@@ -591,11 +651,12 @@ class CarPlayGlCompositor {
             }
         }
         if (showRecents) {
-            CarPlayRecentsOverlay.draw(canvas, encodeWidth, encodeHeight)
+            CarPlayRecentsOverlay.draw(canvas, lw, lh)
         }
         if (showPicker) {
-            CarPlayAppPickerOverlay.draw(canvas, encodeWidth, encodeHeight)
+            CarPlayAppPickerOverlay.draw(canvas, lw, lh)
         }
+        canvas.restore()
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTexId)
         android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
 
@@ -655,6 +716,12 @@ class CarPlayGlCompositor {
 
     companion object {
         private const val RATE_WINDOW_MS = 10_000L
+
+        /** Live Host or AAP compositor — divider settle syncs pane buffers through this. */
+        @Volatile
+        private var activeInstance: CarPlayGlCompositor? = null
+
+        fun activeOrNull(): CarPlayGlCompositor? = activeInstance
 
         // Full-screen triangle strip in NDC: x,y
         private val FULL_RECT = floatArrayOf(

@@ -20,10 +20,15 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * AAP Now Playing / cluster card driver.
  *
- * Same [ClusterLyricStore] / [ClusterArtStore] source as CarPlay and the gearhead
- * Title path. Pushes [MediaPlaybackChannel] metadata (song = current lyric line) and
- * status; track identity follows [ClusterLyricStore.SETTINGS_TRACK_MEDIA_ID] so a
- * lyric-only title change does not reset the clock.
+ * Same [ClusterLyricStore] / [ClusterArtStore] source as CarPlay. Pushes
+ * [MediaPlaybackChannel] metadata (song = current lyric line) and status.
+ * Track identity follows [ClusterLyricStore.SETTINGS_TRACK_MEDIA_ID] so a
+ * lyric-only title change is not treated as a new song.
+ *
+ * HU MediaPlaybackMetadata is a full card replace (same lesson as gearhead
+ * HU MediaInfo — see docs/CLUSTER_LYRIC_CLOCK.md): every metadata send must carry
+ * song + artist + album + duration + album art. Lyric-only partial protobufs
+ * clear cover / artist / album on the cluster and reset the clock to 0:00.
  */
 class AapNowPlaying {
     private val active = AtomicBoolean(false)
@@ -152,73 +157,67 @@ class AapNowPlaying {
         val trackChanged = trackId != pushedTrackId
         if (trackChanged) pushedTrackId = trackId
 
-        val metaBuilder = MediaPlaybackMetadata.newBuilder()
-        var metaDirty = full || trackChanged
-        if (song != pushedSong || full) {
-            pushedSong = song
-            metaBuilder.setSong(song.orEmpty())
-            metaDirty = true
-        }
-        if (artist != pushedArtist || full) {
-            pushedArtist = artist
-            metaBuilder.setArtist(artist.orEmpty())
-            metaDirty = true
-        }
-        if (album != pushedAlbum || full) {
-            pushedAlbum = album
-            metaBuilder.setAlbum(album.orEmpty())
-            metaDirty = true
-        }
-        if (durationSec != pushedDurationSec || full) {
-            pushedDurationSec = durationSec
-            if (durationSec != null) metaBuilder.setDurationSeconds(durationSec)
-            metaDirty = true
-        }
+        val songChanged = song != pushedSong
+        val artistChanged = artist != pushedArtist
+        val albumChanged = album != pushedAlbum
+        val durationChanged = durationSec != pushedDurationSec
+        val artChanged = artRevision != pushedArtRevision || (trackChanged && artRevision > 0L)
+        val metaDirty = full || trackChanged || songChanged || artistChanged ||
+            albumChanged || durationChanged || artChanged
 
-        if (artRevision != pushedArtRevision || (trackChanged && artRevision > 0L)) {
-            if (artRevision > 0L) {
-                if (attachArt(metaBuilder, artRevision, trackId, forceFetch = true)) metaDirty = true
-            } else {
-                pushedArtRevision = artRevision
-                pushedArtTrackId = null
-                cachedArtJpeg = null
-            }
-        } else if (
-            pushedArtTrackId == trackId &&
-            artRevision > 0L &&
-            (full || trackChanged) &&
-            cachedArtJpeg != null
-        ) {
-            cachedArtJpeg?.let { metaBuilder.setAlbumArt(ByteString.copyFrom(it)) }
-            metaDirty = true
+        if (artRevision <= 0L && artChanged) {
+            pushedArtRevision = artRevision
+            pushedArtTrackId = null
+            cachedArtJpeg = null
         }
 
         if (metaDirty && (
-                song != null || artist != null || album != null ||
-                    durationSec != null || metaBuilder.hasAlbumArt()
+                song != null || artist != null || album != null || durationSec != null || artRevision > 0L
                 )
         ) {
-            // Always include song on any meta push so HU refreshes the lyric strip.
-            if (!metaBuilder.hasSong()) metaBuilder.setSong(song.orEmpty())
+            // Full card every time — HU replaces the whole MediaPlaybackMetadata.
+            val metaBuilder = MediaPlaybackMetadata.newBuilder()
+                .setSong(song.orEmpty())
+                .setArtist(artist.orEmpty())
+                .setAlbum(album.orEmpty())
+            if (durationSec != null) metaBuilder.setDurationSeconds(durationSec)
+            if (artRevision > 0L) {
+                // Lyric ticks must re-attach cached JPEG; only fetch on revision/track change.
+                attachArt(
+                    metaBuilder,
+                    artRevision,
+                    trackId,
+                    forceFetch = artChanged || cachedArtJpeg == null,
+                )
+            }
+            pushedSong = song
+            pushedArtist = artist
+            pushedAlbum = album
+            pushedDurationSec = durationSec
             runCatching { ch.metadata(metaBuilder.build()) }
                 .onFailure { Log.w(AapConsts.TAG, "MediaPlayback metadata failed", it) }
         }
 
         val statusBuilder = MediaPlaybackStatus.newBuilder().setState(state)
-        var statusDirty = state != pushedState || full
+        var statusDirty = state != pushedState || full || metaDirty
         if (state != pushedState) pushedState = state
-        if (sourcePkg != pushedSource || full) {
+        // Always re-assert source on status pushes that accompany meta (HU may clear).
+        if (sourcePkg != pushedSource || full || metaDirty) {
             pushedSource = sourcePkg
             statusBuilder.setMediaSource(sourcePkg.orEmpty())
             statusDirty = true
         }
         if (full) pushedElapsedSec = -1L
+        // T2-A+1s: after MediaInfo the HU often resets to 0:00; cover with Store whole-second +1.
         val elapsedSec = if (state == MediaPlaybackStatus.State.PLAYING && progress != null) {
-            ClusterLyricStore.extrapolatePosition(progress) / 1000L
+            val rawSec = ClusterLyricStore.extrapolatePosition(progress) / 1000L
+            val durSec = progress.durationMs.takeIf { it > 0L }?.let { it / 1000L }
+            val bumped = if (metaDirty) rawSec + 1L else rawSec
+            if (durSec != null) bumped.coerceAtMost(durSec) else bumped
         } else {
             -1L
         }
-        if (elapsedSec >= 0L && (elapsedSec != pushedElapsedSec || full || (song != null && metaDirty))) {
+        if (elapsedSec >= 0L && (elapsedSec != pushedElapsedSec || full || metaDirty)) {
             pushedElapsedSec = elapsedSec
             statusBuilder.setPlaybackSeconds(elapsedSec.toInt().coerceAtLeast(0))
             statusDirty = true

@@ -75,6 +75,9 @@ object CarPlayInputBridge {
     @Volatile
     private var imeChipArmed = false
 
+    /** True while divider / peel gesture owns the pointer (skip layout sync that resets ratio). */
+    fun isChromeGestureActive(): Boolean = chromeArmed || chromeDragging
+
     fun injectNormalized(xNorm: Float, yNorm: Float, action: Int) {
         val x = xNorm.coerceIn(0f, 1f)
         val y = yNorm.coerceIn(0f, 1f)
@@ -152,9 +155,20 @@ object CarPlayInputBridge {
         val seamX = left + gap / 2f
         val half = (SplitPane.DIVIDER_DP / 2f + SplitPane.DIVIDER_TOUCH_EXPAND_DP) * scale
         val inset = SplitPane.DIVIDER_TOUCH_END_INSET_DP * scale
+        val xPx = xNorm * w
         val yPx = yNorm * h
         if (h > inset * 2f && (yPx < inset || yPx > h - inset)) return false
-        return abs(xNorm * w - seamX) <= half
+        return abs(xPx - seamX) <= half
+    }
+
+    /** Debug: how far the finger is from the live seam (encode px). */
+    private fun dividerSeamDeltaPx(xNorm: Float): Float {
+        val w = shellWidth()
+        val dpi = densityDpi.coerceAtLeast(160)
+        val ratio = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+        val (left, gap, _) = CarPlayChromePainter.splitStrip(w, ratio, dpi)
+        val seamX = left + gap / 2f
+        return xNorm * w - seamX
     }
 
     private val imeChipBounds = android.graphics.RectF()
@@ -193,12 +207,32 @@ object CarPlayInputBridge {
                 } else {
                     dividerSeamHit(x, y)
                 }
-                if (!chromeArmed) return false
+                if (!chromeArmed) {
+                    if (!inFullscreen) {
+                        val dpi = densityDpi.coerceAtLeast(160)
+                        val half = (SplitPane.DIVIDER_DP / 2f + SplitPane.DIVIDER_TOUCH_EXPAND_DP) *
+                            (dpi / 160f)
+                        val delta = dividerSeamDeltaPx(x)
+                        // Only log near-misses so we can tune hit width without spamming.
+                        if (abs(delta) <= half * 3f) {
+                            Log.i(
+                                CarPlayConsts.TAG,
+                                "divider miss x=$x y=$y deltaPx=$delta half=$half " +
+                                    "ratio=$primaryRatio dpi=$dpi ${shellWidth()}x${shellHeight()}",
+                            )
+                        }
+                    }
+                    return false
+                }
                 chromeDragging = false
                 peelPreviewActive = false
                 chromeDownX = x
                 chromeDownAt = SystemClock.uptimeMillis()
                 ratioAtDown = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+                Log.i(
+                    CarPlayConsts.TAG,
+                    "divider arm x=$x y=$y ratio=$ratioAtDown fs=$inFullscreen",
+                )
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
@@ -353,7 +387,10 @@ object CarPlayInputBridge {
     }
 
     private fun syncGlPaneBuffers(ratio: Float) {
-        val gl = CarPlayHostRuntime.compositorOrNull() ?: return
+        // HostRuntime for CarPlay; activeOrNull also covers AAP (no HostRuntime).
+        val gl = CarPlayHostRuntime.compositorOrNull()
+            ?: CarPlayGlCompositor.activeOrNull()
+            ?: return
         val w = shellWidthPx.coerceAtLeast(2)
         val h = shellHeightPx.coerceAtLeast(1)
         // Same dpi as HostRuntime / GlCompositor / VD (manual override or encode default).

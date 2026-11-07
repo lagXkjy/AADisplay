@@ -168,6 +168,12 @@ class VideoChannel(
         /** Projection visible or not. When it becomes visible, send a key frame. */
         fun onVideoFocus(projected: Boolean)
 
+        /**
+         * Raw [VideoFocusMode] from the HU (optional). Use to detect
+         * [VideoFocusMode.VIDEO_FOCUS_PROJECTED_NO_INPUT_FOCUS] where video shows but touch stays on HU.
+         */
+        fun onVideoFocusMode(mode: VideoFocusMode, unsolicited: Boolean) {}
+
         /** Frames were dropped to catch up: the next frame sent must be a key frame. */
         fun onKeyFrameNeeded()
 
@@ -222,8 +228,20 @@ class VideoChannel(
         when (msg.id) {
             MediaMsg.VIDEO_FOCUS_NOTIFICATION -> {
                 val n = VideoFocusNotification.parseFrom(msg.bodyBytes())
+                listener.onVideoFocusMode(n.focus, n.unsolicited)
                 val projected = n.focus == VideoFocusMode.VIDEO_FOCUS_PROJECTED ||
                     n.focus == VideoFocusMode.VIDEO_FOCUS_PROJECTED_NO_INPUT_FOCUS
+                // PROJECTED_NO_INPUT_FOCUS: HU shows our video but keeps touch. Re-request full
+                // PROJECTED so touchscreen reports reach the phone (keys may still work).
+                if (n.focus == VideoFocusMode.VIDEO_FOCUS_PROJECTED_NO_INPUT_FOCUS) {
+                    send(
+                        MediaMsg.VIDEO_FOCUS_REQUEST,
+                        VideoFocusRequestNotification.newBuilder()
+                            .setMode(VideoFocusMode.VIDEO_FOCUS_PROJECTED)
+                            .setReason(VideoFocusReason.UNKNOWN)
+                            .build(),
+                    )
+                }
                 setFocus(projected)
             }
             MediaMsg.VIDEO_FOCUS_REQUEST -> {

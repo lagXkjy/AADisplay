@@ -136,7 +136,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
             carPlay || aap -> {
                 baseBinding.tvVdDensityTitle.text = "画面清晰度"
                 baseBinding.tvVdDensityHint.text =
-                    "一般不用改。数字越大图标和字越小；留空用默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI}。范围 120–640"
+                    "一般不用改。车机画布固定像素：数字越大图标和字越大；留空用默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI}。范围 120–640"
                 baseBinding.etVdDensityDpi.hint = "留空 = 默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI}"
                 baseBinding.btnResetVdDensityDpi.text = "恢复默认"
             }

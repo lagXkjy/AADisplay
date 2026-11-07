@@ -44,7 +44,6 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
-import kotlin.math.abs
 
 /**
  * Native AAP phone session: wireless bootstrap → TLS → video/audio/input/playback → VD encode.
@@ -81,6 +80,9 @@ class AapSourceSession(
     private var touchH = AapConsts.DEFAULT_VIDEO_HEIGHT
     private var videoW = AapConsts.DEFAULT_VIDEO_WIDTH
     private var videoH = AapConsts.DEFAULT_VIDEO_HEIGHT
+    /** HUIG: visible content = codec − margins (cropped by the HU). */
+    private var widthMargin = 0
+    private var heightMargin = 0
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
@@ -267,44 +269,93 @@ class AapSourceSession(
             configs: List<VideoConfiguration>,
             preferred: List<Int>,
         ): Int {
-            var best = 0
-            var bestScore = Int.MIN_VALUE
             for ((i, c) in configs.withIndex()) {
                 val (w, h) = resolutionOf(c.codecResolution)
-                var score = 0
-                if (w in 800..1920) score += 10
-                if (h in 480..1080) score += 10
-                if (c.frameRate == VideoFrameRateType.VIDEO_FPS_30) score += 5
-                if (abs(w - 1280) + abs(h - 720) < 200) score += 20
-                if (score > bestScore) {
-                    bestScore = score
-                    best = i
+                Log.i(
+                    AapConsts.TAG,
+                    "AAP video cfg[$i]=${w}x$h fps=${c.frameRate} dens=${c.density} " +
+                        "realDens=${c.realDensity} margin=${c.widthMargin}x${c.heightMargin} " +
+                        "preferred=${i in preferred}",
+                )
+            }
+            // Honour HU preference order (AARE PhoneSim / configIndices). Do not require 30fps —
+            // Audi MIB3 only advertises 60fps. Do not bias toward 1280×720: that overrode
+            // preferred=[1920×1080] and left height_margin=128 unused → magnified crop + bad touch.
+            for (idx in preferred) {
+                val c = configs.getOrNull(idx) ?: continue
+                val (w, h) = resolutionOf(c.codecResolution)
+                if (w in 800..1920 && h in 480..1080) {
+                    Log.i(
+                        AapConsts.TAG,
+                        "AAP video choose preferred index=$idx ${w}x$h preferred=$preferred",
+                    )
+                    return idx
                 }
             }
-            return best
+            val fallback = preferred.firstOrNull()?.takeIf { it in configs.indices } ?: 0
+            Log.i(AapConsts.TAG, "AAP video choose fallback index=$fallback preferred=$preferred")
+            return fallback
         }
 
         override fun onVideoStart(index: Int, config: VideoConfiguration) {
             val (w, h) = resolutionOf(config.codecResolution)
             videoW = w.coerceAtLeast(16)
             videoH = h.coerceAtLeast(16)
+            widthMargin = config.widthMargin.toInt().coerceIn(0, videoW - 16)
+            heightMargin = config.heightMargin.toInt().coerceIn(0, videoH - 16)
+            // Margins are total (L+R / T+B); keep them even so content centers cleanly.
+            if (widthMargin and 1 != 0) widthMargin -= 1
+            if (heightMargin and 1 != 0) heightMargin -= 1
             val fps = when (config.frameRate) {
                 VideoFrameRateType.VIDEO_FPS_60 -> 60
                 else -> 30
             }
-            syncTouchBridgeLayout()
+            val contentW = (videoW - widthMargin).coerceAtLeast(16)
+            val contentH = (videoH - heightMargin).coerceAtLeast(16)
+            Log.i(
+                AapConsts.TAG,
+                "AAP video start idx=$index ${videoW}x$videoH@$fps dens=${config.density} " +
+                    "realDens=${config.realDensity} margin=${widthMargin}x$heightMargin " +
+                    "content=${contentW}x$contentH touch=${touchW}x$touchH ui=${config.hasUiConfig()}",
+            )
+            val sessionDpi = resolveSessionDpi(config)
+            syncTouchBridgeLayout(sessionDpi)
             val videoCh = activeVideo ?: return
             val bridge = display ?: AapDisplayBridge(app, onStatus).also { display = it }
-            bridge.startFor(videoCh, videoW, videoH, fps)
+            bridge.startFor(
+                videoCh,
+                videoW,
+                videoH,
+                fps,
+                sessionDpi,
+                widthMargin,
+                heightMargin,
+            )
             onStatus("正在打开车机画面…")
         }
 
         override fun onVideoFocus(projected: Boolean) {
+            Log.i(AapConsts.TAG, "AAP video focus projected=$projected")
             if (projected) display?.requestKeyFrame()
+        }
+
+        override fun onVideoFocusMode(
+            mode: aap_protobuf.service.media.video.message.VideoFocusModeOuterClass.VideoFocusMode,
+            unsolicited: Boolean,
+        ) {
+            Log.i(AapConsts.TAG, "AAP VIDEO_FOCUS mode=$mode unsolicited=$unsolicited")
         }
 
         override fun onKeyFrameNeeded() {
             display?.requestKeyFrame()
+        }
+
+        override fun onUiConfig(config: aap_protobuf.service.media.shared.message.UiConfigOuterClass.UiConfig) {
+            Log.i(
+                AapConsts.TAG,
+                "AAP uiConfig margins=${config.margins} content=${config.contentInsets} " +
+                    "stable=${config.stableContentInsets}",
+            )
         }
     }
 
@@ -323,7 +374,7 @@ class AapSourceSession(
             if (report.hasTouchEvent()) {
                 // Full-canvas → split pane local coords (same as CarPlay Host). The old path
                 // injected video-sized coords into focusedPane only — right pane / off-focus taps felt dead.
-                dispatchTouch(report.touchEvent)
+                dispatchTouch(report.touchEvent, source = "touch")
             }
             if (report.hasKeyEvent()) {
                 inputKeys.onKeyEvent(report.keyEvent)
@@ -332,24 +383,62 @@ class AapSourceSession(
                 handleRelative(report.relativeEvent)
             }
             if (report.hasTouchpadEvent()) {
-                dispatchTouch(report.touchpadEvent)
+                dispatchTouch(report.touchpadEvent, source = "pad")
             }
         }
 
-        private fun dispatchTouch(te: TouchEvent) {
-            if (te.pointerDataCount <= 0) return
+        private fun dispatchTouch(te: TouchEvent, source: String) {
+            if (te.pointerDataCount <= 0) {
+                Log.w(AapConsts.TAG, "AAP $source empty pointers action=${te.action}")
+                return
+            }
             val p = te.getPointerData(0)
-            val xNorm = (p.x.toFloat() / touchW.coerceAtLeast(1)).coerceIn(0f, 1f)
-            val yNorm = (p.y.toFloat() / touchH.coerceAtLeast(1)).coerceIn(0f, 1f)
+            // HUIG content rect the stream is cropped to. Audi MIB3 reports a wider
+            // touchscreen (e.g. 1540×720) than content (1412×654); raw coords still
+            // span the content pixels (samples peak ≪ touchW). Dividing by touchW
+            // shifted the divider ~6% left of the painted seam → chronic misses.
+            val contentW = (videoW - widthMargin).coerceAtLeast(1)
+            val contentH = (videoH - heightMargin).coerceAtLeast(1)
+            val normW = when {
+                touchW > contentW + 8 -> contentW
+                else -> touchW.coerceAtLeast(1)
+            }
+            val normH = when {
+                touchH > contentH + 8 -> contentH
+                else -> touchH.coerceAtLeast(1)
+            }
+            val xNorm = (p.x.toFloat() / normW).coerceIn(0f, 1f)
+            val yNorm = (p.y.toFloat() / normH).coerceIn(0f, 1f)
             val action = when (te.action) {
                 PointerAction.ACTION_DOWN -> MotionEvent.ACTION_DOWN
                 PointerAction.ACTION_UP -> MotionEvent.ACTION_UP
                 PointerAction.ACTION_MOVED -> MotionEvent.ACTION_MOVE
                 PointerAction.ACTION_POINTER_DOWN, PointerAction.ACTION_POINTER_UP ->
                     MotionEvent.ACTION_MOVE
-                else -> return
+                else -> {
+                    Log.w(
+                        AapConsts.TAG,
+                        "AAP $source unknown action=${te.action} raw=${p.x},${p.y} " +
+                            "normBase=${normW}x$normH → $xNorm,$yNorm",
+                    )
+                    return
+                }
             }
-            syncTouchBridgeLayout()
+            // Throttle MOVE spam; always log DOWN/UP so we can see if HU sends touch at all.
+            if (action != MotionEvent.ACTION_MOVE || shouldLogTouchMove()) {
+                Log.i(
+                    AapConsts.TAG,
+                    "AAP $source action=$action raw=${p.x},${p.y} touch=${touchW}x$touchH " +
+                        "normBase=${normW}x$normH " +
+                        "norm=${"%.3f".format(xNorm)},${"%.3f".format(yNorm)} " +
+                        "video=${videoW}x$videoH content=${contentW}x$contentH",
+                )
+            }
+            // Do not pull CoreApi split ratio while divider/peel owns the pointer —
+            // that snapped primaryRatio back every MOVE and killed drag.
+            if (!CarPlayInputBridge.isChromeGestureActive()) {
+                syncTouchBridgeLayout()
+            }
             try {
                 CarPlayInputBridge.injectNormalized(xNorm, yNorm, action)
             } catch (e: Throwable) {
@@ -403,8 +492,16 @@ class AapSourceSession(
                         input.touchScreen?.let { ts ->
                             touchW = ts.width.coerceAtLeast(1)
                             touchH = ts.height.coerceAtLeast(1)
+                            Log.i(
+                                AapConsts.TAG,
+                                "AAP touchscreen ${touchW}x$touchH type=${ts.type} secondary=${ts.isSecondary}",
+                            )
                             syncTouchBridgeLayout()
+                        } ?: Log.w(AapConsts.TAG, "AAP input has no touchscreen; keep default ${touchW}x$touchH")
+                        input.touchPad?.let { tp ->
+                            Log.i(AapConsts.TAG, "AAP touchpad ${tp.width}x${tp.height} abs=${tp.uiAbsolute}")
                         }
+                        Log.i(AapConsts.TAG, "AAP keycodes=${input.keycodes.size}")
                         channels += input
                     }
                     s.hasSensorSourceService() -> {
@@ -533,14 +630,19 @@ class AapSourceSession(
         }
     }
 
-    /** Keep CarPlay-shared pane router in sync with AAP encode size + live split layout. */
-    private fun syncTouchBridgeLayout() {
-        CarPlayInputBridge.shellWidthPx = videoW.coerceAtLeast(1)
-        CarPlayInputBridge.shellHeightPx = videoH.coerceAtLeast(1)
-        CarPlayInputBridge.densityDpi = runCatching { CoreApi.vdDensityDpi }
-            .getOrNull()
-            ?.takeIf { it > 0 }
-            ?: CarPlayConsts.ENCODE_UI_DENSITY_DPI
+    /** Keep CarPlay-shared pane router in sync with HUIG content size + live split layout. */
+    private fun syncTouchBridgeLayout(sessionDpi: Int = 0) {
+        // Touchscreen 0..1 maps onto the visible content rect (codec − margins), not the
+        // cropped margin bands the HU covers with its own chrome.
+        val contentW = (videoW - widthMargin).coerceAtLeast(1)
+        val contentH = (videoH - heightMargin).coerceAtLeast(1)
+        CarPlayInputBridge.shellWidthPx = contentW
+        CarPlayInputBridge.shellHeightPx = contentH
+        CarPlayInputBridge.densityDpi = when {
+            sessionDpi > 0 -> sessionDpi
+            else -> runCatching { CoreApi.vdDensityDpi }.getOrNull()?.takeIf { it > 0 }
+                ?: CarPlayConsts.ENCODE_UI_DENSITY_DPI
+        }
         runCatching {
             CarPlayInputBridge.primaryRatio = CoreApi.getSplitRatio()
                 .coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
@@ -548,5 +650,36 @@ class AapSourceSession(
         runCatching {
             CarPlayInputBridge.fullscreenPane = CoreApi.getSplitFullscreenPane()
         }
+    }
+
+    /**
+     * AAP density — same model as the old gearhead path:
+     * 1) status-page manual override (dynamic),
+     * 2) else HU [VideoConfiguration.density] / real_density (e.g. Audi 213),
+     * 3) else encode default 160.
+     * Do **not** force 160: CarPlay uses 160 only because it has no HU density negotiate.
+     */
+    private fun resolveSessionDpi(config: VideoConfiguration): Int {
+        val huDpi = when {
+            config.density > 0 -> config.density.toInt()
+            config.realDensity > 0 -> config.realDensity.toInt()
+            else -> 0
+        }
+        val override = runCatching { CoreApi.vdDensityDpi }.getOrDefault(0)
+        val dpi = when {
+            override > 0 -> override
+            huDpi > 0 -> huDpi
+            else -> CarPlayConsts.ENCODE_UI_DENSITY_DPI
+        }
+        Log.i(AapConsts.TAG, "AAP density session=$dpi override=$override huCfg=$huDpi")
+        return dpi
+    }
+
+    private var lastTouchMoveLogMs = 0L
+    private fun shouldLogTouchMove(): Boolean {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastTouchMoveLogMs < 250L) return false
+        lastTouchMoveLogMs = now
+        return true
     }
 }

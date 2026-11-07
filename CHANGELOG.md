@@ -1,14 +1,16 @@
 # Changelog
 
-## Unreleased — Google gearhead 原路硬下线（AAP 替代）
+## 1.0#17.8 — AAP 主线里程碑（gearhead 硬下线）
 
-- **运行时硬切：** LSPosed scope 去掉 `gearhead`；`XposedInit` 不再装 `AndroidAutoHook`；Manifest 移除 Car SDK 投影入口（`AaActivityService` / `gms.car.application`）与 `:cluster` Title 壳。
-- **通道：** 残留 `CHANNEL_AA` 永迁 `defaultChannel()`（已装 AA → AAP）；状态页仅 AAP / CarPlay；方向盘 / 仪表歌词走 AAP。
-- **删除退役 gearhead 钩子源码：** `xposed/hook/aa/**`（含 Frx/Maps/TTS、`AaUiHook`/Coolwalk DexKit、签名/媒体/仪表 Egress）、`AndroidAutoHook`、`DexKitMethodCache`、`AaDisplayProcessHook`；去掉 DexKit 依赖。
-- **上层冗余清理（AAP 自渲染后）：** 删除 Car SDK 壳（`AaDisplayActivity*` / `AaActivityService` / `AaMainFragment` / Recents RecyclerView UI）、`aauto.aar`、Coolwalk 轨带结算（`util/coolwalk/` / `CoolwalkRailStore` / `DisplayProfileSettle`）、`ClusterLyricMediaService`；`resolveDisplayProfile` 只锁客户端上报尺寸；Coolwalk / presentation 触控 AIDL 改 no-op；Binder 桥仅本模块 uid。BT 鼠标车机精灵随壳移除（pane 注入仍有效）。
-- 文档：`docs/AAP_NATIVE.md`、`docs/GEARHEAD_LEGACY.md`、`archive/gearhead-aa/`；`COOLWALK_FACETBAR.md` → `docs/archive/`。
-- 清理未使用的 `AapTouchMapper`；`ClusterLyricMirror` 不再 warmStart Title 壳。
-- **死路径再清：** 删壳广播常量与无接收方发送；`registerAaUiBroadcastReceivers` / `HidShellGeometry` / `useGearheadAa` / `tryTouchAaDisplay*` / `automotive_app_desc.xml` / `rb_channel_aa` / `androidx.media`；`EXECUTION.md` / `CLUSTER_LYRIC_CLOCK.md` 去掉仍当活路径的 gearhead 叙述。
+versionCode **10000** / versionName **1.0#17.8**。主版本升至 **1.0**：原生 AAP + 无线 CarPlay 双轨为正式出口；Google gearhead 投影硬下线。
+
+- **Release AAP 连不上：** R8 混淆 `aap_protobuf` / AARE 字段名 → TLS 后 `PhoneInfo.instanceId_` 反射失败。ProGuard keep `aap_protobuf.**`、`net.prototux.aare.**`、`GeneratedMessageLite`。
+- **AAP 仪表卡缺封面 / 艺术家 / 专辑 / 进度乱：** `AapNowPlaying` 换句只推 `song` 增量，HU 整卡替换后冲掉其余字段并归零时钟。改为每次 metadata 发完整卡（song+artist+album+duration+art），并在换句后立刻补 Store 外推整秒 **+1s** 的 status（对齐 `CLUSTER_LYRIC_CLOCK` T2-A）。
+- **AAP 出画 / 触控（HUIG margin）：** 尊重车机 preferred 分辨率与 `width_margin`/`height_margin`；内容区居中编码；触控按 content 归一化；`PROJECTED_NO_INPUT_FOCUS` 时重申完整 PROJECTED；分隔条命中加宽（车机粗触控）。
+- **运行时硬切：** LSPosed scope 去掉 `gearhead`；`XposedInit` 不再装 `AndroidAutoHook`；Manifest 移除 Car SDK 投影入口与 `:cluster` Title 壳。
+- **通道：** 残留 `CHANNEL_AA` 永迁 `defaultChannel()`（已装 AA → AAP）；状态页仅 AAP / CarPlay。
+- **删除：** gearhead DexKit 钩子源码、Car SDK 壳、`aauto.aar`、Coolwalk 轨带结算、`ClusterLyricMediaService`；Coolwalk / presentation 触控 AIDL 改 no-op；Binder 桥仅本模块 uid。
+- 文档：`docs/AAP_NATIVE.md`、`docs/GEARHEAD_LEGACY.md`、`archive/gearhead-aa/`。
 
 ## 0.3#17.8-r6 — AAP 核心体验（音频 / 仪表 / 方向盘）
 
