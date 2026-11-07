@@ -291,8 +291,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             PhoneHidRedirect.onShellCaptureChanged(capture)
         }
 
-        fun hidAaUiDisplayId(): Int = Display.INVALID_DISPLAY
-
         fun hidTargetDisplayId(): Int =
             mSplitController?.resolveHidInjectionDisplayId() ?: Display.INVALID_DISPLAY
 

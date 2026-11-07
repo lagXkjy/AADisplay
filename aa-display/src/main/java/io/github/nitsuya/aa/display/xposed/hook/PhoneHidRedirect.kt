@@ -576,8 +576,7 @@ object PhoneHidRedirect {
     private fun injectAaViewportsInto(list: MutableList<Any?>) {
         val primary = CoreManagerService.hidPrimaryDisplayId()
         val secondary = CoreManagerService.hidSecondaryDisplayId()
-        val shell = CoreManagerService.hidAaUiDisplayId()
-        val ids = intArrayOf(primary, secondary, shell).filter { it >= 0 }.distinct()
+        val ids = intArrayOf(primary, secondary).filter { it >= 0 }.distinct()
         if (ids.isEmpty()) return
         val existing = list.mapNotNull { vp ->
             runCatching {
@@ -813,7 +812,6 @@ object PhoneHidRedirect {
         invokePointerIconVisible(false)
         hidePointerIconOnDisplay(Display.DEFAULT_DISPLAY)
         hidePointerIconOnDisplay(1)
-        hidePointerIconOnDisplay(CoreManagerService.hidAaUiDisplayId())
         hidePointerIconOnDisplay(CoreManagerService.hidPrimaryDisplayId())
         hidePointerIconOnDisplay(CoreManagerService.hidSecondaryDisplayId())
         val offDisplay = Display.INVALID_DISPLAY
