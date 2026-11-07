@@ -4,5 +4,6 @@ pluginManagement {
     }
 }
 
-include(":aa-display", ":lib-stub")
+include(":aa-display", ":lib-stub", ":aare-aap")
+project(":aare-aap").projectDir = file("vendor/aare-aap")
 rootProject.name = "AADisplay"

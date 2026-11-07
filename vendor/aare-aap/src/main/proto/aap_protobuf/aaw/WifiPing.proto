@@ -1,0 +1,13 @@
+syntax="proto2";
+
+package aap_protobuf.aaw;
+
+// AARE: message types 8 and 9 (open-headunit's wireless.proto, Gearhead). Either side may send a
+// request; the answer echoes it.
+message WifiPingRequest {
+  optional int64 timestamp = 1;
+}
+
+message WifiPingResponse {
+  optional int64 timestamp = 1;
+}

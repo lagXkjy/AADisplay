@@ -283,7 +283,7 @@ object CarPlayAppPickerOverlay {
                 if (dy > TAP_SLOP_NORM || dx > TAP_SLOP_NORM) {
                     touchMoved = true
                 }
-                val h = CarPlayConsts.ENCODE_HEIGHT.toFloat()
+                val h = CarPlayInputBridge.shellHeightPx.coerceAtLeast(1).toFloat()
                 val gridTop = h * GRID_TOP
                 val closeTop = h * (1f - CLOSE_BOTTOM - CLOSE_H)
                 val viewport = (closeTop - h * 0.015f - gridTop).coerceAtLeast(1f)
@@ -313,8 +313,9 @@ object CarPlayAppPickerOverlay {
             return true
         }
 
-        val h = CarPlayConsts.ENCODE_HEIGHT.toFloat()
-        val w = CarPlayConsts.ENCODE_WIDTH.toFloat()
+        // Use live encode size (AAP / CarPlay may differ from ENCODE_* defaults).
+        val h = CarPlayInputBridge.shellHeightPx.coerceAtLeast(1).toFloat()
+        val w = CarPlayInputBridge.shellWidthPx.coerceAtLeast(1).toFloat()
         val padX = w * PAD_X
         val gridTop = h * GRID_TOP
         val closeTopPx = h * closeTopNorm

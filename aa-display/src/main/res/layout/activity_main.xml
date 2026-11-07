@@ -134,12 +134,21 @@
                     android:orientation="vertical">
 
                     <RadioButton
+                        android:id="@+id/rb_channel_aap"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:buttonTint="@color/radio_channel_tint"
+                        android:minHeight="48dp"
+                        android:text="原生 Android Auto（AAP：画面+音频+仪表，不依赖钩子）"
+                        android:textColor="@color/color_text_primary" />
+
+                    <RadioButton
                         android:id="@+id/rb_channel_aa"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:buttonTint="@color/radio_channel_tint"
                         android:minHeight="48dp"
-                        android:text="Android Auto（原路投屏）"
+                        android:text="Android Auto（原路 / gearhead）"
                         android:textColor="@color/color_text_primary" />
 
                     <RadioButton
@@ -151,6 +160,127 @@
                         android:text="CarPlay 无线（蓝牙连车机）"
                         android:textColor="@color/color_text_primary" />
                 </RadioGroup>
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- AAP phone certificate: auto-extract from installed Android Auto. -->
+        <FrameLayout
+            android:id="@+id/panel_aap_cert"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_info_card"
+            android:elevation="2dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="@dimen/content_padding">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="AAP 手机证书"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_text_secondary"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:id="@+id/tv_aap_cert_state"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_primary"
+                    android:textSize="16sp"
+                    tools:text="已从已安装 Android Auto 自动提取" />
+
+                <TextView
+                    android:id="@+id/tv_aap_cert_detail"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:lineSpacingExtra="2dp"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_text_primary"
+                    android:textSize="13sp"
+                    tools:text="已安装 AA 17.8" />
+
+                <Button
+                    android:id="@+id/btn_aap_cert_extract"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:minHeight="48dp"
+                    android:text="重新提取（AA 更新后）" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- Native AAP session panel (wireless listen / reconnect). -->
+        <FrameLayout
+            android:id="@+id/panel_aap"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_info_card"
+            android:elevation="2dp"
+            android:visibility="gone"
+            tools:visibility="visible">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="@dimen/content_padding">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="原生 Android Auto（AAP）"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_text_secondary"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:id="@+id/tv_aap_state"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_primary"
+                    android:textSize="18sp"
+                    tools:text="等待车机连接" />
+
+                <TextView
+                    android:id="@+id/tv_aap_detail"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_text_primary"
+                    android:textSize="14sp"
+                    tools:text="无线 AA：蓝牙配对后车机发起连接" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:lineSpacingExtra="4dp"
+                    android:text="不经过 gearhead 进程与 DexKit 钩子；车机画面走本模块 VirtualDisplay。证书从已安装 Android Auto 自动提取。"
+                    android:textAlignment="viewStart"
+                    android:textColor="@color/color_text_primary"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/btn_aap_reconnect"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:minHeight="48dp"
+                    android:text="重新连接" />
             </LinearLayout>
         </FrameLayout>
 

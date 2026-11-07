@@ -34,3 +34,6 @@ jadx-*.zip
 **/__pycache__/
 *.py[cod]
 /*.apk
+
+.tmp-aare/
+vendor/aare-ref/

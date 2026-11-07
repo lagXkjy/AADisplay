@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3#17.8-r6 — AAP 核心体验（音频 / 仪表 / 方向盘）
+
+versionCode **3106** / versionName **0.3#17.8-r6**。原生 AAP 对齐 AADisplay 原通道核心体验（档 1）：车机听得到、仪表有歌词、方向盘媒体键可用。
+
+- **AAP 证书刷新：** 监听 gearhead 安装/更新自动 `ensureExtracted`；按 `versionCode` 替换落盘；不足 30 天/过期状态页告警；卸载 AA 保留已提取 CarService。
+- **AAP 有线 AOA：** 插线先提 CarService 再 `openAccessory`；USB `sendPings=false`；FGS 未就绪时 pending attach；补 accessory 权限请求。
+- **DHU `--usb`：** accessory model 实为 `Android Open Automotive Protocol`（不是 `Android Auto`），补 filter + `AapUsbProbe` 扫已挂接配件；否则系统只弹 `UsbAccessoryUriActivity`。
+- **AAP 有线不出画：** probe 无权限时会要权；TLS 前收到加密帧则关 fd 重试；状态页 radio 默认值不再误切回 gearhead；USB 会话中不把状态盖成「监听无线」。
+- **AAP 触控：** 按分屏比例路由到对应 pane 本地坐标（复用 `CarPlayInputBridge`）；不再把整幅画面坐标塞进 `focusedPane`。
+- **AAP 应用选择器：** `AapDisplayBridge` 补 `CarPlayAppPickerOverlay.bindContext`（原先无 Context，列表恒为空）。
+
+### Added
+- **`AapAudioEgress`：** 复用 `CarPlayAudioCapture`（`pullCarPlayAudio` / `pullCarPlaySpeechAudio`）泵入 AAP `AudioChannel`（MEDIA 48k 立体声 / GUIDANCE·SYSTEM 16k 单声道）；`requestAudioFocus` + focus 启停媒体泵。
+- **`AapNowPlaying`：** `ClusterLyricStore` / `ClusterArtStore` → `MediaPlaybackChannel`（歌词行作 song、曲 id 稳定、整秒进度、封面）。
+- **`AapInputKeys`：** MEDIA 短按 + 长按 NEXT 换窗 / PREV Recent；Recent/Picker 覆盖层触控优先于 VD。
+- **协议补漏：** PCM 每包独立缓冲（避免 `sendData` 异步复用踩内存）；仅在 channel `ready` 后 `startPlayback`；`LOSS_TRANSIENT_CAN_DUCK` 保 MEDIA；GUIDANCE 优先 SYSTEM；断开 `AUDIO_FOCUS_RELEASE`；`RelativeEvent`/`touchpad`；电量 control 通知；音量键转发。
+
+### Notes
+- 仍不做车麦 / 电话 / 导航指引 / Google 助理；Coolwalk 钩子仅 gearhead 路径。
+- 遗留 `CHANNEL_AA` 保留。
+
+## 0.3#17.8-r5 — 原生 AAP 出口（摆脱 gearhead 钩子）
+
+versionCode **3105** / versionName **0.3#17.8-r5**。新增 **原生 Android Auto（AAP）** 通道：用 vendored [AARE](https://github.com/prototux/AARE) 协议栈直接连车机，VirtualDisplay 出画，**运行时不经过 gearhead DexKit 钩子**。
+
+### Added
+- **`CHANNEL_AAP`：** 状态页「原生 Android Auto（AAP，不依赖钩子）」；与 AA gearhead / CarPlay 互斥；默认在已安装 AA 时优先 AAP。
+- **证书自动提取：** 从**已安装**的 `com.google.android.projection.gearhead` APK 路径扫描 DEX，复现 AARE `extract_key.py` KDF，落盘 CarService 证书（AA 更新后点「重新提取」）。无手动选文件；发布包不内置 Google 私钥。
+- **无线建连：** BT RFCOMM bootstrap + Wi‑Fi + TCP；USB AOA 入口（`AapUsbAccessoryActivity`）。
+- **出画 / 触控：** 复用 CarPlay GL 分屏 + AVC 编码器，帧送 AAP `VideoChannel`；触控经 `CoreApi.touchPane`。
+
+### Notes
+- 原厂 Google 库车机仍需有效 CarService 证书（安装 AA 后自动提取即可，不必启用 gearhead 钩子）。
+- 遗留 `CHANNEL_AA`（gearhead）仍保留；仪表歌词等 AA Title 出口一期未接到 AAP（见 r6）。
+
 ## 0.3#17.8-r4 — 奥迪刚连声音、分隔条与键盘、4026 重连
 
 versionCode **3104** / versionName **0.3#17.8-r4**。相对 r2：奥迪认领 MainAudio 后再发 AAC；分隔条命中与收起键盘对齐 AA；断开后恢复手机音量；MIB3 4026 不再被 outbound `…caff` 挡住首次 `…cafe`。

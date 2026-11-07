@@ -1,0 +1,23 @@
+syntax="proto2";
+
+package aap_protobuf.aaw;
+
+// AARE: aasdk named fields 1-4 unknown_value_a..d (required uint32/string). Names, types and fields
+// 5-7 are from open-headunit's wireless.proto and Gearhead (docs/research/gearhead-notes.md 3.2).
+// All optional and int32, wire-compatible with aasdk's uint32 for the values we send.
+message WifiVersionResponse {
+  optional int32 major = 1;
+  optional int32 minor = 2;
+  optional string device_serial = 3;
+  // aaw.Status; real phones have answered -8 (NO_SUPPORTED_WIFI_CHANNELS) and still completed
+  optional int32 status = 4;
+  optional int32 selected_wifi_channel_type = 5;
+  optional WppWifiDeviceInfo device_info = 6;
+  optional bytes setup_token = 7;
+}
+
+// AARE: from open-headunit's wireless.proto.
+message WppWifiDeviceInfo {
+  optional string device_id = 1;
+  optional string connectivity_lifetime_id = 2;
+}

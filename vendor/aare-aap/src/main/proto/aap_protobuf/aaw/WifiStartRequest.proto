@@ -1,0 +1,13 @@
+syntax="proto2";
+
+package aap_protobuf.aaw;
+
+message WifiStartRequest {
+  // AARE: required -> optional (wire-identical) so a head unit that leaves one out still parses
+  // and we can report it ourselves instead of failing inside the protobuf parser.
+  optional string ip_address = 1;
+  optional uint32 port = 2;
+  // AARE: field 3 from open-headunit ("status") / Gearhead ("reason": 0 USER_REQUEST,
+  // 1 AUTO_LAUNCH, 2 AUTOMATIC_RESTART). Only logged.
+  optional int32 reason = 3;
+}

@@ -1,0 +1,19 @@
+syntax="proto2";
+
+import "aap_protobuf/service/wifiprojection/message/AccessPointType.proto";
+
+package aap_protobuf.aaw;
+
+message WifiInfoResponse {
+  // AARE: all fields relaxed from required to optional (wire-identical): some head units send an
+  // empty or no bssid, and a missing field should be reported by us, not by the parser.
+  optional string ssid = 1;
+  optional string password = 2;
+  optional string bssid = 3;
+  // AARE: int32 instead of service.wifiprojection.message.WifiSecurityMode. That in-session enum
+  // numbers the modes differently (WPA2_PERSONAL = 5) while the wire uses the bit-flag values
+  // (8 = WPA2_PERSONAL, 32 = WPA3_PERSONAL, 40 = WPA2_WPA3_PERSONAL; see WppSecurityMode). As a
+  // closed proto2 enum, 32 and 40 would be dropped into the unknown fields.
+  optional int32 security_mode = 4;
+  optional service.wifiprojection.message.AccessPointType access_point_type = 5;
+}

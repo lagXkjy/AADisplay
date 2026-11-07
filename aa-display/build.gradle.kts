@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.nitsuya.aa.display"
         minSdk = 33
         targetSdk = 36
-        versionCode = 3104
-        versionName = "0.3#17.8-r4"
+        versionCode = 3106
+        versionName = "0.3#17.8-r6"
         buildConfigField("long", "BUILD_TIME", buildTime.toString())
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -121,6 +121,9 @@ dependencies {
     // Ed25519 / X25519 for AirPlay pair-setup/verify — matching DiPlay (Samsung API 33
     // Conscrypt often lacks KeyPairGenerator("Ed25519")).
     implementation("org.bouncycastle:bcprov-jdk18on:1.79")
+
+    // AARE AAP protocol (phone-side TLS / framing) — native AA egress without gearhead hooks.
+    implementation(project(":aare-aap"))
 
     compileOnly(project(":lib-stub"))
     implementation("dev.rikka.tools.refine:runtime:4.4.0")

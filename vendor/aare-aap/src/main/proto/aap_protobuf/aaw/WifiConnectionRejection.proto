@@ -1,0 +1,9 @@
+syntax="proto2";
+
+package aap_protobuf.aaw;
+
+// AARE: message type 10 (open-headunit's wireless.proto). Head unit -> phone, meant for WPP over
+// TCP only. reason: 1 MOBILE_DEVICE_ID_NOT_FOUND, 2 INVALID_SETUP_TOKEN.
+message WifiConnectionRejection {
+  optional int32 reason = 1;
+}

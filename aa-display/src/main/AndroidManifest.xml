@@ -30,6 +30,9 @@
     <uses-feature
         android:name="android.hardware.bluetooth"
         android:required="false" />
+    <uses-feature
+        android:name="android.hardware.usb.accessory"
+        android:required="false" />
 
     <queries>
         <intent>
@@ -103,6 +106,42 @@
             android:name=".carplay.CarPlayProjectionService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <service
+            android:name=".aap.AapProjectionService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+        <activity
+            android:name=".aap.usb.AapUsbAccessoryActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
+                android:resource="@xml/aap_usb_accessory_filter" />
+        </activity>
+        <receiver
+            android:name=".aap.AapAutoArmReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.USER_UNLOCKED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.bluetooth.adapter.action.STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
+        <!-- Refresh CarService leaf when gearhead is installed / updated (keep cert if removed). -->
+        <receiver
+            android:name=".aap.AaCertPackageReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_ADDED" />
+                <action android:name="android.intent.action.PACKAGE_REPLACED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
         <!-- Re-arm cafe RFCOMM after reboot / replace / unlock / BT ON (channel=CarPlay).
              Some OEMs bring BT (A2DP sound) up before BOOT_COMPLETED; STATE_ON must
              arm …cafe before the HU SDP backs off.

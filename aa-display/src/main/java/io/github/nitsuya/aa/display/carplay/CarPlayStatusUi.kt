@@ -7,26 +7,25 @@ import android.view.View
 import android.widget.Toast
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
+import io.github.nitsuya.aa.display.aap.AapProjectionService
+import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
 import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
 import io.github.nitsuya.aa.display.egress.ProjectionSessionGate
 
 /**
- * Status-page CarPlay controls. Keeps [io.github.nitsuya.aa.display.ui.main.MainActivity]
- * free of CarPlay session / channel logic beyond a single bind call.
- *
- * Channel radio is always visible when Android Auto is installed; without gearhead the
- * AA option is hidden and CarPlay is the only egress. [panel_aa] vs [panel_carplay]
- * swap with the selection. Wired USB is gated by [CarPlayChannel.USB_CARPLAY_ENABLED]
- * and hidden from UI while WIP.
+ * Status-page egress controls (AA gearhead / native AAP / CarPlay).
+ * Keeps [io.github.nitsuya.aa.display.ui.main.MainActivity] free of session logic.
  */
 object CarPlayStatusUi {
-    /** Swallows the listener callback raised while the channel radio is synced programmatically. */
     private var channelChangeFromUser = true
-    /** Channel waiting on [CarPlayRuntimePerms] dialog (wireless only). */
     private var pendingChannelAfterPerms: Int? = null
 
     fun bind(activity: Activity, binding: ActivityMainBinding) {
         applyAaAvailability(activity, binding)
+        // Apply persisted selection BEFORE the listener — otherwise the layout's
+        // default radio can fire applyChannel(AA) and stop AAP mid USB attach.
+        channelChangeFromUser = false
+        refresh(activity, binding)
         binding.rgCarplayChannel.setOnCheckedChangeListener { _, checkedId ->
             if (!channelChangeFromUser) {
                 channelChangeFromUser = true
@@ -34,26 +33,27 @@ object CarPlayStatusUi {
             }
             val channel = when (checkedId) {
                 R.id.rb_channel_cp -> CarPlayChannel.CHANNEL_CARPLAY
+                R.id.rb_channel_aap -> CarPlayChannel.CHANNEL_AAP
                 else -> CarPlayChannel.CHANNEL_AA
             }
             applyChannel(activity, binding, channel)
         }
         binding.btnCarplayHost.setOnClickListener {
             applyChannel(activity, binding, CarPlayChannel.CHANNEL_CARPLAY)
-            // Re-prompt discoverable so the HU can find the phone after reconnect.
             CarPlayProjectionService.requestDiscoverable(activity)
         }
         binding.btnBtDiscoverable.setOnClickListener {
             CarPlayProjectionService.requestDiscoverable(activity)
             toast(activity, "请允许蓝牙可被发现（300 秒）")
         }
-        refresh(activity, binding)
+        binding.btnAapReconnect.setOnClickListener {
+            applyChannel(activity, binding, CarPlayChannel.CHANNEL_AAP)
+        }
+        channelChangeFromUser = true
         ensureArmedIfCarPlay(activity)
+        ensureArmedIfAap(activity)
     }
 
-    /**
-     * Called from [io.github.nitsuya.aa.display.ui.main.MainActivity.onRequestPermissionsResult].
-     */
     fun onPermissionsResult(
         activity: Activity,
         binding: ActivityMainBinding,
@@ -63,8 +63,7 @@ object CarPlayStatusUi {
         if (!CarPlayRuntimePerms.onRequestResult(requestCode, grantResults)) {
             if (requestCode == CarPlayRuntimePerms.REQUEST_CODE) {
                 pendingChannelAfterPerms = null
-                toast(activity, "需要蓝牙权限才能连接 CarPlay")
-                // Revert radio to last persisted so sticky FGS is not armed.
+                toast(activity, "需要蓝牙权限才能连接")
                 refresh(activity, binding)
             }
             return
@@ -79,7 +78,7 @@ object CarPlayStatusUi {
         binding: ActivityMainBinding,
         channel: Int,
     ) {
-        if (channel == CarPlayChannel.CHANNEL_CARPLAY &&
+        if ((channel == CarPlayChannel.CHANNEL_CARPLAY || channel == CarPlayChannel.CHANNEL_AAP) &&
             !CarPlayRuntimePerms.ensureWireless(activity)
         ) {
             pendingChannelAfterPerms = channel
@@ -95,15 +94,28 @@ object CarPlayStatusUi {
         channel: Int,
     ) {
         CarPlayChannel.set(activity, channel)
-        if (CarPlayChannel.useCarPlayEgress(activity)) {
-            // Listen-only until the HU dials — do not boot Host/VD/encoder here.
-            CarPlayProjectionService.start(activity, launchHostTrampoline = false)
-            CarPlayProjectionService.requestDiscoverable(activity)
-            toast(activity, "已切到 CarPlay，请允许蓝牙可发现后到车机上连接")
-        } else {
-            CarPlayProjectionService.stop(activity)
-            CarPlayHostActivity.current?.finish()
-            toast(activity, "已切回 Android Auto")
+        when {
+            channel == CarPlayChannel.CHANNEL_AAP -> {
+                CarPlayProjectionService.stop(activity)
+                CarPlayHostActivity.current?.finish()
+                // Auto-extract cert from installed AA before arming.
+                PhoneCertStore.ensureExtracted(activity, force = false)
+                AapProjectionService.start(activity)
+                io.github.nitsuya.aa.display.aap.usb.AapUsbProbe.tryAttachExisting(activity)
+                toast(activity, "已切到原生 AAP（不依赖 gearhead 钩子）")
+            }
+            CarPlayChannel.useCarPlayEgress(activity) -> {
+                AapProjectionService.stop(activity)
+                CarPlayProjectionService.start(activity, launchHostTrampoline = false)
+                CarPlayProjectionService.requestDiscoverable(activity)
+                toast(activity, "已切到 CarPlay，请允许蓝牙可发现后到车机上连接")
+            }
+            else -> {
+                AapProjectionService.stop(activity)
+                CarPlayProjectionService.stop(activity)
+                CarPlayHostActivity.current?.finish()
+                toast(activity, "已切回 Android Auto（gearhead）")
+            }
         }
         refresh(activity, binding)
     }
@@ -121,12 +133,6 @@ object CarPlayStatusUi {
         }
     }
 
-    /**
-     * Start FGS when the persisted channel is CarPlay (idempotent if already live).
-     * No Host trampoline: status page is already foreground; launching
-     * [CarPlayHostActivity] then [Activity.moveTaskToBack] used to send the whole
-     * status-page task to the background (felt like the app auto-exited).
-     */
     fun ensureArmedIfCarPlay(activity: Activity) {
         if (!CarPlayChannel.useCarPlayEgress(activity)) return
         if (CarPlayChannel.useWirelessCarPlay(activity) &&
@@ -142,11 +148,29 @@ object CarPlayStatusUi {
         }
     }
 
-    /** Hide AA radio when gearhead is not installed; CarPlay is the only egress. */
+    fun ensureArmedIfAap(activity: Activity) {
+        if (!CarPlayChannel.useAapEgress(activity)) return
+        if (!CarPlayRuntimePerms.ensureWireless(activity)) {
+            pendingChannelAfterPerms = CarPlayChannel.CHANNEL_AAP
+            return
+        }
+        try {
+            PhoneCertStore.ensureExtracted(activity, force = false)
+            AapProjectionService.start(activity)
+        } catch (e: Throwable) {
+            android.util.Log.e(CarPlayConsts.TAG, "ensureArmedIfAap failed", e)
+        }
+    }
+
+    /**
+     * Gearhead radio stays available when installed (legacy path).
+     * Native AAP is always offered (cert auto-extract needs AA APK when talking to
+     * Google-library HUs, but the channel itself does not require gearhead hooks).
+     */
     private fun applyAaAvailability(activity: Activity, binding: ActivityMainBinding) {
         val aaInstalled = CarPlayChannel.isAndroidAutoInstalled(activity)
         binding.rbChannelAa.visibility = if (aaInstalled) View.VISIBLE else View.GONE
-        // Without AA there is nothing to choose — keep the CarPlay row for clarity.
+        binding.rbChannelAap.visibility = View.VISIBLE
         binding.rgCarplayChannel.visibility = View.VISIBLE
     }
 
@@ -160,12 +184,13 @@ object CarPlayStatusUi {
         }
         val channel = CarPlayChannel.get(activity)
         val carPlay = CarPlayChannel.useCarPlayEgress(activity)
+        val aap = CarPlayChannel.useAapEgress(activity)
         val armed = CarPlayProjectionService.isSessionArmed()
+        val aapArmed = AapProjectionService.isSessionArmed()
         val hostUp = CarPlayHostRuntime.isRunning()
         val aaInstalled = CarPlayChannel.isAndroidAutoInstalled(activity)
 
-        // Plain-language status for the CarPlay panel (hidden when AA is selected).
-        val (state, detail, stateColor) = when {
+        val (cpState, cpDetail, cpColor) = when {
             !carPlay -> Triple("", "", activity.getColor(R.color.color_text_primary))
             live && hostUp -> Triple(
                 "投屏中 / 已出画",
@@ -192,27 +217,42 @@ object CarPlayStatusUi {
                 activity.getColor(R.color.color_error),
             )
         }
-        binding.tvCarplayState.text = state
-        binding.tvCarplayState.setTextColor(stateColor)
-        binding.tvCarplayDetail.text = detail
+        binding.tvCarplayState.text = cpState
+        binding.tvCarplayState.setTextColor(cpColor)
+        binding.tvCarplayDetail.text = cpDetail
         binding.btnCarplayHost.text = when {
             !carPlay -> "重新连接"
             armed || live -> "重新连接"
             else -> "开始连接"
         }
 
-        val wantId = when {
-            !aaInstalled || channel == CarPlayChannel.CHANNEL_CARPLAY -> R.id.rb_channel_cp
-            else -> R.id.rb_channel_aa
+        if (aap) {
+            val st = AapProjectionService.lastStatus()
+            binding.tvAapState.text = when {
+                live && aapArmed -> "投屏中 / 已出画"
+                aapArmed -> "已监听"
+                else -> "尚未启动"
+            }
+            binding.tvAapState.setTextColor(
+                if (live || aapArmed) activity.getColor(R.color.color_primary)
+                else activity.getColor(R.color.color_error),
+            )
+            binding.tvAapDetail.text = st
+        }
+
+        val wantId = when (channel) {
+            CarPlayChannel.CHANNEL_CARPLAY -> R.id.rb_channel_cp
+            CarPlayChannel.CHANNEL_AAP -> R.id.rb_channel_aap
+            else -> if (aaInstalled) R.id.rb_channel_aa else R.id.rb_channel_aap
         }
         if (binding.rgCarplayChannel.checkedRadioButtonId != wantId) {
             channelChangeFromUser = false
             binding.rgCarplayChannel.check(wantId)
         }
 
-        // DPI panel stays visible for both AA and CarPlay (labels adapt in MainActivity).
         binding.panelAa.visibility = View.VISIBLE
         binding.panelCarplay.visibility = if (carPlay) View.VISIBLE else View.GONE
+        binding.panelAap.visibility = if (aap) View.VISIBLE else View.GONE
     }
 
     private fun toast(activity: Activity, message: String) {

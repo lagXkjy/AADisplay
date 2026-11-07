@@ -1,0 +1,334 @@
+package io.github.nitsuya.aa.display.aap
+
+import aap_protobuf.service.control.message.AudioFocusStateTypeOuterClass.AudioFocusStateType
+import aap_protobuf.service.media.shared.message.AudioConfigurationOuterClass.AudioConfiguration
+import aap_protobuf.service.media.sink.message.AudioStreamTypeOuterClass.AudioStreamType
+import android.util.Log
+import io.github.nitsuya.aa.display.CoreApi
+import net.prototux.aare.aap.channels.AudioChannel
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
+
+/**
+ * AAP PCM audio egress: reuses system_server [CarPlayAudioCapture] rings via
+ * [CoreApi.pullCarPlayAudio] / [CoreApi.pullCarPlaySpeechAudio], pumps into HU
+ * [AudioChannel] sinks. No RTP / ChaCha — protocol is AAP only.
+ *
+ * Media (48 kHz stereo) and guidance/system (16 kHz mono) never share the same ring.
+ * Per HUIG: wait for audio-focus grant before MEDIA TX; [LOSS_TRANSIENT_CAN_DUCK] keeps MEDIA.
+ */
+class AapAudioEgress {
+    private val running = AtomicBoolean(false)
+    private val mediaFocused = AtomicBoolean(false)
+
+    @Volatile private var mediaChannel: AudioChannel? = null
+    @Volatile private var guidanceChannel: AudioChannel? = null
+    @Volatile private var mediaWorker: Thread? = null
+    @Volatile private var guidanceWorker: Thread? = null
+    private val mediaPumping = AtomicBoolean(false)
+    private val guidancePumping = AtomicBoolean(false)
+
+    fun attach(channel: AudioChannel) {
+        val cfg = channel.config
+        if (cfg == null) {
+            Log.w(AapConsts.TAG, "AapAudioEgress defer ${channel.streamType}: no config yet")
+            return
+        }
+        bind(channel, cfg)
+    }
+
+    fun onChannelReady(channel: AudioChannel, config: AudioConfiguration) {
+        bind(channel, config)
+    }
+
+    private fun bind(channel: AudioChannel, cfg: AudioConfiguration) {
+        when (channel.streamType) {
+            AudioStreamType.AUDIO_STREAM_MEDIA -> {
+                if (!matchesMedia(cfg)) {
+                    Log.w(
+                        AapConsts.TAG,
+                        "AapAudioEgress skip MEDIA cfg=${cfg.samplingRate}/${cfg.numberOfChannels}/" +
+                            "${cfg.numberOfBits} (need ${MEDIA_RATE}/${MEDIA_CH}/${BITS})",
+                    )
+                    return
+                }
+                mediaChannel = channel
+                Log.i(AapConsts.TAG, "AapAudioEgress MEDIA bound ready=${channel.ready}")
+                if (running.get() && mediaFocused.get()) startMediaPump()
+            }
+            AudioStreamType.AUDIO_STREAM_GUIDANCE,
+            AudioStreamType.AUDIO_STREAM_SYSTEM_AUDIO,
+            -> {
+                if (!matchesGuidance(cfg)) {
+                    Log.w(
+                        AapConsts.TAG,
+                        "AapAudioEgress skip ${channel.streamType} cfg=${cfg.samplingRate}/" +
+                            "${cfg.numberOfChannels}/${cfg.numberOfBits} " +
+                            "(need ${GUIDANCE_RATE}/${GUIDANCE_CH}/${BITS})",
+                    )
+                    return
+                }
+                // Prefer GUIDANCE over SYSTEM when both are advertised.
+                val cur = guidanceChannel
+                if (cur != null &&
+                    cur.streamType == AudioStreamType.AUDIO_STREAM_GUIDANCE &&
+                    channel.streamType == AudioStreamType.AUDIO_STREAM_SYSTEM_AUDIO
+                ) {
+                    Log.i(AapConsts.TAG, "AapAudioEgress keep GUIDANCE; ignore SYSTEM")
+                    return
+                }
+                val replacing = cur != null && cur !== channel
+                if (replacing) stopGuidancePump()
+                guidanceChannel = channel
+                Log.i(AapConsts.TAG, "AapAudioEgress ${channel.streamType} bound ready=${channel.ready}")
+                if (running.get()) startGuidancePump()
+            }
+            else -> {
+                Log.i(AapConsts.TAG, "AapAudioEgress ignore streamType=${channel.streamType}")
+            }
+        }
+    }
+
+    fun onAudioFocus(state: AudioFocusStateType) {
+        when (state) {
+            AudioFocusStateType.AUDIO_FOCUS_STATE_GAIN,
+            AudioFocusStateType.AUDIO_FOCUS_STATE_GAIN_MEDIA_ONLY,
+            AudioFocusStateType.AUDIO_FOCUS_STATE_GAIN_TRANSIENT,
+            -> {
+                mediaFocused.set(true)
+                Log.i(AapConsts.TAG, "AapAudioEgress focus=$state mediaGain=true")
+                if (running.get()) startMediaPump()
+            }
+            AudioFocusStateType.AUDIO_FOCUS_STATE_LOSS_TRANSIENT_CAN_DUCK -> {
+                // HUIG: MD may keep MEDIA at reduced level — keep the pump.
+                mediaFocused.set(true)
+                Log.i(AapConsts.TAG, "AapAudioEgress focus=$state (duck — keep MEDIA)")
+                if (running.get()) startMediaPump()
+            }
+            AudioFocusStateType.AUDIO_FOCUS_STATE_GAIN_TRANSIENT_GUIDANCE_ONLY -> {
+                mediaFocused.set(false)
+                stopMediaPump()
+                Log.i(AapConsts.TAG, "AapAudioEgress focus=$state (guidance-only)")
+            }
+            else -> {
+                mediaFocused.set(false)
+                stopMediaPump()
+                Log.i(AapConsts.TAG, "AapAudioEgress focus=$state mediaGain=false")
+            }
+        }
+    }
+
+    fun start() {
+        if (!running.compareAndSet(false, true)) return
+        try {
+            CoreApi.setCarPlayAudioEgressEnabled(true)
+        } catch (e: Throwable) {
+            Log.w(AapConsts.TAG, "setCarPlayAudioEgressEnabled(true) failed", e)
+        }
+        if (mediaFocused.get()) startMediaPump()
+        startGuidancePump()
+        Log.i(AapConsts.TAG, "AapAudioEgress started")
+    }
+
+    fun stop() {
+        if (!running.compareAndSet(true, false)) return
+        stopMediaPump()
+        stopGuidancePump()
+        mediaChannel = null
+        guidanceChannel = null
+        mediaFocused.set(false)
+        Log.i(AapConsts.TAG, "AapAudioEgress stopped")
+    }
+
+    private fun startMediaPump() {
+        val ch = mediaChannel ?: return
+        if (!running.get() || !mediaFocused.get()) return
+        if (!ch.ready) {
+            Log.i(AapConsts.TAG, "AapAudioEgress MEDIA wait channel ready")
+            return
+        }
+        if (!mediaPumping.compareAndSet(false, true)) return
+        try {
+            ch.startPlayback()
+        } catch (e: Throwable) {
+            mediaPumping.set(false)
+            Log.w(AapConsts.TAG, "MEDIA startPlayback failed", e)
+            return
+        }
+        if (!ch.started) {
+            mediaPumping.set(false)
+            Log.w(AapConsts.TAG, "MEDIA startPlayback no-op (not started)")
+            return
+        }
+        flushPreTx(MEDIA)
+        mediaWorker = thread(name = "aap-audio-media", isDaemon = true) {
+            pump(MEDIA, ch, mediaPumping)
+        }
+    }
+
+    private fun stopMediaPump() {
+        if (!mediaPumping.compareAndSet(true, false)) return
+        mediaWorker?.interrupt()
+        mediaWorker = null
+        runCatching { mediaChannel?.stopPlayback() }
+    }
+
+    private fun startGuidancePump() {
+        val ch = guidanceChannel ?: return
+        if (!running.get()) return
+        if (!ch.ready) {
+            Log.i(AapConsts.TAG, "AapAudioEgress GUIDANCE wait channel ready")
+            return
+        }
+        if (!guidancePumping.compareAndSet(false, true)) return
+        try {
+            ch.startPlayback()
+        } catch (e: Throwable) {
+            guidancePumping.set(false)
+            Log.w(AapConsts.TAG, "GUIDANCE startPlayback failed", e)
+            return
+        }
+        if (!ch.started) {
+            guidancePumping.set(false)
+            Log.w(AapConsts.TAG, "GUIDANCE startPlayback no-op (not started)")
+            return
+        }
+        flushPreTx(GUIDANCE)
+        guidanceWorker = thread(name = "aap-audio-guidance", isDaemon = true) {
+            pump(GUIDANCE, ch, guidancePumping)
+        }
+    }
+
+    private fun stopGuidancePump() {
+        if (!guidancePumping.compareAndSet(true, false)) return
+        guidanceWorker?.interrupt()
+        guidanceWorker = null
+        runCatching { guidanceChannel?.stopPlayback() }
+    }
+
+    private fun pump(profile: Profile, channel: AudioChannel, flag: AtomicBoolean) {
+        val framesPerPacket = (profile.sampleRate * PACKET_INTERVAL_MS / 1000L).toInt()
+        val bytesPerPacket = framesPerPacket * profile.channels * 2
+        var packets = 0
+        var pulledTotal = 0L
+        var nextPacketAt = System.nanoTime()
+        var pullFailLogged = false
+        try {
+            while (flag.get() && running.get()) {
+                val now = System.nanoTime()
+                val sleepNs = nextPacketAt - now
+                if (sleepNs > 0L) {
+                    val ms = sleepNs / 1_000_000L
+                    val ns = (sleepNs % 1_000_000L).toInt()
+                    Thread.sleep(ms, ns)
+                } else if (sleepNs < -PACKET_INTERVAL_NS) {
+                    val behind =
+                        ((-sleepNs) / PACKET_INTERVAL_NS).toInt().coerceIn(1, MAX_DISCARD_PACKETS)
+                    discardStale(profile, bytesPerPacket, behind)
+                    nextPacketAt = System.nanoTime()
+                }
+
+                // Fresh buffer each packet: AudioChannel.sendData may queue the array without copy
+                // when offset headroom starts at 0 (see MediaSinkChannel.sendData).
+                val packet = ByteArray(10 + bytesPerPacket)
+                val got = try {
+                    profile.pull(bytesPerPacket)
+                } catch (e: Throwable) {
+                    if (!pullFailLogged) {
+                        pullFailLogged = true
+                        Log.w(AapConsts.TAG, "pull ${profile.label} failed — silence", e)
+                    }
+                    ByteArray(0)
+                }
+                if (got.isNotEmpty()) {
+                    val n = minOf(got.size, bytesPerPacket)
+                    System.arraycopy(got, 0, packet, 10, n)
+                    pulledTotal += n
+                }
+                val tsUs = System.nanoTime() / 1_000L
+                channel.sendPcm(packet, 10, bytesPerPacket, tsUs)
+                packets++
+                if (packets <= 3 || packets % 500 == 0) {
+                    Log.i(
+                        AapConsts.TAG,
+                        "AapAudio ${profile.label} pkt=$packets pulled=${pulledTotal / 1024}KB " +
+                            "underflow=${channel.underflows} dropped=${channel.droppedChunks}",
+                    )
+                }
+                nextPacketAt += PACKET_INTERVAL_NS
+            }
+        } catch (_: InterruptedException) {
+            // stop
+        } catch (e: Throwable) {
+            if (flag.get()) Log.w(AapConsts.TAG, "AapAudio ${profile.label} pump ended", e)
+        } finally {
+            flag.set(false)
+            Log.i(AapConsts.TAG, "AapAudio ${profile.label} pump done packets=$packets")
+        }
+    }
+
+    private class Profile(
+        val label: String,
+        val sampleRate: Int,
+        val channels: Int,
+        val pull: (Int) -> ByteArray,
+    )
+
+    companion object {
+        private const val PACKET_INTERVAL_MS = 20L
+        private const val PACKET_INTERVAL_NS = PACKET_INTERVAL_MS * 1_000_000L
+        private const val MAX_DISCARD_PACKETS = 50
+        private const val BITS = 16
+        private const val MEDIA_RATE = 48_000
+        private const val MEDIA_CH = 2
+        private const val GUIDANCE_RATE = 16_000
+        private const val GUIDANCE_CH = 1
+
+        private val MEDIA = Profile(
+            label = "media",
+            sampleRate = MEDIA_RATE,
+            channels = MEDIA_CH,
+            pull = { max -> CoreApi.pullCarPlayAudio(max) },
+        )
+        private val GUIDANCE = Profile(
+            label = "guidance",
+            sampleRate = GUIDANCE_RATE,
+            channels = GUIDANCE_CH,
+            pull = { max -> CoreApi.pullCarPlaySpeechAudio(max) },
+        )
+
+        private fun matchesMedia(c: AudioConfiguration): Boolean =
+            c.samplingRate == MEDIA_RATE &&
+                c.numberOfChannels == MEDIA_CH &&
+                c.numberOfBits == BITS
+
+        private fun matchesGuidance(c: AudioConfiguration): Boolean =
+            c.samplingRate == GUIDANCE_RATE &&
+                c.numberOfChannels == GUIDANCE_CH &&
+                c.numberOfBits == BITS
+
+        private fun flushPreTx(profile: Profile) {
+            var dropped = 0
+            for (i in 0 until 8) {
+                val got = try {
+                    profile.pull(64 * 1024)
+                } catch (_: Throwable) {
+                    ByteArray(0)
+                }
+                if (got.isEmpty()) break
+                dropped += got.size
+            }
+            if (dropped > 0) {
+                Log.i(AapConsts.TAG, "AapAudio ${profile.label} flushed pre-TX ${dropped / 1024}KB")
+            }
+        }
+
+        private fun discardStale(profile: Profile, bytesPerPacket: Int, packets: Int) {
+            val want = bytesPerPacket * packets.coerceIn(1, MAX_DISCARD_PACKETS)
+            try {
+                profile.pull(want)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+}

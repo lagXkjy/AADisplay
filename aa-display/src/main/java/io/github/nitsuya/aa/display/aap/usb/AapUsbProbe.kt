@@ -1,0 +1,148 @@
+package io.github.nitsuya.aa.display.aap.usb
+
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.usb.UsbAccessory
+import android.hardware.usb.UsbManager
+import android.os.Build
+import android.os.SystemClock
+import android.util.Log
+import io.github.nitsuya.aa.display.aap.AapConsts
+import io.github.nitsuya.aa.display.aap.AapProjectionService
+import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
+import io.github.nitsuya.aa.display.carplay.CarPlayChannel
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
+
+/**
+ * Attach an already-present AOA accessory (DHU / factory HU) when the
+ * [USB_ACCESSORY_ATTACHED] intent was missed (wrong filter, UriActivity, etc.).
+ *
+ * Requests [UsbManager] permission when needed — without it [UsbManager.openAccessory]
+ * always fails and the session stays on wireless listen.
+ */
+object AapUsbProbe {
+    private const val ACTION_PERM = "io.github.nitsuya.aa.display.aap.USB_PROBE_PERM"
+    private val busy = AtomicBoolean(false)
+
+    fun tryAttachExisting(context: Context) {
+        if (!CarPlayChannel.useAapEgress(context)) return
+        if (AapProjectionService.isProtocolLive()) {
+            Log.i(AapConsts.TAG, "USB probe: AAP already live — skip")
+            return
+        }
+        if (!busy.compareAndSet(false, true)) {
+            Log.i(AapConsts.TAG, "USB probe: already in progress")
+            return
+        }
+        val app = context.applicationContext
+        thread(name = "aap-usb-probe", isDaemon = true) {
+            try {
+                probeOnce(app)
+            } catch (e: Throwable) {
+                Log.e(AapConsts.TAG, "USB probe failed", e)
+            } finally {
+                busy.set(false)
+            }
+        }
+    }
+
+    private fun probeOnce(app: Context) {
+        val usb = app.getSystemService(UsbManager::class.java) ?: return
+        val list = usb.accessoryList
+        if (list.isNullOrEmpty()) {
+            Log.i(AapConsts.TAG, "USB probe: no accessories")
+            return
+        }
+        val target = list.firstOrNull { UsbAccessoryTransport.isAndroidAuto(it) } ?: run {
+            Log.i(
+                AapConsts.TAG,
+                "USB probe: accessories present but none match AA/DHU " +
+                    list.joinToString { "${it.manufacturer}/${it.model}" },
+            )
+            return
+        }
+        Log.i(
+            AapConsts.TAG,
+            "USB probe: found ${target.manufacturer}/${target.model}/${target.version} " +
+                "perm=${usb.hasPermission(target)}",
+        )
+        if (!usb.hasPermission(target)) {
+            if (!requestPermissionBlocking(app, usb, target)) {
+                Log.w(AapConsts.TAG, "USB probe: permission denied — unlock phone and allow USB accessory")
+                return
+            }
+        }
+        if (AapProjectionService.isProtocolLive()) return
+        PhoneCertStore.ensureExtracted(app, force = false)
+        val transport = UsbAccessoryTransport(usb, target)
+        val peer = "usb:${target.manufacturer}:${target.model}:${target.version}"
+        val ok = AapProjectionService.attachTransport(transport, peer, trustOnFirstUse = true)
+        Log.i(AapConsts.TAG, "USB probe: attachTransport accepted=$ok")
+        if (!ok) {
+            AapProjectionService.start(app)
+            val deadline = SystemClock.elapsedRealtime() + 15_000L
+            while (!AapProjectionService.isProtocolLive() &&
+                SystemClock.elapsedRealtime() < deadline
+            ) {
+                AapProjectionService.attachTransport(transport, peer, trustOnFirstUse = true)
+                Thread.sleep(200)
+            }
+        }
+        Log.i(
+            AapConsts.TAG,
+            "USB probe: done live=${AapProjectionService.isProtocolLive()} " +
+                "status=${AapProjectionService.lastStatus()}",
+        )
+    }
+
+    private fun requestPermissionBlocking(
+        app: Context,
+        usb: UsbManager,
+        accessory: UsbAccessory,
+    ): Boolean {
+        val lock = Object()
+        var granted: Boolean? = null
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != ACTION_PERM) return
+                val ok = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                synchronized(lock) {
+                    granted = ok
+                    lock.notifyAll()
+                }
+            }
+        }
+        val filter = IntentFilter(ACTION_PERM)
+        if (Build.VERSION.SDK_INT >= 33) {
+            app.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            app.registerReceiver(receiver, filter)
+        }
+        try {
+            val pi = PendingIntent.getBroadcast(
+                app,
+                1,
+                Intent(ACTION_PERM).setPackage(app.packageName),
+                PendingIntent.FLAG_MUTABLE,
+            )
+            Log.i(AapConsts.TAG, "USB probe: requesting accessory permission")
+            usb.requestPermission(accessory, pi)
+            val waitUntil = SystemClock.elapsedRealtime() + 45_000L
+            synchronized(lock) {
+                while (granted == null && SystemClock.elapsedRealtime() < waitUntil) {
+                    val left = waitUntil - SystemClock.elapsedRealtime()
+                    if (left <= 0) break
+                    lock.wait(left.coerceAtMost(500))
+                }
+            }
+        } finally {
+            runCatching { app.unregisterReceiver(receiver) }
+        }
+        return granted == true || usb.hasPermission(accessory)
+    }
+}

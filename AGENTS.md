@@ -106,7 +106,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 
 ### LSPosed scope
 
-见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`。改 scope 会影响模块生效范围，勿随意删改。仅无线 CarPlay（无 gearhead）时用户只需勾 `android`；`gearhead` 项保留给 AA 用户。`CarPlayChannel` 在未装 gearhead 时默认 `CHANNEL_CARPLAY`。
+见 `aa-display/src/main/res/values/arrays.xml`：`android`、`gearhead`。改 scope 会影响模块生效范围，勿随意删改。仅无线 CarPlay / 原生 AAP（无 gearhead 钩子）时用户只需勾 `android`；`gearhead` 项保留给遗留 AA 原路用户。`CarPlayChannel`：已装 AA 默认 `CHANNEL_AAP`，未装默认 `CHANNEL_CARPLAY`。
 仪表横条歌词：QQ 音乐车载（`com.tencent.qqmusiccar` → `METADATA_KEY_LYRIC`）+ QQ 音乐 HD（`com.tencent.qqmusicpad` → 同字段）+ 汽水（`com.luna.music`）——三源同时只能一个播放，谁在播谁更新仪表。音视频互斥：`AvMediaArbiter`（音乐 ∪ 抖音）单发声；粘性焦点——正在播的 AvMedia 不因地图/浏览器压顶自动丢权，仅停播 / 出栈 / 另一 Av 开始播时让出；`ClusterLyricMirror` 只绑三源中 PLAYING 的赢家。链路：`ClusterLyricMirror` → `ClusterLyricStore` → `:cluster` `ClusterLyricMediaService` Title 出站。换句仍改 TITLE；`AaClusterLyricEgressHook` 读壳 metadata 注入歌词/封面、HU 出站补 album、`setTitle` 原地改字（AA 顶栏）；同曲换句不 `scheduleProgressReassert`；Egress：`play_q`/`play_l` 500ms 窗 + `pushPlaybackNow`（Store 整秒 **+1s**，不 hook GAL）。MEDIA_ID 按曲稳定（不含 artRevision）；真机不闪 0:00（见 `docs/CLUSTER_LYRIC_CLOCK.md`）。`AaMediaAllowlistHook` 免开未知来源。LSPosed scope 仅 `android` + `gearhead`。
 
 ## 4. 构建与验证
@@ -247,6 +247,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 | 系统 VirtualDisplay / Binder 桥 | `xposed/hook/AndroidHook.kt`、`CoreManagerService.kt` |
 | VD DPI pin / Metrics 镜像 / 竖屏 letterbox 铺满 / Presentation 拦截 / IME 落屏 | `xposed/hook/VdDensityPin.kt`、`VdMetricsMirror.kt`、`VdOrientationFill.kt`、`PanePresentationGuard.kt`、`VdImeDisplayPin.kt` |
 | 手机蓝牙键鼠（操作 / 双窗 / 分隔条 / 堆栈） | [docs/EXECUTION.md](docs/EXECUTION.md) §10.1；`xposed/hook/PhoneHidRedirect.kt` |
+| **原生 AAP 出口（无 gearhead 钩子）** | [docs/AAP_NATIVE.md](docs/AAP_NATIVE.md)；`aap/`（`AapProjectionService` / `PhoneCertStore` / `AaApkKeyExtractor`）；`vendor/aare-aap`；通道 `CarPlayChannel.CHANNEL_AAP` |
 | 无线 CarPlay 出口（与 AA 双轨） | [docs/EXECUTION.md](docs/EXECUTION.md) §14（§14.1 播放链路速查 + 包边界）；**建连时序** [docs/CARPLAY_CONNECT.md](docs/CARPLAY_CONNECT.md)；**连热点仍走流量** [docs/CARPLAY_WIFI_CELLULAR.md](docs/CARPLAY_WIFI_CELLULAR.md)；协议外参 [docs/CARPLAY_REFS.md](docs/CARPLAY_REFS.md)；`carplay/`、`egress/ProjectionSessionGate`、`xposed/carplay/`；iAP2 → `protocol/Iap2Session.kt` |
 | **有线 CarPlay（USB fake-iPhone，WIP）** | 归档 [`archive/usb-carplay/`](archive/usb-carplay/)（`usb-gadget` / 文档 / pair 实验室）；App 侧 `CarPlayUsb*` 仍在树内但 `CarPlayChannel.USB_CARPLAY_ENABLED=false`，UI 隐藏，残留 `cp-usb` 回落 AA |
 | 重连分辨率结算（HU vs 内容区） | [docs/COOLWALK_FACETBAR.md](docs/COOLWALK_FACETBAR.md)、`util/DisplayProfileSettle.kt` + `CoreManagerService.resolveDisplayProfile`；`AaUiHook` starve `GhFacetBar` |

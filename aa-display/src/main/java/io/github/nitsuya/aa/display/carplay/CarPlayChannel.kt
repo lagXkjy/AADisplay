@@ -10,30 +10,28 @@ import java.io.File
  * User-selected video egress channel, persisted app-side.
  *
  * Channels are **mutually exclusive** — one paints at a time:
- *  - [CHANNEL_AA]: stock Android Auto only; CarPlay Source must not run.
- *  - [CHANNEL_CARPLAY]: wireless CarPlay Source + [CarPlayHostActivity] GL panes;
- *    never tee the AA shell into CarPlay.
- *  - [CHANNEL_CARPLAY_USB]: wired fake-iPhone path via aad-usb + NCM (no BT/Bonjour).
- *    Gated by [USB_CARPLAY_ENABLED] (WIP; off in public builds).
+ *  - [CHANNEL_AA]: stock Android Auto (gearhead) only.
+ *  - [CHANNEL_CARPLAY]: wireless CarPlay Source + [CarPlayHostActivity] GL panes.
+ *  - [CHANNEL_CARPLAY_USB]: wired fake-iPhone path (WIP; gated by [USB_CARPLAY_ENABLED]).
+ *  - [CHANNEL_AAP]: native AAP phone client (AARE protocol) — no gearhead DexKit hooks.
  *
- * Persistence uses [Context.getFilesDir] (not SharedPreferences). On some OEMs
- * SharedPreferences never materializes `shared_prefs/` (silent no-ops), so AutoArm
- * would always see default AA after reboot and skip FGS / `…cafe` RFCOMM listen.
+ * Persistence uses [Context.getFilesDir] (not SharedPreferences).
  *
- * Default when nothing is persisted: [CHANNEL_AA] if Android Auto (gearhead) is
- * installed, otherwise [CHANNEL_CARPLAY] so phones without AA can use wireless
- * CarPlay without a manual channel switch.
+ * Default when nothing is persisted: [CHANNEL_AAP] if Android Auto (gearhead) is installed
+ * (cert can be auto-extracted); otherwise [CHANNEL_CARPLAY].
  */
 object CarPlayChannel {
     const val CHANNEL_AA = 0
     const val CHANNEL_CARPLAY = 1
     const val CHANNEL_CARPLAY_USB = 2
+    /** Native AAP egress — bypasses gearhead process / DexKit hooks. */
+    const val CHANNEL_AAP = 3
 
     /** Same package LSPosed / BridgeService resolve for Android Auto. */
     const val GEARHEAD_PACKAGE = "com.google.android.projection.gearhead"
 
     /**
-     * Wired USB egress — WIP. Keep false for public builds so leftover `cp-usb`
+     * Wired USB CarPlay egress — WIP. Keep false for public builds so leftover `cp-usb`
      * cannot arm FGS or enter [CarPlaySourceSession] USB transport.
      */
     const val USB_CARPLAY_ENABLED = false
@@ -57,7 +55,7 @@ object CarPlayChannel {
 
     /** Channel used when no file / legacy prefs exist yet. */
     fun defaultChannel(context: Context): Int =
-        if (isAndroidAutoInstalled(context)) CHANNEL_AA else CHANNEL_CARPLAY
+        if (isAndroidAutoInstalled(context)) CHANNEL_AAP else CHANNEL_CARPLAY
 
     fun get(context: Context): Int {
         val app = context.applicationContext
@@ -66,7 +64,6 @@ object CarPlayChannel {
             return resolveActive(app, raw, clearDirtyUsb = true)
         }
         val def = defaultChannel(app)
-        // Persist so BootArm / AutoArm see an explicit choice after first read.
         writeFile(app, def)
         Log.i(CarPlayConsts.TAG, "CarPlayChannel default applied channel=$def aaInstalled=${isAndroidAutoInstalled(app)}")
         return def
@@ -78,7 +75,6 @@ object CarPlayChannel {
         if (!writeFile(app, value)) {
             Log.e(CarPlayConsts.TAG, "CarPlayChannel set failed channel=$value")
         }
-        // Best-effort legacy mirror (ignore failures — SP has been unreliable on some OEMs).
         try {
             app.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
                 .edit()
@@ -88,7 +84,7 @@ object CarPlayChannel {
         }
     }
 
-    /** Active CarPlay Source egress (not AA). USB counts only when [USB_CARPLAY_ENABLED]. */
+    /** Active CarPlay Source egress (not AA / AAP). USB counts only when [USB_CARPLAY_ENABLED]. */
     fun useCarPlayEgress(context: Context): Boolean {
         val ch = get(context)
         return ch == CHANNEL_CARPLAY || (USB_CARPLAY_ENABLED && ch == CHANNEL_CARPLAY_USB)
@@ -99,7 +95,11 @@ object CarPlayChannel {
 
     fun useWirelessCarPlay(context: Context): Boolean = get(context) == CHANNEL_CARPLAY
 
-    /** Map a persisted / requested channel to what is allowed to be active. */
+    fun useAapEgress(context: Context): Boolean = get(context) == CHANNEL_AAP
+
+    /** Legacy gearhead shell path. */
+    fun useGearheadAa(context: Context): Boolean = get(context) == CHANNEL_AA
+
     private fun resolveActive(app: Context, channel: Int, clearDirtyUsb: Boolean): Int {
         if (channel == CHANNEL_CARPLAY_USB && !USB_CARPLAY_ENABLED) {
             val fallback = defaultChannel(app)
@@ -112,6 +112,7 @@ object CarPlayChannel {
         return when (channel) {
             CHANNEL_CARPLAY -> CHANNEL_CARPLAY
             CHANNEL_CARPLAY_USB -> CHANNEL_CARPLAY_USB
+            CHANNEL_AAP -> CHANNEL_AAP
             else -> CHANNEL_AA
         }
     }
@@ -119,6 +120,7 @@ object CarPlayChannel {
     private fun normalizeForWrite(app: Context, channel: Int): Int = when (channel) {
         CHANNEL_CARPLAY -> CHANNEL_CARPLAY
         CHANNEL_CARPLAY_USB -> if (USB_CARPLAY_ENABLED) CHANNEL_CARPLAY_USB else defaultChannel(app)
+        CHANNEL_AAP -> CHANNEL_AAP
         else -> CHANNEL_AA
     }
 
@@ -129,7 +131,9 @@ object CarPlayChannel {
         } catch (_: Throwable) {
             -1
         }
-        if (legacy != CHANNEL_CARPLAY && legacy != CHANNEL_AA && legacy != CHANNEL_CARPLAY_USB) {
+        if (legacy != CHANNEL_CARPLAY && legacy != CHANNEL_AA &&
+            legacy != CHANNEL_CARPLAY_USB && legacy != CHANNEL_AAP
+        ) {
             return null
         }
         val active = resolveActive(app, legacy, clearDirtyUsb = false)
@@ -146,6 +150,7 @@ object CarPlayChannel {
             when (f.readText().trim()) {
                 CHANNEL_CARPLAY.toString(), "cp", "carplay" -> CHANNEL_CARPLAY
                 CHANNEL_CARPLAY_USB.toString(), "cp-usb", "carplay-usb", "usb" -> CHANNEL_CARPLAY_USB
+                CHANNEL_AAP.toString(), "aap", "native-aa" -> CHANNEL_AAP
                 CHANNEL_AA.toString(), "aa" -> CHANNEL_AA
                 else -> null
             }
@@ -178,12 +183,10 @@ object CarPlayChannel {
         }
     }
 
-    /** Best-effort Settings.Global so system_server BootArm can read without CE files. */
     private fun mirrorSettings(app: Context, channel: Int) {
         try {
             Settings.Global.putInt(app.contentResolver, SETTINGS_CHANNEL, channel)
         } catch (e: Throwable) {
-            // App uid lacks WRITE_SECURE_SETTINGS; BootArm also reads the CE file.
             Log.w(
                 CarPlayConsts.TAG,
                 "CarPlayChannel Settings.Global mirror skipped: ${e.message}",

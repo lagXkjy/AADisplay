@@ -181,7 +181,14 @@ object CarPlayBootArm {
                     }
                     val fallback = CarPlayChannel.defaultChannel(app)
                     mirrorSettings(app, fallback)
-                    return fallback == CarPlayChannel.CHANNEL_CARPLAY
+                    return fallback == CarPlayChannel.CHANNEL_CARPLAY ||
+                        fallback == CarPlayChannel.CHANNEL_AAP
+                }
+                CarPlayChannel.CHANNEL_AAP.toString(), "aap", "native-aa" -> {
+                    // Native AAP is armed from the app process (AapProjectionService),
+                    // not system_server cafe RFCOMM — BootArm only mirrors settings.
+                    mirrorSettings(app, CarPlayChannel.CHANNEL_AAP)
+                    return false
                 }
                 CarPlayChannel.CHANNEL_AA.toString(), "aa" -> {
                     mirrorSettings(app, CarPlayChannel.CHANNEL_AA)
@@ -189,11 +196,14 @@ object CarPlayBootArm {
                 }
             }
         }
-        // No persisted choice yet: phones without gearhead default to CarPlay.
+        // No persisted choice yet: AA installed → AAP; else CarPlay.
         val def = CarPlayChannel.defaultChannel(app)
         if (def == CarPlayChannel.CHANNEL_CARPLAY) {
             mirrorSettings(app, CarPlayChannel.CHANNEL_CARPLAY)
             return true
+        }
+        if (def == CarPlayChannel.CHANNEL_AAP) {
+            mirrorSettings(app, CarPlayChannel.CHANNEL_AAP)
         }
         return false
     }

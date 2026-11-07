@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Factory head units (classic AOA identity). -->
+    <usb-accessory
+        manufacturer="Android"
+        model="Android Auto" />
+    <!-- Google Desktop Head Unit USB AOA mode. -->
+    <usb-accessory
+        manufacturer="Android"
+        model="Android Open Automotive Protocol" />
+</resources>

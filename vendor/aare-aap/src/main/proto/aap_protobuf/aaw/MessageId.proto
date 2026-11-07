@@ -1,0 +1,18 @@
+syntax="proto2";
+
+package aap_protobuf.aaw;
+
+enum MessageId {
+  WIFI_START_REQUEST = 1;
+  WIFI_INFO_REQUEST = 2;
+  WIFI_INFO_RESPONSE = 3;
+  WIFI_VERSION_REQUEST = 4;
+  WIFI_VERSION_RESPONSE = 5;
+  WIFI_CONNECTION_STATUS = 6;
+  WIFI_START_RESPONSE = 7;
+  // AARE: 8-11 from open-headunit's wireless.proto and Gearhead (docs/research/gearhead-notes.md 3.2).
+  WIFI_PING_REQUEST = 8;
+  WIFI_PING_RESPONSE = 9;
+  WIFI_CONNECTION_REJECTION = 10;
+  WIFI_SETUP_INFO = 11;
+}
