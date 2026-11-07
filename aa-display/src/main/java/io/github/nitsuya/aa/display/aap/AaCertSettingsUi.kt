@@ -8,6 +8,7 @@ import android.view.View
 import android.widget.Toast
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
+import io.github.nitsuya.aa.display.carplay.CarPlayChannel
 import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
 import java.util.concurrent.Executors
 
@@ -28,8 +29,10 @@ object AaCertSettingsUi {
             runExtract(activity, binding, force = true)
         }
         refresh(activity, binding)
-        // Warm extract once when the status page opens (idempotent if version matches).
-        runExtract(activity, binding, force = false)
+        // Warm extract only for AAP; CarPlay 通道不显示连车准备卡。
+        if (CarPlayChannel.useAapEgress(activity)) {
+            runExtract(activity, binding, force = false)
+        }
     }
 
     fun refresh(activity: Activity, binding: ActivityMainBinding) {
@@ -75,7 +78,9 @@ object AaCertSettingsUi {
         binding: ActivityMainBinding,
         st: PhoneCertStore.Status,
     ) {
-        binding.panelAapCert.visibility = View.VISIBLE
+        val aap = CarPlayChannel.useAapEgress(activity)
+        binding.panelAapCert.visibility = if (aap) View.VISIBLE else View.GONE
+        if (!aap) return
         binding.tvAapCertState.text = st.summary
         val color = when {
             st.hasCarService && st.expired -> activity.getColor(R.color.color_warning)
@@ -97,19 +102,15 @@ object AaCertSettingsUi {
                 append("\n可用至 ")
                 append(PhoneCertStore.formatDate(st.notAfter))
             }
-            if (st.hasCarService) {
-                append("\n更新 Android Auto 后会自动重新准备；卸掉应用也不影响已准备好的连车信息。")
-            } else {
-                append("\n请先安装 Android Auto，再点下方按钮。多数原厂车机需要这一步才能连上。")
-            }
+            append("\n部分较严车机：证书过期后，安装最新 Android Auto 再重新准备即可。")
         }
         binding.tvAapCertDetail.text = detail
         binding.btnAapCertExtract.text = when {
             !st.gearheadInstalled && st.hasCarService && (st.expired || st.nearExpiry) ->
-                "安装较新 Android Auto 后再准备"
-            !st.gearheadInstalled -> "安装 Android Auto 后点此重试"
-            st.expired || st.nearExpiry -> "更新 Android Auto 后重新准备"
-            st.hasCarService -> "重新准备（更新 Android Auto 后）"
+                "安装最新 Android Auto 后再准备"
+            !st.gearheadInstalled -> "安装 Android Auto 后重试"
+            st.expired || st.nearExpiry -> "重新准备"
+            st.hasCarService -> "重新准备"
             else -> "从已安装的 Android Auto 准备"
         }
     }

@@ -71,6 +71,7 @@ class SplitDisplayController(
     internal val recentProvider = RecentTaskProvider(this)
     internal val stacks = PaneAppStack(this)
     internal val lockedPeel = SplitLockedPeelController(this)
+    internal val hidChrome = SplitHidChromeController(this)
     internal val ime = SplitImeController(this)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -668,6 +669,7 @@ class SplitDisplayController(
         mExplicitlyClosedPackages.clear()
         ime.stop()
         lockedPeel.reset()
+        hidChrome.reset()
         mOrientationLockedDisplays.clear()
         mImePolicyAppliedDisplays.clear()
         mHandler.removeCallbacks(launch.mDebouncedAtmsSettle)
@@ -736,10 +738,11 @@ class SplitDisplayController(
     }
 
     /**
-     * Locked-fullscreen peel for phone HID (Car SDK presentation inject retired).
-     * @return true when [lockedPeel] consumed the event.
+     * Phone HID chrome: locked-keyguard peel first, then Host divider / peel / Recents
+     * ([SplitHidChromeController] — replaces retired Car SDK [SplitDividerView]).
      */
-    fun onTouchAaDisplay(event: MotionEvent): Boolean = lockedPeel.tryHandle(event)
+    fun onTouchAaDisplay(event: MotionEvent): Boolean =
+        lockedPeel.tryHandle(event) || hidChrome.tryHandle(event)
 
     fun hideIme() {
         ime.hide()

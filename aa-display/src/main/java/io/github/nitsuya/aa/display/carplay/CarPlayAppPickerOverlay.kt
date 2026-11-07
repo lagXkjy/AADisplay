@@ -150,10 +150,12 @@ object CarPlayAppPickerOverlay {
     fun show(pane: Int) {
         if (!SplitPane.isValid(pane)) return
         targetPane = pane
-        CarPlayRecentsOverlay.close()
         scrollY = 0f
         touchMoved = false
+        // Mark visible before closing Recents so shell-capture does not drop in between.
         visible.set(true)
+        CarPlayRecentsOverlay.close()
+        HidShellOverlayGate.sync()
         val gen = loadGeneration.incrementAndGet()
         loadExecutor.execute {
             val built = try {
@@ -173,6 +175,7 @@ object CarPlayAppPickerOverlay {
             loadGeneration.incrementAndGet()
             scrollY = 0f
             Log.i(TAG, "CarPlay app picker closed")
+            HidShellOverlayGate.sync()
         }
     }
 

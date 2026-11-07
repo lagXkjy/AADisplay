@@ -84,6 +84,7 @@ object CarPlayRecentsOverlay {
         if (visible.compareAndSet(false, true)) {
             refresh()
             Log.i(TAG, "CarPlay recents overlay opened")
+            HidShellOverlayGate.sync()
         } else {
             refresh()
         }
@@ -92,6 +93,7 @@ object CarPlayRecentsOverlay {
     fun close() {
         if (visible.compareAndSet(true, false)) {
             Log.i(TAG, "CarPlay recents overlay closed")
+            HidShellOverlayGate.sync()
         }
     }
 

@@ -223,4 +223,18 @@ interface ICoreManager {
      * for Stub ordinals; requires system_server reload (reboot).
      */
     void armBluetoothDiscoverable();
+
+    /**
+     * Host Recents / app-picker visibility → phone BT mouse shell-capture gate.
+     * True while either overlay is open so HID clicks route to Host chrome
+     * (AaDisplay presentation retired). Appended at end for Stub ordinals.
+     */
+    oneway void reportHidShellOverlay(boolean open);
+
+    /**
+     * Drain queued phone-BT shell touches (normalized 0..1) for Host Recents /
+     * picker. Flat triplets: action, xNorm, yNorm, … Empty when idle.
+     * Appended at end for Stub ordinals; requires system_server reload (reboot).
+     */
+    float[] drainHidShellTouches();
 }

@@ -1,9 +1,11 @@
 package io.github.nitsuya.aa.display.carplay
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
+import android.graphics.drawable.Drawable
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.opengl.Matrix
@@ -13,6 +15,9 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
+import androidx.core.content.ContextCompat
+import io.github.nitsuya.aa.display.CoreApi
+import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.carplay.gles.EglCore
 import io.github.nitsuya.aa.display.carplay.gles.EglWindowSurface
 import io.github.nitsuya.aa.display.carplay.gles.GlUtil
@@ -70,6 +75,11 @@ class CarPlayGlCompositor {
     private var overlayTexId = 0
     private var overlayBitmap: Bitmap? = null
     private val imeChipLayout = RectF()
+    /** Phone BT mouse sprite (Lucide); loaded once when [bindHidCursorDrawable] is called. */
+    private var hidCursorDrawable: Drawable? = null
+    private var lastHidOpenRecentsSeq = Float.NaN
+    private var lastHidFlipSeq = Float.NaN
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private var encodeWidth = CarPlayConsts.ENCODE_WIDTH
     private var encodeHeight = CarPlayConsts.ENCODE_HEIGHT
@@ -191,6 +201,15 @@ class CarPlayGlCompositor {
     }
 
     /** Keep in lockstep with VD dpi after a status-page override. */
+    /** Load Lucide pointer once for Host chrome overlay (phone BT mouse). */
+    fun bindHidCursorDrawable(context: Context) {
+        if (hidCursorDrawable != null) return
+        hidCursorDrawable = runCatching {
+            ContextCompat.getDrawable(context.applicationContext, R.drawable.ic_hid_cursor_pointer)
+                ?.mutate()
+        }.getOrNull()
+    }
+
     fun updateDensityDpi(dpi: Int) {
         densityDpi = dpi.coerceAtLeast(1)
     }
@@ -330,6 +349,9 @@ class CarPlayGlCompositor {
         secondarySurfaceRef.set(null)
         encoderAttached.set(false)
         onRateReport = null
+        hidCursorDrawable = null
+        lastHidOpenRecentsSeq = Float.NaN
+        lastHidFlipSeq = Float.NaN
         Log.i(CarPlayConsts.TAG, "CarPlayGlCompositor stopped")
     }
 
@@ -510,16 +532,29 @@ class CarPlayGlCompositor {
             seamX = -1
             chromeFullscreen = true
         } else {
-            val ratio = CarPlayInputBridge.primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+            val raw = CarPlayInputBridge.primaryRatio.coerceIn(0f, 1f)
             val gap = SplitPane.dividerPx(densityDpi)
-            val (leftW, rightW) = splitStripSizes(ratio)
-            // Keep ST buffers == VD pane sizes (grow/shrink) every frame is cheap (no-op if same).
-            applyPaneBufferSize(0, leftW, lh)
-            applyPaneBufferSize(1, rightW, lh)
-            drawPane(0, ox, oy, leftW, lh)
-            drawPane(1, ox + leftW + gap, oy, rightW, lh)
-            seamX = leftW + gap / 2
-            chromeFullscreen = false
+            val usable = (lw - gap).coerceAtLeast(2)
+            // HID divider drag past 20/80: morph both full panes (peel-style) so the
+            // seam can reach fullscreen-enter edges instead of hard-stopping.
+            if (raw < SplitPane.MIN_RATIO || raw > SplitPane.MAX_RATIO) {
+                val leftW = (usable * raw).toInt().coerceIn(0, usable)
+                val rightW = (usable - leftW).coerceAtLeast(0)
+                applyPaneBufferSize(0, lw, lh)
+                applyPaneBufferSize(1, lw, lh)
+                drawPeelClipPreview(ox, oy, lw, lh, leftW, gap, rightW)
+                seamX = leftW + gap / 2
+                chromeFullscreen = false
+            } else {
+                val (leftW, rightW) = splitStripSizes(raw)
+                // Keep ST buffers == VD pane sizes (grow/shrink) every frame is cheap (no-op if same).
+                applyPaneBufferSize(0, leftW, lh)
+                applyPaneBufferSize(1, rightW, lh)
+                drawPane(0, ox, oy, leftW, lh)
+                drawPane(1, ox + leftW + gap, oy, rightW, lh)
+                seamX = leftW + gap / 2
+                chromeFullscreen = false
+            }
         }
         drawChromeLayer(seamX, chromeFullscreen, ox, oy, lw, lh)
 
@@ -609,6 +644,9 @@ class CarPlayGlCompositor {
      * Divider / peel (always) + Recents / picker overlays into one Canvas texture.
      * [seamX] is local to the content rect; &lt; 0 means fullscreen peel mode.
      * Drawn into the content rect of the encode frame so HU margin crop keeps chrome aligned.
+     *
+     * Also pulls [CoreApi.getHidCursorOverlay] each frame (AaDisplayActivity poll replacement):
+     * phone BT cursor tip, locked-peel preview, Recents open, live split ratio / fullscreen.
      */
     private fun drawChromeLayer(
         seamX: Int,
@@ -618,6 +656,7 @@ class CarPlayGlCompositor {
         lw: Int,
         lh: Int,
     ) {
+        val hid = pullHidShellState()
         val showPicker = CarPlayAppPickerOverlay.isVisible()
         val showRecents = CarPlayRecentsOverlay.isVisible()
         val bmp = ensureOverlayBitmap()
@@ -625,10 +664,19 @@ class CarPlayGlCompositor {
         canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
         canvas.save()
         canvas.translate(ox.toFloat(), oy.toFloat())
-        if (fullscreen) {
+        val chromeFs = if (hid.peelPreview) false else fullscreen
+        val chromeSeam = if (hid.peelPreview) {
+            val gap = SplitPane.dividerPx(densityDpi)
+            val usable = (lw - gap).coerceAtLeast(2)
+            val leftW = (usable * hid.peelRatio.coerceIn(0f, 1f)).toInt().coerceIn(0, usable)
+            leftW + gap / 2
+        } else {
+            seamX
+        }
+        if (chromeFs) {
             CarPlayChromePainter.drawPeelTab(canvas, lw, lh)
-        } else if (seamX >= 0) {
-            CarPlayChromePainter.drawSplitDivider(canvas, lw, lh, seamX)
+        } else if (chromeSeam >= 0) {
+            CarPlayChromePainter.drawSplitDivider(canvas, lw, lh, chromeSeam)
         }
         if (!showRecents && !showPicker && SplitPane.isValid(CarPlayImeChip.pane)) {
             if (CarPlayChromePainter.layoutHideImeChip(
@@ -637,7 +685,7 @@ class CarPlayGlCompositor {
                     lh,
                     densityDpi,
                     CarPlayImeChip.pane,
-                    fullscreen,
+                    chromeFs,
                     CarPlayInputBridge.primaryRatio,
                     CarPlayImeChip.label,
                 )
@@ -655,6 +703,15 @@ class CarPlayGlCompositor {
         }
         if (showPicker) {
             CarPlayAppPickerOverlay.draw(canvas, lw, lh)
+        }
+        if (hid.cursorVisible) {
+            CarPlayChromePainter.drawHidCursor(
+                canvas,
+                hid.cursorX,
+                hid.cursorY,
+                densityDpi,
+                hidCursorDrawable,
+            )
         }
         canvas.restore()
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTexId)
@@ -693,6 +750,85 @@ class CarPlayGlCompositor {
         existing?.recycle()
         return Bitmap.createBitmap(encodeWidth, encodeHeight, Bitmap.Config.ARGB_8888).also {
             overlayBitmap = it
+        }
+    }
+
+    private data class HidShellPull(
+        val cursorVisible: Boolean = false,
+        val cursorX: Float = 0f,
+        val cursorY: Float = 0f,
+        val peelPreview: Boolean = false,
+        val peelRatio: Float = 0.5f,
+    )
+
+    /**
+     * One Binder pull per encode frame — replaces AaDisplayActivity's 16 ms poll of
+     * [CoreApi.getHidCursorOverlay]. Applies live split/fullscreen into
+     * [CarPlayInputBridge] so phone HID chrome stays in sync with VD sizes.
+     */
+    private fun pullHidShellState(): HidShellPull {
+        val s = runCatching { CoreApi.hidCursorOverlay }.getOrNull() ?: return HidShellPull()
+        drainAndDispatchHidShellTouches()
+        val fingerChrome = CarPlayInputBridge.isChromeGestureActive()
+        if (!fingerChrome && s.size >= 11) {
+            // Allow 0..1 so HID divider edge-drag preview can pass MIN/MAX.
+            val ratio = s[9].coerceIn(0f, 1f)
+            val fs = s[10].toInt()
+            if (CarPlayInputBridge.primaryRatio != ratio) {
+                CarPlayInputBridge.primaryRatio = ratio
+            }
+            if (CarPlayInputBridge.fullscreenPane != fs) {
+                CarPlayInputBridge.fullscreenPane = fs
+            }
+        }
+        if (s.size >= 9 && s[8] != lastHidOpenRecentsSeq) {
+            lastHidOpenRecentsSeq = s[8]
+            // Seq starts at 0; only open on a real bump from system_server.
+            if (s[8] > 0f) {
+                mainHandler.post { CarPlayRecentsOverlay.open() }
+            }
+        }
+        if (s.size >= 8 && s[6] != lastHidFlipSeq) {
+            lastHidFlipSeq = s[6]
+            val pane = s[7].toInt()
+            if (s[6] > 0f && SplitPane.isFullscreenPane(pane)) {
+                CarPlayInputBridge.fullscreenPane = pane
+            }
+        }
+        val peel = s.size >= 6 && s[4] > 0.5f
+        if (peel) {
+            CarPlayInputBridge.peelPreviewActive = true
+            CarPlayInputBridge.primaryRatio = s[5].coerceIn(0f, 1f)
+        } else if (CarPlayInputBridge.peelPreviewActive && !fingerChrome) {
+            // Clear HID-driven preview when system_server drops the bit; leave finger chrome alone.
+            CarPlayInputBridge.peelPreviewActive = false
+        }
+        return HidShellPull(
+            cursorVisible = s.isNotEmpty() && s[0] > 0.5f,
+            cursorX = s.getOrElse(1) { 0f },
+            cursorY = s.getOrElse(2) { 0f },
+            peelPreview = peel,
+            peelRatio = if (peel) s[5] else 0.5f,
+        )
+    }
+
+    /**
+     * Phone BT mouse → Host Recents / picker (replaces retired AaDisplay View inject).
+     * Drain on the GL thread; dispatch on main so overlay launch / dismiss stay ordered.
+     */
+    private fun drainAndDispatchHidShellTouches() {
+        val touches = runCatching { CoreApi.drainHidShellTouches() }.getOrNull() ?: return
+        if (touches.isEmpty()) return
+        val copy = touches.copyOf()
+        mainHandler.post {
+            var i = 0
+            while (i + 2 < copy.size) {
+                val action = copy[i].toInt()
+                val x = copy[i + 1].coerceIn(0f, 1f)
+                val y = copy[i + 2].coerceIn(0f, 1f)
+                i += 3
+                runCatching { CarPlayInputBridge.injectNormalized(x, y, action) }
+            }
         }
     }
 

@@ -150,7 +150,14 @@ class DisplaySessionPolicy(
         if (live) {
             // The car is rendering the VD content — never destroy under it.
             mDestroyJob?.cancel()
+            // Host / AAP only (no AaDisplayActivity): arm BT mouse while egress is live.
+            runCatching { PhoneHidRedirect.onSessionLiveChanged(true) }
+                .onFailure { log(TAG, "PhoneHidRedirect egress-live failed", it) }
         } else {
+            if (!mAaUiAttached) {
+                runCatching { PhoneHidRedirect.onSessionLiveChanged(false) }
+                    .onFailure { log(TAG, "PhoneHidRedirect egress-end failed", it) }
+            }
             val cb = mPendingDestroySucceed
             if (!mAaUiAttached && mDestroyJob?.isActive != true && cb != null) {
                 startDelayDestroy(cb)
@@ -899,8 +906,11 @@ class DisplaySessionPolicy(
 
     suspend fun onDestroyPromptly() {
         mAaUiAttached = false
-        runCatching { PhoneHidRedirect.onSessionLiveChanged(false) }
-            .onFailure { log(TAG, "PhoneHidRedirect onDestroyPromptly failed", it) }
+        // Keep HID while secondary egress still owns the car screen (Host recycle).
+        if (!carPlaySessionLive) {
+            runCatching { PhoneHidRedirect.onSessionLiveChanged(false) }
+                .onFailure { log(TAG, "PhoneHidRedirect onDestroyPromptly failed", it) }
+        }
         resetPresentationRecoveryState()
         restorePhoneDisplayPower()
         interactiveMonitor.release()
@@ -911,8 +921,12 @@ class DisplaySessionPolicy(
         // Keep heartbeat through Delay Destroy so soft reconnect can recover OFF panes.
         // Monitor locks are acquired only when phone is off or a pane is OFF/DOZE.
         mAaUiAttached = false
-        runCatching { PhoneHidRedirect.onSessionLiveChanged(false) }
-            .onFailure { log(TAG, "PhoneHidRedirect onDestroy failed", it) }
+        // Do not disarm HID while CarPlay/AAP is still projecting — Delay Destroy waits
+        // on egress, and the car is still the pointer target.
+        if (!carPlaySessionLive) {
+            runCatching { PhoneHidRedirect.onSessionLiveChanged(false) }
+                .onFailure { log(TAG, "PhoneHidRedirect onDestroy failed", it) }
+        }
         resetPresentationRecoveryState()
         mDestroyJob?.cancelAndJoin()
         startDelayDestroy(onDestroySucceed)

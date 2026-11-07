@@ -801,8 +801,9 @@ object PhoneHidRedirect {
     }
 
     /**
-     * Hide the OS mouse sprite — visual cursor is [HidCursorOverlayView] on the
-     * AaDisplay presentation (Activity overlay).
+     * Hide the OS mouse sprite — visual cursor is painted by Host GL
+     * ([CarPlayGlCompositor] / [CarPlayChromePainter.drawHidCursor]) from
+     * [CoreManagerService.hidCursorOverlaySnapshot].
      */
     private fun suppressOsPointerSprite(force: Boolean = false) {
         val now = SystemClock.uptimeMillis()
@@ -862,8 +863,7 @@ object PhoneHidRedirect {
         overlayShellX = sx
         overlayShellY = sy
         lastPointerActivityUptime = SystemClock.uptimeMillis()
-        // In-process state only — AaDisplayActivity polls via getHidCursorOverlay each
-        // frame. Broadcasts were AMS-batched and looked like segment jumps.
+        // Host GL pulls via getHidCursorOverlay each encode frame (AaDisplayActivity retired).
         CoreManagerService.publishHidCursorState(true, sx, sy)
         scheduleCursorIdleHide()
     }
@@ -898,8 +898,8 @@ object PhoneHidRedirect {
     }
 
     /**
-     * Broadcast shell cursor position to [AaDisplayActivity] ([HidCursorOverlayView]).
-     * Presentation coords via [HidSplitLayout.toShellTouch].
+     * Publish shell cursor position for Host GL chrome overlay.
+     * Coords via [HidSplitLayout.toShellTouch] (Host encode / content space).
      */
     private fun publishHidCursorOverlay(
         layout: HidSplitLayout?,
@@ -1488,7 +1488,7 @@ object PhoneHidRedirect {
     private fun shellTouchPoint(layout: HidSplitLayout, x: Float, y: Float): Pair<Float, Float> =
         layout.toShellTouch(x, y)
 
-    /** Recents / picker: inject onto AaDisplay presentation so overlay stays operable. */
+    /** Recents / picker: queue onto Host via [CoreManagerService.injectHidAaUiTouch]. */
     private fun routeShellOverlay(layout: HidSplitLayout, event: MotionEvent): Boolean {
         val pressed = event.buttonState and MotionEvent.BUTTON_PRIMARY != 0 ||
             event.actionMasked == MotionEvent.ACTION_DOWN ||
@@ -1573,8 +1573,8 @@ object PhoneHidRedirect {
     }
 
     /**
-     * Seam / peel (or in-progress chrome drag) → [touchAaDisplay] so
-     * [SplitDividerView] can drag shell ratio / long-press Recents / tap-swap.
+     * Seam / peel (or in-progress chrome drag) → [CoreManagerService.injectHidAaUiTouch]
+     * → [SplitHidChromeController] / locked peel (Car SDK SplitDividerView retired).
      */
     private fun routeDividerIfNeeded(layout: HidSplitLayout, event: MotionEvent): Boolean {
         val pressed = event.buttonState and MotionEvent.BUTTON_PRIMARY != 0 ||

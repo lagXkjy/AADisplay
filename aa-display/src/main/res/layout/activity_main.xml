@@ -118,7 +118,7 @@
                         android:layout_height="wrap_content"
                         android:buttonTint="@color/radio_channel_tint"
                         android:minHeight="48dp"
-                        android:text="Android Auto（投到车机）"
+                        android:text="Android Auto"
                         android:textColor="@color/color_text_primary" />
 
                     <RadioButton
@@ -127,7 +127,7 @@
                         android:layout_height="wrap_content"
                         android:buttonTint="@color/radio_channel_tint"
                         android:minHeight="48dp"
-                        android:text="无线 CarPlay（蓝牙连车机）"
+                        android:text="无线 CarPlay"
                         android:textColor="@color/color_text_primary" />
                 </RadioGroup>
             </LinearLayout>
@@ -239,7 +239,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
                     android:lineSpacingExtra="4dp"
-                    android:text="手机装过 Android Auto 即可。用蓝牙或数据线连车机；连上后车机上会出现左右分屏，可触控、听声音、看歌词、用方向盘切歌。"
+                    android:text="部分较严的车机需要连车证书。证书过期连不上时：安装最新 Android Auto，再点上方「重新准备」即可。"
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_primary"
                     android:textSize="13sp" />

@@ -79,6 +79,11 @@ object CarPlayStatusUi {
         binding: ActivityMainBinding,
         channel: Int,
     ) {
+        // Persist + swap cards immediately so the radio and panels stay in sync,
+        // even when a permission dialog delays arming the selected egress.
+        CarPlayChannel.set(activity, channel)
+        stopOtherEgress(activity, channel)
+        refresh(activity, binding)
         if ((channel == CarPlayChannel.CHANNEL_CARPLAY || channel == CarPlayChannel.CHANNEL_AAP) &&
             !CarPlayRuntimePerms.ensureWireless(activity)
         ) {
@@ -89,6 +94,18 @@ object CarPlayStatusUi {
         finishApplyChannel(activity, binding, channel)
     }
 
+    private fun stopOtherEgress(activity: Activity, channel: Int) {
+        when (channel) {
+            CarPlayChannel.CHANNEL_AAP -> {
+                CarPlayProjectionService.stop(activity)
+                CarPlayHostActivity.current?.finish()
+            }
+            CarPlayChannel.CHANNEL_CARPLAY,
+            CarPlayChannel.CHANNEL_CARPLAY_USB,
+            -> AapProjectionService.stop(activity)
+        }
+    }
+
     private fun finishApplyChannel(
         activity: Activity,
         binding: ActivityMainBinding,
@@ -97,15 +114,14 @@ object CarPlayStatusUi {
         CarPlayChannel.set(activity, channel)
         when {
             CarPlayChannel.useAapEgress(activity) -> {
-                CarPlayProjectionService.stop(activity)
-                CarPlayHostActivity.current?.finish()
+                stopOtherEgress(activity, CarPlayChannel.CHANNEL_AAP)
                 PhoneCertStore.ensureExtracted(activity, force = false)
                 AapProjectionService.start(activity)
                 io.github.nitsuya.aa.display.aap.usb.AapUsbProbe.tryAttachExisting(activity)
                 toast(activity, "已切到 Android Auto")
             }
             CarPlayChannel.useCarPlayEgress(activity) -> {
-                AapProjectionService.stop(activity)
+                stopOtherEgress(activity, CarPlayChannel.CHANNEL_CARPLAY)
                 CarPlayProjectionService.start(activity, launchHostTrampoline = false)
                 CarPlayProjectionService.requestDiscoverable(activity)
                 toast(activity, "已切到无线 CarPlay，请到车机上连接")
@@ -238,8 +254,10 @@ object CarPlayStatusUi {
         }
 
         binding.panelAa.visibility = View.VISIBLE
-        binding.panelCarplay.visibility = if (carPlay) View.VISIBLE else View.GONE
+        // 连车准备 / Android Auto 卡只跟 AAP；无线 CarPlay 卡只跟 CarPlay。
+        binding.panelAapCert.visibility = if (aap) View.VISIBLE else View.GONE
         binding.panelAap.visibility = if (aap) View.VISIBLE else View.GONE
+        binding.panelCarplay.visibility = if (carPlay) View.VISIBLE else View.GONE
     }
 
     private fun toast(activity: Activity, message: String) {

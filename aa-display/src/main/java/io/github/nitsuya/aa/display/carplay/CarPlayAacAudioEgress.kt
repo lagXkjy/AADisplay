@@ -44,11 +44,12 @@ class CarPlayAacAudioEgress(
     @Volatile private var encodeWorker: Thread? = null
     @Volatile private var txWorker: Thread? = null
     @Volatile private var txSocket: DatagramSocket? = null
-    /** One encoded silence frame reused when the AU queue is empty. */
+    /** One encoded silence frame reused when hold budget is exhausted. */
     @Volatile private var silenceAu: ByteArray? = null
     private val auQueue = ArrayBlockingQueue<ByteArray>(MAX_QUEUED_AUS)
 
     private val silenceSends = AtomicInteger(0)
+    private val holdSends = AtomicInteger(0)
     private val realignCount = AtomicInteger(0)
     private val peakBehindMs = AtomicLong(0L)
     private val pulledBytes = AtomicLong(0L)
@@ -126,36 +127,37 @@ class CarPlayAacAudioEgress(
         val pullCap = frameBytes * 2
         try {
             while (running.get()) {
-                // Back-pressure: do not pull when the pacer already has a full queue.
-                if (auQueue.remainingCapacity() == 0) {
-                    Thread.sleep(2)
+                // Keep ~1–2 AUs ahead of the pacer; only nap when the queue is full.
+                if (auQueue.size >= MAX_QUEUED_AUS) {
+                    Thread.sleep(1)
                     continue
                 }
+                val lowWater = auQueue.size < TARGET_QUEUED_AUS
                 val got = try {
                     CoreApi.pullCarPlayAudio(pullCap)
                 } catch (_: Throwable) {
                     ByteArray(0)
                 }
                 if (got.isEmpty()) {
-                    Thread.sleep(2)
+                    // Empty capture: shorter nap when TX is already short on AUs.
+                    if (lowWater) Thread.sleep(0, 500_000) else Thread.sleep(1)
                     continue
                 }
                 pulledBytes.addAndGet(got.size.toLong())
                 var off = 0
-                while (off < got.size && running.get()) {
+                while (off < got.size && running.get() && auQueue.size < MAX_QUEUED_AUS) {
                     val need = frameBytes - accumLen
                     val n = minOf(need, got.size - off)
                     System.arraycopy(got, off, accum, accumLen, n)
                     accumLen += n
                     off += n
                     if (accumLen < frameBytes) break
-                    val au = encoder.encodeExactFrame(accum)
+                    // encodeExactFrame may return null on a MediaCodec spike; retry
+                    // pending drain so we do not leave a hole for the RTP pacer.
+                    val au = encoder.encodeExactFrame(accum) ?: encoder.pollPendingAu()
                     accumLen = 0
                     if (au == null) continue
-                    // Drop oldest if full so live audio wins over stale AUs.
-                    while (!auQueue.offer(au)) {
-                        auQueue.poll() ?: break
-                    }
+                    offerAu(au)
                 }
             }
         } catch (e: Throwable) {
@@ -163,6 +165,12 @@ class CarPlayAacAudioEgress(
         } finally {
             encoder.close()
             Log.i(CarPlayConsts.TAG, "CarPlay AAC encode thread done pulled=${pulledBytes.get() / 1024}KB")
+        }
+    }
+
+    private fun offerAu(au: ByteArray) {
+        while (!auQueue.offer(au)) {
+            auQueue.poll() ?: break
         }
     }
 
@@ -191,6 +199,9 @@ class CarPlayAacAudioEgress(
         // False until the first captured AU is sent. Opening silence is not put
         // on the wire — it fills the HU jitter buffer and the mixer drops MainAudio.
         var paced = false
+        /** Last real AU; briefly repeated on underrun instead of hard silence. */
+        var lastRealAu: ByteArray? = null
+        var consecutiveGapFrames = 0
         try {
             while (running.get()) {
                 if (paced) {
@@ -220,22 +231,37 @@ class CarPlayAacAudioEgress(
 
                 var au = auQueue.poll()
                 var usedSilence = false
+                var usedHold = false
                 if (au == null) {
                     if (!paced) {
                         Thread.sleep(2)
                         continue
                     }
-                    au = silenceAu
-                    usedSilence = au != null
-                    if (au == null) {
-                        Thread.sleep(2)
-                        continue
+                    consecutiveGapFrames++
+                    val held = lastRealAu
+                    // Prefer repeating the last real AU for a few frames (~42–64 ms)
+                    // so a short encode/Binder stall is not heard as a mute click.
+                    if (held != null && consecutiveGapFrames <= HOLD_GAP_FRAMES) {
+                        au = held
+                        usedHold = true
+                        holdSends.incrementAndGet()
+                    } else {
+                        au = silenceAu
+                        usedSilence = au != null
+                        if (au == null) {
+                            Thread.sleep(2)
+                            continue
+                        }
+                        silenceSends.incrementAndGet()
                     }
-                    silenceSends.incrementAndGet()
-                } else if (!paced) {
-                    paced = true
-                    nextSendAt = System.nanoTime()
-                    rtpTimestamp = 0
+                } else {
+                    consecutiveGapFrames = 0
+                    lastRealAu = au
+                    if (!paced) {
+                        paced = true
+                        nextSendAt = System.nanoTime()
+                        rtpTimestamp = 0
+                    }
                 }
 
                 var payload = stripAdtsIfPresent(au)
@@ -284,16 +310,23 @@ class CarPlayAacAudioEgress(
                 sequence = (sequence + 1) and 0xffff
                 packets++
                 nextSendAt += frameNs
-                if (packets <= 5 || packets % 500 == 0) {
+                // Periodic + first hold of a streak + every silence (silence is rarer).
+                val logGap = usedSilence || (usedHold && consecutiveGapFrames == 1)
+                if (packets <= 5 || packets % 500 == 0 || logGap) {
                     val head = payload.take(4).joinToString("") { "%02x".format(it) }
+                    val gapTag = when {
+                        usedSilence -> " (silence)"
+                        usedHold -> " (hold)"
+                        else -> ""
+                    }
                     Log.i(
                         CarPlayConsts.TAG,
                         "CarPlay AAC packet=$packets au=${payload.size}B " +
                             "wire=${datagram.size}B ts=$ts head=$head " +
                             "pulled=${pulledBytes.get() / 1024}KB q=${auQueue.size} " +
-                            "silence=${silenceSends.get()} realign=${realignCount.get()} " +
-                            "peakBehindMs=${peakBehindMs.get()}" +
-                            if (usedSilence) " (silence)" else "",
+                            "hold=${holdSends.get()} silence=${silenceSends.get()} " +
+                            "realign=${realignCount.get()} peakBehindMs=${peakBehindMs.get()}" +
+                            gapTag,
                     )
                 }
             }
@@ -308,8 +341,8 @@ class CarPlayAacAudioEgress(
             Log.i(
                 CarPlayConsts.TAG,
                 "CarPlay AAC TX thread done packets=$packets " +
-                    "silence=${silenceSends.get()} realign=${realignCount.get()} " +
-                    "peakBehindMs=${peakBehindMs.get()}",
+                    "hold=${holdSends.get()} silence=${silenceSends.get()} " +
+                    "realign=${realignCount.get()} peakBehindMs=${peakBehindMs.get()}",
             )
         }
     }
@@ -429,6 +462,27 @@ class CarPlayAacAudioEgress(
                 }
             }
             drainAvailable()
+            val first = pendingAus.removeFirstOrNull()
+            if (first != null) return first
+            // Spike: give the codec one more short drain window before returning null
+            // so the encode loop does not leave the RTP pacer without an AU.
+            val retryDeadline = System.nanoTime() + ENCODE_RETRY_BUDGET_NS
+            while (!closed && System.nanoTime() < retryDeadline) {
+                if (drainAvailable() > 0) break
+                try {
+                    Thread.sleep(0, 200_000)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
+            return pendingAus.removeFirstOrNull()
+        }
+
+        /** Non-blocking peek of a previously drained AU (encode-thread only). */
+        fun pollPendingAu(): ByteArray? {
+            if (closed) return null
+            drainAvailable()
             return pendingAus.removeFirstOrNull()
         }
 
@@ -497,10 +551,19 @@ class CarPlayAacAudioEgress(
         private const val MAX_AU = 1400
         /** ~85 ms @ 48 kHz. Above this, encode back-pressures instead of bursting. */
         private const val MAX_QUEUED_AUS = 4
+        /** Target cushion ahead of the RTP pacer (~42 ms @ 48 kHz). */
+        private const val TARGET_QUEUED_AUS = 2
+        /**
+         * Repeat the last real AU for this many empty pacer slots before falling
+         * back to the silence AU (~64 ms @ 48 kHz).
+         */
+        private const val HOLD_GAP_FRAMES = 3
         /** Encode-thread only — can wait longer without opening an RTP hole. */
         private const val INPUT_DEQUEUE_TIMEOUT_US = 20_000L
         /** Budget to wait for one AU after queueing a full PCM frame. */
         private const val ENCODE_DRAIN_BUDGET_NS = 12_000_000L
+        /** Extra drain after a spike that produced no AU in the primary budget. */
+        private const val ENCODE_RETRY_BUDGET_NS = 8_000_000L
         /** ~500ms @ 48 kHz — snap clock + async reclaim only past this. */
         private const val REALIGN_FRAMES = 24
 

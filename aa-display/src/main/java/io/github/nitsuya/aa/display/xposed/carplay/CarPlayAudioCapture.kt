@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
@@ -130,6 +131,13 @@ object CarPlayAudioCapture {
     private const val PULL_TIMEOUT_MS = 5 * 60_000L
     /** Floor between projection-stop / pull-stall rearms while session still desired. */
     private const val REARM_MIN_GAP_MS = 8_000L
+    /** After remotesubmix arms, wait for TYPE_REMOTE_SUBMIX then try RENDER once. */
+    private const val RENDER_UPGRADE_DELAY_MS = 1_500L
+    /**
+     * remote-submix overflow over one watchdog window that triggers a force rearm
+     * to retry audio-policy-render (~50 KB ≈ 260 ms of stereo PCM @ 48 kHz).
+     */
+    private const val REMOTE_SUBMIX_DROP_REARM_BYTES = 50L * 1024
     private const val MEDIA_READ_BYTES = 3_840 // 20 ms @ 48 kHz stereo s16
     private const val SPEECH_READ_BYTES = 640 // 20 ms @ 16 kHz mono s16
     private const val VOLUME_CHANGED_ACTION = "android.media.VOLUME_CHANGED_ACTION"
@@ -141,9 +149,19 @@ object CarPlayAudioCapture {
     private val armed = AtomicBoolean(false)
     private val lastPullMs = AtomicLong(0L)
     private val lastRearmMs = AtomicLong(0L)
+    /** mediaRing.dropped snapshot from the previous watchdog tick. */
+    private val lastWatchdogDropMedia = AtomicLong(0L)
     private val muteEnforceActive = AtomicBoolean(false)
     /** Suppress MediaProjection.onStop → rearm while we intentionally stop() the projection. */
     @Volatile private var ignoringProjectionStop = false
+    /**
+     * Sticky for this capture session: RENDER upgrade already tried and still failed
+     * (OEM setDevice / createAudioRecordSource). Skip remotesubmix dropDelta force-rearm
+     * so we do not tear a live tap for a route we cannot open.
+     */
+    @Volatile private var audioPolicyRenderUnavailable = false
+    /** Reason of the in-flight [rearmIfDesired] (null on first cold [enableLocked]). */
+    @Volatile private var lastRearmReason: String? = null
 
     private val mediaRing = PcmRing(
         MEDIA_RING_BYTES,
@@ -284,6 +302,7 @@ object CarPlayAudioCapture {
         totalMediaPulled = 0L
         totalSpeechPulled = 0L
         mediaPcmPeak.set(0)
+        lastWatchdogDropMedia.set(0L)
         // Rearm keep-mute: preserve saved volumes / phoneMuted across tap rebuild.
         if (!phoneMuted) {
             mutedStreamTypes = null
@@ -313,6 +332,8 @@ object CarPlayAudioCapture {
                 mMode = "audio-policy-render"
                 sMode = renderArm.speechMode
             } else {
+                // Do not mark RENDER unavailable yet — TYPE_REMOTE_SUBMIX AudioDeviceInfo
+                // often appears only after the remotesubmix fallback tap is open.
                 proj = obtainMediaProjection(ctx)
                 if (proj != null) {
                     runCatching {
@@ -430,6 +451,44 @@ object CarPlayAudioCapture {
                     "usagesSpeech=${SPEECH_CAPTURE_USAGES.toList()} phoneMuted=$phoneMuted " +
                     "speakerDeviceMuted=$speakerDeviceMuted (vols=${savedVolumes?.toList()})",
             )
+            when {
+                mMode == "audio-policy-render" -> audioPolicyRenderUnavailable = false
+                lastRearmReason == "remote-submix-drop" ||
+                    lastRearmReason == "remote-submix-upgrade" -> {
+                    // Upgrade attempt landed back on remotesubmix — stop tearing the tap.
+                    audioPolicyRenderUnavailable = true
+                    log(
+                        TAG,
+                        "audio-policy-render still unavailable after $lastRearmReason — " +
+                            "further dropDelta rearms suppressed",
+                    )
+                }
+                mMode == "remote-submix" && !audioPolicyRenderUnavailable -> {
+                    // Cold start: remotesubmix is live → AudioDeviceInfo should resolve;
+                    // one deferred upgrade avoids waiting for the next overflow glitch.
+                    handler.postDelayed(
+                        {
+                            if (!desired.get() ||
+                                !armed.get() ||
+                                mediaMode != "remote-submix" ||
+                                audioPolicyRenderUnavailable
+                            ) {
+                                return@postDelayed
+                            }
+                            if (findRemoteSubmixDeviceInfo("0") == null) {
+                                logDebug(
+                                    TAG,
+                                    "deferred RENDER upgrade skipped — no AudioDeviceInfo yet",
+                                )
+                                return@postDelayed
+                            }
+                            log(TAG, "deferred remotesubmix → audio-policy-render upgrade")
+                            scheduleRearm("remote-submix-upgrade", force = true)
+                        },
+                        RENDER_UPGRADE_DELAY_MS,
+                    )
+                }
+            }
             scheduleWatchdog(handler)
         } catch (e: Throwable) {
             log(TAG, "enable failed — staying idle", e)
@@ -561,13 +620,20 @@ object CarPlayAudioCapture {
         )
         mediaMode = "none"
         speechMode = "none"
+        // Next session may retry RENDER (OEM device list / setDevice can change).
+        if (restoreAudio) {
+            audioPolicyRenderUnavailable = false
+        }
     }
 
     /**
      * Rebuild tap while [desired] without unmuting the phone.
      * Used when MediaProjection dies or TX stalls mid-session.
+     *
+     * @param force when true, tear down an already-armed tap (e.g. upgrade off
+     * remote-submix) instead of no-op'ing.
      */
-    private fun scheduleRearm(reason: String) {
+    private fun scheduleRearm(reason: String, force: Boolean = false) {
         if (!desired.get()) {
             setEnabled(false)
             return
@@ -575,11 +641,11 @@ object CarPlayAudioCapture {
         val now = System.currentTimeMillis()
         val last = lastRearmMs.get()
         if (last != 0L && now - last < REARM_MIN_GAP_MS) {
-            logDebug(TAG, "rearm skipped (gap) reason=$reason")
+            logDebug(TAG, "rearm skipped (gap) reason=$reason force=$force")
             return
         }
         val postTarget = captureHandler
-        val task = Runnable { rearmIfDesired(reason) }
+        val task = Runnable { rearmIfDesired(reason, force) }
         if (postTarget != null) {
             postTarget.post(task)
         } else {
@@ -590,7 +656,7 @@ object CarPlayAudioCapture {
         }
     }
 
-    private fun rearmIfDesired(reason: String) {
+    private fun rearmIfDesired(reason: String, force: Boolean = false) {
         synchronized(opLock) {
             if (!desired.get()) {
                 if (armed.get() || phoneMuted || speakerDeviceMuted) {
@@ -603,12 +669,13 @@ object CarPlayAudioCapture {
                 }
                 return
             }
-            if (armed.get() && mediaRecord != null) {
+            if (!force && armed.get() && mediaRecord != null) {
                 logDebug(TAG, "rearm noop — already armed reason=$reason")
                 return
             }
             lastRearmMs.set(System.currentTimeMillis())
-            log(TAG, "rearm keep-mute reason=$reason")
+            lastRearmReason = reason
+            log(TAG, "rearm keep-mute reason=$reason force=$force modeWas=$mediaMode")
             val identity = Binder.clearCallingIdentity()
             try {
                 if (armed.get()) {
@@ -616,6 +683,7 @@ object CarPlayAudioCapture {
                 }
                 enableLocked()
             } finally {
+                lastRearmReason = null
                 Binder.restoreCallingIdentity(identity)
             }
         }
@@ -1469,29 +1537,98 @@ object CarPlayAudioCapture {
                 .invoke(mixBuilder, routeFlags)
             if (deviceSystemType != null) {
                 // RENDER requires a device (framework: "Can't have flag ROUTE_FLAG_RENDER
-                // without an audio device"). Prefer (int, String) SystemApi.
-                val setDeviceIS = runCatching {
-                    mixBuilderClass.getMethod(
-                        "setDevice",
-                        Int::class.javaPrimitiveType,
-                        String::class.java,
-                    )
-                }.getOrNull()
-                if (setDeviceIS != null) {
-                    setDeviceIS.invoke(mixBuilder, deviceSystemType, deviceAddress ?: "0")
-                } else {
-                    val attrsCtor = Class.forName("android.media.AudioDeviceAttributes")
-                        .getConstructor(Int::class.javaPrimitiveType, String::class.java)
-                    val attrs = attrsCtor.newInstance(deviceSystemType, deviceAddress ?: "0")
-                    mixBuilderClass.methods.first { m ->
-                        m.name == "setDevice" && m.parameterTypes.size == 1
-                    }.invoke(mixBuilder, attrs)
-                }
+                // without an audio device"). OEMs disagree on setDevice signature:
+                // AOSP SystemApi (int,String) / AudioDeviceAttributes; Samsung One UI
+                // often only exposes setDevice(AudioDeviceInfo).
+                bindMixRenderDevice(
+                    mixBuilderClass,
+                    mixBuilder,
+                    deviceSystemType,
+                    deviceAddress ?: "0",
+                )
             }
             mixBuilderClass.getMethod("build").invoke(mixBuilder)
         } catch (e: Throwable) {
             logDebug(TAG, "buildAudioMix failed usages=${usages.toList()}: ${e.message}")
             null
+        }
+    }
+
+    /**
+     * Bind RENDER sink onto [mixBuilder]. Tries (int,String) → Attributes → Info.
+     * Picking the first single-arg [setDevice] is unsafe: Samsung's only overload is
+     * [AudioDeviceInfo], and passing [AudioDeviceAttributes] fails at invoke time.
+     */
+    private fun bindMixRenderDevice(
+        mixBuilderClass: Class<*>,
+        mixBuilder: Any,
+        deviceSystemType: Int,
+        deviceAddress: String,
+    ) {
+        val setDeviceIS = runCatching {
+            mixBuilderClass.getMethod(
+                "setDevice",
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+        }.getOrNull()
+        if (setDeviceIS != null) {
+            setDeviceIS.invoke(mixBuilder, deviceSystemType, deviceAddress)
+            return
+        }
+
+        val attrsClass = Class.forName("android.media.AudioDeviceAttributes")
+        val attrs = attrsClass
+            .getConstructor(Int::class.javaPrimitiveType, String::class.java)
+            .newInstance(deviceSystemType, deviceAddress)
+        val setAttrs = mixBuilderClass.methods.firstOrNull { m ->
+            m.name == "setDevice" &&
+                m.parameterTypes.size == 1 &&
+                m.parameterTypes[0] == attrsClass
+        }
+        if (setAttrs != null) {
+            setAttrs.invoke(mixBuilder, attrs)
+            return
+        }
+
+        val setInfo = mixBuilderClass.methods.firstOrNull { m ->
+            m.name == "setDevice" &&
+                m.parameterTypes.size == 1 &&
+                m.parameterTypes[0] == AudioDeviceInfo::class.java
+        } ?: throw IllegalStateException(
+            "AudioMix.Builder.setDevice has no (int,String) / Attributes / Info overload",
+        )
+        val info = findRemoteSubmixDeviceInfo(deviceAddress)
+            ?: throw IllegalStateException(
+                "setDevice(AudioDeviceInfo) required but no TYPE_REMOTE_SUBMIX device " +
+                    "(addr=$deviceAddress)",
+            )
+        setInfo.invoke(mixBuilder, info)
+        logDebug(
+            TAG,
+            "bindMixRenderDevice via AudioDeviceInfo type=${info.type} addr=${info.address}",
+        )
+    }
+
+    /** Resolve REMOTE_SUBMIX for OEMs that only accept [AudioDeviceInfo] on setDevice. */
+    private fun findRemoteSubmixDeviceInfo(preferredAddress: String): AudioDeviceInfo? {
+        val am = audioManager ?: return null
+        val seen = LinkedHashSet<AudioDeviceInfo>()
+        for (flag in intArrayOf(AudioManager.GET_DEVICES_OUTPUTS, AudioManager.GET_DEVICES_ALL)) {
+            runCatching { am.getDevices(flag) }.getOrNull()?.let { seen.addAll(it) }
+        }
+        val remotes = seen.filter { it.type == AudioDeviceInfo.TYPE_REMOTE_SUBMIX }
+        if (remotes.isNotEmpty()) {
+            return remotes.firstOrNull {
+                it.address.isNullOrEmpty() || it.address == preferredAddress
+            } ?: remotes.first()
+        }
+        // Some dumpsys ports label the sink by product name while type differs.
+        return seen.firstOrNull { d ->
+            val name = d.productName?.toString().orEmpty()
+            (d.address == preferredAddress || d.address == "0" || d.address.isNullOrEmpty()) &&
+                (name.contains("Remote Submix", ignoreCase = true) ||
+                    name.contains("remote_submix", ignoreCase = true))
         }
     }
 
@@ -1908,6 +2045,9 @@ object CarPlayAudioCapture {
                 }
                 // Lifetime max stays for "ever heard audio"; window peak shows if tap is live now.
                 val peak = mediaPcmPeak.getAndSet(0)
+                val dropNow = mediaRing.dropped
+                val dropPrev = lastWatchdogDropMedia.getAndSet(dropNow)
+                val dropDelta = (dropNow - dropPrev).coerceAtLeast(0L)
                 // RENDER path must not fall back to device mute (Samsung zeros remotesubmix).
                 if (mediaMode == "audio-policy-render" && peak == 0 && totalMediaPulled > 0L) {
                     log(
@@ -1925,13 +2065,36 @@ object CarPlayAudioCapture {
                             "(HU may still get empty AAC; check app volume / route)",
                     )
                 }
+                // Stuck on remotesubmix with ongoing ring overflow → force rearm and
+                // retry audio-policy-render (true route; fewer underruns / mute hacks).
+                // Never tear the live tap when RENDER already failed this session
+                // (Samsung setDevice(AudioDeviceInfo) miss used to cause ~500ms mute).
+                if (mediaMode == "remote-submix" &&
+                    dropDelta >= REMOTE_SUBMIX_DROP_REARM_BYTES &&
+                    totalMediaPulled > 0L
+                ) {
+                    if (audioPolicyRenderUnavailable) {
+                        log(
+                            TAG,
+                            "watchdog: remote-submix dropDelta=${dropDelta / 1024}KB — " +
+                                "skip force rearm (audio-policy-render unavailable)",
+                        )
+                    } else {
+                        log(
+                            TAG,
+                            "watchdog: remote-submix dropDelta=${dropDelta / 1024}KB — " +
+                                "force rearm to retry audio-policy-render",
+                        )
+                        scheduleRearm("remote-submix-drop", force = true)
+                    }
+                }
                 val muteAlive = muteMonitorThread?.isAlive == true
                 log(
                     TAG,
                     "watchdog media=$mediaMode speech=$speechMode desired=true " +
                         "pulledMedia=${totalMediaPulled / 1024}KB pulledSpeech=${totalSpeechPulled / 1024}KB " +
-                        "pcmPeak=$peak dropMedia=${mediaRing.dropped / 1024}KB " +
-                        "muteThread=$muteAlive",
+                        "pcmPeak=$peak dropMedia=${dropNow / 1024}KB " +
+                        "dropDelta=${dropDelta / 1024}KB muteThread=$muteAlive",
                 )
                 scheduleWatchdog(handler)
             },

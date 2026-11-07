@@ -5,6 +5,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 
 /**
@@ -182,4 +183,55 @@ internal object CarPlayChromePainter {
             }
         }
     }
+
+    /**
+     * Phone BT mouse tip in content-rect coords (hotspot = tip).
+     * Lucide mouse-pointer-2 via [R.drawable.ic_hid_cursor_pointer]; falls back to a
+     * filled triangle if the drawable cannot be resolved on the GL thread.
+     */
+    fun drawHidCursor(
+        canvas: Canvas,
+        tipX: Float,
+        tipY: Float,
+        densityDpi: Int,
+        cursorDrawable: Drawable?,
+    ) {
+        val d = densityDpi.coerceAtLeast(160) / 160f
+        val size = CURSOR_SIZE_DP * d
+        val hotX = HOTSPOT_X_DP * d
+        val hotY = HOTSPOT_Y_DP * d
+        canvas.save()
+        canvas.translate(tipX - hotX, tipY - hotY)
+        if (cursorDrawable != null) {
+            val px = size.toInt().coerceAtLeast(1)
+            cursorDrawable.setBounds(0, 0, px, px)
+            cursorDrawable.draw(canvas)
+        } else {
+            cursorFillPath.reset()
+            cursorFillPath.moveTo(0f, 0f)
+            cursorFillPath.lineTo(size * 0.72f, size * 0.28f)
+            cursorFillPath.lineTo(size * 0.38f, size * 0.38f)
+            cursorFillPath.lineTo(size * 0.28f, size * 0.72f)
+            cursorFillPath.close()
+            canvas.drawPath(cursorFillPath, cursorFill)
+            canvas.drawPath(cursorFillPath, cursorStroke.apply { strokeWidth = 1.15f * d })
+        }
+        canvas.restore()
+    }
+
+    private val cursorFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFFFFFFF.toInt()
+        style = Paint.Style.FILL
+    }
+    private val cursorStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF1A1A1A.toInt()
+        style = Paint.Style.STROKE
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val cursorFillPath = Path()
+
+    private const val HOTSPOT_X_DP = 4.04f
+    private const val HOTSPOT_Y_DP = 4.69f
+    private const val CURSOR_SIZE_DP = 24f
 }

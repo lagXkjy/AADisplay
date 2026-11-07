@@ -365,7 +365,7 @@ flowchart TB
 
 **折叠屏 / 多面板注意**
 
-- 系统实体屏光标：`forceHideCursor`；可见指针由 Host / HID 路径处理。
+- 系统实体屏光标：`forceHideCursor`；可见指针由 Host GL 每帧拉 `getHidCursorOverlay` 画到 chrome（`CarPlayChromePainter.drawHidCursor`；原 `HidCursorOverlayView` / AaDisplayActivity 已随 gearhead 下线）。
 - 窗需 Input viewport：VD 带 `VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH`；另 hook `setDisplayViewports`。
 - **懒启用（A16）**：无外接鼠标时**不**装 `InputFilter`。检测用 `(sources and SOURCE) == SOURCE`。
 - 日志标签：`AAD_PhoneHid`。

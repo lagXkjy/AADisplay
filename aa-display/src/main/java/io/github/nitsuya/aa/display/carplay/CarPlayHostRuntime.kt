@@ -184,6 +184,8 @@ object CarPlayHostRuntime {
             pendingCreateRatio = bootRatio
             vdCreateRetries = 0
             requestCreateSplitDisplay("boot")
+            // Phone BT mouse tip painted into Host chrome (AaDisplayActivity poll retired).
+            compositor?.bindHidCursorDrawable(app)
             // Binder / system_server may still be cold right after reboot — CoreApi
             // silently skips when the AADD bridge is null. Retry until panes exist.
             mainHandler.removeCallbacks(vdCreateRetryRunnable)

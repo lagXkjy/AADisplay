@@ -152,6 +152,8 @@ class AapDisplayBridge(
             return
         }
         compositor = gl
+        // Phone BT mouse tip painted into Host chrome (AaDisplayActivity poll retired).
+        gl.bindHidCursorDrawable(context)
         // After GL is live — paint/hit-test 「收起键盘」 via CarPlayImeChip + InputBridge.
         CarPlayImeChip.bind(context)
         CarPlayInputBridge.shellWidthPx = contentW

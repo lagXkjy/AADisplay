@@ -287,6 +287,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             logDebug(TAG, "aaUiShellCapture=$capture")
             if (capture) {
                 mSplitController?.lockedPeel?.reset()
+                mSplitController?.hidChrome?.reset()
+            } else {
+                clearHidShellTouchQueue()
             }
             PhoneHidRedirect.onShellCaptureChanged(capture)
         }
@@ -352,8 +355,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         }
 
         /**
-         * Locked-peel gestures from phone HID (Car SDK presentation inject retired).
-         * Returns true when [SplitLockedPeelController] consumed the event.
+         * Phone HID chrome inject.
+         * - Shell capture (Recents / picker): queue for Host [drainHidShellTouches]
+         *   — AaDisplay presentation / View dispatch is gone.
+         * - Otherwise: locked peel and/or [SplitHidChromeController].
          */
         fun injectHidAaUiTouch(
             action: Int,
@@ -366,6 +371,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 if (action == MotionEvent.ACTION_DOWN) {
                     mSessionPolicy?.onVirtualDisplayUserInteraction()
                 }
+                if (aaUiShellCapture) {
+                    enqueueHidShellTouch(action, x, y)
+                    return true
+                }
                 val event = MotionEvent.obtain(downTime, eventTime, action, x, y, 0).apply {
                     source = android.view.InputDevice.SOURCE_TOUCHSCREEN
                 }
@@ -377,6 +386,51 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             } catch (e: Throwable) {
                 logDebug(TAG, "injectHidAaUiTouch: ${e.message}")
                 false
+            }
+        }
+
+        private const val HID_SHELL_TOUCH_QUEUE_MAX = 64
+        private val hidShellTouchLock = Any()
+        /** Flat triplets: action, xNorm, yNorm. */
+        private val hidShellTouchQueue = ArrayDeque<Float>(HID_SHELL_TOUCH_QUEUE_MAX * 3)
+
+        private fun enqueueHidShellTouch(action: Int, xPx: Float, yPx: Float) {
+            val layout = hidSplitLayout()
+            val tw = (layout?.let { l ->
+                l.shellTotalW.takeIf { it > 0 } ?: l.totalW
+            } ?: 1).toFloat().coerceAtLeast(1f)
+            val th = (layout?.let { l ->
+                l.shellTotalH.takeIf { it > 0 } ?: l.totalH
+            } ?: 1).toFloat().coerceAtLeast(1f)
+            val xN = (xPx / tw).coerceIn(0f, 1f)
+            val yN = (yPx / th).coerceIn(0f, 1f)
+            synchronized(hidShellTouchLock) {
+                while (hidShellTouchQueue.size >= HID_SHELL_TOUCH_QUEUE_MAX * 3) {
+                    hidShellTouchQueue.removeFirst()
+                    hidShellTouchQueue.removeFirst()
+                    hidShellTouchQueue.removeFirst()
+                }
+                hidShellTouchQueue.addLast(action.toFloat())
+                hidShellTouchQueue.addLast(xN)
+                hidShellTouchQueue.addLast(yN)
+            }
+        }
+
+        fun drainHidShellTouchesLocked(): FloatArray {
+            synchronized(hidShellTouchLock) {
+                if (hidShellTouchQueue.isEmpty()) return FloatArray(0)
+                val out = FloatArray(hidShellTouchQueue.size)
+                var i = 0
+                while (hidShellTouchQueue.isNotEmpty()) {
+                    out[i++] = hidShellTouchQueue.removeFirst()
+                }
+                return out
+            }
+        }
+
+        fun clearHidShellTouchQueue() {
+            synchronized(hidShellTouchLock) {
+                hidShellTouchQueue.clear()
             }
         }
 
@@ -403,7 +457,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         fun showHidRecentTask(): Boolean {
             return try {
                 // Host Recents is drawn in-app (CarPlayRecentsOverlay); no Car SDK shell.
+                // Bump [hidOpenRecentsSeq] so Host GL opens the overlay (cross-process).
                 setAaUiShellCapture(true)
+                hidOpenRecentsSeq++
+                hidCursorGen++
                 PhoneHidRedirect.revealCursorForKeyboardRecent()
                 mSessionPolicy?.onVirtualDisplayUserInteraction()
                 true
@@ -424,7 +481,16 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             }
         }
 
-        /** Phone BT mouse cursor tip (AIDL pull; GL overlay paint is a follow-up). */
+        /**
+         * Phone BT mouse cursor tip + Host shell state.
+         * Host GL pulls via [hidCursorOverlaySnapshot] each encode frame
+         * (replaces deleted AaDisplayActivity / HidCursorOverlayView poll).
+         *
+         * Indices: 0 visible, 1 x, 2 y, 3 gen, 4 peelPreview, 5 peelRatio,
+         * 6 flipSeq, 7 flipPane, 8 openRecentsSeq, 9 splitRatio, 10 fullscreenPane.
+         * Index 9 may be an unclamped 0..1 divider-drag preview (past MIN/MAX) while
+         * [hidDividerPreviewActive] so Host seam can reach fullscreen-enter edges.
+         */
         @Volatile private var hidCursorVisible = false
         @Volatile private var hidCursorX = 0f
         @Volatile private var hidCursorY = 0f
@@ -432,9 +498,14 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         /** Locked fullscreen peel preview — UI pulls via [hidCursorOverlaySnapshot]. */
         @Volatile private var lockedPeelPreviewActive = false
         @Volatile private var lockedPeelPreviewRatio = 0.5f
-        /** Locked peel tap-flip — broadcast is slow under keyguard; AA UI pulls each ~16ms. */
+        /** Split divider edge-drag preview (0..1, may be outside MIN/MAX). */
+        @Volatile private var hidDividerPreviewActive = false
+        @Volatile private var hidDividerPreviewRatio = 0.5f
+        /** Locked peel tap-flip — broadcast is slow under keyguard; Host GL pulls each frame. */
         @Volatile private var lockedFullscreenFlipSeq = 0
         @Volatile private var lockedFullscreenFlipPane = SplitPane.FULLSCREEN_NONE
+        /** Host [CarPlayRecentsOverlay.open] request from system_server HID chrome. */
+        @Volatile private var hidOpenRecentsSeq = 0
 
         fun publishHidCursorState(visible: Boolean, x: Float = 0f, y: Float = 0f) {
             hidCursorVisible = visible
@@ -451,14 +522,25 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             hidCursorGen++
         }
 
+        /** Phone BT mouse divider drag — Host seam follows [ratio] even past 20/80. */
+        fun publishHidDividerPreview(active: Boolean, ratio: Float = 0.5f) {
+            hidDividerPreviewActive = active
+            if (active) hidDividerPreviewRatio = ratio.coerceIn(0f, 1f)
+            hidCursorGen++
+        }
+
         fun publishLockedFullscreenFlip(pane: Int) {
             lockedFullscreenFlipPane = pane
             lockedFullscreenFlipSeq++
             hidCursorGen++
         }
 
-        fun hidCursorOverlaySnapshot(): FloatArray =
-            floatArrayOf(
+        fun hidCursorOverlaySnapshot(): FloatArray {
+            val splitRatio = when {
+                hidDividerPreviewActive -> hidDividerPreviewRatio
+                else -> mSplitController?.mRatio ?: SplitPane.DEFAULT_RATIO
+            }
+            return floatArrayOf(
                 if (hidCursorVisible) 1f else 0f,
                 hidCursorX,
                 hidCursorY,
@@ -467,7 +549,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 lockedPeelPreviewRatio,
                 lockedFullscreenFlipSeq.toFloat(),
                 lockedFullscreenFlipPane.toFloat(),
+                hidOpenRecentsSeq.toFloat(),
+                splitRatio,
+                (mSplitController?.mFullscreenPane ?: SplitPane.FULLSCREEN_NONE).toFloat(),
             )
+        }
 
         fun displaySizeFor(displayId: Int): Point? {
             if (displayId < 0) return null
@@ -991,6 +1077,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             android.os.Binder.restoreCallingIdentity(token)
         }
     }
+
+    override fun reportHidShellOverlay(open: Boolean) {
+        setAaUiShellCapture(open)
+    }
+
+    override fun drainHidShellTouches(): FloatArray = drainHidShellTouchesLocked()
 
     @SuppressLint("MissingPermission")
     private fun invokeSetScanMode(adapter: BluetoothAdapter, mode: Int): Boolean {

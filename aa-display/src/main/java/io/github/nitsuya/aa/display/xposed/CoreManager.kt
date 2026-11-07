@@ -113,10 +113,11 @@ object CoreManager : ICoreManager, DeathRecipient {
 
     override fun getHidCursorOverlay(): FloatArray {
         return try {
-            getService()?.hidCursorOverlay ?: floatArrayOf(0f, 0f, 0f, 0f, 0f, 0.5f, 0f, -1f)
+            getService()?.hidCursorOverlay
+                ?: floatArrayOf(0f, 0f, 0f, 0f, 0f, 0.5f, 0f, -1f, 0f, 0.5f, -1f)
         } catch (e: Throwable) {
             Log.e(TAG, "getHidCursorOverlay failed", e)
-            floatArrayOf(0f, 0f, 0f, 0f, 0f, 0.5f, 0f, -1f)
+            floatArrayOf(0f, 0f, 0f, 0f, 0f, 0.5f, 0f, -1f, 0f, 0.5f, -1f)
         }
     }
 
@@ -362,6 +363,23 @@ object CoreManager : ICoreManager, DeathRecipient {
             getService()?.armBluetoothDiscoverable()
         } catch (e: Throwable) {
             Log.e(TAG, "armBluetoothDiscoverable failed", e)
+        }
+    }
+
+    override fun reportHidShellOverlay(open: Boolean) {
+        try {
+            getService()?.reportHidShellOverlay(open)
+        } catch (e: Throwable) {
+            Log.e(TAG, "reportHidShellOverlay failed open=$open", e)
+        }
+    }
+
+    override fun drainHidShellTouches(): FloatArray {
+        return try {
+            getService()?.drainHidShellTouches() ?: FloatArray(0)
+        } catch (e: Throwable) {
+            Log.e(TAG, "drainHidShellTouches failed", e)
+            FloatArray(0)
         }
     }
 
