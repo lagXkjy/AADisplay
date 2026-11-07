@@ -10,9 +10,10 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.AABroadcastConst
 
 /**
- * IME pane for the CarPlay encode canvas. [SplitImeController] already broadcasts
- * [AABroadcastConst.ACTION_IME_VISIBILITY] to this package; the AA shell is the
- * only other listener, and it is absent on a CarPlay-only Host.
+ * IME pane for the Host encode canvas (CarPlay + AAP). [SplitImeController]
+ * broadcasts [AABroadcastConst.ACTION_IME_VISIBILITY]; [CarPlayGlCompositor]
+ * paints the chip and [CarPlayInputBridge] hit-tests it. Bound from
+ * [CarPlayHostRuntime] / [io.github.nitsuya.aa.display.aap.AapDisplayBridge].
  */
 internal object CarPlayImeChip {
     @Volatile

@@ -152,7 +152,13 @@ object CarPlayBootArm {
                     mirrorSettings(app, fallback)
                     return fallback == CarPlayChannel.CHANNEL_CARPLAY
                 }
-                CarPlayChannel.CHANNEL_AA -> return false
+                CarPlayChannel.CHANNEL_AA -> {
+                    // Retired Google gearhead path — migrate to default (AAP or CarPlay).
+                    val fallback = CarPlayChannel.defaultChannel(app)
+                    mirrorSettings(app, fallback)
+                    return fallback == CarPlayChannel.CHANNEL_CARPLAY
+                }
+                CarPlayChannel.CHANNEL_AAP -> return false
             }
         } catch (_: Throwable) {
         }
@@ -185,14 +191,15 @@ object CarPlayBootArm {
                         fallback == CarPlayChannel.CHANNEL_AAP
                 }
                 CarPlayChannel.CHANNEL_AAP.toString(), "aap", "native-aa" -> {
-                    // Native AAP is armed from the app process (AapProjectionService),
+                    // AAP is armed from the app process (AapProjectionService),
                     // not system_server cafe RFCOMM — BootArm only mirrors settings.
                     mirrorSettings(app, CarPlayChannel.CHANNEL_AAP)
                     return false
                 }
                 CarPlayChannel.CHANNEL_AA.toString(), "aa" -> {
-                    mirrorSettings(app, CarPlayChannel.CHANNEL_AA)
-                    return false
+                    val fallback = CarPlayChannel.defaultChannel(app)
+                    mirrorSettings(app, fallback)
+                    return fallback == CarPlayChannel.CHANNEL_CARPLAY
                 }
             }
         }

@@ -5,8 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Binder
-import io.github.nitsuya.aa.display.util.AABroadcastConst
-import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import android.os.PowerManager
 import android.os.SystemClock
 import android.os.SystemProperties
@@ -203,11 +201,8 @@ class DisplaySessionPolicy(
         }
     }
 
-    /** CarActivity presentation id from AA UI; INVALID when AA disconnected. */
-    private fun aaPresentationDisplayId(): Int {
-        val id = displayAdapter.mAaUiDisplayId
-        return if (id != Display.INVALID_DISPLAY && id != Display.DEFAULT_DISPLAY) id else Display.INVALID_DISPLAY
-    }
+    /** Car SDK presentation retired — Host/AAP encode has no separate presentation VD. */
+    private fun aaPresentationDisplayId(): Int = Display.INVALID_DISPLAY
 
     private fun isVirtualDisplayPoweredOff(displayId: Int): Boolean {
         return try {
@@ -761,59 +756,11 @@ class DisplaySessionPolicy(
         }
     }
 
-    /** Drop stale presentation Monitor locks when AA UI reports or clears its presentation id. */
-    fun onAaUiDisplayIdChanged(displayId: Int) {
-        if (displayId == Display.INVALID_DISPLAY || displayId == Display.DEFAULT_DISPLAY) {
-            mLastPresentationRecoveryAt = 0L
-        }
-        try {
-            interactiveMonitor.acquireMonitor()
-        } catch (e: Throwable) {
-            log(TAG, "onAaUiDisplayIdChanged prune failed:", e)
-        }
-    }
-
-    /**
-     * Ask the AA UI to rebind TextureView surfaces when presentation may be black while
-     * pane VDs are still live (phone off / presentation DOZE / ColorFade).
-     */
-    private fun maybeRecoverPresentation(reason: String, phoneOff: Boolean) {
-        val presentationId = aaPresentationDisplayId()
-        if (presentationId == Display.INVALID_DISPLAY) return
-        if (aaPaneDisplayIds().isEmpty()) return
-        val presentationOff = isVirtualDisplayPoweredOff(presentationId)
-        if (!phoneOff && !presentationOff) return
-        val now = SystemClock.uptimeMillis()
-        if (now - mLastPresentationRecoveryAt < PRESENTATION_RECOVERY_MIN_INTERVAL_MS) return
-        mLastPresentationRecoveryAt = now
-        logDebug(TAG, "maybeRecoverPresentation[$reason] id=$presentationId phoneOff=$phoneOff off=$presentationOff")
-        sendPresentationRecoveryBroadcast()
-    }
-
-    private fun sendPresentationRecoveryBroadcast() {
-        sendAaDisplayBroadcast(AABroadcastConst.ACTION_REQUEST_DISPLAY_RECOVERY, "recovery")
-    }
-
-    fun sendCoolwalkFullBleedBroadcast(includeGearhead: Boolean = false) {
-        try {
-            val intent = Intent(AABroadcastConst.ACTION_COOLWALK_FULL_BLEED)
-            if (includeGearhead) {
-                intent.putExtra(AABroadcastConst.EXTRA_COOLWALK_RELAUNCH_PRESENTATION, true)
-                AaSystemBroadcast.toAaDisplayAndGearhead(mContext, intent)
-            } else {
-                AaSystemBroadcast.toAaDisplay(mContext, intent)
-            }
-        } catch (e: Throwable) {
-            log(TAG, "sendAaDisplayBroadcast[full-bleed] failed:", e)
-        }
-    }
-
-    private fun sendAaDisplayBroadcast(action: String, label: String) {
-        try {
-            AaSystemBroadcast.toAaDisplay(mContext, Intent(action))
-        } catch (e: Throwable) {
-            log(TAG, "sendAaDisplayBroadcast[$label] failed:", e)
-        }
+    private fun maybeRecoverPresentation(
+        @Suppress("UNUSED_PARAMETER") reason: String,
+        @Suppress("UNUSED_PARAMETER") phoneOff: Boolean,
+    ) {
+        // no-op — Car SDK presentation recovery removed with AAP/CarPlay Host self-render
     }
 
     private fun resetPresentationRecoveryState() {

@@ -38,19 +38,19 @@ object AaCertSettingsUi {
 
     private fun runExtract(activity: Activity, binding: ActivityMainBinding, force: Boolean) {
         if (busy) {
-            toast(activity, "正在提取…")
+            toast(activity, "正在准备…")
             return
         }
         busy = true
         binding.btnAapCertExtract.isEnabled = false
-        binding.tvAapCertState.text = if (force) "正在重新提取…" else "正在检测已安装 Android Auto…"
+        binding.tvAapCertState.text = if (force) "正在重新准备…" else "正在检查 Android Auto…"
         io.execute {
             val st = try {
                 PhoneCertStore.ensureExtracted(activity, force = force)
             } catch (e: Throwable) {
                 PhoneCertStore.status(activity).also {
                     main.post {
-                        toast(activity, "提取失败：${e.message ?: e.javaClass.simpleName}")
+                        toast(activity, "准备失败，请稍后重试")
                     }
                 }
             }
@@ -61,7 +61,8 @@ object AaCertSettingsUi {
                 if (force) {
                     toast(
                         activity,
-                        if (st.hasCarService && !st.expired) "已更新证书" else (st.lastError ?: "提取未成功"),
+                        if (st.hasCarService && !st.expired) "已准备好，可以连车"
+                        else "还没准备好，请先安装或更新 Android Auto",
                     )
                 }
             }
@@ -87,36 +88,29 @@ object AaCertSettingsUi {
 
         val detail = buildString {
             if (st.gearheadInstalled) {
-                append("已安装 AA ")
-                append(st.gearheadVersionName ?: "?")
-                append(" (")
-                append(st.gearheadVersionCode ?: "?")
-                append(")")
+                append("已安装 Android Auto")
+                st.gearheadVersionName?.let { append(" $it") }
             } else {
-                append("未检测到 com.google.android.projection.gearhead")
-            }
-            if (st.modulusFingerprint != null) {
-                append("\n指纹 ")
-                append(st.modulusFingerprint)
+                append("还没装 Android Auto")
             }
             if (st.notAfter != null) {
-                append("\n有效期至 ")
+                append("\n可用至 ")
                 append(st.notAfter)
             }
-            if (!st.lastError.isNullOrBlank()) {
-                append("\n上次错误：")
-                append(st.lastError)
+            if (st.hasCarService) {
+                append("\n更新 Android Auto 后会自动重新准备；卸掉应用也不影响已准备好的连车信息。")
+            } else {
+                append("\n请先安装 Android Auto，再点下方按钮。多数原厂车机需要这一步才能连上。")
             }
-            append("\n优先用已落盘 CarService；失败回落自签。AA 安装/更新会自动重提；卸载不删证书。")
         }
         binding.tvAapCertDetail.text = detail
         binding.btnAapCertExtract.text = when {
             !st.gearheadInstalled && st.hasCarService && (st.expired || st.nearExpiry) ->
-                "安装较新 Android Auto 后提取"
+                "安装较新 Android Auto 后再准备"
             !st.gearheadInstalled -> "安装 Android Auto 后点此重试"
-            st.expired || st.nearExpiry -> "更新 AA 后重新提取"
-            st.hasCarService -> "重新提取（AA 更新后）"
-            else -> "从已安装 Android Auto 提取"
+            st.expired || st.nearExpiry -> "更新 Android Auto 后重新准备"
+            st.hasCarService -> "重新准备（更新 Android Auto 后）"
+            else -> "从已安装的 Android Auto 准备"
         }
     }
 

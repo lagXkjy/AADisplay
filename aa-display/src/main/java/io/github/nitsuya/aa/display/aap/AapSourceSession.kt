@@ -73,7 +73,6 @@ class AapSourceSession(
     private var transport: Transport? = null
     private var aap: AapSession? = null
     private var display: AapDisplayBridge? = null
-    private var touchMapper: AapTouchMapper? = null
     private val audioEgress = AapAudioEgress()
     private val nowPlaying = AapNowPlaying()
     private val inputKeys = AapInputKeys(app)
@@ -85,19 +84,19 @@ class AapSourceSession(
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
-        onStatus("准备证书…")
+        onStatus("正在准备…")
         thread(name = "aap-boot", isDaemon = true) {
             try {
                 PhoneCertStore.ensureExtracted(app, force = false)
                 main.post {
                     // USB attach may have won during extract — do not clobber its status with
-                    // "监听无线", but still register wireless listen for later.
+                    // wireless listen text, but still register wireless listen for later.
                     val usbBusy = transport != null || aap != null
                     armWireless(updateStatus = !usbBusy)
                 }
             } catch (e: Throwable) {
                 Log.e(AapConsts.TAG, "AapSourceSession boot failed", e)
-                onStatus("启动失败：${e.message}")
+                onStatus("启动失败，请重试")
                 // Do not clear [running] if a wired session already bound during extract.
                 if (aap == null && transport == null) running.set(false)
             }
@@ -125,7 +124,7 @@ class AapSourceSession(
     private fun armWireless(updateStatus: Boolean = true) {
         if (!running.get()) return
         if (autoStarter != null) return
-        if (updateStatus) onStatus("监听无线 Android Auto…")
+        if (updateStatus) onStatus("等待车机用无线 Android Auto 连接…")
         val connector = WirelessConnector(app, log)
         wireless = connector
         val starter = WirelessAutoStarter(app, log) { device ->
@@ -138,11 +137,11 @@ class AapSourceSession(
         try {
             starter.register()
         } catch (e: WirelessPermissionException) {
-            onStatus("需要蓝牙/附近设备权限")
+            onStatus("需要蓝牙权限，请到系统设置里允许")
             Log.w(AapConsts.TAG, "wireless perms missing: ${e.missing}")
         } catch (e: Throwable) {
             Log.e(AapConsts.TAG, "WirelessAutoStarter register failed", e)
-            onStatus("无线监听失败：${e.message}")
+            onStatus("无法等待车机连接，请重试")
         }
         thread(name = "aap-scan-connected", isDaemon = true) {
             try {
@@ -165,18 +164,19 @@ class AapSourceSession(
             return
         }
         val connector = wireless ?: return
-        onStatus("正在连接 ${runCatching { device.name }.getOrNull() ?: device.address}…")
+        val peerName = runCatching { device.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: "车机"
+        onStatus("正在连接 $peerName…")
         val t = try {
             connector.connectBlocking(device)
         } catch (e: WirelessPermissionException) {
-            onStatus("缺少权限：${e.missing.joinToString { it.substringAfterLast('.') }}")
+            onStatus("需要蓝牙权限，请到系统设置里允许")
             return
         } catch (e: WirelessException) {
-            onStatus("无线连接失败：${e.message}")
+            onStatus("连接失败，请在车机上重试")
             Log.w(AapConsts.TAG, "wireless connect failed", e)
             return
         } catch (e: Throwable) {
-            onStatus("连接异常：${e.message}")
+            onStatus("连接失败，请重试")
             Log.e(AapConsts.TAG, "connectDevice", e)
             return
         }
@@ -209,7 +209,7 @@ class AapSourceSession(
             if (transport === t && aap != null) return
         }
         if (!running.get()) running.set(true)
-        onStatus("有线 USB：准备证书…")
+        onStatus("数据线已连接，正在准备…")
         try {
             PhoneCertStore.ensureExtracted(app, force = false)
         } catch (e: Throwable) {
@@ -218,7 +218,7 @@ class AapSourceSession(
         val st = PhoneCertStore.status(app)
         if (!st.hasCarService) {
             Log.w(AapConsts.TAG, "USB AAP: no CarService leaf — factory HU likely to reject TLS")
-            onStatus("有线：缺少 CarService 证书（请先提取）")
+            onStatus("还没准备好，请先在状态页完成「连车准备」")
         }
         synchronized(this) {
             if (transport === t && aap != null) return
@@ -240,7 +240,7 @@ class AapSourceSession(
         tearDownSession("rebind")
         transport = t
         val identity = PhoneCertStore.pick(app, certAttempt.get())
-        onStatus("TLS 握手（证书 #${certAttempt.get()}）…")
+        onStatus("正在和车机握手…")
         val session = AapSession(
             t,
             identity,
@@ -292,12 +292,11 @@ class AapSourceSession(
                 VideoFrameRateType.VIDEO_FPS_60 -> 60
                 else -> 30
             }
-            touchMapper = AapTouchMapper(touchW, touchH, videoW, videoH)
             syncTouchBridgeLayout()
             val videoCh = activeVideo ?: return
             val bridge = display ?: AapDisplayBridge(app, onStatus).also { display = it }
             bridge.startFor(videoCh, videoW, videoH, fps)
-            onStatus("出画 ${videoW}x$videoH@$fps")
+            onStatus("正在打开车机画面…")
         }
 
         override fun onVideoFocus(projected: Boolean) {
@@ -404,7 +403,6 @@ class AapSourceSession(
                         input.touchScreen?.let { ts ->
                             touchW = ts.width.coerceAtLeast(1)
                             touchH = ts.height.coerceAtLeast(1)
-                            touchMapper = AapTouchMapper(touchW, touchH, videoW, videoH)
                             syncTouchBridgeLayout()
                         }
                         channels += input
@@ -421,7 +419,7 @@ class AapSourceSession(
                     }
                 }
             }
-            onStatus("服务发现：${AapSession.describe(response)}")
+            onStatus("车机已认出本机，正在接通…")
             return channels
         }
 
@@ -434,7 +432,7 @@ class AapSourceSession(
             runCatching {
                 session.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_GAIN)
             }.onFailure { Log.w(AapConsts.TAG, "requestAudioFocus failed", it) }
-            onStatus("已连接（AAP）")
+            onStatus("已连上车机")
         }
 
         override fun onAudioFocus(session: AapSession, notification: AudioFocusNotification) {
@@ -446,11 +444,11 @@ class AapSourceSession(
             val usbDesync = error?.message?.contains("encrypted frame before TLS") == true
             if (session.certificateRejected) {
                 certAttempt.incrementAndGet()
-                onStatus("车机拒绝证书，下次将换下一张")
+                onStatus("车机未接受连车信息，将自动换一种方式重试")
             } else if (usbDesync) {
-                onStatus("有线协议不同步（车机仍在旧会话），正在重试…")
+                onStatus("线还在，车机状态有点乱，正在重试…")
             } else {
-                onStatus("已断开：$reason")
+                onStatus("已断开，可重新连接")
             }
             main.post {
                 runCatching {

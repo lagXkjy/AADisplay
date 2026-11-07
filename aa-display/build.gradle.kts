@@ -30,7 +30,7 @@ android {
             )
         )
         jniLibs {
-            // minSdk 33: keep libdexkit.so uncompressed so 16 KB devices can map it.
+            // minSdk 33: keep JNI .so uncompressed so 16 KB page-size devices can map them.
             useLegacyPackaging = false
         }
     }
@@ -114,8 +114,6 @@ dependencies {
     implementation("androidx.fragment:fragment-ktx:1.8.9")
     implementation("androidx.constraintlayout:constraintlayout:2.2.1")
     implementation("androidx.recyclerview:recyclerview:1.4.0")
-    // Cluster lyric invisible MediaBrowserService shell (Title egress to AA Now Playing).
-    implementation("androidx.media:media:1.7.0")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     // Ed25519 / X25519 for AirPlay pair-setup/verify — matching DiPlay (Samsung API 33
@@ -130,6 +128,4 @@ dependencies {
     compileOnly("dev.rikka.hidden:stub:4.4.0")
     compileOnly(files("./libs/de.robv.android.xposed_api_82.jar"))
     implementation("com.github.kyuubiran:EzXHelper:1.0.3")
-    implementation("org.luckypray:dexkit:2.0.7")
-    implementation(files("./libs/aauto.aar"))
 }

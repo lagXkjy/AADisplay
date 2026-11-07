@@ -32,10 +32,9 @@ import kotlin.math.max
  * CarPlay Host **Canvas** app picker (tee encode path).
  *
  * Host has no Window — View snapshot + [android.view.View.dispatchTouchEvent] breaks
- * RecyclerView scroll/click. Draw + hit-test like [CarPlayRecentsOverlay]; AA keeps
- * [io.github.nitsuya.aa.display.ui.aa.split.SplitAppPickerController] + XML.
+ * RecyclerView scroll/click. Draw + hit-test like [CarPlayRecentsOverlay].
  *
- * Visuals mirror AA sheet: scrim,「选择应用」,「最近」/「全部应用」, rounded icons,
+ * Visuals: scrim,「选择应用」,「最近」/「全部应用」, rounded icons,
  * bottom「关闭」bar. Icons use BitmapShader round-rect (Launcher3 / Romain Guy pattern)
  * — no third-party UI library on the encode canvas.
  */

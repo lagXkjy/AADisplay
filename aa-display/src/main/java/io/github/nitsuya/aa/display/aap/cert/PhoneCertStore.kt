@@ -73,31 +73,31 @@ object PhoneCertStore {
             get() = when {
                 hasCarService && expired -> {
                     if (gearheadInstalled) {
-                        "CarService 证书已过期（${formatDate(notAfter)}）— 请更新 Android Auto 后自动/手动重新提取"
+                        "连车信息已过期（${formatDate(notAfter)}）— 请更新 Android Auto 后再准备"
                     } else {
-                        "CarService 证书已过期（${formatDate(notAfter)}）— 请安装较新 Android Auto 后提取"
+                        "连车信息已过期（${formatDate(notAfter)}）— 请安装较新的 Android Auto"
                     }
                 }
                 hasCarService && nearExpiry -> {
                     val days = daysRemaining
                     val keep = if (gearheadInstalled) {
-                        "请更新 Android Auto，更新后会自动重提"
+                        "请更新 Android Auto，更新后会自动重新准备"
                     } else {
-                        "请安装较新 Android Auto 后提取（当前可继续用落盘证书）"
+                        "请安装较新 Android Auto（目前仍可连车）"
                     }
-                    "证书即将过期（剩余 ${days} 天）— $keep"
+                    "连车信息即将过期（还剩 ${days} 天）— $keep"
                 }
                 hasCarService -> {
                     val days = daysRemaining
-                    val dayHint = if (days != null) "，剩余 ${days} 天" else ""
+                    val dayHint = if (days != null) "，大约还能用 ${days} 天" else ""
                     if (gearheadInstalled) {
-                        "已从已安装 Android Auto 自动提取$dayHint"
+                        "已准备好，可以连车$dayHint"
                     } else {
-                        "已落盘 CarService 证书$dayHint（Android Auto 已卸载，连车仍可用）"
+                        "已准备好，可以连车$dayHint（即使卸了 Android Auto 也还能用）"
                     }
                 }
-                gearheadInstalled -> "已安装 Android Auto，但尚未提取成功${lastError?.let { "：$it" } ?: ""}"
-                else -> "未安装 Android Auto — 仅自签证书（多数原厂车机需安装 AA 后自动提取）"
+                gearheadInstalled -> "已安装 Android Auto，但还没准备好，请点下方按钮"
+                else -> "请先安装 Android Auto，再点下方按钮准备连车"
             }
     }
 

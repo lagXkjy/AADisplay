@@ -15,15 +15,12 @@ object BridgeService {
     private const val TAG = "AADisplay_Bridge"
 
     private var appUid = 0
-    /** Android Auto shares this uid across :car / :projection; needed for rail touchPrimaryPane. */
-    private var gearheadUid = 0
 
     fun register(pms: IPackageManager) {
         log(TAG, "Initialize AADisplayService - Version ${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE})")
         appUid = packageUid(pms, BuildConfig.APPLICATION_ID)
-        gearheadUid = packageUid(pms, "com.google.android.projection.gearhead")
 
-        log(TAG, "Client uid: app=$appUid gearhead=$gearheadUid")
+        log(TAG, "Client uid: app=$appUid")
         log(TAG, "Service uid: ${Process.myUid()}")
         log(TAG, "Initialize service proxy")
         pms.javaClass.findMethod(true) {
@@ -66,11 +63,7 @@ object BridgeService {
         return false
     }
 
-    private fun isAllowedClient(uid: Int): Boolean {
-        if (uid == appUid) return true
-        if (gearheadUid != 0 && uid == gearheadUid) return true
-        return false
-    }
+    private fun isAllowedClient(uid: Int): Boolean = uid == appUid
 
     private fun packageUid(pms: IPackageManager, packageName: String): Int {
         return try {

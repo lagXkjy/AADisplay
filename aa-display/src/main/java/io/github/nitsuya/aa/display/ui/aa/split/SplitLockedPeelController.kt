@@ -1,28 +1,17 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
 import android.app.KeyguardManager
-import android.content.Intent
-import android.os.Binder
-import android.view.Display
 import android.view.MotionEvent
 import android.view.ViewConfiguration
-import io.github.nitsuya.aa.display.util.AABroadcastConst
-import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
-import io.github.nitsuya.aa.display.xposed.hook.PaneDisplayGroupForce
-import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import kotlin.math.hypot
 
 /**
- * Phone keyguard occludes Gearhead's AaDisplay presentation unless it is pulled out of
- * DisplayGroup 0 with [Display.FLAG_ALWAYS_UNLOCKED] (see [applyAaUiDisplayKeyguardPolicy]).
- * Pane VDs already get that at create time; presentation does not.
- *
- * While keyguard is locked and we are in fullscreen **and** inject is still occluded,
- * interpret peel gestures here (same semantics as [SplitDividerView] peel mode). Live
- * preview is published to [CoreManagerService.publishLockedPeelPreview] for AaDisplayActivity.
+ * While phone keyguard is locked and we are in fullscreen, interpret peel gestures here
+ * (same semantics as Host chrome peel). Live preview is published via
+ * [CoreManagerService.publishLockedPeelPreview] for HID / Host consumers.
  */
 internal class SplitLockedPeelController(private val c: SplitDisplayController) {
 
@@ -34,9 +23,6 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
     private var downUptimeMs = 0L
     private var downRatio = 0f
     private var lastRawRatio = 0f
-
-    /** Skip repeated DMS keyguard patch on every peel DOWN when already applied this session. */
-    private var keyguardPolicyAppliedDisplayId = Display.INVALID_DISPLAY
 
     private val touchSlop: Int by lazy {
         ViewConfiguration.get(c.context).scaledTouchSlop
@@ -63,47 +49,10 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
     }
 
     /**
-     * Make AaDisplay presentation injectable under keyguard (FacetBar → touchAaDisplay,
-     * Recents / picker, peel). Lineage A16: [PaneDisplayGroupForce.forceInteractiveUnderKeyguard]
-     * (own group + ALWAYS_UNLOCKED); plus insecure-keyguard WMS show.
-     */
-    fun applyAaUiDisplayKeyguardPolicy(displayId: Int, reason: String) {
-        if (displayId == Display.INVALID_DISPLAY || displayId == Display.DEFAULT_DISPLAY) return
-        val identity = Binder.clearCallingIdentity()
-        try {
-            try {
-                Instances.iWindowManager.setShouldShowWithInsecureKeyguard(displayId, true)
-            } catch (e: Throwable) {
-                logDebug(
-                    SplitDisplayController.TAG,
-                    "setShouldShowWithInsecureKeyguard failed id=$displayId: ${e.message}"
-                )
-            }
-            runCatching {
-                PaneDisplayGroupForce.forceInteractiveUnderKeyguard(displayId, reason)
-            }.onFailure {
-                log(
-                    SplitDisplayController.TAG,
-                    "forceInteractiveUnderKeyguard failed id=$displayId",
-                    it,
-                )
-            }
-            keyguardPolicyAppliedDisplayId = displayId
-            logDebug(
-                SplitDisplayController.TAG,
-                "applyAaUiDisplayKeyguardPolicy id=$displayId reason=$reason"
-            )
-        } finally {
-            Binder.restoreCallingIdentity(identity)
-        }
-    }
-
-    /**
-     * @return true if the event was consumed as a locked-phone peel gesture
-     * (caller must not also inject into the presentation).
+     * @return true if the event was consumed as a locked-phone peel gesture.
      */
     fun tryHandle(event: MotionEvent): Boolean {
-        // Recents / picker owns the shell — never peel-swap under the overlay.
+        // Recents / picker owns the chrome — never peel-swap under the overlay.
         if (CoreManagerService.aaUiShellCapture) {
             if (tracking) reset()
             return false
@@ -118,7 +67,6 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // Only the peel tab — Coolwalk may also route the wider rail band here.
                 val density = c.mDensityDpi.coerceAtLeast(160) / 160f
                 if (!SplitPane.peelHitContains(event.x, event.y, c.mWidth, c.mHeight, density)) {
                     return false
@@ -131,12 +79,6 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
                 downUptimeMs = event.downTime
                 lastRawRatio = rawRatio(event)
                 downRatio = lastRawRatio
-                val aaUiId = c.mAaUiDisplayId
-                if (aaUiId != Display.INVALID_DISPLAY &&
-                    aaUiId != keyguardPolicyAppliedDisplayId
-                ) {
-                    applyAaUiDisplayKeyguardPolicy(aaUiId, "locked-peel")
-                }
                 c.mHandler.removeCallbacks(longPressRunnable)
                 c.mHandler.postDelayed(longPressRunnable, longPressTimeout)
                 return true
@@ -210,7 +152,6 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
         tracking = false
         dragging = false
         longPressFired = false
-        keyguardPolicyAppliedDisplayId = Display.INVALID_DISPLAY
         publishPreviewCancel()
     }
 
@@ -236,7 +177,7 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
         }
         val release = SplitPane.clampRatio(lastRawRatio)
         publishPreviewCancel()
-        // Same order as AaMainFragment.exitFullscreen: stash ratio then one exit resize.
+        // Same order as Host chrome exitFullscreen: stash ratio then one exit resize.
         c.setSplitRatio(release)
         c.setSplitFullscreen(SplitPane.FULLSCREEN_NONE)
         log(
@@ -254,12 +195,11 @@ internal class SplitLockedPeelController(private val c: SplitDisplayController) 
     }
 
     private fun openRecent() {
+        // Car SDK shell broadcast path deleted; Host GL Recents is opened in-app
+        // (CarPlayRecentsOverlay). Under keyguard, arm shell-capture + cursor reveal.
         try {
-            AaSystemBroadcast.toAaDisplay(
-                c.context,
-                Intent(AABroadcastConst.ACTION_SHOW_RECENT_TASK),
-            )
-            logDebug(SplitDisplayController.TAG, "lockedPeel long-press → SHOW_RECENT_TASK")
+            CoreManagerService.showHidRecentTask()
+            logDebug(SplitDisplayController.TAG, "lockedPeel long-press → showHidRecentTask")
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "lockedPeel openRecent failed:", e)
         }

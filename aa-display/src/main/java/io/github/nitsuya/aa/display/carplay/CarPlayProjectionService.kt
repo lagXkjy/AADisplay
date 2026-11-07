@@ -92,10 +92,10 @@ class CarPlayProjectionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             CarPlayConsts.ACTION_STOP -> {
-                // With Android Auto installed, STOP means switch back to AA (XOR egress).
-                // Without gearhead, keep CHANNEL_CARPLAY so BootArm / status-page re-arm still work.
+                // XOR egress: stop CarPlay → default channel (AAP if AA installed, else stay CP).
+                // Never re-enter soft-off gearhead CHANNEL_AA.
                 if (CarPlayChannel.isAndroidAutoInstalled(this)) {
-                    CarPlayChannel.set(this, CarPlayChannel.CHANNEL_AA)
+                    CarPlayChannel.set(this, CarPlayChannel.defaultChannel(this))
                 }
                 tearDown("stop-intent")
                 stopSelf()

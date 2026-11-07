@@ -12,10 +12,10 @@
 
 | 方式 | 适合谁 |
 |------|--------|
-| **Android Auto** | 车机本身支持 Android Auto（手机装了 AA 时默认走这条） |
+| **Android Auto（AAP）** | 车机支持 Android Auto；手机装过 AA 时**默认**走这条（本模块直接说 AAP，**不依赖** gearhead 钩子；装 AA 主要为了自动提取证书） |
 | **无线 CarPlay** | 车机支持 CarPlay（例如 DiPlay 等盒子）；**手机没装 Android Auto 也能用**。目前只在 **Audi MIB3（3874 / 4026）** 与 **DiPlay** 上测过 |
 
-当前版本：**0.3#17.8-r4** · 更新说明见 [CHANGELOG.md](CHANGELOG.md)
+当前版本：**0.3#17.8-r6** · 更新说明见 [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
@@ -59,9 +59,7 @@
 
 1. 打开 **LSPosed**
 2. 找到 **AADisplay**（或本模块名称），打开开关
-3. 「作用域」里勾选：
-   - **系统框架**（有的机子写成 System Framework）——**不论走 AA 还是 CarPlay 都要勾**
-   - **Android Auto**——**只有要用 Android Auto 时才需要**；只用无线 CarPlay、手机没装 AA 时可以不勾
+3. 「作用域」里勾选：**系统框架**（System Framework）——AAP / CarPlay 都只要这一项；**不要**再勾 Android Auto
 4. **重启手机**（这一步很重要，不重启往往显示「未激活」）
 
 ### 3. 确认已经激活
@@ -84,30 +82,21 @@
 
 车机连上后同样是左右分屏；某一侧是空的，就点空白处选 App。日常操作见下文「无线 CarPlay 多说几句」和「日常怎么用」里的分屏 / 方向盘说明。
 
-### 4b. 第一次连 Android Auto 前（只做这一次）
+### 4b. 第一次用 Android Auto（AAP）
 
-第一次用 AA 连车机前，请先在手机上装好这三个：
+1. 手机装好 **Android Auto**（用于自动提取 CarService 证书；原厂 Google 库车机需要）
+2. 打开状态页，确认通道是 **Android Auto（AAP）**，证书卡片显示已提取
+3. 允许蓝牙权限；无线连车机，或 USB 按车机 / DHU 说明连接
+4. 正常时会出左右分屏；某一侧是空的，就 **点一下空白处**，选要打开的 App
 
-- **Google**（Google App）
-- **Google 地图**
-- **Google 语音服务 / 文字转语音（TTS）**
-
-然后按 Android Auto 自己的提示走完 **首次设置**。
-
-> **成功进过分屏之后，这三个可以删掉。**  
-> 以后日常重连一般不再需要它们。  
-> 如果从来没装过就直接连车，有可能卡在 AA 的首次引导，进不了分屏。
-
-### 5. 连上车机（Android Auto）
-
-用数据线或无线把手机连到车机（按你车机平时连 Android Auto 的方式）。  
-正常时会 **自动打开** 分屏界面；某一侧是空的，就 **点一下空白处**，选要打开的 App。
+> 公开构建**不再**走 gearhead「原路」投屏，也**不必**为了出画去勾 LSPosed 里的 Android Auto。  
+> 更细的证书 / DHU 说明见 [docs/AAP_NATIVE.md](docs/AAP_NATIVE.md)。
 
 手机**已装** Android Auto、但想改用 **无线 CarPlay**：打开状态页，把出口通道改成 **CarPlay**，再在 **车机** 上发起无线 CarPlay 配对（首次可能弹出配对码 **3939**）。奥迪 MIB3：只能由车机发现手机，不要用手机配对车机。
 
 ---
 
-## 日常怎么用（Android Auto）
+## 日常怎么用（Android Auto / AAP）
 
 ### 选 App、换 App
 

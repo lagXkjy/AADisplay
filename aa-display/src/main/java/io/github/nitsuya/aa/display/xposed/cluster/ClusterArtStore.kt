@@ -28,7 +28,7 @@ object ClusterArtStore {
     const val SETTINGS_ART_MEDIA_ID = "aadisplay_cluster_np_art_media_id"
     /** Monotonic counter — bumps on every successful write or clear; wakes :cluster / egress. */
     const val SETTINGS_ART_REVISION = "aadisplay_cluster_np_art_revision"
-    /** Shared with [io.github.nitsuya.aa.display.service.ClusterLyricMediaService] / egress hook. */
+    /** Shared with AAP / CarPlay Now Playing album-art egress. */
     const val ART_PATH = "/data/system/aadisplay_cluster_art.jpg"
     private const val ART_TMP_PATH = "/data/system/aadisplay_cluster_art.jpg.tmp"
     private const val TAG = "AAD_ClusterArtStore"

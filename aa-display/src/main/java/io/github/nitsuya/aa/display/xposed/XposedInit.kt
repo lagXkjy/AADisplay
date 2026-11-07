@@ -5,8 +5,6 @@ import com.github.kyuubiran.ezxhelper.utils.Log.logexIfThrow
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import io.github.nitsuya.aa.display.xposed.hook.AaDisplayProcessHook
-import io.github.nitsuya.aa.display.xposed.hook.AndroidAutoHook
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.hook.BaseHook
 import io.github.nitsuya.aa.display.xposed.util.log
@@ -23,9 +21,9 @@ class XposedInit : IXposedHookZygoteInit, IXposedHookLoadPackage{
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         val packageName = lpparam.packageName
         when {
+            // system_server: VirtualDisplay, Binder bridge, VD pin / IME / HID.
             packageName == "android" && lpparam.appInfo == null -> arrayOf(AndroidHook)
-            packageName == "com.google.android.projection.gearhead" -> arrayOf(AndroidAutoHook)
-            packageName == "io.github.nitsuya.aa.display" -> arrayOf(AaDisplayProcessHook)
+            // Google gearhead DexKit path deleted — AAP / CarPlay own egress (no AndroidAutoHook).
             else -> null
         }?.also {
             initHooks(lpparam, *it)

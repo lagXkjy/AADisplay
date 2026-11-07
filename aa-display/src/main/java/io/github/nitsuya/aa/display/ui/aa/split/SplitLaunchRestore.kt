@@ -7,8 +7,6 @@ import android.os.Binder
 import android.os.SystemClock
 import android.view.Display
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
-import io.github.nitsuya.aa.display.util.AABroadcastConst
-import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.util.LastSplitStore
 import io.github.nitsuya.aa.display.util.PmResolveCache
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
@@ -33,19 +31,11 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         persistSnapshot(force = false, logSettingsFailures = false)
     }
 
-    /** ATMS settle: reclaim + refresh pane bookkeeping, then notify AA UI + Recent. */
+    /** ATMS settle: reclaim + refresh pane bookkeeping. */
     internal val mDebouncedAtmsSettle = Runnable {
         c.ownership.reclaimOwnedPackages("stack")
         if (refreshPanePackagesFromAtms()) {
             notifySplitStateChangedImmediate()
-        }
-        try {
-            AaSystemBroadcast.toAaDisplay(
-                c.context,
-                Intent(AABroadcastConst.ACTION_RECENT_TASK_DIRTY),
-            )
-        } catch (e: Throwable) {
-            logDebug(SplitDisplayController.TAG, "recent dirty broadcast failed: ${e.message}")
         }
     }
 
@@ -560,39 +550,17 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
         SplitPresentationGuard.scheduleEvictForeignPresentations(c, "ensure-$reason")
     }
 
+    /**
+     * Car SDK shell picker broadcast deleted. Host GL opens [CarPlayAppPickerOverlay]
+     * from input / Recents; restore-fail only logs.
+     */
     fun openPickerForPane(pane: Int) {
-        try {
-            AaSystemBroadcast.toAaDisplay(
-                c.context,
-                Intent(AABroadcastConst.ACTION_OPEN_SPLIT_PICKER).apply {
-                    putExtra(AABroadcastConst.EXTRA_PANE, pane)
-                },
-            )
-        } catch (e: Throwable) {
-            log(SplitDisplayController.TAG, "openPickerForPane failed pane=$pane:", e)
-        }
+        logDebug(SplitDisplayController.TAG, "openPickerForPane no-op (Host GL) pane=$pane")
     }
 
+    /** Car SDK / Coolwalk UI listeners deleted — Host GL polls CoreApi / overlay state. */
     fun notifySplitStateChangedImmediate() {
-        try {
-            AaSystemBroadcast.toAaDisplayAndGearhead(
-                c.context,
-                Intent(AABroadcastConst.ACTION_SPLIT_STATE_CHANGED).apply {
-                    putExtra(
-                        AABroadcastConst.EXTRA_PRIMARY_PACKAGE,
-                        c.mPanePackages[SplitPane.PRIMARY].orEmpty()
-                    )
-                    putExtra(
-                        AABroadcastConst.EXTRA_SECONDARY_PACKAGE,
-                        c.mPanePackages[SplitPane.SECONDARY].orEmpty()
-                    )
-                    putExtra(AABroadcastConst.EXTRA_FULLSCREEN_PANE, c.mFullscreenPane)
-                    putExtra(AABroadcastConst.EXTRA_RATIO, c.mRatio)
-                },
-            )
-        } catch (e: Throwable) {
-            logDebug(SplitDisplayController.TAG, "notifySplitStateChanged failed: ${e.message}")
-        }
+        // no-op
     }
 
     fun resetSettlement() {

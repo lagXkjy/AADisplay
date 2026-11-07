@@ -9,15 +9,16 @@
 
 ## 0. 架构总览
 
-所有 VD 上的真实任务操作都在 **system_server** 的 `SplitDisplayController` 中执行。AA UI 进程（gearhead `:projection/:car`）只通过 **Binder IPC** 触发：
+所有 VD 上的真实任务操作都在 **system_server** 的 `SplitDisplayController` 中执行。Host GL（AAP / CarPlay）经 **Binder IPC** 触发：
 
 ```
-SplitAppPickerController / RecentTasksCoordinator / AaMainFragment
+CarPlayAppPickerOverlay / CarPlayRecentsOverlay / CarPlayInputBridge
     → CoreApi → CoreManager (PMS bridge "AADD")
     → CoreManagerService (system_server)
     → SplitDisplayController.mHandler → ATMS / ActivityManager
-    → ACTION_SPLIT_STATE_CHANGED / ACTION_RECENT_TASK_DIRTY 广播回 AA UI
 ```
+
+（原 Car SDK 壳广播 `SPLIT_STATE_CHANGED` / `RECENT_TASK_DIRTY` 已删；Host 覆盖层直接拉 `CoreApi`。）
 
 **关键设计**：用户操作走 `*Async` + `postUserAction`（插队到 handler 队首）；restore/ensure 走同步 `runOnHandlerBlocking` 全路径。恢复链路由 `SplitLaunchRestore` 的 `SettlementPhase`（`IDLE → RESTORING → VERIFYING`）串行，禁止并行 `scheduleRestoreLastSplit`。
 
@@ -147,7 +148,7 @@ notify + Recent dirty 已合并进 `scheduleAtmsSettle`；persist 与 evict 仍�
 
 ### 3.5 AA 主壳布局更新（MEDIUM）
 
-`AaMainFragment` 收 `ACTION_SPLIT_STATE_CHANGED` → `applyOccupancyFromPackages` → 分屏 weight 重算。occupancy 未变时跳过 overlay 刷新；ratio/swap settle 期间 `layoutSettleUntil` 挡 rebind。
+Host GL 不再收 `SPLIT_STATE_CHANGED`；occupancy / ratio 以 `CoreApi` 与本地 overlay 状态为准。
 
 ### 3.6 目标 App 冷启动（框架层）
 

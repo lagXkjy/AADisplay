@@ -1,3 +1,5 @@
+> **历史文档.** Coolwalk FacetBar / content-slot settle 已随 gearhead 上层删除；现行出画锁定客户端上报尺寸（AAP / CarPlay Host）。
+
 # COOLWALK_FACETBAR.md — FacetBar / 左轨回收与重连分辨率
 
 Coolwalk 左侧 **FacetBar**（`GhFacetBar` VirtualDisplay + launcher/dashboard 图标列）与 **重连分辨率结算** 的架构说明。  

@@ -13,7 +13,7 @@ import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
 import io.github.nitsuya.aa.display.egress.ProjectionSessionGate
 
 /**
- * Status-page egress controls (AA gearhead / native AAP / CarPlay).
+ * Status-page egress controls (AAP / CarPlay only — Google gearhead projection retired).
  * Keeps [io.github.nitsuya.aa.display.ui.main.MainActivity] free of session logic.
  */
 object CarPlayStatusUi {
@@ -21,9 +21,10 @@ object CarPlayStatusUi {
     private var pendingChannelAfterPerms: Int? = null
 
     fun bind(activity: Activity, binding: ActivityMainBinding) {
-        applyAaAvailability(activity, binding)
-        // Apply persisted selection BEFORE the listener — otherwise the layout's
-        // default radio can fire applyChannel(AA) and stop AAP mid USB attach.
+        binding.rbChannelAap.visibility = View.VISIBLE
+        binding.rgCarplayChannel.visibility = View.VISIBLE
+        // Apply persisted selection BEFORE the listener — otherwise a layout default
+        // radio can fire applyChannel and stop AAP mid USB attach.
         channelChangeFromUser = false
         refresh(activity, binding)
         binding.rgCarplayChannel.setOnCheckedChangeListener { _, checkedId ->
@@ -34,7 +35,7 @@ object CarPlayStatusUi {
             val channel = when (checkedId) {
                 R.id.rb_channel_cp -> CarPlayChannel.CHANNEL_CARPLAY
                 R.id.rb_channel_aap -> CarPlayChannel.CHANNEL_AAP
-                else -> CarPlayChannel.CHANNEL_AA
+                else -> CarPlayChannel.defaultChannel(activity)
             }
             applyChannel(activity, binding, channel)
         }
@@ -44,7 +45,7 @@ object CarPlayStatusUi {
         }
         binding.btnBtDiscoverable.setOnClickListener {
             CarPlayProjectionService.requestDiscoverable(activity)
-            toast(activity, "请允许蓝牙可被发现（300 秒）")
+            toast(activity, "请允许手机被车机发现")
         }
         binding.btnAapReconnect.setOnClickListener {
             applyChannel(activity, binding, CarPlayChannel.CHANNEL_AAP)
@@ -95,26 +96,26 @@ object CarPlayStatusUi {
     ) {
         CarPlayChannel.set(activity, channel)
         when {
-            channel == CarPlayChannel.CHANNEL_AAP -> {
+            CarPlayChannel.useAapEgress(activity) -> {
                 CarPlayProjectionService.stop(activity)
                 CarPlayHostActivity.current?.finish()
-                // Auto-extract cert from installed AA before arming.
                 PhoneCertStore.ensureExtracted(activity, force = false)
                 AapProjectionService.start(activity)
                 io.github.nitsuya.aa.display.aap.usb.AapUsbProbe.tryAttachExisting(activity)
-                toast(activity, "已切到原生 AAP（不依赖 gearhead 钩子）")
+                toast(activity, "已切到 Android Auto")
             }
             CarPlayChannel.useCarPlayEgress(activity) -> {
                 AapProjectionService.stop(activity)
                 CarPlayProjectionService.start(activity, launchHostTrampoline = false)
                 CarPlayProjectionService.requestDiscoverable(activity)
-                toast(activity, "已切到 CarPlay，请允许蓝牙可发现后到车机上连接")
+                toast(activity, "已切到无线 CarPlay，请到车机上连接")
             }
             else -> {
-                AapProjectionService.stop(activity)
-                CarPlayProjectionService.stop(activity)
-                CarPlayHostActivity.current?.finish()
-                toast(activity, "已切回 Android Auto（gearhead）")
+                // Retired CHANNEL_AA or unknown → arm default.
+                val fallback = CarPlayChannel.defaultChannel(activity)
+                CarPlayChannel.set(activity, fallback)
+                finishApplyChannel(activity, binding, fallback)
+                return
             }
         }
         refresh(activity, binding)
@@ -162,21 +163,8 @@ object CarPlayStatusUi {
         }
     }
 
-    /**
-     * Gearhead radio stays available when installed (legacy path).
-     * Native AAP is always offered (cert auto-extract needs AA APK when talking to
-     * Google-library HUs, but the channel itself does not require gearhead hooks).
-     */
-    private fun applyAaAvailability(activity: Activity, binding: ActivityMainBinding) {
-        val aaInstalled = CarPlayChannel.isAndroidAutoInstalled(activity)
-        binding.rbChannelAa.visibility = if (aaInstalled) View.VISIBLE else View.GONE
-        binding.rbChannelAap.visibility = View.VISIBLE
-        binding.rgCarplayChannel.visibility = View.VISIBLE
-    }
-
     @SuppressLint("SetTextI18n")
     fun refresh(activity: Activity, binding: ActivityMainBinding) {
-        applyAaAvailability(activity, binding)
         val live = try {
             CoreApi.isCarPlaySessionLive
         } catch (_: Throwable) {
@@ -193,8 +181,8 @@ object CarPlayStatusUi {
         val (cpState, cpDetail, cpColor) = when {
             !carPlay -> Triple("", "", activity.getColor(R.color.color_text_primary))
             live && hostUp -> Triple(
-                "投屏中 / 已出画",
-                "Host 与编码器已启动；车机断开后仍保持监听",
+                "已投到车机",
+                "车机断开后手机仍会继续等待下次连接",
                 activity.getColor(R.color.color_primary),
             )
             live -> Triple(
@@ -204,15 +192,15 @@ object CarPlayStatusUi {
             )
             armed -> Triple(
                 "等待车机连接",
-                "蓝牙已监听，车机连上后再启动画面编码（省电）",
+                "手机已就绪，请到车机上连接 CarPlay",
                 activity.getColor(R.color.color_primary),
             )
             else -> Triple(
                 "尚未启动",
                 if (aaInstalled) {
-                    "点下方「重新连接」，或重新勾选上方「CarPlay 无线」"
+                    "点下方「重新连接」，或重新勾选上方「无线 CarPlay」"
                 } else {
-                    "点下方「重新连接」开始监听；车机用无线 CarPlay 连接"
+                    "点下方「重新连接」，再到车机上连 CarPlay"
                 },
                 activity.getColor(R.color.color_error),
             )
@@ -229,8 +217,8 @@ object CarPlayStatusUi {
         if (aap) {
             val st = AapProjectionService.lastStatus()
             binding.tvAapState.text = when {
-                live && aapArmed -> "投屏中 / 已出画"
-                aapArmed -> "已监听"
+                live && aapArmed -> "已投到车机"
+                aapArmed -> "等待车机连接"
                 else -> "尚未启动"
             }
             binding.tvAapState.setTextColor(
@@ -242,8 +230,7 @@ object CarPlayStatusUi {
 
         val wantId = when (channel) {
             CarPlayChannel.CHANNEL_CARPLAY -> R.id.rb_channel_cp
-            CarPlayChannel.CHANNEL_AAP -> R.id.rb_channel_aap
-            else -> if (aaInstalled) R.id.rb_channel_aa else R.id.rb_channel_aap
+            else -> R.id.rb_channel_aap
         }
         if (binding.rgCarplayChannel.checkedRadioButtonId != wantId) {
             channelChangeFromUser = false

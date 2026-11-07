@@ -496,7 +496,7 @@ class CarPlayGlCompositor {
 
     /**
      * Fullscreen peel drag preview: draw both panes at full encode size and
-     * scissor to L/R strips (matches AA [AaMainFragment.applyPeelClipPreview]).
+     * scissor to L/R strips (Host peel preview).
      * Window scissor origin is bottom-left.
      */
     private fun drawPeelClipPreview(leftW: Int, gap: Int, rightW: Int) {

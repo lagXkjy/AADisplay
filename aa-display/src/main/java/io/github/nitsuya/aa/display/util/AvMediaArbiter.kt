@@ -5,7 +5,6 @@ import android.media.session.MediaController
 import android.media.session.PlaybackState
 import android.os.SystemClock
 import io.github.nitsuya.aa.display.BuildConfig
-import io.github.nitsuya.aa.display.service.ClusterLyricMediaService
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.xposed.cluster.LyricLineExtractor
 import io.github.nitsuya.aa.display.xposed.util.logDebug
@@ -74,10 +73,6 @@ object AvMediaArbiter {
             if (pkg == selfPkg) return@filter false
             if (pkg == "android") return@filter false
             if (pkg.startsWith("com.google.android.projection.gearhead")) return@filter false
-            val mediaId = c.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_MEDIA_ID)
-            if (mediaId?.startsWith(ClusterLyricMediaService.MEDIA_ID_PREFIX) == true) {
-                return@filter false
-            }
             MusicAppClassifier.isAvMediaSession(context, c)
         }
     }

@@ -18,8 +18,6 @@ import android.view.Surface
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
-import io.github.nitsuya.aa.display.util.AABroadcastConst
-import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.PmCaches
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
@@ -55,7 +53,6 @@ class SplitDisplayController(
         internal const val RESTORE_VERIFY_DELAY_MS = 2000L
         internal const val RESTORE_VERIFY_RETRY_MS = 2000L
         /** Debounce peel-inject recovery broadcasts / latch clears. */
-        private const val AA_UI_DISPLAY_ID_RECOVERY_MS = 3000L
         internal const val MAX_RESTORE_VERIFY_ATTEMPTS = 3
         /** Token for post-fullscreen focus restore kicks (cancel on destroy / re-enter). */
         internal val FULLSCREEN_FOCUS_TOKEN = Any()
@@ -116,33 +113,11 @@ class SplitDisplayController(
     val secondaryDisplayId: Int
         get() = mCachedSecondaryDisplayId
 
-    /**
-     * AaDisplayActivity presentation displayId reported from the app process.
-     * Private VDs are invisible to system_server [DisplayManager.getDisplays].
-     */
-    @Volatile
-    var mAaUiDisplayId: Int = Display.INVALID_DISPLAY
-        private set
+    /** Retired Car SDK presentation id — always invalid (AIDL ordinal kept elsewhere). */
+    val mAaUiDisplayId: Int
+        get() = Display.INVALID_DISPLAY
 
-    /**
-     * One-shot ATMS fallback already failed this session (no reported id).
-     * Avoids scanning 1..64 on every peel touch after a miss.
-     */
-    @Volatile
-    private var mHidShellGeometry: HidShellGeometry? = null
-
-    @Volatile
-    private var mAaUiDisplayIdLookupFailed = false
-
-    fun aaUiDisplayId(): Int = mAaUiDisplayId
-
-    fun updateHidShellGeometry(geometry: HidShellGeometry) {
-        mHidShellGeometry = geometry
-    }
-
-    /** Uptime of last peel-inject recovery (latch clear + UI re-report ask). */
-    @Volatile
-    private var mLastAaUiDisplayIdRecoveryUptime = 0L
+    fun aaUiDisplayId(): Int = Display.INVALID_DISPLAY
 
     internal var mPrimary: VirtualDisplay? = null
     internal var mSecondary: VirtualDisplay? = null
@@ -514,18 +489,11 @@ class SplitDisplayController(
             }
             mFullscreenPane = pane
             mFocusedPane = pane
-            if (lockedPeel.isPhoneKeyguardLocked()) {
-                val aaUiId = mAaUiDisplayId
-                if (aaUiId != Display.INVALID_DISPLAY) {
-                    lockedPeel.applyAaUiDisplayKeyguardPolicy(aaUiId, "fullscreen-keyguard")
-                }
-            }
         } else {
             mFullscreenPane = SplitPane.FULLSCREEN_NONE
             mRatio = SplitPane.clampRatio(mRatioBeforeFullscreen)
         }
-        // Flip: notify AA shell before ATMS focus work so TextureView z-order updates
-        // immediately (locked-peel path never hits AaMainFragment.enterFullscreen).
+        // Flip: notify Host chrome before ATMS focus work so overlays update immediately.
         if (flipWithinFullscreen) {
             if (lockedPeel.isPhoneKeyguardLocked()) {
                 CoreManagerService.publishLockedFullscreenFlip(mFullscreenPane)
@@ -699,9 +667,6 @@ class SplitDisplayController(
         launch.resetSettlement()
         mExplicitlyClosedPackages.clear()
         ime.stop()
-        mAaUiDisplayId = Display.INVALID_DISPLAY
-        mAaUiDisplayIdLookupFailed = false
-        mLastAaUiDisplayIdRecoveryUptime = 0L
         lockedPeel.reset()
         mOrientationLockedDisplays.clear()
         mImePolicyAppliedDisplays.clear()
@@ -762,116 +727,10 @@ class SplitDisplayController(
     }
 
     /**
-     * Relay Coolwalk left-rail touches (HU x &lt; rail width) into the PRIMARY pane VD.
+     * Locked-fullscreen peel for phone HID (Car SDK presentation inject retired).
+     * @return true when [lockedPeel] consumed the event.
      */
-    fun onTouchPrimaryPane(event: MotionEvent) {
-        onTouchPane(SplitPane.PRIMARY, event)
-    }
-
-    /**
-     * Relay flush-left peel / AA UI touches into the AaDisplayActivity presentation
-     * display (not a pane VirtualDisplay).
-     *
-     * Under phone keyguard, [lockedPeel.applyAaUiDisplayKeyguardPolicy] (own group +
-     * ALWAYS_UNLOCKED) keeps inject alive for Recents / FacetBar. If still occluded
-     * while fullscreen, [lockedPeel] handles peel gestures without presentation hit-test.
-     */
-    fun onTouchAaDisplay(event: MotionEvent) {
-        if (lockedPeel.tryHandle(event)) return
-        val displayId = resolveAaUiDisplayId()
-        if (displayId == Display.INVALID_DISPLAY) {
-            log(TAG, "onTouchAaDisplay: AaDisplayActivity display not found")
-            maybeRecoverAaUiDisplayId()
-            return
-        }
-        input.injectInputEvent(displayId, event)
-    }
-
-    /** Recents / picker overlay — inject BT keyboard onto AaDisplay presentation. */
-    fun onHidKeyEventToAaDisplay(event: KeyEvent): Boolean {
-        val displayId = resolveAaUiDisplayId()
-        if (displayId == Display.INVALID_DISPLAY) {
-            log(TAG, "onHidKeyEventToAaDisplay: AaDisplayActivity display not found")
-            maybeRecoverAaUiDisplayId()
-            return false
-        }
-        return input.injectKeyEvent(displayId, event)
-    }
-
-    /**
-     * Peel inject missed the presentation id (report race or latched ATMS miss).
-     * Clear the one-shot latch so a later [setAaUiDisplayId] / one ATMS retry can
-     * succeed, and ask the AA UI to re-report — debounced so MOVE floods do not
-     * re-scan 1..64 every frame.
-     */
-    private fun maybeRecoverAaUiDisplayId() {
-        val now = SystemClock.uptimeMillis()
-        if (now - mLastAaUiDisplayIdRecoveryUptime < AA_UI_DISPLAY_ID_RECOVERY_MS) return
-        mLastAaUiDisplayIdRecoveryUptime = now
-        mAaUiDisplayIdLookupFailed = false
-        try {
-            AaSystemBroadcast.toAaDisplay(
-                context,
-                Intent(AABroadcastConst.ACTION_REQUEST_AA_UI_DISPLAY_ID),
-            )
-            logDebug(TAG, "maybeRecoverAaUiDisplayId: asked UI to re-report")
-        } catch (e: Throwable) {
-            log(TAG, "maybeRecoverAaUiDisplayId broadcast failed", e)
-        }
-    }
-
-    /** Called from the AA UI process; [displayId] may be INVALID_DISPLAY to clear. */
-    fun setAaUiDisplayId(displayId: Int) {
-        val next = if (displayId == Display.DEFAULT_DISPLAY) Display.INVALID_DISPLAY else displayId
-        if (mAaUiDisplayId == next) {
-            if (next != Display.INVALID_DISPLAY) {
-                lockedPeel.applyAaUiDisplayKeyguardPolicy(next, "re-report")
-            }
-            return
-        }
-        mAaUiDisplayId = next
-        // Fresh report (or clear) → allow one ATMS fallback again if still unknown.
-        mAaUiDisplayIdLookupFailed = false
-        if (next != Display.INVALID_DISPLAY) {
-            mLastAaUiDisplayIdRecoveryUptime = 0L
-            lockedPeel.applyAaUiDisplayKeyguardPolicy(next, "report")
-        } else {
-            lockedPeel.reset()
-        }
-        logDebug(TAG, "setAaUiDisplayId id=$next")
-    }
-
-    /**
-     * Prefer the id reported by AaDisplayActivity. Do **not** validate via
-     * [DisplayManager.getDisplay]: FLAG_PRIVATE presentations owned by the app uid
-     * are invisible to system_server's DisplayManager client and would discard a
-     * good reported id (peel inject then fails with "display not found").
-     *
-     * ATMS 1..64 is a one-shot session fallback when report races; never re-scan
-     * on every peel touch after a miss.
-     */
-    private fun resolveAaUiDisplayId(): Int {
-        val reported = mAaUiDisplayId
-        if (reported != Display.INVALID_DISPLAY && reported != Display.DEFAULT_DISPLAY) {
-            return reported
-        }
-        if (mAaUiDisplayIdLookupFailed) return Display.INVALID_DISPLAY
-        // Fallback once: ATMS can see tasks on private presentation displays.
-        for (id in 1..64) {
-            val tasks = tryOrNull {
-                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(id)
-            }.orEmpty()
-            if (tasks.any { it.topActivity?.packageName == BuildConfig.APPLICATION_ID }) {
-                mAaUiDisplayId = id
-                lockedPeel.applyAaUiDisplayKeyguardPolicy(id, "atms")
-                logDebug(TAG, "resolveAaUiDisplayId via ATMS id=$id")
-                return id
-            }
-        }
-        mAaUiDisplayIdLookupFailed = true
-        log(TAG, "resolveAaUiDisplayId: no report and ATMS miss (latched)")
-        return Display.INVALID_DISPLAY
-    }
+    fun onTouchAaDisplay(event: MotionEvent): Boolean = lockedPeel.tryHandle(event)
 
     fun hideIme() {
         ime.hide()
@@ -985,10 +844,8 @@ class SplitDisplayController(
     /**
      * Snapshot for BT mouse cross-pane cursor.
      *
-     * Pane sizes **must** match the real VirtualDisplays (inject + pointer bind), not the
-     * AA UI TextureView metrics. UI density / Coolwalk chrome can differ from [mDensityDpi]
-     * and previously made right-edge clicks look hundreds of px early / "wrong resolution".
-     * Shell geometry only supplies fullscreen / orientation hints and optional touch scaling.
+     * Pane sizes **must** match the real VirtualDisplays (inject + pointer bind), not any
+     * retired Car SDK TextureView metrics.
      */
     fun hidSplitLayout(): HidSplitLayout {
         val sizes = vd.computePaneSizes()
@@ -998,12 +855,10 @@ class SplitDisplayController(
         val primaryH = (livePrimary?.y?.takeIf { it > 0 } ?: sizes.primaryH).coerceAtLeast(1)
         val secondaryW = (liveSecondary?.x?.takeIf { it > 0 } ?: sizes.secondaryW).coerceAtLeast(1)
         val secondaryH = (liveSecondary?.y?.takeIf { it > 0 } ?: sizes.secondaryH).coerceAtLeast(1)
-        val geo = mHidShellGeometry
-        val sideBySide = geo?.sideBySide ?: isSideBySide
+        val sideBySide = isSideBySide
         val totalW = mWidth.coerceAtLeast(1)
         val totalH = mHeight.coerceAtLeast(1)
-        // Gap closes the canvas: primary + gap + secondary == total (not UI density gap).
-        val gap = if (SplitPane.isFullscreenPane(geo?.fullscreenPane ?: mFullscreenPane)) {
+        val gap = if (SplitPane.isFullscreenPane(mFullscreenPane)) {
             0
         } else if (sideBySide) {
             (totalW - primaryW - secondaryW).coerceAtLeast(1)
@@ -1012,7 +867,7 @@ class SplitDisplayController(
         }
         return HidSplitLayout(
             sideBySide = sideBySide,
-            fullscreenPane = geo?.fullscreenPane ?: mFullscreenPane,
+            fullscreenPane = mFullscreenPane,
             focusedPane = mFocusedPane,
             primaryDisplayId = primaryDisplayId,
             secondaryDisplayId = secondaryDisplayId,
@@ -1024,12 +879,8 @@ class SplitDisplayController(
             totalH = totalH,
             densityDpi = mDensityDpi.coerceAtLeast(160),
             shellGap = gap,
-            shellTotalW = geo?.parentW ?: 0,
-            shellTotalH = geo?.parentH ?: 0,
-            imeChipL = geo?.imeChipL ?: 0,
-            imeChipT = geo?.imeChipT ?: 0,
-            imeChipR = geo?.imeChipR ?: 0,
-            imeChipB = geo?.imeChipB ?: 0,
+            shellTotalW = totalW,
+            shellTotalH = totalH,
         )
     }
 
@@ -1461,14 +1312,8 @@ class SplitDisplayController(
     }
 
     private fun notifySwapFailed() {
-        try {
-            AaSystemBroadcast.toAaDisplay(
-                context,
-                Intent(AABroadcastConst.ACTION_SPLIT_SWAP_FAILED),
-            )
-        } catch (e: Throwable) {
-            logDebug(TAG, "notifySwapFailed: ${e.message}")
-        }
+        // Car SDK shell UI deleted — Host GL swap is local; nothing to revert remotely.
+        logDebug(TAG, "swapPanesOnHandler failed")
     }
 
     private fun swapPanesOnHandler(): Boolean {

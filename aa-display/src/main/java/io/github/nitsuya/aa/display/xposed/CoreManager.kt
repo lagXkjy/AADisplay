@@ -197,20 +197,19 @@ object CoreManager : ICoreManager, DeathRecipient {
         tryTouchPane(pane, motionEvent)
     }
 
+    /** Retired Coolwalk rail steal — ordinal kept. */
     override fun touchPrimaryPane(motionEvent: MotionEvent) {
-        tryTouchPrimaryPane(motionEvent)
+        // no-op
     }
 
+    /** Retired Car SDK presentation inject — ordinal kept. */
     override fun touchAaDisplay(motionEvent: MotionEvent) {
-        tryTouchAaDisplay(motionEvent)
+        // no-op
     }
 
+    /** Retired Car SDK presentation id report — ordinal kept. */
     override fun reportAaUiDisplayId(displayId: Int) {
-        try {
-            getService()?.reportAaUiDisplayId(displayId)
-        } catch (e: Throwable) {
-            Log.e(TAG, "reportAaUiDisplayId failed id=$displayId", e)
-        }
+        // no-op
     }
 
     override fun hideIme() {
@@ -225,88 +224,25 @@ object CoreManager : ICoreManager, DeathRecipient {
         return getService()?.imePane ?: SplitPane.FULLSCREEN_NONE
     }
 
+    /** Retired Coolwalk rail report — ordinal kept. */
     override fun reportCoolwalkRailSnapshot(
         phase: Int,
         touchRailWidthPx: Int,
         fullHuWidthPx: Int,
         facetDisplayId: Int,
     ) {
-        try {
-            getService()?.reportCoolwalkRailSnapshot(phase, touchRailWidthPx, fullHuWidthPx, facetDisplayId)
-        } catch (e: Throwable) {
-            Log.e(TAG, "reportCoolwalkRailSnapshot failed", e)
-        }
+        // no-op
     }
 
-    override fun getCoolwalkRailSnapshot(): IntArray {
-        return try {
-            getService()?.coolwalkRailSnapshot ?: intArrayOf(0, 0, 0, -1)
-        } catch (e: Throwable) {
-            Log.e(TAG, "getCoolwalkRailSnapshot failed", e)
-            intArrayOf(0, 0, 0, -1)
-        }
-    }
+    /** Retired Coolwalk rail snapshot — ordinal kept. */
+    override fun getCoolwalkRailSnapshot(): IntArray = intArrayOf(0, 0, 0, -1)
 
-    override fun getCoolwalkReconnectEpochMs(): Long {
-        return try {
-            getService()?.coolwalkReconnectEpochMs ?: 0L
-        } catch (e: Throwable) {
-            Log.e(TAG, "getCoolwalkReconnectEpochMs failed", e)
-            0L
-        }
-    }
+    /** Retired Coolwalk reconnect epoch — ordinal kept. */
+    override fun getCoolwalkReconnectEpochMs(): Long = 0L
 
+    /** Retired Coolwalk full-bleed poke — ordinal kept. */
     override fun notifyCoolwalkFullBleed() {
-        try {
-            getService()?.notifyCoolwalkFullBleed()
-        } catch (e: Throwable) {
-            Log.e(TAG, "notifyCoolwalkFullBleed failed", e)
-        }
-    }
-
-    fun tryReportCoolwalkRailSnapshot(snapshot: io.github.nitsuya.aa.display.xposed.hook.aa.coolwalk.RailSnapshot): Boolean {
-        val svc = getService() ?: return false
-        return try {
-            svc.reportCoolwalkRailSnapshot(
-                snapshot.phase.code,
-                snapshot.touchRailWidthPx,
-                snapshot.fullHuWidthPx,
-                snapshot.facetDisplayId,
-            )
-            true
-        } catch (e: Throwable) {
-            Log.e(TAG, "reportCoolwalkRailSnapshot failed", e)
-            false
-        }
-    }
-
-    fun tryGetCoolwalkRailSnapshot(): IntArray? {
-        return try {
-            getService()?.coolwalkRailSnapshot
-        } catch (e: Throwable) {
-            Log.e(TAG, "getCoolwalkRailSnapshot failed", e)
-            null
-        }
-    }
-
-    fun tryGetCoolwalkReconnectEpochMs(): Long {
-        return try {
-            getService()?.coolwalkReconnectEpochMs ?: 0L
-        } catch (e: Throwable) {
-            Log.e(TAG, "getCoolwalkReconnectEpochMs failed", e)
-            0L
-        }
-    }
-
-    fun tryNotifyCoolwalkFullBleed(): Boolean {
-        val svc = getService() ?: return false
-        return try {
-            svc.notifyCoolwalkFullBleed()
-            true
-        } catch (e: Throwable) {
-            Log.e(TAG, "notifyCoolwalkFullBleed failed", e)
-            false
-        }
+        // no-op
     }
 
     /** @return false when binder missing or the remote call throws (caller must not swallow HU events).
@@ -322,40 +258,6 @@ object CoreManager : ICoreManager, DeathRecipient {
             true
         } catch (e: Throwable) {
             Log.e(TAG, "touchPane failed pane=$pane", e)
-            false
-        }
-    }
-
-    /** @return false when binder missing or the remote call throws (caller must not swallow HU events).
-     *  touchPrimaryPane is oneway — success means the parcel was queued, not that inject finished. */
-    fun tryTouchPrimaryPane(motionEvent: MotionEvent): Boolean {
-        val svc = getService()
-        if (svc == null) {
-            Log.e(TAG, "touchPrimaryPane skipped; binder unavailable")
-            return false
-        }
-        return try {
-            svc.touchPrimaryPane(motionEvent)
-            true
-        } catch (e: Throwable) {
-            Log.e(TAG, "touchPrimaryPane failed", e)
-            false
-        }
-    }
-
-    /** @return false when binder missing or the remote call throws (caller must not swallow HU events).
-     *  touchAaDisplay is oneway — success means the parcel was queued, not that inject finished. */
-    fun tryTouchAaDisplay(motionEvent: MotionEvent): Boolean {
-        val svc = getService()
-        if (svc == null) {
-            Log.e(TAG, "touchAaDisplay skipped; binder unavailable")
-            return false
-        }
-        return try {
-            svc.touchAaDisplay(motionEvent)
-            true
-        } catch (e: Throwable) {
-            Log.e(TAG, "touchAaDisplay failed", e)
             false
         }
     }

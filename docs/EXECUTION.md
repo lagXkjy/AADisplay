@@ -9,22 +9,21 @@
 
 ## 0. 先建立的心智模型
 
-本模块不是普通 App：它是 **LSPosed 模块**。真正干活的代码跑在 **system_server**；车机画面跑在 **AADisplay 进程的 CarActivity**；Android Auto（gearhead）只负责 HU 壳、把触控/按键偷过来、以及把本模块当成投影 App 拉起。
+本模块不是普通 App：它是 **LSPosed 模块**。真正干活的代码跑在 **system_server**。  
+**出口仅 AAP 或无线 CarPlay**（Host 式 GL → 协议栈）。Google gearhead / Car SDK 投影已硬下线；清单见 [GEARHEAD_LEGACY.md](GEARHEAD_LEGACY.md)。
 
 ```
-手机 HU 画面 = AaDisplayActivity 里两块 TextureView 合成
+HU 画面      = AAP / CarPlay：Host GL（VD→OES→Compositor→编码器）→ 协议出站
 应用真实窗口 = system_server 里两块独立 VirtualDisplay（PRIMARY / SECONDARY）
 跨进程能力   = 只能走 CoreApi → ICoreManager（禁止在 AA / App 进程直接 createVirtualDisplay）
 ```
 
-三进程（再加被投应用自己的进程）：
+进程（再加被投应用自己的进程）：
 
 | 进程 | 谁注入 | 常驻对象 | 禁止做的事 |
 |------|--------|----------|------------|
 | `system_server` | `AndroidHook` | `CoreManagerService`、`SplitDisplayController`、`DisplaySessionPolicy`、`ClusterLyricMirror` | 不要从这里 inflate 车机 UI |
-| `io.github.nitsuya.aa.display` | 无 Xposed 钩子 | `AaDisplayActivity` / `AaMainFragment` | 不要直接操作 VD / ATMS |
-| `io.github.nitsuya.aa.display:cluster` | 无 | `ClusterLyricMediaService`（隐形媒体壳 Title 出站） | 不要碰分屏 VD / 投影 UI |
-| `gearhead`（`:projection` / `:car`） | `AndroidAutoHook` → `Aa*Hook` | Coolwalk 壳、HU 触控、Auto Open、仪表 Title 改写 / 媒体白名单 | 不要在这里创建分屏 VD |
+| `io.github.nitsuya.aa.display` | 无 Xposed 钩子 | `AapProjectionService` / `CarPlayProjectionService` / Host GL | 不要直接操作 VD / ATMS |
 | 被投 App | 无（仅 DPI pin 等 system 侧） | 任务窗口画在 VD 上 | — |
 
 `CoreApi` 选路（`CoreApi.kt`）：**只有真正的 system_server**（`AndroidHook.isReadyForSystemHooks()`）才用 `CoreManagerService.instance`；其余一律 `CoreManager` 经 PMS 桥拿 Binder。不要用 `uid == 1000` 判断——三星等 OEM 系统应用也是 1000。
@@ -37,7 +36,6 @@
 sequenceDiagram
     participant XP as LSPosed/XposedInit
     participant SS as system_server
-    participant GH as gearhead
     participant APP as AADisplay进程
     participant HU as 车机屏幕
 
@@ -45,21 +43,17 @@ sequenceDiagram
     XP->>SS: handleLoadPackage(android, appInfo=null)
     SS->>SS: AndroidHook: 截 PMS / AMS
     SS->>SS: BridgeService 注入 IPackageManager.onTransact AADD
-    SS->>SS: AMS.systemReady → Instances + PanePresentationGuard + VdImeDisplayPin + PhoneHidRedirect + ClusterLyricMirror
+    SS->>SS: AMS.systemReady → Instances + Pane* + Vd* + PhoneHidRedirect + ClusterLyricMirror + CarPlay*
 
-    Note over GH,HU: 连接 Android Auto
-    XP->>GH: handleLoadPackage(gearhead)
-    GH->>GH: DexKit + Aa*Hook
-    GH->>GH: AaUiHook: 收回左侧 rail、Auto Open
-    GH->>APP: 启动 AaActivityService → AaDisplayActivity
-    APP->>HU: CarActivity 投影到 HU presentation
-    APP->>APP: TextureView 双 Surface 就绪
-    APP->>SS: CoreApi.onCreateSplitDisplay(w,h,dpi,ratio,surfaces)
-    SS->>SS: 创建双 OWN_DISPLAY_GROUP VD
-    SS->>SS: DisplaySessionPolicy keep-awake
-    SS->>SS: restore LastSplitStore 栈
-    APP->>HU: TextureView 显示两窗 + 分隔条
+    Note over APP,HU: 选 AAP 或无线 CarPlay（互斥）
+    APP->>APP: AapProjectionService / CarPlayProjectionService FGS
+    APP->>APP: Host GL 武装（CarPlayGlCompositor）
+    APP->>SS: CoreApi.onCreateSplitDisplay + setPaneSurface
+    SS->>SS: 创建双 OWN_DISPLAY_GROUP VD + restore LastSplitStore
+    APP->>HU: Host GL → AVC → AAP VideoChannel / CarPlay ScreenStream
 ```
+
+出画细节见 §14.3（AAP）与 §14.1（CarPlay）。Google gearhead / Car SDK 投影已硬下线：[GEARHEAD_LEGACY.md](GEARHEAD_LEGACY.md)。
 
 ---
 
@@ -69,14 +63,13 @@ sequenceDiagram
 类：`xposed/XposedInit.kt`
 
 1. `initZygote` → EzXHelper。
-2. `handleLoadPackage` **只认两路**，其余包不注入：
+2. `handleLoadPackage` 路由，**仅** system_server；其余包（含 gearhead）不注入：
 
 | 条件 | 对象 | 进程确认 |
 |------|------|----------|
 | `packageName == "android"` **且** `lpparam.appInfo == null` | `AndroidHook` | 再用 `/proc/self/cmdline == system_server`（`AndroidHook.isReadyForSystemHooks()`） |
-| `packageName == com.google.android.projection.gearhead` | `AndroidAutoHook` | 再按 `processName` 过滤各 `AaHook` |
 
-LSPosed scope（`res/values/arrays.xml`）：`android` + gearhead。少勾一项则对应半边整条链路断。
+LSPosed scope（`res/values/arrays.xml`）：`android` + 本模块包。**不要**再勾 Android Auto（gearhead）。gearhead APK 仅供 AAP 证书提取。
 
 ---
 
@@ -89,11 +82,12 @@ ServiceManager.addService("package")
   → 拿到 IPackageManager
   → BridgeService.register(pms)
   → hook IPackageManager.onTransact
-  → code == 'AADD' 且 uid ∈ {本模块, gearhead}
+  → code == 'AADD' 且 uid == 本模块
   → reply.writeStrongBinder(CoreManagerService.instance)
 
 AMS 构造 → 捕获 system UI Context → CoreManagerService.systemContext
-AMS.systemReady → Instances.init + PanePresentationGuard + VdImeDisplayPin + VdOrientationFill + PhoneHidRedirect + ClusterLyricMirror
+AMS.systemReady → Instances.init + PanePresentationGuard + VdImeDisplayPin + VdOrientationFill
+                 + PhoneHidRedirect + ClusterLyricMirror + CarPlayAudioCapture / ProcessBoost / BootArm
 ```
 
 客户端拿 Binder：`xposed/CoreManager.kt` `getService()`  
@@ -102,97 +96,40 @@ AMS.systemReady → Instances.init + PanePresentationGuard + VdImeDisplayPin + V
 硬约束：
 
 - magic **`AADD`**、descriptor `android.content.pm.IPackageManager` 禁止改名。
-- 只放行 **本模块 uid** 和 **gearhead uid**（`:car` 轨触控也要过桥）。
+- 只放行 **本模块 uid**（gearhead uid 白名单已删）。
 - AIDL **只能在接口末尾追加** 方法，否则旧 system_server Stub 序数错位（需重装模块并重启）。
+- 若干 Coolwalk / Car SDK 触控方法保留为 **no-op**（ordinal 稳定），见 [GEARHEAD_LEGACY.md](GEARHEAD_LEGACY.md)。
 
 ---
 
-## 4. Android Auto 侧钩子（gearhead 进程）
+## 4. Google gearhead 钩子（已删除）
 
-总控：`xposed/hook/AndroidAutoHook.kt`
+运行时 **不再** 注入 `com.google.android.projection.gearhead`。原 `AndroidAutoHook` / `Aa*Hook` / Coolwalk / DexKit / Car SDK 壳全部删除。
 
-`Instrumentation.callApplicationOnCreate` 里：先读 `DexKitMethodCache`（gearhead `cache/aadisplay_dexkit_{car|projection}.properties`）；全命中则跳过扫包，否则 `System.loadLibrary("dexkit")` → 未命中 hook 的 `loadDexClass` → `saveCache` → `hook()`。
-每个 hook 的 `loadDexClass` / `hook` **单独** `runCatching`：某一个失败只跳过该 hook，其余仍会装上（日志 `AAD_AndroidAutoHook` / `AAD_*` / `AAD_DexKitCache`）。
-DexKit 查询 **不要** 写 `searchPackages = listOf("")`（2.0.7 会只搜无名包，`AaSignatureHook` / LayoutInfo 等命中 0）。
-
-进程常量（`AaHook`）：
-
-- `:projection` = `com.google.android.projection.gearhead:projection`
-- `:car` = `com.google.android.projection.gearhead:car`
-
-| Hook | 进程 | 做什么 |
-|------|------|--------|
-| `AaSignatureHook` | `:car` | 本模块包名签名校验返回 true，AA 才肯跑 CarActivity |
-| `AaFrxRequiredAppsHook` | 两者 | Google App / Maps / TTS 的 FRX 状态强制 READY |
-| `AaNavFallbackHook` | 两者 | 禁用 `NavigationFallbackCarActivityService`（缺 Maps 否则占位页崩 `:car`） |
-| `AaMediaPlaceholderHook` | 两者 | **保持** `MediaCarAppService` 启用（元数据出站）；隐藏残留 Dashboard / 壳相关媒体 Presentation；吞 Dashboard cover 断言 |
-| `AaMediaAllowlistHook` | 两者 | 本包免「未知来源」/ 媒体资格；配合 `:cluster` `ClusterLyricMediaService` 出站仪表 Title |
-| `AaClusterLyricEgressHook` | 两者 | 读 `MediaMetadata` Title/Subtitle 时注入 `ClusterLyricStore` 仪表横条文案 |
-| `AaBtnEventHook` | `:projection` | 偷 MEDIA_BUTTON / projected.KEY_EVENT → 广播给车机 UI |
-| `AaUiHook` | 两者（职责不同） | 见下节 |
-
-### 4.1 AaUiHook 内部分工
-
-文件：`xposed/hook/aa/AaUiHook.kt`（DexKit + 资源 id，易碎）
-
-**`:projection`（AA 壳 / Facet / VD 尺寸）**
-
-1. 把 Coolwalk 左侧 rail 相关 dimen **置 0**，让内容区拿满 HU 宽。
-2. `LayoutInfo` 强制 `hasVerticalRail=true`，避免 800×480 掉回底栏。
-3. `CoolwalkFacetChrome`：折叠 facet 列、全窗扫 gutter；`GhFacetBar` VD **饿成 1×H**（见 [COOLWALK_FACETBAR.md](COOLWALK_FACETBAR.md)）。
-4. `rewriteVirtualDisplayArgs`：名为 `Dashboard` 的 VD **饿成 1×1**（空媒体卡）。
-5. `content_bounds` 扩满 → 广播 `ACTION_COOLWALK_FULL_BLEED` → `AaMainFragment.requestDisplay`。
-6. Auto Open：武装后立刻 + 分档重试调用 CarActivity 启动入口（≤17.4：`CarSystemUiControllerService` 静态 `a(Intent)`；17.8+：DexKit 定位 ProjectionContext 启动器 `(Intent)V` + 静态单例 getter；勿用 `CarUiEntry`——AppDecor 会 `Unsupported intent` 拒 OEM 壳）；`car-connected` 再踢一次；收到 `ACTION_AA_DISPLAY_SHOWN` 才停。
-
-**AADisplay 进程（非 gearhead）**
-
-- `AaDisplayProcessHook` → `AaDisplayPresentationResize`：仅在 **createVirtualDisplay** 时按 `CoolwalkRailStore` 加宽 CarActivity presentation（禁止 gearhead 侧 resize，会黑屏）。
-
-**`:car`（HU 输入 / content_bounds 镜像）**
-
-1. 改写 projection `content_bounds`，不要再给左侧留 rail 矩形。
-2. Hook HU touch dispatch：落在原 rail 带的触摸 **偷走**，经 `CoreManager` 注入。
-3. 路由（DOWN/MOVE 都不得 Binder 查全屏；只信 `ACTION_SPLIT_STATE_CHANGED`，注册后一次异步预热）：
-
-| 条件 | IPC | 落点 |
-|------|-----|------|
-| 应用选择器打开（`ACTION_AA_UI_RAIL_CONSUME`） | `touchAaDisplay` | CarActivity presentation |
-| 全屏 + 点在 peel 命中带（`SplitPane.peelHitContains`） | `touchAaDisplay` | 分隔条 / peel |
-| 其余左侧 rail 带 | `touchPrimaryPane` | PRIMARY 窗 VD |
-
-触控解码必须用 **uptime** 作为 `downTime/eventTime`。Coolwalk 自带时间戳进 InputDispatcher 会被丢。
+清单与仍保留项（证书提取、AIDL no-op）：[GEARHEAD_LEGACY.md](GEARHEAD_LEGACY.md)。  
+历史 FacetBar 架构：[archive/COOLWALK_FACETBAR.md](archive/COOLWALK_FACETBAR.md)。
 
 ---
 
-## 5. 车机 UI 进程：从 CarActivity 到双 Surface
+## 5. 出画进程：Host GL → 双 VirtualDisplay
 
 ### 5.1 拉起
 
 ```
-Android Auto 绑定 AADisplay 的投影 Service
-  AndroidManifest: AaActivityService
-    CATEGORY_PROJECTION / NAVIGATION / OEM
-  AaActivityService.getCarActivity() → AaDisplayActivity
-  AaDisplayActivity.onCreate → AaDisplayActivityKt.showMain → AaMainFragment
-  onResume → 广播 ACTION_AA_DISPLAY_SHOWN（取消 Auto Open 重试）
+状态页选 CHANNEL_AAP 或 CHANNEL_CARPLAY
+  → AapProjectionService / CarPlayProjectionService FGS
+  → Host Runtime 武装 CarPlayGlCompositor（双 VD → OES → GLES → encoder）
+  → CoreApi.onCreateSplitDisplay(w, h, dpi, ratio, surfaces)
+  → setPaneSurface(PRIMARY/SECONDARY)
+  → LastSplitStore restore
 ```
 
-- 手机状态页：`ui/main/MainActivity.kt`（`MAIN` + `CATEGORY_INFO`，无桌面图标）。用 `CoreApi.buildTime` 对比 `BuildConfig.BUILD_TIME`：0 未激活 / 相等已激活 / 不等需重启。
-- 车机 UI **没有** LAUNCHER Activity；只走 Car SDK。
+车机触控 / 分隔条 / Recents / Picker 在 Host GL 合成层处理：`CarPlayInputBridge`、`CarPlayRecentsOverlay`、`CarPlayAppPickerOverlay`（AAP 复用同一套）。
 
-### 5.2 创建分屏显示（软/硬连接共用一个入口）
+### 5.2 创建分屏显示
 
-`ui/aa/fragment/AaMainFragment.kt`：
-
-1. `initViews`：读 `LastSplitStore` 做乐观比例/全屏；绑两个 `TextureView`；分隔条手势。
-2. 两块 Surface 都 `available` 且 `splitContainer` 有宽高 → `requestDisplay`。
-3. DPI 取 **HU presentation** 的 density，不要写死、不要用手机默认 Display。
-4. `CoreApi.onCreateSplitDisplay(w, h, dpi, ratio, primarySurface, secondarySurface, listener)`。
-5. `onAvailableDisplay`：再 `setPaneSurface`、注册控制广播、settle 占用/比例。
-6. 多次 `reportAaUiDisplayId`（layout / resume / surface / created）：presentation 是 `FLAG_PRIVATE`，system_server 枚举不到，peel 注入靠这个 id。
-
-`requestDisplay` 跳过条件：宽高未就绪、缺 Surface、创建已在途、**profile 未变**（避免 TextureView 改 weight 反馈打 VD）。  
-`onSurfaceTextureSizeChanged` **禁止**再 `requestDisplay`。
+软/硬连接共用 `CoreApi.onCreateSplitDisplay` → `CoreManagerService` → `SplitDisplayController` / `SplitVdLifecycle`。  
+Surface 来自 Host GL 的 pane `SurfaceTexture`，不是已删除的 Car SDK `TextureView`。
 
 ### 5.3 system_server 创建 / 重连
 
@@ -215,7 +152,7 @@ Android Auto 绑定 AADisplay 的投影 Service
 `ui/aa/split/SplitDisplayController.onConnected`：
 
 1. `DisplayManager.createVirtualDisplay` × 2（名字 `AADisplay-P/S-*`）。
-2. 先 `onCreated(primaryDisplayId)` 让 TextureView 出画，再 post 应用 IME/旋转策略（三星 `freezeDisplayRotation` 很贵）。
+2. 先 `onCreated(primaryDisplayId)` 让 Host 绑 Surface 出画，再 post 应用 IME/旋转策略（三星 `freezeDisplayRotation` 很贵）。
 3. 有合法快照则 `SplitLaunchRestore.scheduleRestoreLastSplit()`，并 `mSuppressReclaimUntil += 8s`。
 
 VD flags（`SplitVdLifecycle.vdFlags`）——**不要加 `VIRTUAL_DISPLAY_FLAG_PRESENTATION`**（抖音 LivePlay 会把 Presentation 贴到另一窗，盖住导航并抢走焦点）：
@@ -228,20 +165,16 @@ VD flags（`SplitVdLifecycle.vdFlags`）——**不要加 `VIRTUAL_DISPLAY_FLAG_
 - **不要 `OWN_FOCUS`**：A16 上会导致 IMMS 以为已 show（壳出现「收起键盘」）但 VD 上无 `TYPE_INPUT_METHOD` 窗；省略后焦点 EditText 才能正常出键盘。
 - `SUPPORTS_TOUCH`：蓝牙鼠标 viewport / `setVirtualMousePointerDisplayId` 需要。
 
-分屏时 **VD 缓冲 = 窗格 TextureView 尺寸**（HU × ratio − 分隔条）。全屏时两 VD 都是满 HU 缓冲，AA UI 只显示一块、底下那块继续渲染。  
+分屏时 **VD 缓冲 = 窗格尺寸**（HU × ratio − 分隔条）。全屏时两 VD 都是满 HU 缓冲，Host 只合成可见侧、背后那块继续渲染。  
 不要改回「两窗都满幅再 crop」——半窗会变成全屏布局的中心切片 + 黑边。
 
-### 5.4 Display profile lock（FacetBar / 重连分辨率）
+### 5.4 Display profile lock（重连分辨率）
 
-`CoreManagerService.resolveDisplayProfile` + `DisplayProfileSettle`（**单一 settle 规则**，已取代 grow/shrink 双梯）：
+`CoreManagerService.resolveDisplayProfile`：**锁定客户端上报尺寸**（AAP / CarPlay Host 上报的 w×h×dpi）。
 
-- **live FacetBar VD 条带 > 1px** → settle 到 `fullHU − rail`（content 槽）。
-- **条带 ≤ 1（已 starve）** → 若 reported 仍是 content slot 则暂保持 reported；否则 full HU。
-- **不要用 `touchRailWidthPx` 做 profile**（仅 `:car` 触控 steal）；live 条带来自 system_server 扫 `DisplayManager`。
-- 软重连首次 create 后 **450ms `rail-settle` 重试**；`reportCoolwalkRailSnapshot` 在 full 变大或 `FullBleed` 时也会触发。
-- 新会话：锁定 settle 结果；方向变了才 relock；真正 `onDestroyDisplay` 走完才 `clearDisplayProfileLock`。
-
-坑点与模块地图：**[COOLWALK_FACETBAR.md](COOLWALK_FACETBAR.md)**（黑条、gutter、presentation 黑屏、跨车污染等）。
+- 软重连：同方向只允许变大；方向变了才 relock。
+- 真正 `onDestroyDisplay` 走完才 `clearDisplayProfileLock`。
+- 旧 Coolwalk FacetBar / content-slot settle（`DisplayProfileSettle` / `reportCoolwalkRailSnapshot`）已删除；历史见 [archive/COOLWALK_FACETBAR.md](archive/COOLWALK_FACETBAR.md)。
 
 ---
 
@@ -252,7 +185,7 @@ VD flags（`SplitVdLifecycle.vdFlags`）——**不要加 `VIRTUAL_DISPLAY_FLAG_
 | 事件 | 行为 |
 |------|------|
 | 首创成功 | Monitor wake lock（每块 VD 一把自己的 display-scoped `SCREEN_BRIGHT`）+ heartbeat |
-| AA `onDestroy` / Fragment `onDestroy` | `CoreApi.onDestroyDisplay` → `policy.onDestroy` → **延迟 180s** 再 `controller.onDestroy()` |
+| Host / FGS 拆显示会话 | `CoreApi.onDestroyDisplay` → `policy.onDestroy` → **延迟 180s** 再 `controller.onDestroy()` |
 | 180s 内重连 | `onResume`：`cancelAndJoin` 销毁任务，VD 复用 |
 | 180s 到 | 释放 lock、拆 VD、清 profile lock、forceStop 窗内应用 |
 | 手机 SCREEN_OFF | 立刻 keep-awake；完整约 4s burst 最短间隔 **8s**（抖动时跳过加固循环）；heartbeat 改为 3s |
@@ -263,7 +196,7 @@ VD flags（`SplitVdLifecycle.vdFlags`）——**不要加 `VIRTUAL_DISPLAY_FLAG_
 
 Keep-awake 硬规则：
 
-- AA 窗 **不许停在 ColorFade/OFF**（三星 `OWN_DISPLAY_GROUP` 会跟手机一起 doze）。
+- 窗 VD **不许停在 ColorFade/OFF**（三星 `OWN_DISPLAY_GROUP` 会跟手机一起 doze）。
 - `IPowerManager.userActivity` **只走带 displayId 的四参重载**；禁止全局 overload（会亮手机主屏）。
 - 伪熄屏：系统 idle 被 VD 全局锁挡住时，对 display 0 `goToSleep`；无手机 FG 用户应用时超时上限 **10s**（`min(SCREEN_OFF_TIMEOUT, 10s)`），有地图等 FG 应用则跳过；计时锚点 = 亮屏 / 会话开始 / **主屏** TOUCH·BUTTON·A11Y；车机操作不重置。
 - `ACQUIRE_CAUSES_WAKEUP` 只做短 pulse，不要长持。
@@ -280,25 +213,25 @@ Keep-awake 硬规则：
 
 | 方法 | 调用方典型场景 | 落到 |
 |------|----------------|------|
-| `onCreateSplitDisplay` | `AaMainFragment.requestDisplay` | 创建或软重连 |
-| `setPaneSurface` | TextureView available/destroyed | `VirtualDisplay.surface =` |
+| `onCreateSplitDisplay` | AAP / CarPlay Host 武装 | 创建或软重连 |
+| `setPaneSurface` | Host pane SurfaceTexture | `VirtualDisplay.surface =` |
 | `setSplitRatio` / `getSplitRatio` | 分隔条松手 | resize VD；全屏中只改 `mRatioBeforeFullscreen` |
 | `setSplitFullscreen` / `getSplitFullscreenPane` | 拖过边缘 / peel | 两 VD 满幅或按比例 |
-| `getPanePackage` / `setFocusedPane` / `getFocusedPane` | 空窗遮罩 / Recent 焦点 | 栈顶包名；焦点窗记录 |
-| `swapSplitPanes` | 点分隔条 / 方控长按下一曲（快进） | 整栈 `moveRootTask` 对调，**VD 身份不变** |
-| `startActivity` / `startActivityOnPane` | 选择器 / Recent 点选 | `PaneAppStack.pushToTop` + 启动或置顶 |
+| `getPanePackage` / `setFocusedPane` / `getFocusedPane` | 空窗 / Recent 焦点 | 栈顶包名；焦点窗记录 |
+| `swapSplitPanes` | 点分隔条 / 方控长按下一曲 | 整栈 `moveRootTask` 对调，**VD 身份不变** |
+| `startActivity` / `startActivityOnPane` | Picker / Recent 点选 | `PaneAppStack.pushToTop` + 启动或置顶 |
 | `moveTaskId` / `moveTaskIdToPane` / `moveTaskToFront` | Recent 拖拽 | 跨 display 搬任务 |
 | `removeTask` | Recent Close | 关任务；栈顶空则下一档 |
-| `pressKey` | 方控短按 / Activity 方向键 | 注入到焦点窗 |
-| `hideIme` **oneway** | 壳层「收起键盘」 | WMS/IMM hide；失败才对该 display 打 BACK（不 bringTaskToFront） |
-| `getImePane` | 壳层芯片初次同步 | -1 隐藏；0/1 为正在显示 IME 的窗 |
-| `touchPane` **oneway** | TextureView | 注入对应 VD |
-| `touchPrimaryPane` **oneway** | Coolwalk 左轨 | PRIMARY VD |
-| `touchAaDisplay` **oneway** | peel / 选择器 | presentation；锁屏全屏走 `SplitLockedPeelController` |
-| `reportAaUiDisplayId` **oneway** | UI 多次上报 | `mAaUiDisplayId`；失败会广播让 UI 再报 |
-| `getRecentTask` | `AaRecentTaskFragment` | 左=PRIMARY 栈，中=SECONDARY，右=手机 |
+| `pressKey` | 方控短按 | 注入到焦点窗 |
+| `hideIme` **oneway** | Host「收起键盘」 | WMS/IMM hide |
+| `getImePane` | IME chip 同步 | -1 隐藏；0/1 为正在显示 IME 的窗 |
+| `touchPane` **oneway** | Host / AAP 触控 → 窗 | 注入对应 VD |
+| `touchPrimaryPane` / `touchAaDisplay` / `reportAaUiDisplayId` | — | **no-op**（AIDL ordinal 保留） |
+| `reportCoolwalk*` / `notifyCoolwalkFullBleed` | — | **no-op**（AIDL ordinal 保留） |
+| `getRecentTask` | `CarPlayRecentsOverlay` | 左=PRIMARY 栈，中=SECONDARY，右=手机 |
+| `reportCarPlaySessionLive` | AAP / CarPlay 会话 | 二次出口 live → Delay Destroy 门控 |
 
-`touch*` 是 oneway：返回只表示 parcel 已入队，不表示 InputManager 已注入。`CoreManager.tryTouch*` 失败时 **不要吞掉 HU 事件**（调用方要放行给 AA）。
+`touchPane` 是 oneway：返回只表示 parcel 已入队。`CoreManager.tryTouchPane` 失败时 **不要吞掉 HU 事件**。
 
 ---
 
@@ -312,10 +245,10 @@ Keep-awake 硬规则：
 | `SplitLaunchRestore` | restore / persist / ensure 空窗 / 校验 |
 | `SplitOwnership` | ATMS 任务搬家、reclaim、bringToFront、1px nudge 铺满 |
 | `SplitInputRecents` | `IInputManager.injectInputEvent`、Recent 列表 |
-| `SplitImeController` | 轮询窗 VD 上 IME 可见性，广播给 AA 壳；`hideIme` 不抢任务焦点 |
+| `SplitImeController` | 轮询窗 VD 上 IME 可见性，广播给 Host（`ACTION_IME_VISIBILITY`）；`hideIme` 不抢任务焦点 |
 | `PaneAppStack` | 每窗最多 3 个，底→顶，栈顶=画面 |
 | `SplitTaskStackListener` | 栈变 → debounce reclaim + persist + 驱逐外窗 Presentation |
-| `SplitLockedPeelController` | 手机锁屏时 presentation 被 Keyguard 挡住，全屏 peel 在 system_server 直接解析 |
+| `SplitLockedPeelController` | 手机锁屏时 Host presentation 被 Keyguard 挡住，全屏 peel 在 system_server 直接解析 |
 | `SplitPresentationGuard` | 外包 `TYPE_PRESENTATION` 贴到本窗 VD → 拦 `addWindow` / `attachWindowContextToDisplayArea` |
 | `SplitChromePackages` | 不参与 bounce/reclaim 的壳包名 |
 
@@ -357,110 +290,90 @@ Persist key **禁止改名**（已有设备快照）：`aadisplay_last_split_lef
 
 ---
 
-## 9. 车机 UI 手势（AaMainFragment + SplitDividerView）
+## 9. 车机 UI 手势（Host GL：`CarPlayInputBridge`）
 
-分隔条三个点（`setupDivider`）：
+分隔条 / peel（合成层，非已删除的 `SplitDividerView` Fragment）：
 
 | 手势 | 分屏 | 全屏（peel） |
 |------|------|----------------|
-| 拖动 | GPU 预览 scale/clip，**松手**才 `setSplitRatio`（live resize 在三星上 600–900ms/次会抖） | 向外 peel；松手超 `FULLSCREEN_EXIT_RATIO` 则退出 |
-| 点按 | `swapSplitPanes`（UI 先乐观 `1-ratio`） | 只切可见窗，**不搬栈** |
-| 长按 | 松手后再开 Recent（按下期间 add Fragment 会打烂指针序列，之后 peel 点不动） | 同左；锁屏则 `ACTION_SHOW_RECENT_TASK` |
+| 拖动 | 预览比例，**松手**才 `setSplitRatio` | 向外 peel；松手超 `FULLSCREEN_EXIT_RATIO` 则退出 |
+| 点按 | `swapSplitPanes` | 只切可见窗，**不搬栈** |
+| 长按 | 开 `CarPlayRecentsOverlay` | 同左；锁屏走 `SplitLockedPeelController` → `showHidRecentTask` |
 
-拖过边缘：常量见 `SplitPane`——`rawRatio < FULLSCREEN_ENTER_RATIO(0.12)` → SECONDARY 全屏；`> 1 - 0.12` → PRIMARY 全屏。peel 退出阈值 `FULLSCREEN_EXIT_RATIO = 0.15`。  
-退出全屏顺序：**先** `setSplitRatio`（写入 `mRatioBeforeFullscreen`）**再** `setSplitFullscreen(NONE)`，一次 resize。反过来会两次 resize，OneUI 把 Window Requested 卡在中间宽。
+拖过边缘：常量见 `SplitPane`。退出全屏顺序：**先** `setSplitRatio` **再** `setSplitFullscreen(NONE)`。
 
-空窗：`tvEmpty*` 点 → `SplitAppPickerController.show(pane)` → `startActivityOnPane`。  
-选择器显示时广播 `ACTION_AA_UI_RAIL_CONSUME=true`，让 `:car` 把左轨触摸打到 presentation，而不是打穿到 PRIMARY 应用。
-
-TextureView 触摸：`rewriteMotionEvent` 后 `CoreApi.touchPane`；MOVE 合并，destroy 前必须 `cancelPendingPaneTouches`。
+空窗短按 → `CarPlayAppPickerOverlay.show(pane)` → `startActivityOnPane`。  
+窗内触控 → `CoreApi.touchPane`（归一化坐标由 `CarPlayInputBridge` 映射）。
 
 ---
 
-## 10. 输入四条路（不要混）
+## 10. 输入路径（不要混）
 
 ```mermaid
 flowchart TB
-    subgraph HU["车机触摸"]
-        TV["AaMainFragment TextureView"]
-        RAIL["AaUiHook :car 左轨偷触摸"]
-        KEY["AaDisplayActivity onKeyDown / 滚轮"]
-        WH["方向盘 MEDIA_BUTTON"]
+    subgraph HU["车机触摸 / 键"]
+        AAP["AAP VideoChannel / RelativeEvent"]
+        CP["CarPlay event HID"]
+        WH["方向盘 / MEDIA"]
     end
 
     subgraph PhoneHid["手机蓝牙键鼠"]
         BT["PhoneHidRedirect system_server"]
     end
 
-    TV --> touchPane
-    RAIL -->|普通左缘| touchPrimaryPane
-    RAIL -->|peel / 选择器| touchAaDisplay
-    KEY --> pressKey
-    WH --> BtnHook["AaBtnEventHook :projection"]
-    BtnHook --> BR["ACTION_STEERING_WHEEL_CONTROL"]
-    BR --> MAIN["AaMainFragment"]
-    MAIN -->|短按媒体键| pressKey
-    MAIN -->|长按下一曲/快进| swap或切全屏
-    MAIN -->|长按上一曲/快退| Recent
-    BT -->|窗内主键| HID["inject 焦点窗 VD"]
-    BT -->|分隔条带| touchAaDisplay
-    BT -->|Ctrl 快捷键| Chrome["ratio / Recent / swap"]
+    AAP --> Bridge["CarPlayInputBridge"]
+    CP --> Bridge
+    WH --> Wheel["AapInputKeys / CarPlayWheelController"]
+    Bridge -->|窗内| touchPane
+    Bridge -->|分隔条 / peel / Recents / Picker| Chrome["Host overlay 本地处理"]
+    Wheel -->|短按| pressKey
+    Wheel -->|长按下一曲| swapSplitPanes
+    Wheel -->|长按上一曲| Recents["CarPlayRecentsOverlay"]
+    BT -->|窗内| HID["inject 焦点窗 VD"]
+    BT -->|分隔条 / peel| lockedPeel["SplitLockedPeelController / HID chrome"]
+    BT -->|Ctrl 快捷键| HidChrome["ratio / Recent / swap"]
 
     touchPane --> IM["IInputManager.inject 到窗 VD"]
-    touchPrimaryPane --> IM
-    touchAaDisplay --> PEEL{"锁屏且全屏?"}
-    PEEL -->|是| LOCK["SplitLockedPeelController 直接改 controller"]
-    PEEL -->|否| PRES["inject 到 AaDisplay presentation"]
-    pressKey --> IM
     HID --> IM
-    Chrome --> MAIN
 ```
 
 ### 10.1 手机蓝牙键鼠（操作说明）
 
-前提：键鼠**连手机**；AA 会话活跃（非 Delay Destroy）；改钩子后需**重启**（`system_server`）。实现：`xposed/hook/PhoneHidRedirect.kt`。方控媒体键路径不变。
+前提：键鼠**连手机**；显示会话活跃（非 Delay Destroy）；改钩子后需**重启**（`system_server`）。实现：`xposed/hook/PhoneHidRedirect.kt`。
 
-光标在 **AaDisplay 壳画布**上连续移动（`[左窗][分隔条][右窗]`），可见箭头由壳上 `HidCursorOverlayView` 自绘（system_server 写内存坐标，AA UI 每帧 `getHidCursorOverlay` pull；勿再走 `ACTION_HID_CURSOR` 广播），跨 pane **不**再切换 `setVirtualMousePointerDisplayId`；inject 仍进各 pane VD。
+光标在 **双窗合成画布**上连续移动（`[左窗][分隔条][右窗]`）；inject 进各 pane VD。几何来自 `SplitDisplayController.hidSplitLayout()`（活体 VD 尺寸）。
 
 **鼠标**
 
 | 操作 | 效果 |
 |------|------|
-| 窗内移动 / 主键点击 | 当触控注入当前窗格 VD（App） |
-| 移到两窗**中间分隔带**停住再拖 | 调**壳**分屏比例（`touchAaDisplay` → `SplitDividerView` 预览，松手再 `setSplitRatio` 改 VD） |
-| 分隔带上**长按再松手** | 打开堆栈 / Recent 三列；之后鼠标继续打到壳（堆栈可点） |
-| 分隔带**短按** | 对调两窗（同点分隔条） |
+| 窗内移动 / 主键点击 | 触控注入当前窗格 VD |
+| 移到两窗**中间分隔带**停住再拖 | 调分屏比例（预览，松手 `setSplitRatio`） |
+| 分隔带上**长按再松手** | 打开 Recents（`showHidRecentTask` / Host overlay） |
+| 分隔带**短按** | 对调两窗 |
 | **中键** | 光标跳到另一窗中心并切焦点 |
-| 相对移动越过缝 | 经分隔带进入另一窗（可在带上停留） |
-| 全屏某一窗 | 只在该窗内移动（无跨窗） |
-| 堆栈 / 应用选择器打开时 | 全部触控走 `touchAaDisplay`（`ACTION_AA_UI_RAIL_CONSUME`） |
-
-分隔条 / 堆栈 / 对调在 **AA 壳 presentation**，不在窗 VD。
+| 全屏某一窗 | 只在该窗内移动；peel 带见 `HidSplitLayout.isPeelHit` |
 
 **键盘**（须按住 **Ctrl**；放行 Power / Volume / Home / Back）
 
 | 快捷键 | 效果 |
 |--------|------|
-| Ctrl + ← / → / ↑ / ↓ 或 WASD | 壳比例 ±5%（广播 `HID_APPLY_SPLIT_RATIO` → UI 改 TextureView + 再 settle VD；**禁止**只调 `setSplitRatio`） |
-| Ctrl + R 或 Ctrl + Tab 或 App Switch | 打开堆栈 / Recent（`ACTION_SHOW_RECENT_TASK`） |
-| Ctrl + S | 对调两窗（`swapPanes`） |
-| 其它物理键 | `inject` 到当前焦点窗（跟随鼠标焦点） |
+| Ctrl + ← / → / ↑ / ↓ 或 WASD | 比例 ±5%（`nudgeHidSplitRatio`） |
+| Ctrl + R 或 Ctrl + Tab 或 App Switch | Recents（`showHidRecentTask`） |
+| Ctrl + S | 对调两窗 |
+| 其它物理键 | `inject` 到当前焦点窗 |
 
 **折叠屏 / 多面板注意**
 
-- 系统实体屏光标：`forceHideCursor` + 藏 icon；可见指针只在 AA 壳 overlay。
-- 可选一次 `setVirtualMousePointerDisplayId` 绑 shell，避免合盖外屏 mapper 画 ghost cursor。
-- AA 窗需 Input viewport：VD 带 `VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH`；另 hook `setDisplayViewports` 注入窗 viewport。
-- **懒启用（A16）**：无外接鼠标时**不**装 `InputFilter`、**不**注入 AA VIRTUAL viewport。检测必须用 `(sources and SOURCE) == SOURCE`（`!= 0` 会把触屏误判成鼠标，因共享 `CLASS_POINTER`）。插拔鼠标热开/关；纯键盘走 key hook。
-- 日志标签：`AAD_PhoneHid`（LSPosed Bridge / modules log）。
+- 系统实体屏光标：`forceHideCursor`；可见指针由 Host / HID 路径处理。
+- 窗需 Input viewport：VD 带 `VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH`；另 hook `setDisplayViewports`。
+- **懒启用（A16）**：无外接鼠标时**不**装 `InputFilter`。检测用 `(sources and SOURCE) == SOURCE`。
+- 日志标签：`AAD_PhoneHid`。
 
 ### 10.2 方控映射
 
-`AaMainFragment` 收 `ACTION_STEERING_WHEEL_CONTROL`：
-
-- 短按（`EXTRA_TYPE=0`）：媒体键 → `CoreApi.pressKey`（直播顶窗里 next/prev 可能被改写成滑动，见 `SplitInputRecents`）。
-- 长按下一曲/快进（`EXTRA_TYPE=1`，87/90）：与点分隔条相同（分屏对调整栈；全屏只切可见侧）。
-- 长按上一曲/快退（88/89）：开/关 Recent。
+- **AAP：** `aap/AapInputKeys` — 短按媒体键 `pressKey`；长按 NEXT 换窗；长按 PREV Recents。
+- **CarPlay：** `CarPlayWheelController` — 同 UX；MIB3 物理右常报 HID PREV → `invertMediaLeftRight`。
 
 `pressKey` / 触控 DOWN / HID 注入会 `DisplaySessionPolicy.onVirtualDisplayUserInteraction`。
 
@@ -468,7 +381,7 @@ flowchart TB
 
 ## 11. Recent 三列
 
-入口：`AaDisplayActivityKt.showRecentTask` → `AaRecentTaskFragment`（盖在 Main 上，不 remove Main）。
+入口：分隔条 / peel 长按、方控长按上一曲 → `CarPlayRecentsOverlay`（Host GL 画布三列）。
 
 `CoreApi.recentTask`：
 
@@ -476,8 +389,8 @@ flowchart TB
 - 中 = SECONDARY
 - 右 = 手机 DEFAULT_DISPLAY
 
-点卡片 → `startActivityOnPane` 置顶并关面板；Close → `removeTask`。  
-左/中底栏「添加应用」：`ACTION_OPEN_SPLIT_PICKER` + `EXTRA_KEEP_OCCUPANCY=true`（不要清空窗遮罩）。
+点卡片 → `startActivityOnPane` / `moveTaskToFront`；Close → `removeTask`。  
+左/中底栏「添加应用」→ `CarPlayAppPickerOverlay`。
 
 ---
 
@@ -503,30 +416,26 @@ flowchart TB
 
 ## 13. 广播总线（`util/AABroadcastConst.kt`）
 
+Car SDK / Coolwalk / gearhead 总线已删。现行仅：
+
 | Action | 方向 | 用途 |
 |--------|------|------|
-| `AA_DISPLAY_SHOWN` | App → gearhead | Auto Open 停重试 |
-| `STEERING_WHEEL_CONTROL` | `:projection` → App | 方控 |
-| `SPLIT_STATE_CHANGED` | system_server → App / `:car` | 占用、全屏、swap 后比例；`:car` 缓存全屏供轨触摸 |
-| `OPEN_SPLIT_PICKER` | Recent / restore 失败 → App | 打开选择器 |
-| `AA_UI_RAIL_CONSUME` | App → `:car` | 选择器打开时左轨打到 presentation |
-| `REQUEST_AA_UI_DISPLAY_ID` | system_server → App | peel 找不到 presentation id |
-| `SHOW_RECENT_TASK` | system_server → App | 锁屏 peel 长按；蓝牙键鼠 Ctrl+R/Tab（`PhoneHidRedirect`） |
-| `HID_APPLY_SPLIT_RATIO` | system_server → App | 蓝牙 Ctrl+方向：先改壳布局再 `setSplitRatio` |
-| `HID_CURSOR` | system_server → App | 蓝牙鼠标壳上自绘光标位置（presentation 坐标） |
+| `IME_VISIBILITY` | system_server → 本模块 | Host「收起键盘」chip（`CarPlayImeChip`）；`EXTRA_PANE` |
+
+`AaSystemBroadcast.toAaDisplay` 只投本模块包。system_server 发送前经 `AndroidHook` 对 `aa.display.action.*` 白名单，避免 A14+ WTF dump。
 
 ---
 
-## 14. 无线 CarPlay 出口（与 AA 双轨）
+## 14. 二次出口（AAP / 无线 CarPlay）
 
-目标：同一套双 VD / 分屏，可同时或单独走 **Android Auto** 与 **手机直连无线 CarPlay Source**。
+目标：同一套双 VD / 分屏，经 **AAP** 或 **无线 CarPlay Source** 出到车机（互斥；无 Google gearhead 投影）。
 
 ```
 应用窗口 → system_server VirtualDisplay
          → 通道互斥（同一时刻只出一路）:
-            AA：AaMainFragment TextureView → gearhead GAL
-            CarPlay：Host GL（VD→OES→CarPlayGlCompositor）→ AVC → CarPlaySourceSession
-                     （Bonjour _carplay-ctrl._tcp. + BT iAP2 + RTSP；无 AA 壳 tee）
+            AAP（已装 AA 时默认）：Host GL → AVC → AapSourceSession / VideoChannel
+            CarPlay：Host GL → AVC → CarPlaySourceSession
+                     （Bonjour _carplay-ctrl._tcp. + BT iAP2 + RTSP）
 ```
 
 ### 14.1 播放链路（速查）
@@ -594,14 +503,14 @@ ClusterLyricMirror（system_server）
   → 封面：会话 12 文件传输（SETUP→START→DATA+FLAG_LAST→SUCCESS）
 ```
 
-- Host 发 `0x5000` 后才推流；与 AA 仪表横条**同源**，只是出口从 gearhead Title 换成 iAP2。
+- Host 发 `0x5000` 后才推流；与 AAP `AapNowPlaying` **同源**（`ClusterLyricStore`），出口为 iAP2。
 
 **触控 / 方控（回传，非播放）**：event 通道 HID → `CarPlayInputBridge` / `CarPlayWheelController` → `CoreApi.touch*` / `pressKey` / `scrollPane`。
 
 | 组件 | 路径 |
 |------|------|
 | FGS / 启停 | `carplay/CarPlayProjectionService.kt`（Intent `CONNECT` / `STOP`；系统重启仅在选择 CarPlay 通道时重武装） |
-| 通道选择 | `carplay/CarPlayChannel.kt`（app 侧 prefs；默认 AA，真车行为不变） |
+| 通道选择 | `carplay/CarPlayChannel.kt`（files 持久化；已装 AA 默认 AAP，未装默认 CarPlay；`CHANNEL_AA` 已退役） |
 | 会话编排 | `carplay/CarPlaySourceSession.kt` |
 | 发现 / 链路 | `CarPlayBonjour`、`CarPlayBluetoothLink`（RFCOMM dial+listen）、`CarPlayRtspSession` |
 | iAP2 | `protocol/Iap2Framing` + `Iap2Csm` + `Iap2Session`：detect → Link Sync → Ident → Auth(`AA00…05`) → WiFi/`4300`→`4301`；`CarPlayWifiHandoff` 尝试加热点 |
@@ -612,35 +521,35 @@ ClusterLyricMirror（system_server）
 | iAP2 扩展 | `Iap2Session`：`0x5000` 订阅接收、`sendNowPlaying`、会话 12 路由 + 发送窗口流控（对端 maxOutgoing 累积 ACK，队列封顶）；`Iap2Framing` LSP 含 `(0x0C, kind 1, ver 2)` |
 | 方向盘 | event 通道 HID → `CarPlayWheelController`（与 AA 同 UX）：短按切歌 `pressKey`；**长按右/下一曲=`swapSplitPanes`**；**长按左/上一曲=Recents**；滚轮 `scrollPane`。MIB3 物理右常报 HID PREV → `invertMediaLeftRight` 对调后再按 AA 语义处理 |
 | 仅 CP Host | `CarPlayHostActivity`（无 UI 壳：双 SurfaceTexture → `CarPlayGlCompositor` GLES 合成 + 分隔条/全屏 peel + Recents/Picker 纹理叠加；`LastSplitStore` 快照恢复 + 演示应用兜底） |
-| 触控回传 | `CarPlayInputBridge` → AA 在线 `CoreApi.touchAaDisplay`；仅 CP 按 `primaryRatio` 切窗 → `CoreApi.touchPane`（窗内像素）；分隔条对齐 AA：短按 `swapSplitPanes`、长按 Recents、拖动预览 + UP `setSplitRatio` settle、拖过边缘 `setSplitFullscreen`；空窗短按开 `CarPlayAppPickerOverlay` |
-| Recents | `CarPlayRecentsOverlay.kt`（画布三列对齐 AA `fragment_aa_recent_task`：左 PRIMARY / 中 SECONDARY / 右 phone；无列标题；两道竖分割线；底栏「添加应用」→ Picker；卡片 × → `removeTask`；点卡 `moveTaskToFront` / `startActivityOnPaneForUser`；空白 dismiss） |
-| 应用选择器 | `CarPlayAppPickerOverlay.kt`（**Canvas** 直绘 + 归一化命中/拖动滚动；观感对齐 AA：scrim /「选择应用」/「最近·全部」/ 圆角图标 / 底栏「关闭」；AA 仍用 `view_split_app_picker`） |
-| 会话仲裁 | `egress/ProjectionSessionGate`（app，只记 CarPlay 会话是否存活）+ `reportCarPlaySessionLive`（system_server → `DisplaySessionPolicy.onSecondaryEgressLiveChanged`：CP 存活期间 Delay Destroy 挂起，CP 结束且 AA 未附 → 重启 180s 倒计时）＋ `xposed/carplay/CarPlayProcessBoost.kt`（CP 存活期把 app pid 写入 `cpu`+`cpuset`+`freezer` 的 top-app，3s 重断言；仅写 cpu 时三星会进 `cpuset:/abnormal` 砍半核） |
+| 触控回传 | `CarPlayInputBridge` → `CoreApi.touchPane` / Host chrome（分隔条 / peel / Recents / Picker） |
+| Recents | `CarPlayRecentsOverlay.kt`（画布三列：左 PRIMARY / 中 SECONDARY / 右 phone） |
+| 应用选择器 | `CarPlayAppPickerOverlay.kt`（Canvas 直绘；AAP/CP 共用） |
+| 会话仲裁 | `egress/ProjectionSessionGate`（app，**二次出口** live：CarPlay ∪ AAP）+ `reportCarPlaySessionLive`（AIDL 名冻结；system_server → `DisplaySessionPolicy.onSecondaryEgressLiveChanged`：存活期间 Delay Destroy 挂起，结束且无 AA UI 附 → 重启 180s 倒计时）＋ `xposed/carplay/CarPlayProcessBoost.kt`（存活期把 app pid 写入 `cpu`+`cpuset`+`freezer` 的 top-app，3s 重断言；仅写 cpu 时三星会进 `cpuset:/abnormal` 砍半核） |
 | 状态页 CarPlay UI | `carplay/CarPlayStatusUi`（`MainActivity` 只 `bind` / `refresh` / `handleLaunchIntent`） |
 | 音频采集（system） | `xposed/carplay/CarPlayAudioCapture.kt`（原 `xposed/hook/`，已迁出以免与 AA 钩子混放） |
 
-### 14.2 包边界（AA 与 CarPlay 分离）
+### 14.2 包边界（AAP 与 CarPlay）
 
-目标：协议 / 编码 / Host 留在 `carplay/`；AA 车机 UI 与 gearhead 钩子**不** import carplay 包；共享的是 `egress/ProjectionSessionGate`（会话存活）与 `CoreApi`。
+目标：协议 / 编码 / Host 留在 `carplay/`（AAP 出画复用）；`ui/aa/split` 不 import 协议细节；共享 `egress/ProjectionSessionGate` 与 `CoreApi`。
 
 ```
-ui/aa/           → CoreApi                              （无 carplay import）
-carplay/         → CoreApi + egress/ + Cluster*（读）     （协议 / FGS / Host）
+ui/aa/split/     → CoreApi                              （分屏真源）
+aap/             → CoreApi + carplay Host GL（出画/触控复用）
+carplay/         → CoreApi + egress/ + Cluster*（读）
 xposed/carplay/  → 仅 system_server 能力，经 ICoreManager 门控
-xposed/hook/aa/  → 无 CarPlay 引用（保持）
 ```
 
 | 允许共享 | 禁止 |
 |----------|------|
-| `CoreApi` / 双 VD / `SplitPane` / `LastSplitStore` / `ClusterLyricStore`（读） | `AaMainFragment` 直接引用 `CarPlayProjectionService` |
-| `egress/ProjectionSessionGate` | 把 iAP2/RTSP/加密搬进 system_server |
-| AIDL `reportCarPlaySessionLive` 等（名称冻结，ordinal 稳定） | 在 `AndroidAutoHook` / gearhead 钩子里加 CarPlay 逻辑 |
+| `CoreApi` / 双 VD / `SplitPane` / `LastSplitStore` / `ClusterLyricStore`（读） | 把 iAP2/RTSP/加密搬进 system_server |
+| `egress/ProjectionSessionGate` | 恢复 gearhead DexKit / Car SDK 壳 |
+| AIDL `reportCarPlaySessionLive` 等（名称冻结，ordinal 稳定） | 新增 gearhead 进程钩子 |
 
 **不变式补充**
 
-- CarPlay **协议栈**（iAP2 / RTSP / 加密 / 音频 RTP / 文件传输）只跑在 AADisplay 进程的 `carplay/`。两个 **系统能力**例外（与 VirtualDisplay 创建同性质，经 `ICoreManager` 由 app 门控，CP 会话存活才生效）：`xposed/carplay/CarPlayAudioCapture` 与 `CarPlayProcessBoost`。不要把协议逻辑搬进 system_server。
-- 出画 **互斥**：选 AA 则停 CarPlay Source/Host；选 CarPlay 则只走 Host GL。
-- 不 vendor CatPlay / 不开 CarLife 包名伪装；LSPosed scope 仍仅 `android` + gearhead。
+- CarPlay **协议栈**（iAP2 / RTSP / 加密 / 音频 RTP / 文件传输）只跑在 AADisplay 进程的 `carplay/`。两个 **系统能力**例外：`xposed/carplay/CarPlayAudioCapture` 与 `CarPlayProcessBoost`。不要把协议逻辑搬进 system_server。
+- 出画 **互斥**：选 AAP 则停 CarPlay Source/Host；选 CarPlay 则停 AAP。
+- 不 vendor CatPlay / 不开 CarLife 包名伪装；LSPosed scope = `android` + 本模块。
 - Source dial（对 DiPlay）：persistent Pair-Setup M1–M6 → Pair-Verify → 加密 SETUP/RECORD → `eventPort`（Events-* ChaCha：forceKeyFrame / HID 触控）→ `dataPort` screen 流（DataStream ChaCha 密钥来自 pair-verify shared + avcC CONFIG + AVC）。FairPlay AES 路径仍需真机抓包对照。
 - screen 128B 头 **NTP 32.32 = little-endian**、event 通道 `Events-Input/Output` 密钥**互补交换**（对照 DiPlay 真机解密布局；方向写反即对端持续 `BAD_DECRYPT`）。
 - encoder `start()/stop()` 会并发释放 codec：drain / converter 线程对 codec 的调用必须整次隔离异常（released codec 的调用 FATAL 会崩进程）；`ensureEncoder` 同 tick 重复调用要按「已在目标尺寸运行」去重。
@@ -653,7 +562,39 @@ xposed/hook/aa/  → 无 CarPlay 引用（保持）
 
 **真机验证状态（对 DiPlay 0.2.19，双机）**：screen 解码出画（`first decrypted frame` → decoder render）、event 通道长活、触控往返（Host tap → Source `event touch` → 窗格）、audio 通道建立。画面供给帧率受 **Source 手机 app cgroup** 影响（后台 2–4fps / 前台 11–15fps）——CarPlay 会话存活期由 `CarPlayProcessBoost` 提权 top-app 缓解；**60fps 需要在车机 DiPlay 设置→显示→帧率=60**（DiPlay 解码帧率自持，忽略 Source SETUP fps）。
 
-状态页（`MainActivity` → `CarPlayStatusUi`）「出口通道」单选 **Android Auto / CarPlay**（默认 AA，真车行为不变，互斥出画）：选 CarPlay 启 Source + Host；切回 AA 停 Source 并 finish Host。
+状态页（`MainActivity` → `CarPlayStatusUi`）「出口通道」单选 **Android Auto（AAP）/ 无线 CarPlay**（已装 AA 默认 AAP；互斥出画）。
+
+---
+
+### 14.3 Android Auto（AAP）开机→出画
+
+细节与证书策略见 [AAP_NATIVE.md](AAP_NATIVE.md)。与 CarPlay 共用 Host GL / 触控桥 / `CarPlayAudioCapture` / 二次出口 live 位。
+
+```
+状态页 CHANNEL_AAP（或已装 AA 默认）
+  → PhoneCertStore.ensureExtracted（读 gearhead APK，不装钩子）
+  → AapProjectionService FGS
+  → AapSourceSession：无线 BT bootstrap / USB AOA
+  → TLS + ServiceDiscovery
+  → VideoChannel.onVideoStart
+  → AapDisplayBridge：CarPlayGlCompositor + CarPlayVideoEncoder
+  → CoreApi.onCreateSplitDisplay + setPaneSurface + LastSplitStore restore
+  → ProjectionSessionGate.setCarPlayLive(true) + reportCarPlaySessionLive(true)
+       （Delay Destroy 挂起、ProcessBoost、AudioCapture arm）
+  → 帧 → AAP VideoChannel.sendFrame
+  → 触控 → CarPlayInputBridge.injectNormalized → touchPane / chrome
+  → 音频 → AapAudioEgress ← pullCarPlay*
+  → 歌词 → AapNowPlaying ← ClusterLyricStore
+```
+
+| 组件 | 路径 |
+|------|------|
+| FGS / 会话 | `aap/AapProjectionService.kt`、`aap/AapSourceSession.kt` |
+| 出画 | `aap/AapDisplayBridge.kt`（复用 `carplay/` GL+AVC） |
+| 触控 / 键 | `CarPlayInputBridge`、`aap/AapInputKeys.kt` |
+| 音频 / NP | `aap/AapAudioEgress.kt`、`aap/AapNowPlaying.kt` |
+| 证书 | `aap/cert/PhoneCertStore.kt`、`AaApkKeyExtractor.kt` |
+| 协议 | `vendor/aare-aap` |
 
 ---
 
@@ -662,20 +603,19 @@ xposed/hook/aa/  → 无 CarPlay 引用（保持）
 1. 跨进程显示 **只经** `CoreApi` / `ICoreManager`。
 2. 不要给 VD 加 `VIRTUAL_DISPLAY_FLAG_PRESENTATION`。
 3. 分屏 VD 尺寸 = 窗格尺寸；全屏才双 VD 满缓冲。
-4. Profile lock：软重连只允许同方向变大。
+4. Profile lock：软重连只允许同方向变大；尺寸取客户端上报（非 Coolwalk rail）。
 5. Delay Destroy = **180s**；keep-awake 覆盖 Delay Destroy 全程。
 6. `userActivity` 禁止无 displayId 的全局调用。
-7. AIDL 只追加；`touch*` 保持 oneway。
+7. AIDL 只追加；`touch*` 保持 oneway；Coolwalk / presentation 孤儿方法保持 no-op。
 8. `LastSplitStore` / Binder magic `AADD` / `xposed_scope` 禁止改名。
 9. ATMS 列表先规范成底→顶；front = visible / last after normalize。
 10. 分隔条拖动不要 live `setSplitRatio`；退出全屏先 stash ratio 再一次 resize。
 11. 长按开 Recent 必须 **UP 之后**；开之前 `resetGesture`。
-12. `AaUiHook` / Frx 优先 DexKit，不要写死混淆名；**禁止** `searchPackages("")`（DexKit 2.0.7）。
-13. AA 钩子 `loadDexClass` / `hook` 失败要隔离，不要让单个 hook 拖垮同进程其余钩子。
-14. 不要重新引入 `aadisplay_config` SharedPreferences。
-15. 不要在 App 进程申请 Magisk `su`。
-16. 新钩子：`object` + `BaseHook`/`AaHook`，`tagName` = `AAD_*`。
-17. CarPlay **协议**不进 system_server（系统侧仅 `xposed/carplay/CarPlayAudioCapture` / `CarPlayProcessBoost`，CP-live 门控）；出画 AA XOR CarPlay（Host GL 独占）；`ui/aa/` 不 import carplay 包。
+12. **不要**恢复 gearhead DexKit / `AndroidAutoHook` / Car SDK 壳。
+13. 不要重新引入 `aadisplay_config` SharedPreferences。
+14. 不要在 App 进程申请 Magisk `su`。
+15. 新钩子：仅 system_server / 本模块需要时 `object` + `BaseHook`，`tagName` = `AAD_*`。
+16. CarPlay **协议**不进 system_server（系统侧仅 `CarPlayAudioCapture` / `CarPlayProcessBoost` / `CarPlayBootArm`，会话门控）；出画 AAP XOR CarPlay（Host GL 独占）。
 
 ---
 
@@ -683,25 +623,23 @@ xposed/hook/aa/  → 无 CarPlay 引用（保持）
 
 | 要改什么 | 从这些文件顺着读 |
 |----------|------------------|
-| 开机 / 作用域 / 进哪个进程 | `XposedInit.kt`、`AndroidHook.kt`、`AndroidAutoHook.kt` |
-| 无线 CarPlay 出口 / 播放链路 | §14 / §14.1 / §14.2、[CARPLAY_CONNECT.md](CARPLAY_CONNECT.md)（建连）、[CARPLAY_REFS.md](CARPLAY_REFS.md)、`carplay/`、`egress/ProjectionSessionGate`、`xposed/carplay/`、`ICoreManager.reportCarPlaySessionLive` |
+| 开机 / 作用域 / 进哪个进程 | `XposedInit.kt`、`AndroidHook.kt` |
+| 无线 CarPlay 出口 / 播放链路 | §14 / §14.1 / §14.2、[CARPLAY_CONNECT.md](CARPLAY_CONNECT.md)、[CARPLAY_REFS.md](CARPLAY_REFS.md)、`carplay/`、`egress/ProjectionSessionGate`、`xposed/carplay/` |
+| Android Auto（AAP）出口 | §14.3、[AAP_NATIVE.md](AAP_NATIVE.md)、`aap/`、`vendor/aare-aap` |
 | Binder 拿不到 / 未激活 | `BridgeService.kt`、`CoreManager.kt`、`CoreApi.kt`、`MainActivity.kt` |
-| 车机没自动打开本模块 | `AaUiHook` Auto Open、`AaActivityService`、`AaSignatureHook` |
-| 双窗创建 / 闪烁 / 尺寸 | `AaMainFragment.requestDisplay`、`CoreManagerService` profile lock、`DisplayProfileSettle`、`SplitVdLifecycle` |
-| FacetBar / 左轨黑条 / 重连 800/720 | [COOLWALK_FACETBAR.md](COOLWALK_FACETBAR.md)、`CoolwalkFacetChrome`、`CoolwalkRailCoordinator` |
+| 双窗创建 / 闪烁 / 尺寸 | `AapDisplayBridge` / `CarPlayHostRuntime`、`CoreManagerService` profile lock、`SplitVdLifecycle` |
 | 断线黑屏 / 亮手机 / 180s | `DisplaySessionPolicy.kt` |
-| 分屏比例 / 全屏 peel | `SplitDividerView`、`AaMainFragment.setupDivider`、`setSplitFullscreen` |
-| 触控穿窗 / peel 点不动 / 锁屏 peel | `AaUiHook.hookHuTouchDispatchRedirect`、`touchAaDisplay`、`SplitLockedPeelController` |
+| 分屏比例 / 全屏 peel | `CarPlayInputBridge`、`SplitLockedPeelController`、`setSplitFullscreen` |
 | 启动应用 / 栈 / 杀错进程 | `PaneAppStack`、`SplitLaunchRestore`、`SplitOwnership` |
-| Recent 三列 | `AaRecentTaskFragment`、`RecentTaskColumns`、`getRecentTask` |
+| Recent 三列 | `CarPlayRecentsOverlay`、`getRecentTask` |
 | 快照恢复错误 | `LastSplitStore.kt`、`restoreLastSplitNow`、ATMS 底→顶 |
-| 方控 | `AaBtnEventHook`、`AaMainFragment` `ACTION_STEERING_WHEEL_CONTROL` |
-| 手机蓝牙键鼠 / 分屏比例 / 堆栈快捷键 | §10.1、`PhoneHidRedirect.kt`、`HidSplitLayout.kt` |
-| FRX / 无 Maps 崩溃 / 空媒体卡 | `AaFrxRequiredAppsHook`、`AaNavFallbackHook`、`AaMediaPlaceholderHook`、`rewriteVirtualDisplayArgs` |
-| 仪表横条歌词采得到但推不过去 | `ClusterLyricMediaService`（`:cluster`）、`AaMediaAllowlistHook`、`ClusterLyricStore`、`AaClusterLyricEgressHook` |
+| 方控 | `AapInputKeys`、`CarPlayWheelController` |
+| 手机蓝牙键鼠 | §10.1、`PhoneHidRedirect.kt`、`HidSplitLayout.kt` |
+| 仪表横条歌词 | [CLUSTER_LYRIC_CLOCK.md](CLUSTER_LYRIC_CLOCK.md)、`ClusterLyricMirror`、`AapNowPlaying` / `CarPlayNowPlaying` |
 | 抖音盖导航 / 外窗 Presentation | `PanePresentationGuard`、`SplitPresentationGuard` |
 | AA VD 键盘落错屏 / 合盖无键盘 | `VdImeDisplayPin` |
 | 应用 DPI 不对 | `VdDensityPin`、`VdMetricsMirror` |
+| 已删 gearhead 原路 | [GEARHEAD_LEGACY.md](GEARHEAD_LEGACY.md)、[archive/COOLWALK_FACETBAR.md](archive/COOLWALK_FACETBAR.md) |
 | 隐藏 API | `lib-stub/` + `Instances.kt`（Rikka Refine） |
 
 行为变更与真机回归清单：[README.md](../README.md)（用户向）、[CHANGELOG.md](../CHANGELOG.md)、[docs/archive/](archive/)。

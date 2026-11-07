@@ -4,20 +4,15 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
 import io.github.nitsuya.aa.display.CoreApi
-import io.github.nitsuya.aa.display.egress.ProjectionSessionGate
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import kotlin.math.abs
 
 /**
- * Maps normalized CarPlay screen coordinates (0..1) onto AADisplay injection paths.
+ * Maps normalized HU screen coordinates (0..1) onto AADisplay injection paths.
  *
- * Dual-channel (AA attached): the whole CarPlay image is the AA shell, so touches go to
- * [CoreApi.touchAaDisplay]. CarPlay-only (no AA UI): the image is the split display, so
- * touches land on the pane VirtualDisplay that owns the touched half
- * ([CoreApi.touchPane]), re-normalized into that pane's pixel space.
- *
- * Host chrome (divider / peel / Recents / picker) mirrors AA [SplitDividerView] semantics:
- * short tap → swap, long-press → Recents, drag → ratio with settle on UP, edge → fullscreen.
+ * Host chrome (divider / peel / Recents / picker) handles first; remaining touches
+ * land on the pane VirtualDisplay that owns the touched half ([CoreApi.touchPane]),
+ * re-normalized into that pane's pixel space.
  */
 object CarPlayInputBridge {
     @Volatile
@@ -94,35 +89,20 @@ object CarPlayInputBridge {
             return
         }
 
-        // CarPlay exclusive: Host chrome (hide-IME chip / divider / peel / overlays).
-        if (ProjectionSessionGate.shouldUseCarPlayHost()) {
-            if (handleImeChip(x, y, action)) return
-            if (handleChrome(x, y, action)) return
-        }
+        // Host chrome (hide-IME chip / divider / peel / overlays).
+        if (handleImeChip(x, y, action)) return
+        if (handleChrome(x, y, action)) return
 
         val w = shellWidthPx.coerceAtLeast(1)
         val h = shellHeightPx.coerceAtLeast(1)
-        val px = (x * (w - 1)).toFloat()
-        val py = (y * (h - 1)).toFloat()
-        val now = SystemClock.uptimeMillis()
-        val event = MotionEvent.obtain(now, now, action, px, py, 0)
-        try {
-            val ok = try {
-                if (ProjectionSessionGate.shouldUseCarPlayHost()) {
-                    routeToPane(x, y, action, w, h)
-                } else {
-                    CoreApi.touchAaDisplay(event)
-                    true
-                }
-            } catch (e: Throwable) {
-                Log.e(CarPlayConsts.TAG, "CarPlay touch inject failed", e)
-                false
-            }
-            if (!ok) {
-                Log.w(CarPlayConsts.TAG, "CarPlay touch dropped action=$action x=$x y=$y")
-            }
-        } finally {
-            event.recycle()
+        val ok = try {
+            routeToPane(x, y, action, w, h)
+        } catch (e: Throwable) {
+            Log.e(CarPlayConsts.TAG, "CarPlay touch inject failed", e)
+            false
+        }
+        if (!ok) {
+            Log.w(CarPlayConsts.TAG, "CarPlay touch dropped action=$action x=$x y=$y")
         }
     }
 

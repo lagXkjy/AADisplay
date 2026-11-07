@@ -45,7 +45,7 @@ interface ICoreManager {
      */
     oneway void touchPane(int pane, in MotionEvent motionEvent);
     /**
-     * Relay Coolwalk left-rail HU touches from :car into the PRIMARY pane virtual display.
+     * Retired Coolwalk left-rail steal — ordinal kept; use [touchPane].
      */
     oneway void touchPrimaryPane(in MotionEvent motionEvent);
 
@@ -67,17 +67,12 @@ interface ICoreManager {
     int getSplitFullscreenPane();
 
     /**
-     * Inject into the AaDisplayActivity presentation display (peel handle / AA UI),
-     * not a pane VirtualDisplay. Used when Coolwalk rail steal would otherwise bury
-     * flush-left peel touches into the fullscreen app. Appended at end for Stub ordinals.
+     * Retired Car SDK presentation inject — ordinal kept (no-op).
      */
     oneway void touchAaDisplay(in MotionEvent motionEvent);
 
     /**
-     * AaDisplayActivity's presentation VirtualDisplay is FLAG_PRIVATE (app-owned), so
-     * system_server DisplayManager cannot enumerate it. The AA UI process reports the
-     * live displayId so [touchAaDisplay] can inject. Pass INVALID_DISPLAY (-1) to clear.
-     * Appended at end for Stub ordinals.
+     * Retired Car SDK presentation id report — ordinal kept (no-op).
      */
     oneway void reportAaUiDisplayId(int displayId);
 
@@ -92,22 +87,20 @@ interface ICoreManager {
     int getImePane();
 
     /**
-     * gearhead :projection / :car report Coolwalk rail snapshot for display-profile settle.
-     * [phase] is [RailPhase.code]. Appended at end for Stub ordinals.
+     * Retired Coolwalk rail report — ordinal kept (no-op).
      */
     oneway void reportCoolwalkRailSnapshot(int phase, int touchRailWidthPx, int fullHuWidthPx, int facetDisplayId);
 
     /**
-     * Returns int[4]: phase, touchRailWidthPx, fullHuWidthPx, facetDisplayId.
+     * Retired Coolwalk rail snapshot — ordinal kept; returns zeros.
      */
     int[] getCoolwalkRailSnapshot();
 
-    /** [SystemClock.uptimeMillis] of the latest gearhead soft reconnect; 0 if none. */
+    /** Retired Coolwalk reconnect epoch — ordinal kept; returns 0. */
     long getCoolwalkReconnectEpochMs();
 
     /**
-     * system_server → AADisplay: gearhead cannot reliably deliver package-targeted
-     * broadcasts on Android 13+; relay through system uid like [ACTION_REQUEST_DISPLAY_RECOVERY].
+     * Retired Coolwalk full-bleed poke — ordinal kept (no-op).
      */
     oneway void notifyCoolwalkFullBleed();
 

@@ -1,24 +1,12 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
-/** Live shell geometry reported from [AaMainFragment] (matches divider layout). */
-data class HidShellGeometry(
-    val parentW: Int,
-    val parentH: Int,
-    val sideBySide: Boolean,
-    val fullscreenPane: Int,
-    /** 「收起键盘」in parent coords; empty when hidden. */
-    val imeChipL: Int = 0,
-    val imeChipT: Int = 0,
-    val imeChipR: Int = 0,
-    val imeChipB: Int = 0,
-) {
-    fun hasImeChip(): Boolean = imeChipR > imeChipL && imeChipB > imeChipT
-}
-
 /**
  * Dual-pane geometry for phone BT mouse: one continuous canvas
- * `[primary][divider][secondary]` so the cursor can rest on the shell seam
+ * `[primary][divider][secondary]` so the cursor can rest on the seam
  * instead of teleporting into the sibling VD.
+ *
+ * Built from live VirtualDisplay sizes in [SplitDisplayController] (Host GL path;
+ * Car SDK shell geometry reporting is gone).
  */
 data class HidSplitLayout(
     val sideBySide: Boolean,
@@ -31,19 +19,19 @@ data class HidSplitLayout(
     val primaryH: Int,
     val secondaryW: Int,
     val secondaryH: Int,
-    /** HU content size (AaDisplay presentation). */
+    /** HU / Host encode canvas size. */
     val totalW: Int,
     val totalH: Int,
     val densityDpi: Int,
     /** Seam gap so primary + gap + secondary == total; 0 → derive from [densityDpi]. */
     val shellGap: Int = 0,
     /**
-     * AaDisplay presentation size when known. Divider / Recents injects scale from
-     * [totalW]/[totalH] (VD profile) into this space when they differ.
+     * Optional shell/parent size when it differs from the VD profile canvas.
+     * Host GL keeps these equal to [totalW]/[totalH].
      */
     val shellTotalW: Int = 0,
     val shellTotalH: Int = 0,
-    /** 「收起键盘」in shell parent coords (same space as [shellTotalW]/[shellTotalH]). */
+    /** 「收起键盘」in shell parent coords; Host GL IME chip is hit-tested in-app. */
     val imeChipL: Int = 0,
     val imeChipT: Int = 0,
     val imeChipR: Int = 0,
@@ -195,7 +183,7 @@ data class HidSplitLayout(
         return x.coerceIn(0f, tw - 1f) to y.coerceIn(0f, th - 1f)
     }
 
-    /** Map VD-profile canvas coords onto the AaDisplay presentation for [touchAaDisplay]. */
+    /** Map VD-profile canvas coords onto Host shell / encode space. */
     fun toShellTouch(canvasX: Float, canvasY: Float): Pair<Float, Float> {
         val (cx, cy) = clampCanvas(canvasX, canvasY)
         val sw = shellTotalW
@@ -298,14 +286,14 @@ data class HidSplitLayout(
     }
 }
 
-/** Result of mapping the HID cursor on the AaDisplay presentation canvas. */
+/** Result of mapping the HID cursor on the Host / dual-VD canvas. */
 sealed class HidCursorHit {
-    /** Shell chrome (divider / peel) — inject via [touchAaDisplay]. */
+    /** Shell chrome (divider / peel) — handled by HID chrome / locked peel. */
     data class Divider(val x: Float, val y: Float) : HidCursorHit()
 
     /** App VirtualDisplay — inject into [pane] at local coords. */
     data class Pane(val pane: Int, val x: Float, val y: Float) : HidCursorHit()
 
-    /** Full presentation (Recents / picker overlay) — inject via [touchAaDisplay]. */
+    /** Full canvas chrome (Recents / picker / IME chip). */
     data class Shell(val x: Float, val y: Float) : HidCursorHit()
 }

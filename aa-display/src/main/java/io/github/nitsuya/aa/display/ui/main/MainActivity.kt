@@ -134,16 +134,15 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
         val aap = CarPlayChannel.useAapEgress(this)
         when {
             carPlay || aap -> {
-                val label = if (aap) "AAP" else "CarPlay"
-                baseBinding.tvVdDensityTitle.text = "虚拟屏 DPI（$label）"
+                baseBinding.tvVdDensityTitle.text = "画面清晰度"
                 baseBinding.tvVdDensityHint.text =
-                    "$label 无车机 DPI 协商；留空 = 默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI}；范围 120–640"
+                    "一般不用改。数字越大图标和字越小；留空用默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI}。范围 120–640"
                 baseBinding.etVdDensityDpi.hint = "留空 = 默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI}"
                 baseBinding.btnResetVdDensityDpi.text = "恢复默认"
             }
             else -> {
-                baseBinding.tvVdDensityTitle.text = "虚拟屏 DPI（Android Auto）"
-                baseBinding.tvVdDensityHint.text = "留空 = 自动（车机上报值）；有效范围 120–640"
+                baseBinding.tvVdDensityTitle.text = "画面清晰度"
+                baseBinding.tvVdDensityHint.text = "一般不用改。留空用自动；范围 120–640"
                 baseBinding.etVdDensityDpi.hint = "留空 = 自动"
                 baseBinding.btnResetVdDensityDpi.text = "恢复自动"
             }
@@ -160,39 +159,33 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
 
     private fun updateVdDensityStatus(configured: Int, carPlay: Boolean) {
         baseBinding.tvVdDensitySaved.text = when {
-            configured > 0 -> "已保存：$configured dpi"
-            carPlay -> "已保存：默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI}"
+            configured > 0 -> "已保存：$configured"
+            carPlay || CarPlayChannel.useAapEgress(this) ->
+                "已保存：默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI}"
             else -> "已保存：自动"
         }
-        if (carPlay || CarPlayChannel.useAapEgress(this)) {
-            baseBinding.tvVdDensityHu.text =
-                if (CarPlayChannel.useAapEgress(this)) "车机协商：无（AAP 用视频配置分辨率）"
-                else "车机协商：无（CarPlay 不协商 DPI）"
-            baseBinding.tvVdDensityHu.visibility = View.VISIBLE
-        } else {
-            val huReported = CoreApi.reportedHostDensityDpi
-            baseBinding.tvVdDensityHu.visibility = View.VISIBLE
-            baseBinding.tvVdDensityHu.text = if (huReported > 0) {
-                "车机协商：$huReported dpi"
-            } else {
-                "车机协商：暂无（连接 Android Auto 后更新）"
-            }
-        }
+        baseBinding.tvVdDensityHu.visibility = View.GONE
         val effective = CoreApi.effectiveVdDensityDpi
-        val defaultHint = if (carPlay) CarPlayConsts.ENCODE_UI_DENSITY_DPI else 0
+        val defaultHint = if (carPlay || CarPlayChannel.useAapEgress(this)) {
+            CarPlayConsts.ENCODE_UI_DENSITY_DPI
+        } else {
+            0
+        }
         baseBinding.tvVdDensitySession.text = when {
-            effective <= 0 && !CarPlayHostRuntime.isRunning() -> "当前生效：未连接"
+            effective <= 0 && !CarPlayHostRuntime.isRunning() &&
+                !CarPlayChannel.useAapEgress(this) -> "当前：未连接"
             configured > 0 && effective > 0 && effective != configured ->
-                "当前生效：$effective dpi（已保存 $configured，重连后对齐）"
-            effective > 0 -> "当前生效：$effective dpi"
-            carPlay -> "当前生效：默认 $defaultHint dpi（Host 未启动）"
-            else -> "当前生效：未连接"
+                "当前：$effective（已保存 $configured，重连后生效）"
+            effective > 0 -> "当前：$effective"
+            carPlay || CarPlayChannel.useAapEgress(this) ->
+                "当前：默认 $defaultHint（未连接时）"
+            else -> "当前：未连接"
         }
     }
 
     private fun applyVdDensityDpi() {
         if (CoreApi.buildTime == 0L) {
-            toast("模块未激活，请先启用 LSPosed 并重启")
+            toast("模块未激活，请先在 LSPosed 里打开并重启手机")
             return
         }
         val raw = baseBinding.etVdDensityDpi.text?.toString()?.trim().orEmpty()
@@ -210,7 +203,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
             return
         }
         if (!DisplayDpiStore.isValidOverride(parsed)) {
-            toast("DPI 须在 ${DisplayDpiStore.MIN_DPI}–${DisplayDpiStore.MAX_DPI} 之间")
+            toast("请填 ${DisplayDpiStore.MIN_DPI}–${DisplayDpiStore.MAX_DPI} 之间的数字")
             return
         }
         persistVdDensityDpi(parsed)
@@ -218,7 +211,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
 
     private fun resetVdDensityDpi() {
         if (CoreApi.buildTime == 0L) {
-            toast("模块未激活，请先启用 LSPosed 并重启")
+            toast("模块未激活，请先在 LSPosed 里打开并重启手机")
             return
         }
         persistVdDensityDpi(0)
@@ -229,12 +222,12 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
         val saved = CoreApi.vdDensityDpi
         val carPlay = CarPlayChannel.useCarPlayEgress(this)
         if (dpi > 0 && saved != dpi) {
-            toast("保存失败，请确认模块已激活并重试")
+            toast("保存失败，请确认模块已激活后重试")
             refreshVdDensityUi()
             return
         }
         if (dpi == 0 && saved != 0) {
-            toast(if (carPlay) "恢复默认失败，请重试" else "恢复自动失败，请重试")
+            toast("恢复失败，请重试")
             refreshVdDensityUi()
             return
         }
@@ -246,13 +239,13 @@ class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::clas
         updateVdDensityInput(saved, carPlay)
         updateVdDensityStatus(saved, carPlay)
         if (dpi > 0) {
-            toast("已设为 $dpi dpi")
+            toast("已设为 $dpi")
         } else {
             toast(
-                if (carPlay) {
-                    "已恢复默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI} dpi"
+                if (carPlay || CarPlayChannel.useAapEgress(this)) {
+                    "已恢复默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI}"
                 } else {
-                    "已恢复自动 DPI"
+                    "已恢复自动"
                 },
             )
         }

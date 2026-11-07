@@ -59,9 +59,7 @@
         <meta-data
             android:name="xposedscope"
             android:resource="@array/xposed_scope" />
-        <meta-data
-            android:name="com.google.android.gms.car.application"
-            android:resource="@xml/automotive_app_desc" />
+        <!-- Google Car SDK projection shell deleted — Android Auto egress is AAP only. -->
 
         <activity
             android:name=".ui.main.MainActivity"
@@ -79,29 +77,7 @@
             android:launchMode="singleTask"
             android:taskAffinity="io.github.nitsuya.aa.display.carplay.host"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
-        <service
-            android:name=".service.AaActivityService"
-            android:exported="true"
-            tools:ignore="ExportedService">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="com.google.android.gms.car.category.CATEGORY_PROJECTION" />
-                <category android:name="com.google.android.gms.car.category.CATEGORY_PROJECTION_NAVIGATION" />
-                <category android:name="com.google.android.gms.car.category.CATEGORY_PROJECTION_OEM" />
-            </intent-filter>
-        </service>
-        <!-- Invisible AA media shell for instrument-cluster lyric Title egress.
-             Isolated from projection UI so session lifecycle cannot tear down split VDs. -->
-        <service
-            android:name=".service.ClusterLyricMediaService"
-            android:exported="true"
-            android:process=":cluster"
-            tools:ignore="ExportedService">
-            <intent-filter>
-                <action android:name="android.media.browse.MediaBrowserService" />
-            </intent-filter>
-        </service>
+
         <service
             android:name=".carplay.CarPlayProjectionService"
             android:exported="false"

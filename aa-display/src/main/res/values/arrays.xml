@@ -1,7 +1,7 @@
 <resources>
+    <!-- AAP / CarPlay only — no gearhead DexKit. gearhead APK still used for cert extract. -->
     <string-array name="xposed_scope" >
         <item>android</item>
-        <item>com.google.android.projection.gearhead</item>
         <item>io.github.nitsuya.aa.display</item>
     </string-array>
 

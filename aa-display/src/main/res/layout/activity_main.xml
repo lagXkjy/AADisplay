@@ -121,7 +121,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="同一时间只能选一个；换通道后原先那边会停掉"
+                    android:text="同一时间只能选一种；换了之后另一种会自动停掉"
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_secondary"
                     android:textSize="12sp" />
@@ -139,16 +139,7 @@
                         android:layout_height="wrap_content"
                         android:buttonTint="@color/radio_channel_tint"
                         android:minHeight="48dp"
-                        android:text="原生 Android Auto（AAP：画面+音频+仪表，不依赖钩子）"
-                        android:textColor="@color/color_text_primary" />
-
-                    <RadioButton
-                        android:id="@+id/rb_channel_aa"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:buttonTint="@color/radio_channel_tint"
-                        android:minHeight="48dp"
-                        android:text="Android Auto（原路 / gearhead）"
+                        android:text="Android Auto（投到车机）"
                         android:textColor="@color/color_text_primary" />
 
                     <RadioButton
@@ -157,7 +148,7 @@
                         android:layout_height="wrap_content"
                         android:buttonTint="@color/radio_channel_tint"
                         android:minHeight="48dp"
-                        android:text="CarPlay 无线（蓝牙连车机）"
+                        android:text="无线 CarPlay（蓝牙连车机）"
                         android:textColor="@color/color_text_primary" />
                 </RadioGroup>
             </LinearLayout>
@@ -181,7 +172,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="AAP 手机证书"
+                    android:text="连车准备"
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_secondary"
                     android:textSize="16sp" />
@@ -195,7 +186,7 @@
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_primary"
                     android:textSize="16sp"
-                    tools:text="已从已安装 Android Auto 自动提取" />
+                    tools:text="已准备好，可以连车" />
 
                 <TextView
                     android:id="@+id/tv_aap_cert_detail"
@@ -206,7 +197,7 @@
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_primary"
                     android:textSize="13sp"
-                    tools:text="已安装 AA 17.8" />
+                    tools:text="已安装 Android Auto" />
 
                 <Button
                     android:id="@+id/btn_aap_cert_extract"
@@ -214,7 +205,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
                     android:minHeight="48dp"
-                    android:text="重新提取（AA 更新后）" />
+                    android:text="重新准备（更新 Android Auto 后）" />
             </LinearLayout>
         </FrameLayout>
 
@@ -238,7 +229,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="原生 Android Auto（AAP）"
+                    android:text="Android Auto"
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_secondary"
                     android:textSize="16sp" />
@@ -262,14 +253,14 @@
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_primary"
                     android:textSize="14sp"
-                    tools:text="无线 AA：蓝牙配对后车机发起连接" />
+                    tools:text="请在车机上连接 Android Auto" />
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
                     android:lineSpacingExtra="4dp"
-                    android:text="不经过 gearhead 进程与 DexKit 钩子；车机画面走本模块 VirtualDisplay。证书从已安装 Android Auto 自动提取。"
+                    android:text="手机装过 Android Auto 即可。用蓝牙或数据线连车机；连上后车机上会出现左右分屏，可触控、听声音、看歌词、用方向盘切歌。"
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_primary"
                     android:textSize="13sp" />
@@ -304,7 +295,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="CarPlay 无线"
+                    android:text="无线 CarPlay"
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_secondary"
                     android:textSize="16sp" />
@@ -344,7 +335,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="6dp"
                     android:lineSpacingExtra="4dp"
-                    android:text="1. 手机蓝牙先与车机配对（已配对可跳过）\n2. 上方选「CarPlay 无线」，允许蓝牙权限\n3. 点「使蓝牙可发现」并允许 300 秒\n4. 在车机上打开 / 连接 CarPlay\n5. 若提示连车机热点，选加入"
+                    android:text="1. 手机蓝牙先和车机配对（已配对可跳过）\n2. 上方选「无线 CarPlay」，允许蓝牙权限\n3. 点「让手机可被车机发现」并同意\n4. 在车机上打开 / 连接 CarPlay\n5. 若提示连车机热点，选加入"
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_primary"
                     android:textSize="13sp" />
@@ -363,7 +354,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:minHeight="48dp"
-                    android:text="使蓝牙可发现（300 秒）" />
+                    android:text="让手机可被车机发现" />
 
                 <TextView
                     android:layout_width="match_parent"
@@ -379,14 +370,14 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="6dp"
                     android:lineSpacingExtra="4dp"
-                    android:text="· 导航、音乐等声音从车机出；电话仍走手机听筒\n· 车机画面是双窗分屏，触控与分隔条用法和 AA 相同\n· 若用 DiPlay：设置 → 显示 → 帧率选 60（默认常为 30）"
+                    android:text="· 导航、音乐等声音从车机出；电话仍走手机听筒\n· 车机上是左右两个窗口，中间竖条可拖动调大小\n· 若用 DiPlay 盒子：设置 → 显示 → 帧率选 60"
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_primary"
                     android:textSize="13sp" />
             </LinearLayout>
         </FrameLayout>
 
-        <!-- Virtual-display DPI (AA: HU negotiate; CarPlay: default 160, manual override). -->
+        <!-- Display scale (advanced; plain labels). -->
         <FrameLayout
             android:id="@+id/panel_aa"
             android:layout_width="match_parent"
@@ -405,7 +396,7 @@
                     android:id="@+id/tv_vd_density_title"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="虚拟屏 DPI"
+                    android:text="画面清晰度"
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_secondary"
                     android:textSize="16sp" />
@@ -415,7 +406,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="留空 = 自动（车机上报值）；有效范围 120–640"
+                    android:text="一般不用改。数字越大图标和字越小；留空用默认。范围 120–640"
                     android:textAlignment="viewStart"
                     android:textColor="@color/color_text_secondary"
                     android:textSize="12sp" />
@@ -425,7 +416,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
-                    android:hint="留空 = 自动"
+                    android:hint="留空 = 默认"
                     android:imeOptions="actionDone"
                     android:importantForAutofill="no"
                     android:inputType="number"

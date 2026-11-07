@@ -8,7 +8,6 @@ import android.media.session.PlaybackState
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import io.github.nitsuya.aa.display.service.ClusterLyricMediaService
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.MusicAppClassifier
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
@@ -16,9 +15,9 @@ import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
 /**
- * Mirrors the playing preferred music [MediaController] into [ClusterLyricStore] so
- * [io.github.nitsuya.aa.display.service.ClusterLyricMediaService] / gearhead egress
- * can feed the instrument-cluster ticker.
+ * Mirrors the playing preferred music [MediaController] into [ClusterLyricStore].
+ * Consumers: AAP [io.github.nitsuya.aa.display.aap.AapNowPlaying] and CarPlay NowPlaying
+ * (Google gearhead Title shell retired).
  *
  * Single-sounder via [AvMediaArbiter.enforceSingleSounder] (shared with split restore).
  * Cluster binds only QQ 车载 / HD / 汽水 while that trio is PLAYING; when video wins
@@ -224,11 +223,8 @@ object ClusterLyricMirror {
                 handler,
             )
             onSessionsChanged(sm.getActiveSessionsSafe())
-            // Wake :cluster MediaBrowserService once so Title can egress before AA binds.
-            warmStartPending = true
-            runCatching { ClusterLyricMediaService.warmStart(appContext!!) }
-                .onFailure { log(TAG, "ClusterLyricMediaService.warmStart failed", it) }
-                .onSuccess { warmStartPending = false }
+            // Gearhead Title shell (:cluster) retired — AAP/CarPlay read ClusterLyricStore directly.
+            warmStartPending = false
             log(TAG, "started")
         } catch (e: Throwable) {
             log(TAG, "start failed", e)
@@ -619,10 +615,7 @@ object ClusterLyricMirror {
             ClusterLyricStore.publish(ctx.contentResolver, title, panelArtist, album)
             ClusterLyricStore.publishTrackMediaId(ctx.contentResolver, mediaId)
             ClusterLyricStore.publishSourcePkg(ctx.contentResolver, boundPackage.orEmpty())
-            if (warmStartPending) {
-                ClusterLyricMediaService.warmStart(ctx)
-                warmStartPending = false
-            }
+            // No ClusterLyricMediaService warmStart — Google AA Title egress is offline.
         }
         logDebug(
             TAG,

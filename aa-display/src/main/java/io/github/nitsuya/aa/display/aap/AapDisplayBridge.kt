@@ -9,6 +9,7 @@ import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.carplay.CarPlayAppPickerOverlay
 import io.github.nitsuya.aa.display.carplay.CarPlayConsts
 import io.github.nitsuya.aa.display.carplay.CarPlayGlCompositor
+import io.github.nitsuya.aa.display.carplay.CarPlayImeChip
 import io.github.nitsuya.aa.display.carplay.CarPlayVideoEncoder
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.LastSplitStore
@@ -50,7 +51,7 @@ class AapDisplayBridge(
         override fun onAvailableDisplay(displayId: Int, create: Boolean) {
             this@AapDisplayBridge.displayId = displayId
             Log.i(AapConsts.TAG, "AapDisplayBridge VD ready id=$displayId create=$create")
-            onStatus("画面就绪 display=$displayId")
+            onStatus("画面已打开")
             compositor?.primarySurface()?.let { CoreApi.setPaneSurface(SplitPane.PRIMARY, it) }
             compositor?.secondarySurface()?.let { CoreApi.setPaneSurface(SplitPane.SECONDARY, it) }
             if (create) maybeLaunchDefaults()
@@ -86,7 +87,7 @@ class AapDisplayBridge(
             ensureEncoderAttached()
             return
         }
-        onStatus("启动 VirtualDisplay ${width}x$height@$fps")
+        onStatus("正在打开车机画面…")
         // Canvas picker loads launchables via PackageManager — same bind as CarPlay Host.
         CarPlayAppPickerOverlay.bindContext(context)
         CarPlayAppPickerOverlay.prefetch()
@@ -97,7 +98,7 @@ class AapDisplayBridge(
         } catch (e: Throwable) {
             Log.e(AapConsts.TAG, "GL boot failed", e)
             running.set(false)
-            onStatus("GL 启动失败")
+            onStatus("打开画面失败，请重试")
             return
         }
         val primary = gl.primarySurface()
@@ -105,10 +106,12 @@ class AapDisplayBridge(
         if (primary == null || secondary == null) {
             gl.stop()
             running.set(false)
-            onStatus("GL surface 缺失")
+            onStatus("打开画面失败，请重试")
             return
         }
         compositor = gl
+        // After GL is live — paint/hit-test 「收起键盘」 via CarPlayImeChip + InputBridge.
+        CarPlayImeChip.bind(context)
         val ratio = resolveRatio()
         val gap = SplitPane.dividerPx(dpi)
         val usable = (width - gap).coerceAtLeast(2)
@@ -120,7 +123,7 @@ class AapDisplayBridge(
             CoreApi.onCreateSplitDisplay(width, height, dpi, ratio, primary, secondary, vdListener)
         } catch (e: Throwable) {
             Log.e(AapConsts.TAG, "onCreateSplitDisplay failed", e)
-            onStatus("创建分屏失败")
+            onStatus("打开分屏失败，请重试")
         }
     }
 
@@ -168,5 +171,6 @@ class AapDisplayBridge(
         displayId = Display.INVALID_DISPLAY
         CarPlayAppPickerOverlay.close()
         CarPlayAppPickerOverlay.unbind()
+        CarPlayImeChip.unbind()
     }
 }

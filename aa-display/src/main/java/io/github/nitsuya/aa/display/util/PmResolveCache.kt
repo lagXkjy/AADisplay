@@ -5,7 +5,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Process-local cache of launcher [ComponentName] per package.
- * Invalidate on PACKAGE_ADDED/REMOVED/CHANGED (see [SplitAppPickerController]).
+ * Invalidate on PACKAGE_ADDED/REMOVED/CHANGED (app picker / launch resolve).
  */
 object PmResolveCache {
     private val byPackage = ConcurrentHashMap<String, ComponentName>()

@@ -1,8 +1,26 @@
 # 仪表横条歌词与进度时钟（奥迪 / Android Auto）
 
-真机问题记录与后续试验备忘。改 `AaClusterLyricEgressHook` / `ClusterLyricMediaService` 前先读本文。
+> **现行出口：** Google gearhead Title / `ClusterLyricMediaService` / `AaClusterLyricEgressHook` **已删除**。  
+> 歌词源仍是 `ClusterLyricMirror` → `ClusterLyricStore`；出站为 **AAP** `AapNowPlaying` 或 **CarPlay** `CarPlayNowPlaying`。  
+> 下文大量 gearhead / DexKit / 壳 session 内容为 **2026-08 试验备忘**（历史），改现行代码时以 Store + AAP/CP 路径为准。
 
-**验证环境（截至 2026-08）：** Gearhead 17.4、奥迪仪表横条、QQ 车载 / HD / 汽水。
+真机问题记录与后续试验备忘。
+
+**验证环境（截至 2026-08，历史）：** Gearhead 17.4、奥迪仪表横条、QQ 车载 / HD / 汽水。  
+**现行验证：** AAP / 无线 CarPlay + 同一套 Store。
+
+---
+
+## 0. 现行数据流（AAP / CarPlay）
+
+```
+QQ / 汽水 MediaSession
+    → ClusterLyricMirror（system_server，LRC 取句）
+    → ClusterLyricStore / ClusterArtStore（Settings.Global）
+    → AapNowPlaying（MediaPlaybackChannel）或 CarPlayNowPlaying（iAP2 0x5001）
+```
+
+时钟 / 换句语义仍可能受车机对 MediaInfo·PlaybackStatus 的处理影响；AAP 侧实现见 `aap/AapNowPlaying.kt`。
 
 ---
 

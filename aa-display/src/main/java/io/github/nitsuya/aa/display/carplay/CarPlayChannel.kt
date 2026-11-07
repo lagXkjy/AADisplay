@@ -10,10 +10,10 @@ import java.io.File
  * User-selected video egress channel, persisted app-side.
  *
  * Channels are **mutually exclusive** — one paints at a time:
- *  - [CHANNEL_AA]: stock Android Auto (gearhead) only.
  *  - [CHANNEL_CARPLAY]: wireless CarPlay Source + [CarPlayHostActivity] GL panes.
  *  - [CHANNEL_CARPLAY_USB]: wired fake-iPhone path (WIP; gated by [USB_CARPLAY_ENABLED]).
- *  - [CHANNEL_AAP]: native AAP phone client (AARE protocol) — no gearhead DexKit hooks.
+ *  - [CHANNEL_AAP]: Android Auto over AAP (custom protocol) — replaces stock gearhead.
+ *  - [CHANNEL_AA]: retired Google gearhead path; read only as a migrate sentinel → [defaultChannel].
  *
  * Persistence uses [Context.getFilesDir] (not SharedPreferences).
  *
@@ -21,13 +21,14 @@ import java.io.File
  * (cert can be auto-extracted); otherwise [CHANNEL_CARPLAY].
  */
 object CarPlayChannel {
+    /** Retired stock Google AA (gearhead). Never active; migrates to [defaultChannel]. */
     const val CHANNEL_AA = 0
     const val CHANNEL_CARPLAY = 1
     const val CHANNEL_CARPLAY_USB = 2
-    /** Native AAP egress — bypasses gearhead process / DexKit hooks. */
+    /** AAP egress — phone-as-client protocol stack. */
     const val CHANNEL_AAP = 3
 
-    /** Same package LSPosed / BridgeService resolve for Android Auto. */
+    /** Package used only for CarService cert extraction (not runtime hooks). */
     const val GEARHEAD_PACKAGE = "com.google.android.projection.gearhead"
 
     /**
@@ -61,7 +62,7 @@ object CarPlayChannel {
         val app = context.applicationContext
         val raw = readFile(app) ?: migrateLegacy(app)
         if (raw != null) {
-            return resolveActive(app, raw, clearDirtyUsb = true)
+            return resolveActive(app, raw, clearDirty = true)
         }
         val def = defaultChannel(app)
         writeFile(app, def)
@@ -84,7 +85,7 @@ object CarPlayChannel {
         }
     }
 
-    /** Active CarPlay Source egress (not AA / AAP). USB counts only when [USB_CARPLAY_ENABLED]. */
+    /** Active CarPlay Source egress (not AAP). USB counts only when [USB_CARPLAY_ENABLED]. */
     fun useCarPlayEgress(context: Context): Boolean {
         val ch = get(context)
         return ch == CHANNEL_CARPLAY || (USB_CARPLAY_ENABLED && ch == CHANNEL_CARPLAY_USB)
@@ -97,15 +98,23 @@ object CarPlayChannel {
 
     fun useAapEgress(context: Context): Boolean = get(context) == CHANNEL_AAP
 
-    /** Legacy gearhead shell path. */
-    fun useGearheadAa(context: Context): Boolean = get(context) == CHANNEL_AA
-
-    private fun resolveActive(app: Context, channel: Int, clearDirtyUsb: Boolean): Int {
+    private fun resolveActive(app: Context, channel: Int, clearDirty: Boolean): Int {
         if (channel == CHANNEL_CARPLAY_USB && !USB_CARPLAY_ENABLED) {
             val fallback = defaultChannel(app)
-            if (clearDirtyUsb) {
+            if (clearDirty) {
                 writeFile(app, fallback)
                 Log.i(CarPlayConsts.TAG, "CarPlayChannel USB disabled — cleared leftover cp-usb → $fallback")
+            }
+            return fallback
+        }
+        if (channel == CHANNEL_AA) {
+            val fallback = defaultChannel(app)
+            if (clearDirty) {
+                writeFile(app, fallback)
+                Log.i(
+                    CarPlayConsts.TAG,
+                    "CarPlayChannel retired gearhead AA — cleared leftover aa → $fallback",
+                )
             }
             return fallback
         }
@@ -113,7 +122,7 @@ object CarPlayChannel {
             CHANNEL_CARPLAY -> CHANNEL_CARPLAY
             CHANNEL_CARPLAY_USB -> CHANNEL_CARPLAY_USB
             CHANNEL_AAP -> CHANNEL_AAP
-            else -> CHANNEL_AA
+            else -> defaultChannel(app)
         }
     }
 
@@ -121,7 +130,7 @@ object CarPlayChannel {
         CHANNEL_CARPLAY -> CHANNEL_CARPLAY
         CHANNEL_CARPLAY_USB -> if (USB_CARPLAY_ENABLED) CHANNEL_CARPLAY_USB else defaultChannel(app)
         CHANNEL_AAP -> CHANNEL_AAP
-        else -> CHANNEL_AA
+        else -> defaultChannel(app) // includes retired CHANNEL_AA
     }
 
     private fun migrateLegacy(app: Context): Int? {
@@ -136,7 +145,7 @@ object CarPlayChannel {
         ) {
             return null
         }
-        val active = resolveActive(app, legacy, clearDirtyUsb = false)
+        val active = resolveActive(app, legacy, clearDirty = false)
         writeFile(app, active)
         return active
     }
