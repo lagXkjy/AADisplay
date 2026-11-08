@@ -4,6 +4,7 @@
 
 versionCode **10100** / versionName **1.1**。
 
+- **分隔条 settle 卡顿：** `ratio-settle` 仅对尺寸变化的 pane 做 1px VD nudge，跳过 OneUI 上无效的 `bringTaskToFront` / `resizeTask`；throttle 窗口内 pending nudge OR 合并。
 - **方控下一曲打到栈外 QQ：** 分屏高德+抖音时焦点常停在高德；`MEDIA_NEXT` 只偏爱 Live 窗，不认另一侧抖音 Feed，于是 `pickMediaKeyTarget` 落到仍 PLAYING 的 `qqmusiccar`（可不在分屏栈里）。改为 NEXT/PREV 也优先视频前台窗并上滑切条；另一窗是抖音时不再把 transport 交给音乐会话。
 - **静态帧跳过（Host GL）：** 一 tick 内双窗无新帧、且分隔条 / 全屏 / 键盘条 / HID 光标（`ChromeKey`）与布局均未变时，跳过 GL 重绘 + swap；C2 按帧间隔复读上一帧保持线路节拍。静止画面（音乐 App、地图不移动）省 GPU / C2 转色 / 带宽；rate 统计把复读帧计入 delivered，不假触发 60→30 降档。
 - **`KEY_REPEAT_PREVIOUS_FRAME_AFTER` 单位修复：** 旧值 `1_000_000/fps` 实为 16µs（API 单位是纳秒）——供给一抖动 C2 就以 drain 速度连发上一帧，向车机灌整幅 P 帧 TCP 突发。改为一个帧间隔（静态场景每帧一个极小复读帧）。

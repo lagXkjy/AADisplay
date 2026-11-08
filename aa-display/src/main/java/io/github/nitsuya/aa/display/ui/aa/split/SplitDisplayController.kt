@@ -154,8 +154,12 @@ class SplitDisplayController(
     private var mPendingNudgePrimary = false
     private var mPendingNudgeSecondary = false
     internal val mPendingResize = Runnable {
+        val nudgeP = mPendingNudgePrimary
+        val nudgeS = mPendingNudgeSecondary
+        mPendingNudgePrimary = false
+        mPendingNudgeSecondary = false
         vd.resizePanesInternal("ratio-throttled")
-        scheduleEnsureTasksFillAfterRatioSettle(mPendingNudgePrimary, mPendingNudgeSecondary)
+        scheduleEnsureTasksFillAfterRatioSettle(nudgeP, nudgeS)
         launch.persistRatioNow()
     }
 
@@ -381,25 +385,45 @@ class SplitDisplayController(
     }
 
     /**
-     * Ratio settle: push WM/task config and 1px-nudge every pane whose buffer size
-     * changed. OneUI often leaves Window Requested at the pre-resize size after
-     * [VirtualDisplay.resize]; shrink-only nudge fixed letterbox on the narrow side
-     * but left the growing side stuck at the old resolution.
+     * Ratio settle: 1px-nudge only panes whose buffer size changed. OneUI often
+     * leaves Window Requested at the pre-resize size after [VirtualDisplay.resize].
+     * Light path skips bring-front / forced resizeTask (no-ops on OneUI fullscreen
+     * roots and were the main settle hitch on system_server main).
      */
     private fun scheduleEnsureTasksFillAfterRatioSettle(
         nudgePrimary: Boolean = false,
         nudgeSecondary: Boolean = false,
     ) {
         if (SplitPane.isFullscreenPane(mFullscreenPane)) return
+        if (!nudgePrimary && !nudgeSecondary) return
         mHandler.removeCallbacksAndMessages(RATIO_SETTLE_FILL_TOKEN)
         val now = SystemClock.uptimeMillis()
         mHandler.postAtTime(
             {
-                ensureTasksFillBothPanes(
-                    "ratio-settle",
-                    nudgePrimary = nudgePrimary,
-                    nudgeSecondary = nudgeSecondary,
-                )
+                if (mIsDestroying || SplitPane.isFullscreenPane(mFullscreenPane)) return@postAtTime
+                val sizes = vd.computePaneSizes()
+                val primaryDisplay = primaryDisplayId
+                val secondaryDisplay = secondaryDisplayId
+                if (nudgePrimary && primaryDisplay != Display.INVALID_DISPLAY) {
+                    ownership.ensureTasksFillDisplay(
+                        primaryDisplay,
+                        sizes.primaryW,
+                        sizes.primaryH,
+                        "ratio-settle",
+                        nudgeVd = true,
+                        lightRatioSettle = true,
+                    )
+                }
+                if (nudgeSecondary && secondaryDisplay != Display.INVALID_DISPLAY) {
+                    ownership.ensureTasksFillDisplay(
+                        secondaryDisplay,
+                        sizes.secondaryW,
+                        sizes.secondaryH,
+                        "ratio-settle",
+                        nudgeVd = true,
+                        lightRatioSettle = true,
+                    )
+                }
             },
             RATIO_SETTLE_FILL_TOKEN,
             now + RATIO_SETTLE_FILL_DELAY_MS,
@@ -455,8 +479,9 @@ class SplitDisplayController(
         mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
         val now = SystemClock.uptimeMillis()
         if (now - mLastResizeAt < RESIZE_THROTTLE_MS) {
-            mPendingNudgePrimary = nudgePrimary
-            mPendingNudgeSecondary = nudgeSecondary
+            // OR-merge so a mid-window settle cannot drop the other pane's nudge.
+            mPendingNudgePrimary = mPendingNudgePrimary || nudgePrimary
+            mPendingNudgeSecondary = mPendingNudgeSecondary || nudgeSecondary
             mHandler.removeCallbacks(mPendingResize)
             mHandler.postDelayed(mPendingResize, RESIZE_THROTTLE_MS)
             return

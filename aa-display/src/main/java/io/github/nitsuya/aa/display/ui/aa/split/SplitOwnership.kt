@@ -831,6 +831,10 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
      * while ActivityRecord config already matches the VD (ADB: 386×480 on a 436 VD).
      * `resizeTask` is a no-op for fullscreen roots on OneUI; nudge the VirtualDisplay by 1px
      * so WM re-dispatches configuration, then re-front the stack top to force a layout pass.
+     *
+     * [lightRatioSettle]: divider settle only needs the 1px nudge. Skipping
+     * bring-front / forced resizeTask avoids 100ms+ system_server main stalls
+     * (OneUI rejects resizeTask on fullscreen VD roots anyway).
      */
     fun ensureTasksFillDisplay(
         displayId: Int,
@@ -838,8 +842,10 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         height: Int,
         reason: String,
         nudgeVd: Boolean = true,
+        lightRatioSettle: Boolean = false,
     ) {
         if (displayId == Display.INVALID_DISPLAY || width <= 0 || height <= 0) return
+        if (lightRatioSettle && !nudgeVd) return
         val pane = when (displayId) {
             c.primaryDisplayId -> SplitPane.PRIMARY
             c.secondaryDisplayId -> SplitPane.SECONDARY
@@ -861,6 +867,14 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             } catch (e: Throwable) {
                 log(SplitDisplayController.TAG, "ensureTasksFillDisplay nudge failed display=$displayId:", e)
             }
+        }
+        if (lightRatioSettle) {
+            logDebug(
+                SplitDisplayController.TAG,
+                "ensureTasksFillDisplay[$reason] display=$displayId " +
+                    "${width}x$height nudged=${nudgeVd && vd != null} light=true"
+            )
+            return
         }
         // One ATMS walk: bring front then forced-resize the same snapshot (task ids stable).
         val userTasks = snapshotUserRootTasks(displayId)
