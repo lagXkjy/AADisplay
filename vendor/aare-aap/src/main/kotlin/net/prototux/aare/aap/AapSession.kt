@@ -150,6 +150,8 @@ class AapSession(
 
     private val queue = PriorityBlockingQueue<Outgoing>()
     private val seq = AtomicLong()
+    /** Throttle for the audio write-queue stall warning in [writeLoop]. */
+    private val lastAudioQueueWaitLogMs = AtomicLong(0)
     private val closed = AtomicBoolean(false)
     private val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "aap-timer").apply { isDaemon = true }
@@ -174,6 +176,7 @@ class AapSession(
     private class Outgoing(
         val priority: Int, val seq: Long, val channel: Int, val control: Boolean, val encrypted: Boolean,
         val plain: ByteArray, val length: Int, val onSent: (() -> Unit)?,
+        val enqueuedAtNs: Long = System.nanoTime(),
     ) : Comparable<Outgoing> {
         override fun compareTo(other: Outgoing): Int =
             if (priority != other.priority) priority.compareTo(other.priority) else seq.compareTo(other.seq)
@@ -241,6 +244,16 @@ class AapSession(
         try {
             while (!closed.get()) {
                 val m = queue.poll(500, TimeUnit.MILLISECONDS) ?: continue
+                // One socket: an audio frame queued behind a video write blocked in the kernel
+                // (Wi-Fi congestion / buffer bloat) arrives past its real-time timestamp.
+                // Throttled marker of link-side delay, distinct from phone-side supply gaps.
+                if (m.priority == Priority.AUDIO) {
+                    val waitMs = (System.nanoTime() - m.enqueuedAtNs) / 1_000_000L
+                    if (waitMs > 100L && System.currentTimeMillis() - lastAudioQueueWaitLogMs.get() > 2_000L) {
+                        lastAudioQueueWaitLogMs.set(System.currentTimeMillis())
+                        log.w("audio DATA waited ${waitMs}ms in write queue (depth=${queue.size}) — link/writer stall")
+                    }
+                }
                 // Never downgrade: a message flagged encrypted while TLS is down throws (ends the session).
                 writer.write(m.channel, m.control, m.encrypted, m.plain, m.length)
                 m.onSent?.invoke()

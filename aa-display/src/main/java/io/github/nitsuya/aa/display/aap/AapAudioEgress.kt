@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.aap
 import aap_protobuf.service.control.message.AudioFocusStateTypeOuterClass.AudioFocusStateType
 import aap_protobuf.service.media.shared.message.AudioConfigurationOuterClass.AudioConfiguration
 import aap_protobuf.service.media.sink.message.AudioStreamTypeOuterClass.AudioStreamType
+import android.os.Process
 import android.util.Log
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.util.AudioPullRing
@@ -164,6 +165,7 @@ class AapAudioEgress {
         }
         flushPreTx(MEDIA)
         mediaWorker = thread(name = "aap-audio-media", isDaemon = true) {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             pump(MEDIA, ch, mediaPumping)
         }
     }
@@ -199,6 +201,7 @@ class AapAudioEgress {
         }
         flushPreTx(GUIDANCE)
         guidanceWorker = thread(name = "aap-audio-guidance", isDaemon = true) {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             pump(GUIDANCE, ch, guidancePumping)
         }
     }
@@ -218,6 +221,7 @@ class AapAudioEgress {
         var pulledTotal = 0L
         var nextPacketAt = System.nanoTime()
         var pullFailLogged = false
+        var lastShortLogMs = 0L
         try {
             while (flag.get() && running.get()) {
                 val now = System.nanoTime()
@@ -244,8 +248,21 @@ class AapAudioEgress {
                     }
                     ByteArray(0)
                 }
-                if (got.isNotEmpty()) {
-                    val n = minOf(got.size, bytesPerPacket)
+                val n = minOf(got.size, bytesPerPacket)
+                if (n < bytesPerPacket && System.currentTimeMillis() - lastShortLogMs > 2_000L) {
+                    // Short/empty read → the packet is silence-padded: the app ring ran dry
+                    // (puller starvation or upstream drop). Throttled: this is the marker of a
+                    // phone-side supply gap, distinct from the car-side underflow/dropped counters.
+                    lastShortLogMs = System.currentTimeMillis()
+                    val deficitMs = (bytesPerPacket - n) * 1_000L / (profile.sampleRate * profile.channels * 2L)
+                    Log.i(
+                        AapConsts.TAG,
+                        "AapAudio ${profile.label} short read deficit=${deficitMs}ms " +
+                            "avail=${profile.ring.availableBytes}B ringDrop=${profile.ring.droppedBytes}B " +
+                            "underflow=${channel.underflows} dropped=${channel.droppedChunks}",
+                    )
+                }
+                if (n > 0) {
                     System.arraycopy(got, 0, packet, 10, n)
                     pulledTotal += n
                 }
@@ -256,7 +273,8 @@ class AapAudioEgress {
                     Log.i(
                         AapConsts.TAG,
                         "AapAudio ${profile.label} pkt=$packets pulled=${pulledTotal / 1024}KB " +
-                            "underflow=${channel.underflows} dropped=${channel.droppedChunks}",
+                            "underflow=${channel.underflows} dropped=${channel.droppedChunks} " +
+                            "avail=${profile.ring.availableBytes}B ringDrop=${profile.ring.droppedBytes}B",
                     )
                 }
                 nextPacketAt += PACKET_INTERVAL_NS

@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.util
 
+import android.os.Process
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -43,9 +44,16 @@ class AudioPullRing(
     var droppedBytes = 0L
         private set
 
+    /** Bytes currently buffered (for pacing-thread diagnostics). */
+    val availableBytes: Int
+        get() = synchronized(lock) { available }
+
     fun start() {
         if (!running.compareAndSet(false, true)) return
         worker = thread(name = "audio-pull-$label", isDaemon = true) {
+            // Realtime audio supply: a Binder round trip delayed by a busy app process
+            // (GL compositor / C2 encoder) opens a silence hole in the paced stream.
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             var failLogged = false
             while (running.get()) {
                 val got = try {

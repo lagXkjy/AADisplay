@@ -693,6 +693,9 @@ object CarPlayAudioCapture {
         readerRunning.set(true)
         mediaReaderThread = Thread(
             {
+                // Realtime audio path: a reader starved by system_server load leaves the
+                // capture ring to drain, and the car hears it as a short silence.
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 val buf = ByteArray(MEDIA_READ_BYTES)
                 var written = 0L
                 var firstNonZeroLogged = false
@@ -736,6 +739,7 @@ object CarPlayAudioCapture {
     private fun startSpeechReaderLocked(record: AudioRecord) {
         speechReaderThread = Thread(
             {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 val buf = ByteArray(SPEECH_READ_BYTES)
                 var written = 0L
                 var firstNonZeroLogged = false

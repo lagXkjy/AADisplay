@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.carplay
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.graphics.drawable.Drawable
@@ -81,7 +82,20 @@ class CarPlayGlCompositor {
     private var chromeGpuSynced = false
     /** Last chrome content signature that was drawn + uploaded; skip idle full-frame uploads. */
     private var lastChromeKey: ChromeKey? = null
+    /**
+     * Geometry the overlay actually painted on the previous chrome frame. The incremental
+     * clear/upload rects track this mirror, NOT [ChromeKey]: the draw uses live values
+     * (e.g. [CarPlayInputBridge.primaryRatio], written from the main thread) which can
+     * move between key build and canvas write within one tick. Clearing by the key-derived
+     * rect would leave stale divider pixels behind on a fast drag (double bar); mirroring
+     * what was really painted closes that race.
+     */
+    private var lastDrawnState = ChromeDrawnState.EMPTY
     private val imeChipLayout = RectF()
+    /** Last pulled shell state; reused on quiet ticks that skip the Binder pull ([dueForHidPull]). */
+    private var lastHidState = HidShellPull()
+    /** Ticks since the last shell pull; armed so the first tick always pulls. */
+    private var quietTicks = QUIET_PULL_TICKS
     /** Phone BT mouse sprite (Lucide); loaded once when [bindHidCursorDrawable] is called. */
     private var hidCursorDrawable: Drawable? = null
     private var lastHidOpenRecentsSeq = Float.NaN
@@ -292,6 +306,8 @@ class CarPlayGlCompositor {
                 encoderAttached.set(true)
                 deliveredFrames.set(0)
                 forceFrames.set(2)
+                lastHidState = HidShellPull()
+                quietTicks = QUIET_PULL_TICKS
                 windowStart = SystemClock.uptimeMillis()
                 handler.removeCallbacks(renderTick)
                 handler.post(renderTick)
@@ -366,6 +382,8 @@ class CarPlayGlCompositor {
         secondarySurfaceRef.set(null)
         encoderAttached.set(false)
         onRateReport = null
+        lastHidState = HidShellPull()
+        quietTicks = QUIET_PULL_TICKS
         hidCursorDrawable = null
         lastHidOpenRecentsSeq = Float.NaN
         lastHidFlipSeq = Float.NaN
@@ -411,6 +429,7 @@ class CarPlayGlCompositor {
         overlayTexId = GlUtil.createTexture2d()
         chromeGpuSynced = false
         lastChromeKey = null
+        lastDrawnState = ChromeDrawnState.EMPTY
     }
 
     private fun applyPaneBufferSize(pane: Int, width: Int, height: Int) {
@@ -474,6 +493,7 @@ class CarPlayGlCompositor {
         overlayBitmap = null
         chromeGpuSynced = false
         lastChromeKey = null
+        lastDrawnState = ChromeDrawnState.EMPTY
         if (oesProgram != 0) {
             GLES20.glDeleteProgram(oesProgram)
             oesProgram = 0
@@ -517,7 +537,16 @@ class CarPlayGlCompositor {
         if (!encoderAttached.get()) return
         val window = encoderWindow ?: return
 
-        val hid = pullHidShellState()
+        // Quiet shell (no cursor / peel / Recents / picker / car-side gesture) pulls the
+        // system_server snapshot every [QUIET_PULL_TICKS] ticks instead of every frame —
+        // a static screen otherwise burns 2 Binder round trips per tick (120 IPC/s).
+        // Edge events (openRecents / flip seqs) are delta-dispatched on pull, so the
+        // catch-up pull just fires them a few ticks late.
+        val hid = if (dueForHidPull()) {
+            pullHidShellState().also { lastHidState = it }
+        } else {
+            lastHidState
+        }
         val key = buildChromeKey(hid)
         val force = forceFrames.getAndSet(0)
         val dirty = newPaneFrame || force > 0 || key != lastChromeKey ||
@@ -734,7 +763,12 @@ class CarPlayGlCompositor {
      * phone BT cursor tip, locked-peel preview, Recents open, live split ratio / fullscreen.
      *
      * Idle frames (static divider / peel, no cursor, no shell overlay) reuse the previous
-     * GPU texture — skip Canvas clear/redraw and [GLUtils.texImage2D] (~full encode ARGB).
+     * GPU texture — skip Canvas clear/redraw and the overlay upload entirely.
+     * When the key changes without a shell overlay, only the affected element regions
+     * (divider / peel tab / IME chip / cursor, prev ∪ new) are cleared + re-uploaded via
+     * [android.opengl.GLUtils.texSubImage2D] — a moving BT cursor no longer costs a
+     * full 1280×720 ARGB (~3.7 MB) [android.opengl.GLUtils.texImage2D] every tick.
+     * Recents / picker (or a freshly minted texture) take the full-frame path.
      */
     private fun drawChromeLayer(
         hid: HidShellPull,
@@ -765,9 +799,56 @@ class CarPlayGlCompositor {
             !chromeGpuSynced ||
             key != lastChromeKey
         if (dirty) {
-            lastChromeKey = key
+            val prev = lastChromeKey
             val canvas = Canvas(bmp)
-            canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+            // Freeze the chip layout for this frame (feeds both the paint and the upload
+            // rect) so nothing the canvas writes can outrun the rect.
+            val chipShown = !showRecents && !showPicker && SplitPane.isValid(imePane) &&
+                CarPlayChromePainter.layoutHideImeChip(
+                    imeChipLayout,
+                    lw,
+                    lh,
+                    densityDpi,
+                    imePane,
+                    chromeFs,
+                    CarPlayInputBridge.primaryRatio,
+                    imeLabel,
+                )
+            val drawn = ChromeDrawnState(
+                ox,
+                oy,
+                lw,
+                lh,
+                densityDpi,
+                chromeFs,
+                if (chromeFs) -1 else chromeSeam,
+                chipShown,
+                imeChipLayout.left,
+                imeChipLayout.top,
+                imeChipLayout.right,
+                imeChipLayout.bottom,
+                hid.cursorVisible,
+                hid.cursorX,
+                hid.cursorY,
+            )
+            // Shell overlays animate across the whole content rect and a fresh GPU texture
+            // must be fully seeded — both take the full-frame path.
+            val shellOpen = liveShell || (prev?.let { it.showRecents || it.showPicker } ?: false)
+            val rects = if (chromeGpuSynced && !shellOpen) {
+                drawn.dirtyRegion(lastDrawnState, bmp.width, bmp.height)
+            } else {
+                null
+            }
+            if (rects == null) {
+                canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+            } else {
+                for (r in rects) {
+                    canvas.save()
+                    canvas.clipRect(r)
+                    canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+                    canvas.restore()
+                }
+            }
             canvas.save()
             canvas.translate(ox.toFloat(), oy.toFloat())
             if (chromeFs) {
@@ -775,25 +856,8 @@ class CarPlayGlCompositor {
             } else if (chromeSeam >= 0) {
                 CarPlayChromePainter.drawSplitDivider(canvas, lw, lh, chromeSeam)
             }
-            if (!showRecents && !showPicker && SplitPane.isValid(imePane)) {
-                if (CarPlayChromePainter.layoutHideImeChip(
-                        imeChipLayout,
-                        lw,
-                        lh,
-                        densityDpi,
-                        imePane,
-                        chromeFs,
-                        CarPlayInputBridge.primaryRatio,
-                        imeLabel,
-                    )
-                ) {
-                    CarPlayChromePainter.drawHideImeChip(
-                        canvas,
-                        imeChipLayout,
-                        densityDpi,
-                        imeLabel,
-                    )
-                }
+            if (chipShown) {
+                CarPlayChromePainter.drawHideImeChip(canvas, imeChipLayout, densityDpi, imeLabel)
             }
             if (showRecents) {
                 CarPlayRecentsOverlay.draw(canvas, lw, lh)
@@ -812,8 +876,27 @@ class CarPlayGlCompositor {
             }
             canvas.restore()
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTexId)
-            android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+            if (rects == null) {
+                android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+            } else {
+                // 5-arg overload only — the (bitmap, format, type) form treated width/height
+                // as GL enums, threw, and left the GPU overlay stuck on the first center seam.
+                for (r in rects) {
+                    val sub = Bitmap.createBitmap(bmp, r.left, r.top, r.width(), r.height())
+                    try {
+                        // Overlay UV is v-flipped: bitmap top → GL row (H - bottom).
+                        android.opengl.GLUtils.texSubImage2D(
+                            GLES20.GL_TEXTURE_2D, 0, r.left, bmp.height - r.bottom, sub,
+                        )
+                    } finally {
+                        sub.recycle()
+                    }
+                }
+            }
+            // Only after upload succeeds — otherwise retry next tick instead of sticking.
+            lastChromeKey = key
             chromeGpuSynced = true
+            lastDrawnState = drawn
         }
 
         if (!chromeGpuSynced) return
@@ -862,6 +945,86 @@ class CarPlayGlCompositor {
         val cursorY: Int,
     )
 
+    /**
+     * Clear/upload region for the incremental chrome path: union of every element this
+     * state and [prev] painted (each in its own content origin, bitmap coords, clamped
+     * to the bitmap). Empty → null → caller falls back to the full-frame path.
+     */
+    private fun ChromeDrawnState.dirtyRegion(prev: ChromeDrawnState, bmpW: Int, bmpH: Int): List<Rect>? {
+        val all = ArrayList<Rect>(4)
+        collectStateElementRects(prev, all)
+        collectStateElementRects(this, all)
+        val out = ArrayList<Rect>(all.size)
+        for (r in all) {
+            val c = Rect(r)
+            c.intersect(0, 0, bmpW, bmpH)
+            if (!c.isEmpty) out.add(c)
+        }
+        // Defensive: a key change always moves at least one painted element; if the
+        // geometry says otherwise, fall back to the full-frame path rather than a no-op.
+        return out.takeIf { it.isNotEmpty() }
+    }
+
+    private fun collectStateElementRects(state: ChromeDrawnState, out: ArrayList<Rect>) {
+        if (state.lw <= 0 || state.lh <= 0) return
+        val d = state.dpi.coerceAtLeast(160) / 160f
+        if (state.fullscreen) {
+            CarPlayChromePainter.peelTabRect(state.lw, state.lh)?.let {
+                it.offset(state.ox, state.oy)
+                out.add(it)
+            }
+        } else if (state.seam >= 0) {
+            CarPlayChromePainter.dividerRect(state.seam, state.lh)?.let {
+                it.offset(state.ox, state.oy)
+                out.add(it)
+            }
+        }
+        if (state.chipShown) {
+            val m = (6f * d).toInt() + 2
+            val r = Rect(
+                state.chipLeft.toInt() - m,
+                state.chipTop.toInt() - m,
+                state.chipRight.toInt() + m,
+                state.chipBottom.toInt() + m,
+            )
+            r.offset(state.ox, state.oy)
+            out.add(r)
+        }
+        if (state.cursorVisible) {
+            CarPlayChromePainter.cursorRect(state.cursorX, state.cursorY, state.dpi)?.let {
+                it.offset(state.ox, state.oy)
+                out.add(it)
+            }
+        }
+    }
+
+    /**
+     * What the overlay canvas actually painted on the last chrome frame (content-rect
+     * coords). See [lastDrawnState].
+     */
+    private data class ChromeDrawnState(
+        val ox: Int,
+        val oy: Int,
+        val lw: Int,
+        val lh: Int,
+        val dpi: Int,
+        /** Fullscreen peel tab was painted (vs. split divider at [seam]; seam < 0 = none). */
+        val fullscreen: Boolean,
+        val seam: Int,
+        val chipShown: Boolean,
+        val chipLeft: Float,
+        val chipTop: Float,
+        val chipRight: Float,
+        val chipBottom: Float,
+        val cursorVisible: Boolean,
+        val cursorX: Float,
+        val cursorY: Float,
+    ) {
+        companion object {
+            val EMPTY = ChromeDrawnState(0, 0, 0, 0, 160, false, -1, false, 0f, 0f, 0f, 0f, false, 0f, 0f)
+        }
+    }
+
     private fun ensureOverlayBitmap(): Bitmap {
         val existing = overlayBitmap
         if (existing != null &&
@@ -874,6 +1037,7 @@ class CarPlayGlCompositor {
         existing?.recycle()
         chromeGpuSynced = false
         lastChromeKey = null
+        lastDrawnState = ChromeDrawnState.EMPTY
         forceFrames.addAndGet(2)
         return Bitmap.createBitmap(encodeWidth, encodeHeight, Bitmap.Config.ARGB_8888).also {
             overlayBitmap = it
@@ -889,9 +1053,33 @@ class CarPlayGlCompositor {
     )
 
     /**
-     * One Binder pull per encode frame — replaces AaDisplayActivity's 16 ms poll of
-     * [CoreApi.getHidCursorOverlay]. Applies live split/fullscreen into
-     * [CarPlayInputBridge] so phone HID chrome stays in sync with VD sizes.
+     * Shell-state pull cadence: per frame while any interactive chrome is live (phone BT
+     * cursor, peel preview, Recents / picker, car-side finger gesture); every
+     * [QUIET_PULL_TICKS] ticks while quiet. A fully static screen then costs ~12 IPC/s
+     * instead of 120.
+     */
+    private fun dueForHidPull(): Boolean {
+        val s = lastHidState
+        val active = s.cursorVisible || s.peelPreview ||
+            CarPlayRecentsOverlay.isVisible() || CarPlayAppPickerOverlay.isVisible() ||
+            CarPlayInputBridge.isChromeGestureActive()
+        if (active) {
+            quietTicks = 0
+            return true
+        }
+        if (quietTicks >= QUIET_PULL_TICKS) {
+            quietTicks = 0
+            return true
+        }
+        quietTicks++
+        return false
+    }
+
+    /**
+     * One Binder pull per *due* encode frame ([dueForHidPull] decimates quiet ticks) —
+     * replaces AaDisplayActivity's 16 ms poll of [CoreApi.getHidCursorOverlay]. Applies
+     * live split/fullscreen into [CarPlayInputBridge] so phone HID chrome stays in sync
+     * with VD sizes.
      */
     private fun pullHidShellState(): HidShellPull {
         val s = runCatching { CoreApi.hidCursorOverlay }.getOrNull() ?: return HidShellPull()
@@ -979,6 +1167,8 @@ class CarPlayGlCompositor {
 
     companion object {
         private const val RATE_WINDOW_MS = 10_000L
+        /** Quiet-tick shell pull interval (60 fps → 5 Hz). Edge events catch up on the next pull. */
+        private const val QUIET_PULL_TICKS = 12
 
         /** Live Host or AAP compositor — divider settle syncs pane buffers through this. */
         @Volatile

@@ -317,10 +317,17 @@ object CarPlayInputBridge {
                 if (seamPending) {
                     val heldMs = SystemClock.uptimeMillis() - chromeDownAt
                     val dist = abs(x - chromeDownX)
-                    if (SplitPane.shouldBeginDividerDrag(
+                    val begin = if (heldMs >= SplitPane.DIVIDER_TAP_STACK_MIN_MS) {
+                        // Long-press lane has expired. A busy main thread can delay the
+                        // postDelayed runnable so seamLongPressFired stays false — the
+                        // input timestamp is the source of truth; plain slop starts the drag.
+                        !seamLongPressFired && dist > DRAG_SLOP
+                    } else {
+                        SplitPane.shouldBeginDividerDrag(
                             dist, DRAG_SLOP, seamLongPressFired, heldMs,
                         )
-                    ) {
+                    }
+                    if (begin) {
                         stealSeamToChrome(startDrag = true, x = x)
                         return true
                     }
@@ -353,6 +360,23 @@ object CarPlayInputBridge {
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_CANCEL -> {
                 if (seamPending) {
+                    // HU digitizers often omit MOVE and jump DOWN→UP (fast flick / coarse
+                    // panel): a horizontal jump is a divider drag, not a tap — steal the
+                    // pointer from the pane and settle the seam at the release point.
+                    val jumped = action == MotionEvent.ACTION_UP &&
+                        abs(x - chromeDownX) > DRAG_SLOP * 2f
+                    if (jumped) {
+                        mainHandler.removeCallbacks(seamLongPressRunnable)
+                        seamPending = false
+                        cancelPanePointer()
+                        seamLongPressFired = false
+                        settleRatioOrFullscreen(x)
+                        Log.i(
+                            CarPlayConsts.TAG,
+                            "divider seam jump-drag (no MOVE) upX=$x settle",
+                        )
+                        return true
+                    }
                     // Short tap / scroll stayed with the pane — do not consume UP.
                     clearSeamPending(cancelPane = false)
                     return false

@@ -39,38 +39,8 @@ class CarPlayVideoEncoder(
     private var inputSurface: Surface? = null
     private val surfaceFrameFailLogged = AtomicBoolean(false)
     private val drainFailLogged = AtomicBoolean(false)
+    private val drainedBadOutputLogged = AtomicBoolean(false)
     private val droppedFrames = AtomicLong(0)
-
-    /**
-     * Reusable drain buffers — the old per-frame ByteArray churn (~2–3 arrays per
-     * frame at 60 fps) caused GC pauses in the background FGS that showed up as
-     * encode hitches. Codec-config AUs are excluded: the screen egress retains the
-     * config buffer across re-SETUP.
-     */
-    private val auPoolLock = Any()
-    private val auPool = ArrayDeque<ByteArray>()
-
-    private fun acquireAuBuffer(size: Int): ByteArray {
-        synchronized(auPoolLock) {
-            var i = 0
-            while (i < auPool.size) {
-                val b = auPool[i]
-                if (b.size >= size) {
-                    auPool.removeAt(i)
-                    return b
-                }
-                i++
-            }
-        }
-        return ByteArray(size)
-    }
-
-    private fun releaseAuBuffer(buf: ByteArray, isCodecConfig: Boolean) {
-        if (isCodecConfig || buf.size > MAX_POOL_BUFFER) return
-        synchronized(auPoolLock) {
-            if (auPool.size < POOL_CAPACITY) auPool.addLast(buf)
-        }
-    }
 
     /** Frames dropped for back-pressure (converter busy / surface unusable), since process start. */
     fun dropCount(): Long = droppedFrames.get()
@@ -409,25 +379,37 @@ class CarPlayVideoEncoder(
                 }
             }
             outIndex >= 0 -> {
-                    var bytes: ByteArray? = null
-                    var config = false
                     try {
                         val buffer = encoder.getOutputBuffer(outIndex)
                         if (buffer != null && info.size > 0) {
-                            bytes = acquireAuBuffer(info.size)
-                            buffer.position(info.offset)
-                            buffer.limit(info.offset + info.size)
-                            buffer.get(bytes)
-                            val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-                            config = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
-                            onEncodedAccessUnit(bytes, info.presentationTimeUs, key, config)
+                            // C2 (Qualcomm) occasionally reports an output whose
+                            // offset+size overruns the backing buffer — `get(bytes)`
+                            // would underflow and wedge the drain loop (screen frozen
+                            // on the first IDR, MIB3 no-delay decoder errors). Drop.
+                            if (info.offset + info.size > buffer.capacity()) {
+                                if (!drainedBadOutputLogged.compareAndSet(false, true)) {
+                                    Log.w(
+                                        CarPlayConsts.TAG,
+                                        "AVC drop bad output offset=${info.offset} " +
+                                            "size=${info.size} cap=${buffer.capacity()}",
+                                    )
+                                }
+                            } else {
+                                // Exact-size allocation on purpose: consumers treat
+                                // array.size == AU length; a larger pooled buffer makes
+                                // ByteBuffer.get(bytes) underflow.
+                                val bytes = ByteArray(info.size)
+                                buffer.position(info.offset)
+                                buffer.limit(info.offset + info.size)
+                                buffer.get(bytes)
+                                val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                                val config = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                                onEncodedAccessUnit(bytes, info.presentationTimeUs, key, config)
+                            }
                         }
                     } catch (e: Throwable) {
                         Log.e(CarPlayConsts.TAG, "AVC drain failed", e)
                     } finally {
-                        // Codec-config AUs are retained by the screen egress across
-                        // re-SETUP — never pool those.
-                        bytes?.let { releaseAuBuffer(it, config) }
                         try {
                             encoder.releaseOutputBuffer(outIndex, false)
                         } catch (_: Throwable) {
@@ -548,11 +530,5 @@ class CarPlayVideoEncoder(
                 MediaCodecInfo.CodecProfileLevel.AVCLevel41
             else -> MediaCodecInfo.CodecProfileLevel.AVCLevel5
         }
-    }
-
-    companion object {
-        /** 1920×1080@60 IDR bursts can exceed this; keep such buffers out of the pool. */
-        private const val MAX_POOL_BUFFER = 1_000_000
-        private const val POOL_CAPACITY = 12
     }
 }

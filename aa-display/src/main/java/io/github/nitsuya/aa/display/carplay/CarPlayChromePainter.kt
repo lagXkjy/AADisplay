@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.carplay
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
@@ -234,4 +235,44 @@ internal object CarPlayChromePainter {
     private const val HOTSPOT_X_DP = 4.04f
     private const val HOTSPOT_Y_DP = 4.69f
     private const val CURSOR_SIZE_DP = 24f
+
+    /**
+     * Painted bounds (top-left origin, content-rect pixel coords, inflated for stroke /
+     * dot / AA slack) of each chrome element. [CarPlayGlCompositor] unions the prev and
+     * new key rects to clear / [android.opengl.GLUtils.texSubImage2D] only the affected
+     * region instead of re-uploading the full ARGB overlay on every cursor tick.
+     */
+    fun dividerRect(seamX: Int, h: Int): Rect? {
+        if (seamX < 0 || h <= 0) return null
+        val d = density(h)
+        // Dots reach gap + radius (9.5d) from the seam line; leave stroke / AA slack.
+        val m = (12f * d).toInt() + 2
+        return Rect(seamX - m, 0, seamX + m + 1, h)
+    }
+
+    fun peelTabRect(w: Int, h: Int): Rect? {
+        if (w <= 0 || h <= 0) return null
+        val d = density(h)
+        val tabLen = SplitPane.PEEL_TAB_LENGTH_DP * d * 1.15f
+        val thick = (SplitPane.PEEL_TAB_THICKNESS_DP * d * 1.35f).coerceAtLeast(8f)
+        val cy = h / 2f
+        val m = (10f * d).toInt() + 2
+        val left = 0
+        val top = (cy - tabLen / 2f - m).toInt().coerceAtLeast(0)
+        val right = (thick + 2 * m).toInt().coerceAtMost(w)
+        val bottom = (cy + tabLen / 2f + m).toInt().coerceAtMost(h)
+        return Rect(left, top, right, bottom)
+    }
+
+    fun cursorRect(tipX: Float, tipY: Float, densityDpi: Int): Rect? {
+        if (tipX.isNaN() || tipY.isNaN()) return null
+        val d = densityDpi.coerceAtLeast(160) / 160f
+        val size = CURSOR_SIZE_DP * d
+        val m = 3f * d
+        val left = (tipX - HOTSPOT_X_DP * d - m).toInt()
+        val top = (tipY - HOTSPOT_Y_DP * d - m).toInt()
+        val sizePx = size.toInt().coerceAtLeast(1)
+        val mPx = m.toInt().coerceAtLeast(1)
+        return Rect(left, top, left + sizePx + 2 * mPx, top + sizePx + 2 * mPx)
+    }
 }
