@@ -13,6 +13,7 @@ import aap_protobuf.service.sensorsource.message.SensorBatchOuterClass.SensorBat
 import android.bluetooth.BluetoothDevice
 import android.content.Context
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
 import android.view.MotionEvent
@@ -54,6 +55,9 @@ class AapSourceSession(
 ) {
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
+    /** Touch/scroll Binder must not run on aap-reader (stalls USB drain → TLS NONCE-GAP). */
+    private val inputThread = HandlerThread("aap-input").apply { start() }
+    private val inputHandler = Handler(inputThread.looper)
     private val log = object : AapLog {
         override fun i(msg: String) {
             Log.i(AapConsts.TAG, msg)
@@ -115,6 +119,7 @@ class AapSourceSession(
         autoStarter = null
         wireless = null
         reportLive(false)
+        inputHandler.removeCallbacksAndMessages(null)
         onStatus("已停止")
     }
 
@@ -198,7 +203,21 @@ class AapSourceSession(
     /** True only after service discovery completed — not during TLS / failed handshake. */
     fun isProtocolLive(): Boolean = aap?.state == AapSession.State.RUNNING
 
-    private val usbRetry = AtomicInteger(0)
+    /**
+     * Soft [AapUsbProbe] must not reopen the same AOA accessory after TLS desync /
+     * mid-session crypto failure — HU still speaks encrypted frames. Cleared on
+     * USB DETACH or a fresh ATTACHED entry ([clearUsbReplugRequired]).
+     */
+    private val usbReplugRequired = AtomicBoolean(false)
+
+    fun isUsbReplugRequired(): Boolean = usbReplugRequired.get()
+
+    /** Call from USB_ACCESSORY_ATTACHED / DETACHED before a new soft or hard attach. */
+    fun clearUsbReplugRequired() {
+        if (usbReplugRequired.compareAndSet(true, false)) {
+            Log.i(AapConsts.TAG, "USB replug gate cleared")
+        }
+    }
 
     /**
      * USB AOA / lab entry: AAP on an already-open [Transport].
@@ -209,6 +228,12 @@ class AapSourceSession(
     fun startOnTransport(t: Transport, peerKey: String, trustOnFirstUse: Boolean = true) {
         synchronized(this) {
             if (transport === t && aap != null) return
+        }
+        if (peerKey.startsWith("usb:") && usbReplugRequired.get()) {
+            Log.w(AapConsts.TAG, "USB attach blocked — unplug/replug required")
+            onStatus("请拔掉数据线再插上")
+            runCatching { t.close() }
+            return
         }
         if (!running.get()) running.set(true)
         onStatus("数据线已连接，正在准备…")
@@ -224,10 +249,6 @@ class AapSourceSession(
         }
         synchronized(this) {
             if (transport === t && aap != null) return
-            if (peerKey.startsWith("usb:")) {
-                // Fresh USB bind — allow desync retries again.
-                usbRetry.set(0)
-            }
             startAap(t, peerKey, trustOnFirstUse, sendPings = false)
         }
     }
@@ -470,19 +491,26 @@ class AapSourceSession(
 
     private val inputListener = object : InputChannel.Listener {
         override fun onInput(report: InputReport) {
-            if (report.hasTouchEvent()) {
-                // Full-canvas → split pane local coords (same as CarPlay Host). The old path
-                // injected video-sized coords into focusedPane only — right pane / off-focus taps felt dead.
-                dispatchTouch(report.touchEvent, source = "touch")
-            }
-            if (report.hasKeyEvent()) {
-                inputKeys.onKeyEvent(report.keyEvent)
-            }
-            if (report.hasRelativeEvent()) {
-                handleRelative(report.relativeEvent)
-            }
-            if (report.hasTouchpadEvent()) {
-                dispatchTouch(report.touchpadEvent, source = "pad")
+            // Copy refs only — protobuf messages are immutable; Binder inject off reader thread.
+            val touch = if (report.hasTouchEvent()) report.touchEvent else null
+            val key = if (report.hasKeyEvent()) report.keyEvent else null
+            val relative = if (report.hasRelativeEvent()) report.relativeEvent else null
+            val pad = if (report.hasTouchpadEvent()) report.touchpadEvent else null
+            inputHandler.post {
+                if (touch != null) {
+                    // Full-canvas → split pane local coords (same as CarPlay Host). The old path
+                    // injected video-sized coords into focusedPane only — right pane / off-focus taps felt dead.
+                    dispatchTouch(touch, source = "touch")
+                }
+                if (key != null) {
+                    inputKeys.onKeyEvent(key)
+                }
+                if (relative != null) {
+                    handleRelative(relative)
+                }
+                if (pad != null) {
+                    dispatchTouch(pad, source = "pad")
+                }
             }
         }
 
@@ -637,12 +665,20 @@ class AapSourceSession(
 
         override fun onClosed(session: AapSession, reason: String, error: Throwable?) {
             Log.i(AapConsts.TAG, "session closed: $reason", error)
-            val usbDesync = error?.message?.contains("encrypted frame before TLS") == true
+            val errMsg = error?.message.orEmpty()
+            val usbCryptoFault = errMsg.contains("encrypted frame before TLS") ||
+                errMsg.contains("NONCE-GAP") ||
+                errMsg.contains("TLS record failed") ||
+                errMsg.contains("TLS closed")
+            val wasUsb = transport?.name?.startsWith("usb ") == true
             if (session.certificateRejected) {
                 certAttempt.incrementAndGet()
                 onStatus("车机未接受连车信息，将自动换一种方式重试")
-            } else if (usbDesync) {
-                onStatus("线还在，车机状态有点乱，正在重试…")
+            } else if (wasUsb && usbCryptoFault) {
+                // Soft reopen of the same AOA accessory cannot reset HU TLS — require unplug.
+                usbReplugRequired.set(true)
+                onStatus("请拔掉数据线再插上")
+                Log.w(AapConsts.TAG, "USB TLS fault — soft attach blocked until unplug/replug")
             } else {
                 onStatus("已断开，可重新连接")
             }
@@ -654,27 +690,18 @@ class AapSourceSession(
                 audioEgress.stop()
                 nowPlaying.stop()
                 inputKeys.reset()
+                inputHandler.removeCallbacksAndMessages(null)
                 CarPlayRecentsOverlay.close()
                 CarPlayAppPickerOverlay.close()
                 stopVideoBitrateCtrl()
                 display?.stop()
                 display = null
                 aap = null
-                // Closing the accessory fd forces DHU / HU to reset AOA before we reopen.
+                // Closing the accessory fd; HU often keeps AOA until physical unplug.
                 runCatching { transport?.close() }
                 transport = null
                 activeVideo = null
                 reportLive(false)
-                if (usbDesync && running.get() && usbRetry.incrementAndGet() <= 3) {
-                    val attempt = usbRetry.get()
-                    Log.i(AapConsts.TAG, "USB TLS desync — retry attach attempt=$attempt")
-                    main.postDelayed(
-                        {
-                            io.github.nitsuya.aa.display.aap.usb.AapUsbProbe.tryAttachExisting(app)
-                        },
-                        1_500L * attempt,
-                    )
-                }
             }
         }
     }

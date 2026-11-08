@@ -66,10 +66,12 @@ class AapUsbAccessoryActivity : Activity() {
                 }
                 transport = UsbAccessoryTransport(usb, accessory)
                 val peer = "usb:${accessory.manufacturer}:${accessory.model}:${accessory.version}"
+                // ATTACHED intent = physical (re)plug — clear TLS-desync soft-attach gate.
                 val accepted = AapProjectionService.attachTransport(
                     transport,
                     peerKey = peer,
                     trustOnFirstUse = true,
+                    fromAccessoryAttached = true,
                 )
                 Log.i(
                     AapConsts.TAG,
@@ -81,7 +83,12 @@ class AapUsbAccessoryActivity : Activity() {
                 ) {
                     // If FGS was late, pending queue is drained on ensureSession.
                     if (!accepted) {
-                        AapProjectionService.attachTransport(transport, peer, trustOnFirstUse = true)
+                        AapProjectionService.attachTransport(
+                            transport,
+                            peer,
+                            trustOnFirstUse = true,
+                            fromAccessoryAttached = true,
+                        )
                     }
                     Thread.sleep(200)
                 }

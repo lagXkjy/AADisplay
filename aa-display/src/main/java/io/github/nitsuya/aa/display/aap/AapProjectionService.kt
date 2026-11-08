@@ -5,9 +5,13 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.hardware.usb.UsbManager
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import io.github.nitsuya.aa.display.R
@@ -52,9 +56,22 @@ class AapProjectionService : Service() {
 
         fun lastStatus(): String = lastStatus
 
+        /** Soft USB probe must wait for unplug after TLS desync / crypto fault. */
+        fun isUsbReplugRequired(): Boolean = sessionRef.get()?.isUsbReplugRequired() == true
+
+        /**
+         * Clear the USB replug gate (DETACH or a fresh ATTACHED entry).
+         * Soft [AapUsbProbe] stays blocked until this runs.
+         */
+        fun clearUsbReplugRequired() {
+            sessionRef.get()?.clearUsbReplugRequired()
+        }
+
         /**
          * Hand an already-open transport (USB AOA / lab TCP) to the live session.
          *
+         * @param fromAccessoryAttached true when coming from [USB_ACCESSORY_ATTACHED]
+         *        (clears the replug gate before bind).
          * @return true if the session accepted / already owns [transport]; false if queued
          *         until [ensureSession] drains (caller may wait on [isProtocolLive]).
          */
@@ -62,7 +79,11 @@ class AapProjectionService : Service() {
             transport: Transport,
             peerKey: String,
             trustOnFirstUse: Boolean = true,
+            fromAccessoryAttached: Boolean = false,
         ): Boolean {
+            if (fromAccessoryAttached) {
+                clearUsbReplugRequired()
+            }
             synchronized(attachLock) {
                 val s = sessionRef.get()
                 if (s != null) {
@@ -97,6 +118,15 @@ class AapProjectionService : Service() {
     }
 
     private var session: AapSourceSession? = null
+    private var usbDetachRegistered = false
+
+    private val usbDetachReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_DETACHED) return
+            Log.i(AapConsts.TAG, "USB accessory detached — clear replug gate")
+            clearUsbReplugRequired()
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -133,6 +163,7 @@ class AapProjectionService : Service() {
     }
 
     private fun ensureSession() {
+        registerUsbDetachReceiver()
         if (sessionRef.get() != null) {
             drainPendingTransport()
             // Session may have been armed before DHU entered accessory mode — keep probing.
@@ -154,8 +185,27 @@ class AapProjectionService : Service() {
         AapUsbProbe.tryAttachExisting(this)
     }
 
+    private fun registerUsbDetachReceiver() {
+        if (usbDetachRegistered) return
+        val filter = IntentFilter(UsbManager.ACTION_USB_ACCESSORY_DETACHED)
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(usbDetachReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(usbDetachReceiver, filter)
+        }
+        usbDetachRegistered = true
+    }
+
+    private fun unregisterUsbDetachReceiver() {
+        if (!usbDetachRegistered) return
+        runCatching { unregisterReceiver(usbDetachReceiver) }
+        usbDetachRegistered = false
+    }
+
     private fun tearDown(reason: String) {
         Log.i(AapConsts.TAG, "AapProjectionService tearDown $reason")
+        unregisterUsbDetachReceiver()
         pendingTransport.getAndSet(null)?.let { runCatching { it.transport.close() } }
         sessionRef.getAndSet(null)?.stop()
         session = null

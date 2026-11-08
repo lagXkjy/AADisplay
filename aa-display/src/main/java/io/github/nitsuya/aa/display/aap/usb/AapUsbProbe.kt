@@ -34,6 +34,10 @@ object AapUsbProbe {
             Log.i(AapConsts.TAG, "USB probe: AAP already live — skip")
             return
         }
+        if (AapProjectionService.isUsbReplugRequired()) {
+            Log.i(AapConsts.TAG, "USB probe: blocked until unplug/replug (TLS fault)")
+            return
+        }
         if (!busy.compareAndSet(false, true)) {
             Log.i(AapConsts.TAG, "USB probe: already in progress")
             return
