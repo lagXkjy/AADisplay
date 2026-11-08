@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased — 编码 / 推流链路优化
+## 1.1 — 编码 / 推流链路优化
+
+versionCode **10100** / versionName **1.1**。
 
 - **方控下一曲打到栈外 QQ：** 分屏高德+抖音时焦点常停在高德；`MEDIA_NEXT` 只偏爱 Live 窗，不认另一侧抖音 Feed，于是 `pickMediaKeyTarget` 落到仍 PLAYING 的 `qqmusiccar`（可不在分屏栈里）。改为 NEXT/PREV 也优先视频前台窗并上滑切条；另一窗是抖音时不再把 transport 交给音乐会话。
 - **静态帧跳过（Host GL）：** 一 tick 内双窗无新帧、且分隔条 / 全屏 / 键盘条 / HID 光标（`ChromeKey`）与布局均未变时，跳过 GL 重绘 + swap；C2 按帧间隔复读上一帧保持线路节拍。静止画面（音乐 App、地图不移动）省 GPU / C2 转色 / 带宽；rate 统计把复读帧计入 delivered，不假触发 60→30 降档。
