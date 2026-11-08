@@ -74,6 +74,13 @@ class CarPlayGlCompositor {
 
     private var overlayTexId = 0
     private var overlayBitmap: Bitmap? = null
+    /**
+     * True after the GPU overlay texture matches [overlayBitmap]. Cleared on GL recreate /
+     * bitmap resize so the first chrome frame always uploads.
+     */
+    private var chromeGpuSynced = false
+    /** Last chrome content signature that was drawn + uploaded; skip idle full-frame uploads. */
+    private var lastChromeKey: ChromeKey? = null
     private val imeChipLayout = RectF()
     /** Phone BT mouse sprite (Lucide); loaded once when [bindHidCursorDrawable] is called. */
     private var hidCursorDrawable: Drawable? = null
@@ -392,6 +399,8 @@ class CarPlayGlCompositor {
             if (i == 0) primarySurfaceRef.set(surface) else secondarySurfaceRef.set(surface)
         }
         overlayTexId = GlUtil.createTexture2d()
+        chromeGpuSynced = false
+        lastChromeKey = null
     }
 
     private fun applyPaneBufferSize(pane: Int, width: Int, height: Int) {
@@ -453,6 +462,8 @@ class CarPlayGlCompositor {
         }
         overlayBitmap?.recycle()
         overlayBitmap = null
+        chromeGpuSynced = false
+        lastChromeKey = null
         if (oesProgram != 0) {
             GLES20.glDeleteProgram(oesProgram)
             oesProgram = 0
@@ -647,6 +658,9 @@ class CarPlayGlCompositor {
      *
      * Also pulls [CoreApi.getHidCursorOverlay] each frame (AaDisplayActivity poll replacement):
      * phone BT cursor tip, locked-peel preview, Recents open, live split ratio / fullscreen.
+     *
+     * Idle frames (static divider / peel, no cursor, no shell overlay) reuse the previous
+     * GPU texture — skip Canvas clear/redraw and [GLUtils.texImage2D] (~full encode ARGB).
      */
     private fun drawChromeLayer(
         seamX: Int,
@@ -659,11 +673,6 @@ class CarPlayGlCompositor {
         val hid = pullHidShellState()
         val showPicker = CarPlayAppPickerOverlay.isVisible()
         val showRecents = CarPlayRecentsOverlay.isVisible()
-        val bmp = ensureOverlayBitmap()
-        val canvas = Canvas(bmp)
-        canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
-        canvas.save()
-        canvas.translate(ox.toFloat(), oy.toFloat())
         val chromeFs = if (hid.peelPreview) false else fullscreen
         val chromeSeam = if (hid.peelPreview) {
             val gap = SplitPane.dividerPx(densityDpi)
@@ -673,49 +682,87 @@ class CarPlayGlCompositor {
         } else {
             seamX
         }
-        if (chromeFs) {
-            CarPlayChromePainter.drawPeelTab(canvas, lw, lh)
-        } else if (chromeSeam >= 0) {
-            CarPlayChromePainter.drawSplitDivider(canvas, lw, lh, chromeSeam)
-        }
-        if (!showRecents && !showPicker && SplitPane.isValid(CarPlayImeChip.pane)) {
-            if (CarPlayChromePainter.layoutHideImeChip(
-                    imeChipLayout,
-                    lw,
-                    lh,
-                    densityDpi,
-                    CarPlayImeChip.pane,
-                    chromeFs,
-                    CarPlayInputBridge.primaryRatio,
-                    CarPlayImeChip.label,
-                )
-            ) {
-                CarPlayChromePainter.drawHideImeChip(
+        val imePane = CarPlayImeChip.pane
+        val imeLabel = CarPlayImeChip.label
+        val ratioQ = (CarPlayInputBridge.primaryRatio * 1000f).toInt()
+        val peelQ = if (hid.peelPreview) (hid.peelRatio * 1000f).toInt() else -1
+        // Recents / picker may mutate every frame (scroll, task list) — always redraw while open.
+        val liveShell = showPicker || showRecents
+        val key = ChromeKey(
+            seam = chromeSeam,
+            fullscreen = chromeFs,
+            ox = ox,
+            oy = oy,
+            lw = lw,
+            lh = lh,
+            dpi = densityDpi,
+            showPicker = showPicker,
+            showRecents = showRecents,
+            imePane = imePane,
+            imeLabel = imeLabel,
+            ratioQ = ratioQ,
+            peelQ = peelQ,
+            cursorVisible = hid.cursorVisible,
+            cursorX = if (hid.cursorVisible) hid.cursorX.toInt() else 0,
+            cursorY = if (hid.cursorVisible) hid.cursorY.toInt() else 0,
+        )
+        val bmp = ensureOverlayBitmap()
+        val dirty = liveShell ||
+            !chromeGpuSynced ||
+            key != lastChromeKey
+        if (dirty) {
+            lastChromeKey = key
+            val canvas = Canvas(bmp)
+            canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+            canvas.save()
+            canvas.translate(ox.toFloat(), oy.toFloat())
+            if (chromeFs) {
+                CarPlayChromePainter.drawPeelTab(canvas, lw, lh)
+            } else if (chromeSeam >= 0) {
+                CarPlayChromePainter.drawSplitDivider(canvas, lw, lh, chromeSeam)
+            }
+            if (!showRecents && !showPicker && SplitPane.isValid(imePane)) {
+                if (CarPlayChromePainter.layoutHideImeChip(
+                        imeChipLayout,
+                        lw,
+                        lh,
+                        densityDpi,
+                        imePane,
+                        chromeFs,
+                        CarPlayInputBridge.primaryRatio,
+                        imeLabel,
+                    )
+                ) {
+                    CarPlayChromePainter.drawHideImeChip(
+                        canvas,
+                        imeChipLayout,
+                        densityDpi,
+                        imeLabel,
+                    )
+                }
+            }
+            if (showRecents) {
+                CarPlayRecentsOverlay.draw(canvas, lw, lh)
+            }
+            if (showPicker) {
+                CarPlayAppPickerOverlay.draw(canvas, lw, lh)
+            }
+            if (hid.cursorVisible) {
+                CarPlayChromePainter.drawHidCursor(
                     canvas,
-                    imeChipLayout,
+                    hid.cursorX,
+                    hid.cursorY,
                     densityDpi,
-                    CarPlayImeChip.label,
+                    hidCursorDrawable,
                 )
             }
+            canvas.restore()
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTexId)
+            android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+            chromeGpuSynced = true
         }
-        if (showRecents) {
-            CarPlayRecentsOverlay.draw(canvas, lw, lh)
-        }
-        if (showPicker) {
-            CarPlayAppPickerOverlay.draw(canvas, lw, lh)
-        }
-        if (hid.cursorVisible) {
-            CarPlayChromePainter.drawHidCursor(
-                canvas,
-                hid.cursorX,
-                hid.cursorY,
-                densityDpi,
-                hidCursorDrawable,
-            )
-        }
-        canvas.restore()
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTexId)
-        android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+
+        if (!chromeGpuSynced) return
 
         Matrix.setIdentityM(mvpMatrix, 0)
         GLES20.glUseProgram(tex2dProgram)
@@ -738,6 +785,29 @@ class CarPlayGlCompositor {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
     }
 
+    /**
+     * Content signature for chrome dirty upload. Pixel-quantized cursor so subpixel HID
+     * noise does not force a full ARGB upload every tick while the tip is still.
+     */
+    private data class ChromeKey(
+        val seam: Int,
+        val fullscreen: Boolean,
+        val ox: Int,
+        val oy: Int,
+        val lw: Int,
+        val lh: Int,
+        val dpi: Int,
+        val showPicker: Boolean,
+        val showRecents: Boolean,
+        val imePane: Int,
+        val imeLabel: String,
+        val ratioQ: Int,
+        val peelQ: Int,
+        val cursorVisible: Boolean,
+        val cursorX: Int,
+        val cursorY: Int,
+    )
+
     private fun ensureOverlayBitmap(): Bitmap {
         val existing = overlayBitmap
         if (existing != null &&
@@ -748,6 +818,8 @@ class CarPlayGlCompositor {
             return existing
         }
         existing?.recycle()
+        chromeGpuSynced = false
+        lastChromeKey = null
         return Bitmap.createBitmap(encodeWidth, encodeHeight, Bitmap.Config.ARGB_8888).also {
             overlayBitmap = it
         }

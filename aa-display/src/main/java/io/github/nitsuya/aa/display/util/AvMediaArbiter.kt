@@ -98,6 +98,56 @@ object AvMediaArbiter {
     }
 
     /**
+     * Target for MEDIA_* transport controls — not the system media-button session.
+     *
+     * Focused AvMedia window (抖音 / QQ) keeps keys on that package — never jump to
+     * a buried PAUSED music session while the user is watching Douyin.
+     * Non-Av focus (高德): PLAYING sounder, else PAUSED music; ignore idle STOPPED
+     * Douyin FeedPlayerSession that steals media-button ownership.
+     */
+    fun pickMediaKeyTarget(
+        context: Context,
+        sessions: List<MediaController>?,
+        layout: StackLayout?,
+    ): MediaController? {
+        val eligible = eligibleControllers(context, sessions)
+        if (eligible.isEmpty()) return null
+
+        fun stateOf(c: MediaController): Int =
+            c.playbackState?.state ?: PlaybackState.STATE_NONE
+
+        val focused = layout?.focusedFront()?.trim()?.takeIf { it.isNotEmpty() }
+        if (focused != null && MusicAppClassifier.isAvMediaPackage(context, focused)) {
+            val forFocus = eligible.filter { it.packageName == focused }
+            forFocus.firstOrNull { isPlayingState(stateOf(it)) }?.let { return it }
+            forFocus.firstOrNull { stateOf(it) == PlaybackState.STATE_PAUSED }?.let { return it }
+            // Idle video session: caller should swipe/inject the focused VD — do not
+            // fall through to buried QQ (skipToNext would resume music under Douyin).
+            return null
+        }
+
+        pickWinner(context, sessions, layout)?.let { return it }
+
+        val pausedMusic = eligible.filter {
+            stateOf(it) == PlaybackState.STATE_PAUSED &&
+                MusicAppClassifier.isMusicSession(context, it)
+        }
+        if (pausedMusic.isEmpty()) return null
+        if (layout != null) {
+            pickPausedForFront(pausedMusic, layout.otherFront())?.let { return it }
+        }
+        return pausedMusic.maxWithOrNull(playingComparator(layout))
+    }
+
+    private fun pickPausedForFront(
+        paused: List<MediaController>,
+        frontPkg: String?,
+    ): MediaController? {
+        val pkg = frontPkg?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return paused.firstOrNull { it.packageName == pkg }
+    }
+
+    /**
      * Dashboard lyric source: the one preferred music app that is PLAYING
      * (QQ 车载 / HD / 汽水). When video (or other non-trio) owns the speaker,
      * preferred are paused and this returns null.

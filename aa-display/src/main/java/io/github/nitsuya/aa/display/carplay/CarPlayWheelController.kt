@@ -1,7 +1,6 @@
 package io.github.nitsuya.aa.display.carplay
 
 import android.content.Context
-import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -61,10 +60,6 @@ object CarPlayWheelController {
     private val invertMediaLr = AtomicBoolean(false)
     private val handler = Handler(Looper.getMainLooper())
 
-    /** App context for short-press [AudioManager.dispatchMediaKeyEvent] (no system_server reboot). */
-    @Volatile
-    private var appContext: Context? = null
-
     /** CarPlay Host recents overlay hook (set by [CarPlayHostActivity]). */
     @Volatile
     var onRecentsToggle: (() -> Unit)? = null
@@ -81,11 +76,10 @@ object CarPlayWheelController {
     fun setEnabled(
         live: Boolean,
         invertMediaLeftRight: Boolean = false,
-        context: Context? = null,
+        @Suppress("UNUSED_PARAMETER") context: Context? = null,
     ) {
         enabled.set(live)
         invertMediaLr.set(if (live) invertMediaLeftRight else false)
-        appContext = if (live) context?.applicationContext else null
         if (!live) {
             clearPressState()
         }
@@ -99,18 +93,10 @@ object CarPlayWheelController {
         lastMediaUsage = 0
     }
 
-    /** VD inject + active media-session dispatch (map-focused pane otherwise eats keys). */
+    /** Media keys: [CoreApi.pressKey] → AvMediaArbiter target (idle Douyin must not steal). */
     private fun pressMediaKey(keyCode: Int) {
         runCatching { CoreApi.pressKey(keyCode) }
-        val ctx = appContext ?: return
-        runCatching {
-            val am = ctx.getSystemService(AudioManager::class.java) ?: return@runCatching
-            val now = SystemClock.uptimeMillis()
-            am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
-            am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0))
-        }.onFailure { e ->
-            Log.w(TAG, "dispatchMediaKeyEvent($keyCode) failed", e)
-        }
+            .onFailure { e -> Log.w(TAG, "pressKey($keyCode) failed", e) }
     }
 
     /**

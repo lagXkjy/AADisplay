@@ -481,12 +481,24 @@ object CarPlayInputBridge {
             primaryRatio = ratioAtDown
             return
         }
+        // Drag first (incl. peel-out-then-back): never open Recents. Final dist can be
+        // tiny after returning to the edge while heldMs already ≥ long-press — same false
+        // trigger SplitLockedPeelController already guards against.
+        if (wasDragging) {
+            if (x > SplitPane.FULLSCREEN_EXIT_RATIO) {
+                exitFullscreen(x.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO))
+            } else {
+                // Below exit threshold — same as AA onPeelCancelled: stay FS, restore ratio.
+                primaryRatio = ratioAtDown
+            }
+            return
+        }
         if (SplitPane.qualifiesDividerLongPress(false, heldMs) && dist <= DRAG_SLOP * 3f) {
             primaryRatio = ratioAtDown
             CarPlayRecentsOverlay.open()
             return
         }
-        if (!wasDragging && heldMs <= SplitPane.DIVIDER_TAP_SWAP_MAX_MS && dist <= DRAG_SLOP) {
+        if (heldMs <= SplitPane.DIVIDER_TAP_SWAP_MAX_MS && dist <= DRAG_SLOP) {
             // Tap peel → flip visible fullscreen pane (AA peel tap).
             primaryRatio = ratioAtDown
             val other = if (fullscreenPane == SplitPane.PRIMARY) {
@@ -495,13 +507,6 @@ object CarPlayInputBridge {
                 SplitPane.PRIMARY
             }
             enterFullscreen(other)
-            return
-        }
-        if (wasDragging && x > SplitPane.FULLSCREEN_EXIT_RATIO) {
-            exitFullscreen(x.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO))
-        } else if (wasDragging) {
-            // Below exit threshold — same as AA onPeelCancelled: stay FS, restore ratio.
-            primaryRatio = ratioAtDown
         }
     }
 

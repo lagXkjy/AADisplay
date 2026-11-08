@@ -1,6 +1,7 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
 import android.annotation.SuppressLint
+import android.app.ActivityTaskManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -19,6 +20,7 @@ import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
+import io.github.nitsuya.aa.display.util.MusicAppClassifier
 import io.github.nitsuya.aa.display.util.PmCaches
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
@@ -789,24 +791,25 @@ class SplitDisplayController(
             }
             // knownLive: already confirmed by resolvePaneDisplayId — skip a second ATMS walk.
             val live = knownLive || input.isLiveStyleTopActivity(displayId)
-            // Live rooms ignore MEDIA_NEXT/PREV; swipe the current VD bounds instead
-            // (size read at inject time — split ratio / resize can change anytime).
-            if (live && nextPrev) {
+            val topPkg = topTask?.packageName
+            // Douyin live / feed: vertical fling on the focused VD — never skipToNext on
+            // buried QQ (that resumed music under Douyin and ANR'd aweme).
+            val videoFeed = MusicAppClassifier.isVideoPackage(topPkg)
+            if (nextPrev && (live || videoFeed)) {
                 return@runOnHandlerBlocking input.injectLiveRoomSwipe(
                     displayId,
                     next = action == KeyEvent.KEYCODE_MEDIA_NEXT
                 )
             }
+            // Map / non-video: AvMediaArbiter transport (PLAYING or PAUSED music).
+            // Skip VD inject when transport handled the key (avoid double skip).
+            if (input.isMediaKeyCode(action) && input.dispatchMediaKeyFallback(action)) {
+                return@runOnHandlerBlocking true
+            }
             val down = input.createKeyEvent(KeyEvent.ACTION_DOWN, action)
             val up = input.createKeyEvent(KeyEvent.ACTION_UP, action)
             input.injectInputEvent(displayId, down)
             input.injectInputEvent(displayId, up)
-            // Map / browser often holds focus while music plays on the other pane —
-            // VD inject alone is ignored. Always also dispatch to the active media
-            // session (QQ 车载 etc.). Live next/prev already returned via swipe above.
-            if (input.isMediaKeyCode(action)) {
-                input.dispatchMediaKeyFallback(action)
-            }
             true
         }
     }
@@ -1002,8 +1005,18 @@ class SplitDisplayController(
         mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
     }
 
-    private fun finishLaunchOnPane(pane: Int, packageName: String, displayId: Int) {
-        ownership.enforceStackFrontAudio(pane)
+    /**
+     * @param rootsCache optional ATMS roots for this launch's target display — reused by
+     *   [SplitOwnership.enforceStackFrontAudio] demote so we do not walk the same display twice.
+     *   Must not be passed into [SplitOwnership.bringTaskToFront] (stale after mutation).
+     */
+    private fun finishLaunchOnPane(
+        pane: Int,
+        packageName: String,
+        displayId: Int,
+        rootsCache: MutableMap<Int, List<ActivityTaskManager.RootTaskInfo>>? = null,
+    ) {
+        ownership.enforceStackFrontAudio(pane, rootsCache = rootsCache)
         // 置顶 on the behind pane while the other side is fullscreen: keep the visible
         // FS pane focused for input/media, but promote stack fronts so ATMS catches up.
         if (SplitPane.isFullscreenPane(mFullscreenPane) && mFullscreenPane != pane) {
@@ -1046,11 +1059,21 @@ class SplitDisplayController(
             return false
         }
         // Already on this pane stack → just bring to front (no reload).
+        // One ATMS walk for find + demote; bringTaskToFront verifies without this snapshot
+        // (mutation would make it stale for topmost checks).
         if (stacks.contains(pane, packageName)) {
-            val taskId = ownership.findPackageTaskOnDisplay(packageName, displayId, liveOnly = true)
+            val roots = tryOrNull {
+                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
+            }.orEmpty()
+            val taskId = ownership.findPackageTaskInRoots(packageName, roots, liveOnly = true)
             if (taskId != null && ownership.bringTaskToFront(taskId)) {
                 stacks.moveToTop(pane, packageName)
-                finishLaunchOnPane(pane, packageName, displayId)
+                finishLaunchOnPane(
+                    pane,
+                    packageName,
+                    displayId,
+                    rootsCache = hashMapOf(displayId to roots),
+                )
                 logDebug(TAG, "startActivityOnPane front-existing pkg=$packageName pane=$pane")
                 return true
             }

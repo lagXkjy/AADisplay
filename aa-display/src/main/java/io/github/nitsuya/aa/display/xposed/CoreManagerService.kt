@@ -581,6 +581,23 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             }
         }
 
+        /**
+         * Phone HID media keys (飞鼠 Consumer Control): same path as steering-wheel
+         * [pressKey] — live-room swipe + [AvMediaArbiter] media-key target.
+         * Do not raw-inject MEDIA_* into the focused VD (MediaSession often delivers
+         * them to idle Douyin FeedPlayerSession).
+         */
+        fun dispatchHidMediaKey(keyCode: Int): Boolean {
+            return try {
+                mSessionPolicy?.onVirtualDisplayUserInteraction()
+                mSplitController?.onPressKey(keyCode)
+                true
+            } catch (e: Throwable) {
+                logDebug(TAG, "dispatchHidMediaKey: ${e.message}")
+                false
+            }
+        }
+
         /** Retired Car SDK presentation key inject — always false. */
         fun injectHidAaUiKeyEvent(event: KeyEvent): Boolean = false
 

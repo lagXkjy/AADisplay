@@ -2,7 +2,6 @@ package io.github.nitsuya.aa.display.aap
 
 import aap_protobuf.service.inputsource.message.KeyEventOuterClass.KeyEvent
 import android.content.Context
-import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -14,12 +13,11 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * AAP [KeyEvent] → AADisplay actions, matching [io.github.nitsuya.aa.display.carplay.CarPlayWheelController]:
- * short MEDIA_* → [CoreApi.pressKey] + [AudioManager.dispatchMediaKeyEvent];
+ * short MEDIA_* → [CoreApi.pressKey] (AvMediaArbiter session target);
  * long NEXT/FF → [CoreApi.swapSplitPanes];
  * long PREV/REWIND → [CarPlayRecentsOverlay.toggle].
  */
-class AapInputKeys(context: Context) {
-    private val app = context.applicationContext
+class AapInputKeys(@Suppress("UNUSED_PARAMETER") context: Context) {
     private val handler = Handler(Looper.getMainLooper())
     private val pressStartMs = ConcurrentHashMap<Int, Long>()
     private val longFired = ConcurrentHashMap.newKeySet<Int>()
@@ -109,21 +107,10 @@ class AapInputKeys(context: Context) {
         }
     }
 
+    /** Media keys: system_server [CoreApi.pressKey] → AvMediaArbiter target (not AudioManager). */
     private fun pressMediaOrNav(keyCode: Int) {
         runCatching { CoreApi.pressKey(keyCode) }
-        if (!isMediaKey(keyCode)) return
-        runCatching {
-            val am = app.getSystemService(AudioManager::class.java) ?: return@runCatching
-            val now = SystemClock.uptimeMillis()
-            am.dispatchMediaKeyEvent(
-                AndroidKeyEvent(now, now, AndroidKeyEvent.ACTION_DOWN, keyCode, 0),
-            )
-            am.dispatchMediaKeyEvent(
-                AndroidKeyEvent(now, now, AndroidKeyEvent.ACTION_UP, keyCode, 0),
-            )
-        }.onFailure { e ->
-            Log.w(AapConsts.TAG, "dispatchMediaKeyEvent($keyCode) failed", e)
-        }
+            .onFailure { e -> Log.w(AapConsts.TAG, "pressKey($keyCode) failed", e) }
     }
 
     companion object {

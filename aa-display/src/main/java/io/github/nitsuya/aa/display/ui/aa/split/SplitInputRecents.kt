@@ -4,6 +4,9 @@ import android.app.ActivityTaskManager
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Point
+import android.media.session.MediaController
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.Binder
 import android.os.SystemClock
 import android.view.Display
@@ -18,8 +21,10 @@ import com.github.kyuubiran.ezxhelper.utils.args
 import com.github.kyuubiran.ezxhelper.utils.invokeMethod
 import com.github.kyuubiran.ezxhelper.utils.tryOrNull
 import io.github.nitsuya.aa.display.model.RecentTaskInfo
+import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.PmIconCache
 import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import java.lang.reflect.Method
 
@@ -88,18 +93,69 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
     }
 
     /**
-     * Best-effort when the focused VD activity ignores injected MEDIA_* (e.g. Douyin
-     * LivePlay after FeedPlayerSession is removed). Runs as system_server.
-     * Do not use for NEXT/PREV on live rooms — that should [injectLiveRoomSwipe].
+     * Prefer [AvMediaArbiter.pickMediaKeyTarget] transport controls.
+     * No [android.media.AudioManager.dispatchMediaKeyEvent] — that follows the
+     * system media-button session (often idle Douyin or the wrong player).
+     * Do not use for NEXT/PREV on live/video feed — that should [injectLiveRoomSwipe].
+     *
+     * @return true when a session transport handled the key (caller should skip
+     *   VD inject to avoid double skipToNext).
      */
-    fun dispatchMediaKeyFallback(keyCode: Int) {
-        if (!isMediaKeyCode(keyCode)) return
-        try {
-            val am = c.context.getSystemService(android.media.AudioManager::class.java) ?: return
-            am.dispatchMediaKeyEvent(createKeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-            am.dispatchMediaKeyEvent(createKeyEvent(KeyEvent.ACTION_UP, keyCode))
+    fun dispatchMediaKeyFallback(keyCode: Int): Boolean {
+        if (!isMediaKeyCode(keyCode)) return false
+        return try {
+            val sessions = activeMediaSessions()
+            val target = AvMediaArbiter.pickMediaKeyTarget(
+                c.context,
+                sessions,
+                c.avStackLayout(),
+            ) ?: return false
+            if (!dispatchMediaKeyToController(target, keyCode)) return false
+            logDebug(
+                SplitDisplayController.TAG,
+                "dispatchMediaKeyFallback key=$keyCode → ${target.packageName}",
+            )
+            true
         } catch (e: Throwable) {
             log(SplitDisplayController.TAG, "dispatchMediaKeyFallback failed key=$keyCode:", e)
+            false
+        }
+    }
+
+    private fun activeMediaSessions(): List<MediaController>? {
+        val msm = c.context.getSystemService(MediaSessionManager::class.java) ?: return null
+        return try {
+            msm.getActiveSessions(null)
+        } catch (e: Throwable) {
+            logDebug(SplitDisplayController.TAG, "getActiveSessions failed: ${e.message}")
+            null
+        }
+    }
+
+    private fun dispatchMediaKeyToController(controller: MediaController, keyCode: Int): Boolean {
+        return try {
+            val tc = controller.transportControls
+            when (keyCode) {
+                KeyEvent.KEYCODE_MEDIA_PLAY -> tc.play()
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> tc.pause()
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                    val state = controller.playbackState?.state ?: PlaybackState.STATE_NONE
+                    if (AvMediaArbiter.isPlayingState(state)) tc.pause() else tc.play()
+                }
+                KeyEvent.KEYCODE_MEDIA_STOP -> tc.stop()
+                KeyEvent.KEYCODE_MEDIA_NEXT,
+                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> tc.skipToNext()
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                KeyEvent.KEYCODE_MEDIA_REWIND -> tc.skipToPrevious()
+                else -> return false
+            }
+            true
+        } catch (e: Throwable) {
+            logDebug(
+                SplitDisplayController.TAG,
+                "dispatchMediaKeyToController ${controller.packageName} key=$keyCode: ${e.message}",
+            )
+            false
         }
     }
 

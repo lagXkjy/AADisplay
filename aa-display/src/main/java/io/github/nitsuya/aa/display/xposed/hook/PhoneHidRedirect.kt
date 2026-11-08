@@ -1096,6 +1096,14 @@ object PhoneHidRedirect {
             ) {
                 return true
             }
+            // Media keys: pressKey path (live swipe / AvMediaArbiter target). Consume
+            // DOWN+UP so MediaSession never delivers to idle Douyin FeedPlayerSession.
+            if (isHidMediaKey(event.keyCode)) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                    CoreManagerService.dispatchHidMediaKey(event.keyCode)
+                }
+                return true
+            }
             if (CoreManagerService.aaUiShellCapture) {
                 return CoreManagerService.injectHidAaUiKeyEvent(event)
             }
@@ -1104,6 +1112,19 @@ object PhoneHidRedirect {
             logDebug(TAG, "dispatchKey: ${e.message}")
             false
         }
+    }
+
+    private fun isHidMediaKey(keyCode: Int): Boolean = when (keyCode) {
+        KeyEvent.KEYCODE_MEDIA_PLAY,
+        KeyEvent.KEYCODE_MEDIA_PAUSE,
+        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+        KeyEvent.KEYCODE_MEDIA_STOP,
+        KeyEvent.KEYCODE_MEDIA_NEXT,
+        KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+        KeyEvent.KEYCODE_MEDIA_REWIND,
+        KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+        KeyEvent.KEYCODE_HEADSETHOOK -> true
+        else -> false
     }
 
     /**
