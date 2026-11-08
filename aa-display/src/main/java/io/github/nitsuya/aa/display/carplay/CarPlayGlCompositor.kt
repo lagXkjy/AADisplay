@@ -506,7 +506,7 @@ class CarPlayGlCompositor {
 
     private fun drawFrame() {
         // Drain pending OES frames even when encoder is not yet attached (avoid queue stall).
-        var newPaneFrame = false
+        val newFrame = booleanArrayOf(false, false)
         for (i in 0..1) {
             val pending = synchronized(frameAvailable) {
                 val v = frameAvailable[i]
@@ -514,7 +514,7 @@ class CarPlayGlCompositor {
                 v
             }
             if (!pending) continue
-            newPaneFrame = true
+            newFrame[i] = true
             try {
                 surfaceTextures[i]?.updateTexImage()
             } catch (e: Throwable) {
@@ -537,15 +537,31 @@ class CarPlayGlCompositor {
         }
         val key = buildChromeKey(hid)
         val force = forceFrames.getAndSet(0)
+        // Fullscreen draws only the visible pane; a new frame on the *hidden* pane
+        // (buried video / live map) must not flip dirty, or every hidden frame would
+        // re-encode unchanged visible content. Mirror the draw branch below: peel
+        // preview / ratio-morph draw BOTH scissored, split draws both.
+        val rawDirty = CarPlayInputBridge.primaryRatio.coerceIn(0f, 1f)
+        val bothVisible = !SplitPane.isFullscreenPane(CarPlayInputBridge.fullscreenPane) ||
+            CarPlayInputBridge.peelPreviewActive || hid.peelPreview ||
+            rawDirty < SplitPane.MIN_RATIO || rawDirty > SplitPane.MAX_RATIO
+        val newPaneFrame = if (bothVisible) {
+            newFrame[0] || newFrame[1]
+        } else if (CarPlayInputBridge.fullscreenPane == SplitPane.PRIMARY) {
+            newFrame[0]
+        } else {
+            newFrame[1]
+        }
         val dirty = newPaneFrame || force > 0 || key != lastChromeKey ||
             CarPlayAppPickerOverlay.isVisible() ||
             CarPlayRecentsOverlay.isVisible()
         if (!dirty) {
-            // Static scene: no new pane frame, chrome / layout unchanged. Skip the GL
-            // redraw + swap — C2's REPEAT_PREVIOUS_FRAME_AFTER (one frame interval)
+            // Static scene: no new *visible* pane frame, chrome / layout unchanged. Skip
+            // the GL redraw + swap — C2's REPEAT_PREVIOUS_FRAME_AFTER (one frame interval)
             // then emits one tiny repeat so the wire stays paced. Count it as
             // delivered: the supply cadence is intact, the rate report must not
-            // mistake a static screen for a stall.
+            // mistake a static screen for a stall. Hidden-pane frames are drained above
+            // (updateTexImage) so their buffer queue never stalls.
             CarPlayMediaClock.ensureRunning()
             deliveredFrames.incrementAndGet()
             return
