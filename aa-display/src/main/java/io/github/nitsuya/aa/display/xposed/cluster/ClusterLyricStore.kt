@@ -43,6 +43,15 @@ object ClusterLyricStore {
     var cachedTitle: String = ""
         private set
 
+    /**
+     * Set after [clear] actually wrote the empty state. Re-clears skip all
+     * Settings writes — [io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror]
+     * re-enters clear() on its 500ms repick while no session exists, and the
+     * unconditional 11-key write loop loaded system_server SettingsProvider.
+     */
+    @Volatile
+    private var clearedSincePublish = false
+
     @Volatile
     var cachedSubtitle: String = ""
         private set
@@ -85,6 +94,7 @@ object ClusterLyricStore {
             touch(cr)
             return
         }
+        clearedSincePublish = false
         cachedTitle = t
         cachedSubtitle = s
         cachedAlbum = a
@@ -106,6 +116,7 @@ object ClusterLyricStore {
 
     fun publishTrackMediaId(cr: ContentResolver, mediaId: String) {
         val id = mediaId.trim()
+        clearedSincePublish = false
         runCatching {
             Settings.Global.putString(cr, SETTINGS_TRACK_MEDIA_ID, id)
             cr.notifyChange(Settings.Global.getUriFor(SETTINGS_TRACK_MEDIA_ID), null)
@@ -116,6 +127,7 @@ object ClusterLyricStore {
 
     fun publishSourcePkg(cr: ContentResolver, pkg: String) {
         val p = pkg.trim()
+        clearedSincePublish = false
         runCatching {
             Settings.Global.putString(cr, SETTINGS_SOURCE_PKG, p)
             cr.notifyChange(Settings.Global.getUriFor(SETTINGS_SOURCE_PKG), null)
@@ -153,6 +165,7 @@ object ClusterLyricStore {
         lastProgressState = playbackState
         lastProgressSpeed = speed
         lastProgressWriteElapsedMs = now
+        clearedSincePublish = false
         runCatching {
             Settings.Global.putString(cr, SETTINGS_POSITION_MS, pos.toString())
             Settings.Global.putString(cr, SETTINGS_DURATION_MS, dur.toString())
@@ -191,6 +204,8 @@ object ClusterLyricStore {
         lastProgressState = PlaybackState.STATE_NONE
         lastProgressSpeed = Float.NaN
         lastProgressWriteElapsedMs = 0L
+        if (clearedSincePublish) return
+        clearedSincePublish = true
         runCatching {
             Settings.Global.putString(cr, SETTINGS_TITLE, "")
             Settings.Global.putString(cr, SETTINGS_SUBTITLE, "")

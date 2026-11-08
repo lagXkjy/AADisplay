@@ -394,6 +394,12 @@ object CoreManager : ICoreManager, DeathRecipient {
     private fun getService(): ICoreManager? {
         if (service != null) return service
         val pm = ServiceManager.getService("package")
+        if (pm == null) {
+            // Very early boot: package service not registered yet — transact on null would
+            // NPE. Retry on the next call.
+            Log.d(TAG, "package service not ready; cannot acquire binder yet")
+            return null
+        }
         val data = Parcel.obtain()
         val reply = Parcel.obtain()
         val remote = try {

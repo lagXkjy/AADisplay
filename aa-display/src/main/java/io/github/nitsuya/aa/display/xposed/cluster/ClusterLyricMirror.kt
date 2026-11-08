@@ -35,6 +35,12 @@ object ClusterLyricMirror {
     private const val STALE_TOUCH_MS = 5_000L
     /** Re-pick when bound to a paused session — list listener misses playback-only changes. */
     private const val REPICK_INTERVAL_MS = 500L
+    /**
+     * Slower cadence while fully unbound (no session at all). The active-sessions
+     * listener already catches a new session; this loop is only a safety net and its
+     * 500ms onSessionsChanged → clearOutput cycle kept system_server busy.
+     */
+    private const val REPICK_NO_BIND_INTERVAL_MS = 2_000L
     /** Prefer a fresher playing session over a stale preferred-package PLAYING ghost. */
     private const val STALE_PLAYING_MS = 1_500L
     private const val START_RETRY_FIRST_MS = 2_000L
@@ -154,7 +160,12 @@ object ClusterLyricMirror {
             if (!repickArmed) return
             onSessionsChanged(sessionManager?.getActiveSessionsSafe())
             if (repickArmed) {
-                handler.postDelayed(this, REPICK_INTERVAL_MS)
+                val interval = if (boundController == null) {
+                    REPICK_NO_BIND_INTERVAL_MS
+                } else {
+                    REPICK_INTERVAL_MS
+                }
+                handler.postDelayed(this, interval)
             }
         }
     }
@@ -817,7 +828,8 @@ object ClusterLyricMirror {
         }
         repickArmed = true
         handler.removeCallbacks(repickRunnable)
-        handler.postDelayed(repickRunnable, REPICK_INTERVAL_MS)
+        val interval = if (boundController == null) REPICK_NO_BIND_INTERVAL_MS else REPICK_INTERVAL_MS
+        handler.postDelayed(repickRunnable, interval)
     }
 
     private fun disarmRepick() {

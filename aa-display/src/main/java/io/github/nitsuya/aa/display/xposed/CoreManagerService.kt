@@ -44,7 +44,6 @@ import io.github.duzhaokun123.template.utils.runIO
 import io.github.duzhaokun123.template.utils.runMain
 import io.github.qauxv.ui.CommonContextWrapper
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CountDownLatch
 
 class CoreManagerService private constructor() : ICoreManager.Stub() {
 
@@ -87,7 +86,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 systemContextHost = value.createContext(value.params ?: ContextParams.Builder().build())
             }
 
+        // Written on the system_server main handler (create/destroy), read from Binder
+        // threads (getSplitRatio / touchPane / hidCursorOverlaySnapshot / gates) — volatile
+        // so a freshly created / torn-down controller is visible to those readers.
+        @Volatile
         private var mSessionPolicy: DisplaySessionPolicy? = null
+        @Volatile
         private var mSplitController: SplitDisplayController? = null
         private var mDisplayCreateInProgress = false
 
@@ -106,38 +110,18 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         private var mLastReportedHostDensityDpi = 0
         private val mMainHandler = Handler(Looper.getMainLooper())
 
-        /** Binder setters must finish before the client reads back (see MainActivity DPI UI). */
-        private fun runMainSync(block: () -> Unit) {
-            if (Looper.myLooper() == Looper.getMainLooper()) {
-                block()
-                return
-            }
-            val latch = CountDownLatch(1)
-            var error: Throwable? = null
-            mMainHandler.post {
-                try {
-                    block()
-                } catch (t: Throwable) {
-                    error = t
-                } finally {
-                    latch.countDown()
-                }
-            }
-            latch.await()
-            error?.let { throw it }
-        }
-
-        private fun persistVdDensityDpiLocked(dpi: Int) {
+        private fun persistVdDensityDpi(dpi: Int): Boolean {
             if (!hasSystemContext) {
                 log(TAG, "setVdDensityDpi aborted: systemContext not initialized")
-                return
+                return false
             }
             val normalized = DisplayDpiStore.normalize(dpi)
             val ok = DisplayDpiStore.save(normalized, systemContext.contentResolver)
             if (!ok) {
                 log(TAG, "setVdDensityDpi persist failed dpi=$normalized")
+                return false
             }
-            applyDensityOverrideLive()
+            return true
         }
 
         private fun sanitizeDisplayProfile(width: Int, height: Int, densityDpi: Int): DisplayProfile {
@@ -828,8 +812,17 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             ClusterArtStore.loadJpegBytes()
         }
 
+    /**
+     * Persist runs on the Binder thread (a plain Settings.Global/file write — no main
+     * thread needed) and MUST complete before this returns: MainActivity reads back
+     * [getVdDensityDpi] right after the call to confirm the save. Only the live session
+     * apply hops to the main handler. Replaces the old CountDownLatch runMainSync, which
+     * blocked a Binder thread waiting on system_server main — a latent deadlock if main
+     * is busy in a synchronous binder exchange.
+     */
     override fun setVdDensityDpi(dpi: Int) {
-        runMainSync { persistVdDensityDpiLocked(dpi) }
+        if (!persistVdDensityDpi(dpi)) return
+        mMainHandler.post { applyDensityOverrideLive() }
     }
 
     override fun getVdDensityDpi(): Int {

@@ -995,14 +995,23 @@ class SplitDisplayController(
         }
     }
 
-    private fun cancelBackgroundSettleForUserAction() {
+    /**
+     * Vacate→push window: cancel the armed ATMS settle AND hold reclaim for
+     * [SUPPRESS_RECLAIM_MS]. The two must always be done together — dropping either lets
+     * a prior stack-changed debounce yank the task back mid-move (recurring bug class).
+     */
+    private fun suppressReclaimUntilSettle() {
         mHandler.removeCallbacks(launch.mDebouncedAtmsSettle)
+        mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
+    }
+
+    private fun cancelBackgroundSettleForUserAction() {
+        suppressReclaimUntilSettle()
         mHandler.removeCallbacks(launch.mDebouncedPersist)
         // Do not cancel restore/ensure/verify — user picks must not abort connect memory restore.
         mHandler.removeCallbacksAndMessages(FULLSCREEN_FOCUS_TOKEN)
         mHandler.removeCallbacksAndMessages(RECONNECT_FILL_TOKEN)
         mHandler.removeCallbacksAndMessages(RATIO_SETTLE_FILL_TOKEN)
-        mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
     }
 
     /**
@@ -1114,8 +1123,7 @@ class SplitDisplayController(
             } else {
                 // Vacate→pushToTop leaves paneContaining null; suppress reclaim so it cannot
                 // releaseOwnershipIfUnused mid-relocate and bounce the task back.
-                mHandler.removeCallbacks(launch.mDebouncedAtmsSettle)
-                mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
+                suppressReclaimUntilSettle()
                 ownership.vacateOtherPanesHolding(packageName, keepPane = pane)
                 val relocated = try {
                     Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, displayId)
@@ -1182,8 +1190,7 @@ class SplitDisplayController(
         if (!isVirtualDisplay) {
             // Cancel any armed reclaim before ownership is cleared — otherwise a prior
             // stack-changed debounce can yank the task straight back onto the VD.
-            mHandler.removeCallbacks(launch.mDebouncedAtmsSettle)
-            mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
+            suppressReclaimUntilSettle()
             ownership.forgetOwnership(taskId, packageName)
             // Must clear pane bookkeeping: getPanePackage prefers mPanePackages when ATMS
             // is empty / chrome-only, so a stale pkg keeps the AA empty overlay hidden
@@ -1203,8 +1210,7 @@ class SplitDisplayController(
             }
             if (!packageName.isNullOrBlank()) {
                 // Same vacate→push window as startActivityOnPane: hold reclaim until stacked.
-                mHandler.removeCallbacks(launch.mDebouncedAtmsSettle)
-                mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
+                suppressReclaimUntilSettle()
                 ownership.vacateOtherPanesHolding(packageName, pane)
             }
         }
@@ -1285,8 +1291,7 @@ class SplitDisplayController(
         val onVd = ownership.isTaskOnAaDisplay(taskId)
         return try {
             if (onVd) {
-                mHandler.removeCallbacks(launch.mDebouncedAtmsSettle)
-                mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
+                suppressReclaimUntilSettle()
                 ownership.forgetOwnership(taskId, packageName)
             }
             if (onVd && pkg != null) {
@@ -1377,8 +1382,7 @@ class SplitDisplayController(
             snapSecondary.mapNotNull { it.packageName }.distinct()
         }
 
-        mHandler.removeCallbacks(launch.mDebouncedAtmsSettle)
-        mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
+        suppressReclaimUntilSettle()
 
         val identity = Binder.clearCallingIdentity()
         try {

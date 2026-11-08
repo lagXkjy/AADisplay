@@ -21,9 +21,11 @@ import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import java.lang.reflect.Method
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -121,6 +123,18 @@ class DisplaySessionPolicy(
     }
 
     private var mDestroyJob: Job? = null
+    /**
+     * One scope for the four policy loops (keep-awake / pseudo-off / SCREEN_OFF reassert
+     * burst / power-group retry) instead of a fresh scope per loop. [SupervisorJob] keeps
+     * one crashing loop from taking its siblings with it, and the handler makes a crash
+     * visible — a bare scope would swallow the exception and the loop would just die.
+     */
+    private val mPolicyScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            CoroutineExceptionHandler { _, t -> log(TAG, "policy loop crashed:", t) }
+    )
+    /** Delay-destroy countdown on Main; shared so repeated arming reuses one scope. */
+    private val mMainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     /** Last destroy callback, kept so a secondary-egress stop can re-arm the countdown. */
     @Volatile
     private var mPendingDestroySucceed: (() -> Unit)? = null
@@ -440,7 +454,7 @@ class DisplaySessionPolicy(
 
     private fun startKeepAwakeLoop() {
         if (mKeepAwakeJob?.isActive == true) return
-        mKeepAwakeJob = CoroutineScope(Dispatchers.Default).launch {
+        mKeepAwakeJob = mPolicyScope.launch {
             while (isActive) {
                 delay(keepAwakeIntervalMs())
                 val phonePanelOff = !isDefaultDisplayOn()
@@ -461,7 +475,7 @@ class DisplaySessionPolicy(
         mPhoneWasInteractive = isPhoneInteractive()
         mLastDefaultDisplayState = defaultDisplayState()
         if (mPseudoOffJob?.isActive == true) return
-        mPseudoOffJob = CoroutineScope(Dispatchers.Default).launch {
+        mPseudoOffJob = mPolicyScope.launch {
             while (isActive) {
                 delay(PSEUDO_OFF_POLL_MS)
                 maybeForcePhonePanelOff()
@@ -709,7 +723,7 @@ class DisplaySessionPolicy(
         }
         mLastScreenOffBurstAt = now
         cancelScreenOffReassertBurst()
-        mScreenOffReassertJob = CoroutineScope(Dispatchers.Default).launch {
+        mScreenOffReassertJob = mPolicyScope.launch {
             // First assert already ran from onReceive; reinforce while DreamManager settles.
             repeat(SCREEN_OFF_REASSERT_COUNT) {
                 delay(SCREEN_OFF_REASSERT_INTERVAL_MS)
@@ -843,7 +857,7 @@ class DisplaySessionPolicy(
     /** Re-assert pane userActivity until PMS has PowerGroups for new OWN_DISPLAY_GROUP VDs. */
     private fun schedulePowerGroupRetry() {
         if (mPowerGroupRetryJob?.isActive == true) return
-        mPowerGroupRetryJob = CoroutineScope(Dispatchers.Default).launch {
+        mPowerGroupRetryJob = mPolicyScope.launch {
             repeat(POWER_GROUP_RETRY_MAX) {
                 delay(POWER_GROUP_RETRY_DELAY_MS)
                 if (!isActive) return@launch
@@ -941,7 +955,7 @@ class DisplaySessionPolicy(
     private fun startDelayDestroy(onDestroySucceed: () -> Unit) {
         mPendingDestroySucceed = onDestroySucceed
         mDestroyJob?.cancel()
-        mDestroyJob = CoroutineScope(Dispatchers.Main).launch {
+        mDestroyJob = mMainScope.launch {
             delay(DELAY_DESTROY_SEC * 1000L)
             while (carPlaySessionLive) {
                 delay(CP_LIVE_RECHECK_MS)
