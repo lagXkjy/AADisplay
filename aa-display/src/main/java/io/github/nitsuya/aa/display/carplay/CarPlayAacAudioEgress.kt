@@ -8,6 +8,7 @@ import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.carplay.protocol.BinaryPlist
 import io.github.nitsuya.aa.display.carplay.protocol.HkdfSha512
 import io.github.nitsuya.aa.display.carplay.protocol.RtspMessage
+import io.github.nitsuya.aa.display.util.AudioPullRing
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -44,6 +45,19 @@ class CarPlayAacAudioEgress(
     @Volatile private var encodeWorker: Thread? = null
     @Volatile private var txWorker: Thread? = null
     @Volatile private var txSocket: DatagramSocket? = null
+
+    /**
+     * App-local drop-to-live ring in front of the system capture ring: the puller
+     * keeps the Binder round trips off the encode loop so a busy system_server
+     * cannot open a hole in the 1024-sample timeline.
+     */
+    private val bytesPerMs = (sampleRate * CHANNELS * 2L / 1000L).toInt()
+    private val ring = AudioPullRing(
+        "cp-aac",
+        capacityBytes = bytesPerMs * 600,
+        highWatermarkBytes = bytesPerMs * 300,
+        lowWatermarkBytes = bytesPerMs * 50,
+    ) { CoreApi.pullCarPlayAudio(it) }
     /** One encoded silence frame reused when hold budget is exhausted. */
     @Volatile private var silenceAu: ByteArray? = null
     private val auQueue = ArrayBlockingQueue<ByteArray>(MAX_QUEUED_AUS)
@@ -69,6 +83,7 @@ class CarPlayAacAudioEgress(
         } catch (e: Throwable) {
             Log.w(CarPlayConsts.TAG, "setCarPlayAudioEgressEnabled(true) failed", e)
         }
+        ring.start()
         encodeWorker = thread(name = "carplay-audio-aac-enc", isDaemon = true) { encodeLoop() }
         txWorker = thread(name = "carplay-audio-aac-tx", isDaemon = true) { txLoop() }
         Log.i(
@@ -86,6 +101,7 @@ class CarPlayAacAudioEgress(
         } catch (_: Throwable) {
         }
         txSocket = null
+        ring.stop()
         encodeWorker?.interrupt()
         txWorker?.interrupt()
         encodeWorker = null
@@ -103,13 +119,9 @@ class CarPlayAacAudioEgress(
         }
         val frameBytes = SAMPLES_PER_FRAME * CHANNELS * 2
         // Drop capture filled before TX arm so the first AU is live.
-        repeat(8) {
-            val got = try {
-                CoreApi.pullCarPlayAudio(64 * 1024)
-            } catch (_: Throwable) {
-                ByteArray(0)
-            }
-            if (got.isEmpty()) return@repeat
+        val flushed = ring.flushUpstream()
+        if (flushed > 0) {
+            Log.i(CarPlayConsts.TAG, "CarPlay AAC pre-TX backlog flushed ${flushed / 1024}KB")
         }
         // Prime AAC-LC (first frames often yield no AU). TX must never call
         // MediaCodec. The primed AU is only a mid-session cadence hold —
@@ -134,7 +146,7 @@ class CarPlayAacAudioEgress(
                 }
                 val lowWater = auQueue.size < TARGET_QUEUED_AUS
                 val got = try {
-                    CoreApi.pullCarPlayAudio(pullCap)
+                    ring.read(pullCap, 16)
                 } catch (_: Throwable) {
                     ByteArray(0)
                 }

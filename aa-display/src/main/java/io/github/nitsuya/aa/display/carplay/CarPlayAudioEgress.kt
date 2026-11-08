@@ -5,6 +5,7 @@ import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.carplay.protocol.BinaryPlist
 import io.github.nitsuya.aa.display.carplay.protocol.HkdfSha512
 import io.github.nitsuya.aa.display.carplay.protocol.RtspMessage
+import io.github.nitsuya.aa.display.util.AudioPullRing
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -45,6 +46,18 @@ class CarPlayAudioEgress(
     @Volatile
     private var txSocket: DatagramSocket? = null
 
+    /**
+     * App-local drop-to-live ring in front of the system capture ring: the puller
+     * keeps the Binder round trips off the RTP pacing thread.
+     */
+    private val bytesPerMs = (profile.sampleRate * profile.channels * 2L / 1000L).toInt()
+    private val ring = AudioPullRing(
+        "cp-${profile.label}",
+        capacityBytes = bytesPerMs * 600,
+        highWatermarkBytes = bytesPerMs * 300,
+        lowWatermarkBytes = bytesPerMs * 50,
+    ) { profile.pull(it) }
+
     val isRunning: Boolean
         get() = running.get()
 
@@ -59,6 +72,7 @@ class CarPlayAudioEgress(
         } catch (e: Throwable) {
             Log.w(CarPlayConsts.TAG, "setCarPlayAudioEgressEnabled(true) failed — silence expected", e)
         }
+        ring.start()
         worker = thread(name = "carplay-audio-tx-${profile.label}", isDaemon = true) { pump() }
         Log.i(
             CarPlayConsts.TAG,
@@ -75,6 +89,7 @@ class CarPlayAudioEgress(
         } catch (_: Throwable) {
         }
         txSocket = null
+        ring.stop()
         worker?.interrupt()
         worker = null
         activeEgresses.decrementAndGet()
@@ -107,7 +122,13 @@ class CarPlayAudioEgress(
         // Session-live arms capture before RTSP audio SETUP; the ring fills to LIVE_*
         // while phone mute is already on. Flush that pre-TX backlog so DiPlay does not
         // start ~100–200ms behind the phone tap.
-        flushPreTxBacklog(profile)
+        val flushed = ring.flushUpstream()
+        if (flushed > 0) {
+            Log.i(
+                CarPlayConsts.TAG,
+                "CarPlay ${profile.label} audio flushed pre-TX backlog=${flushed / 1024}KB",
+            )
+        }
         // Absolute cadence: at most one packet per interval. Mild "catch-up" bursts used
         // to fire several UDP packets in one wall slice and DiPlay's jitter FIFO grew
         // without bound (queue=192 ≈ 3.8s, drop-newest keeps stale PCM).
@@ -134,17 +155,16 @@ class CarPlayAudioEgress(
                     val ns = (sleepNs % 1_000_000L).toInt()
                     Thread.sleep(ms, ns)
                 } else if (sleepNs < -intervalNs) {
-                    // Late: never burst-send. Drop the missed duration of PCM so the
-                    // next packet is live, then realign the schedule to wall clock.
-                    val behindPackets =
-                        ((-sleepNs) / intervalNs).toInt().coerceIn(1, MAX_DISCARD_PACKETS)
+                    // Late: never burst-send. Drop the backlog locally (the system ring
+                    // is already drop-to-live) so the next packet is live, then realign.
                     Log.i(
                         CarPlayConsts.TAG,
                         "CarPlay ${profile.label} audio cadence drop-live " +
-                            "behindMs=${-sleepNs / 1_000_000L} discardPkts=$behindPackets " +
+                            "behindMs=${-sleepNs / 1_000_000L} " +
                             "packet=$packets pulled=${pulledTotal / 1024}KB",
                     )
-                    discardStalePackets(profile, bytesPerPacket, behindPackets)
+                    // Drop the backlog locally; the system ring is already drop-to-live.
+                    ring.clear()
                     nextPacketAt = System.nanoTime()
                 }
 
@@ -152,7 +172,7 @@ class CarPlayAudioEgress(
                 rtpTimestamp = (rtpTimestamp + framesPerPacket) and 0x7fffffff
                 Arrays.fill(payload, 0.toByte())
                 val got = try {
-                    profile.pull(payload.size)
+                    ring.read(payload.size, 20)
                 } catch (e: Throwable) {
                     if (!pullFailLogged) {
                         pullFailLogged = true
@@ -233,7 +253,7 @@ class CarPlayAudioEgress(
                     val settleEnd = System.nanoTime() + HU_SETTLE_MS * 1_000_000L
                     while (running.get() && System.nanoTime() < settleEnd) {
                         try {
-                            profile.pull(bytesPerPacket)
+                            ring.read(bytesPerPacket, 20)
                         } catch (_: Throwable) {
                         }
                         Thread.sleep(PACKET_INTERVAL_MS)
@@ -283,46 +303,8 @@ class CarPlayAudioEgress(
         /** ~10% under realtime to bleed any residual HU FIFO after settle. */
         private const val SOFT_PACE_INTERVAL_NS = PACKET_INTERVAL_NS * 11 / 10
         private const val SOFT_PACE_MS = 8_000L
-        /** Cap discard work on a late tick (~1s) so Binder cannot stall the TX thread. */
-        private const val MAX_DISCARD_PACKETS = 50
         private const val PAYLOAD_TYPE = 96
         private val activeEgresses = AtomicInteger(0)
-
-        /**
-         * One Binder pull-and-drop for missed cadence slots (FIFO). Prefer a short
-         * skip over shipping backlog that would inflate DiPlay's buffer.
-         */
-        private fun discardStalePackets(profile: Profile, bytesPerPacket: Int, packets: Int) {
-            val want = bytesPerPacket * packets.coerceIn(1, MAX_DISCARD_PACKETS)
-            try {
-                profile.pull(want)
-            } catch (_: Throwable) {
-            }
-        }
-
-        /**
-         * Drain capture rings filled between [reportCarPlaySessionLive] and audio SETUP.
-         * A few large pulls cover the hard ring cap; concurrent writers may leave a
-         * packet or two which is fine for DiPlay's audioLatencyMs cushion.
-         */
-        private fun flushPreTxBacklog(profile: Profile) {
-            var dropped = 0
-            for (i in 0 until 8) {
-                val got = try {
-                    profile.pull(64 * 1024)
-                } catch (_: Throwable) {
-                    ByteArray(0)
-                }
-                if (got.isEmpty()) break
-                dropped += got.size
-            }
-            if (dropped > 0) {
-                Log.i(
-                    CarPlayConsts.TAG,
-                    "CarPlay ${profile.label} audio flushed pre-TX backlog=${dropped / 1024}KB",
-                )
-            }
-        }
 
         val MEDIA = Profile(
             label = "media",

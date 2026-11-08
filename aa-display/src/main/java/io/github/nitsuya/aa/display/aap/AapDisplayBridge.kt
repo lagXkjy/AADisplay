@@ -45,10 +45,41 @@ class AapDisplayBridge(
             ch.sendCodecConfig(bytes, 0, bytes.size)
             return@CarPlayVideoEncoder
         }
-        // VideoChannel needs 10 bytes of headroom before the NAL payload.
-        val buf = ByteArray(10 + bytes.size)
+        // VideoChannel needs 10 bytes of headroom before the NAL payload. The wrapper
+        // is pooled — aare returns it via the recycle callback after write / drop.
+        val buf = acquireFrameBuf(bytes.size)
         System.arraycopy(bytes, 0, buf, 10, bytes.size)
-        ch.sendFrame(buf, 10, bytes.size, ptsUs, key) { /* pooled one-shot */ }
+        ch.sendFrame(buf, 10, bytes.size, ptsUs, key) { releaseFrameBuf(it) }
+    }
+
+    /**
+     * Reusable 10-byte-headroom frame wrappers. The old per-frame ByteArray(10+size)
+     // churn (~35 KB at 8 Mbps / 30 fps) added GC pressure on top of the drain copy.
+     */
+    private val frameBufPoolLock = Any()
+    private val frameBufPool = ArrayDeque<ByteArray>()
+
+    private fun acquireFrameBuf(payloadSize: Int): ByteArray {
+        val need = 10 + payloadSize
+        synchronized(frameBufPoolLock) {
+            var i = 0
+            while (i < frameBufPool.size) {
+                val b = frameBufPool[i]
+                if (b.size >= need) {
+                    frameBufPool.removeAt(i)
+                    return b
+                }
+                i++
+            }
+        }
+        return ByteArray(need)
+    }
+
+    private fun releaseFrameBuf(buf: ByteArray) {
+        if (buf.size > 1_000_000) return
+        synchronized(frameBufPoolLock) {
+            if (frameBufPool.size < 16) frameBufPool.addLast(buf)
+        }
     }
 
     private val vdListener = object : IVirtualDisplayCreatedListener.Stub() {
@@ -106,6 +137,14 @@ class AapDisplayBridge(
 
     fun requestKeyFrame() {
         encoder.requestKeyFrame()
+    }
+
+    /** CSM-derived bitrate for the current encode size/rate — adaptive ceiling. */
+    fun baseVideoBitrate(): Int = encoder.baseBitrate()
+
+    /** Live [CarPlayVideoEncoder.setBitrate] for the AAP adaptive controller. */
+    fun setVideoBitrate(bps: Int) {
+        main.post { encoder.setBitrate(bps) }
     }
 
     fun stop() {

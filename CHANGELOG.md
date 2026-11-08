@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — 编码 / 推流链路优化
+
+- **静态帧跳过（Host GL）：** 一 tick 内双窗无新帧、且分隔条 / 全屏 / 键盘条 / HID 光标（`ChromeKey`）与布局均未变时，跳过 GL 重绘 + swap；C2 按帧间隔复读上一帧保持线路节拍。静止画面（音乐 App、地图不移动）省 GPU / C2 转色 / 带宽；rate 统计把复读帧计入 delivered，不假触发 60→30 降档。
+- **`KEY_REPEAT_PREVIOUS_FRAME_AFTER` 单位修复：** 旧值 `1_000_000/fps` 实为 16µs（API 单位是纳秒）——供给一抖动 C2 就以 drain 速度连发上一帧，向车机灌整幅 P 帧 TCP 突发。改为一个帧间隔（静态场景每帧一个极小复读帧）。
+- **AAP 自适应码率：** `AapSourceSession` 观测 aare `VideoChannel` 的 `ackLatencyMs` / `sendLatencyMs` / `congestionDrops`（3s 窗）：连续 2 窗拥塞降档 ×2/3（下限 CSM 基准/2、≥2M），连续 3 窗干净回升至基准；`setParameters(KEY_BIT_RATE)` 热改，不重建编码器、不重发 CONFIG。
+- **视频缓冲池化：** 编码器 drain 每帧 `ByteArray` 复用（codec-config 帧除外——screen egress 跨 re-SETUP 持有）；AAP bridge 10 字节 headroom 包装缓冲池化（经 aare `recycle` 归还）。消除每帧分配与后台 FGS 的 GC 卡顿。
+- **音频采集解耦：** 新增 `util/AudioPullRing` —— puller 线程粗粒度 Binder 拉取（≤64KB/次、空 8ms 间隔）进本地 drop-to-live 环；AAC 编码 / CarPlay PCM / AAP PCM 三个泵只读本地环，Binder 往返移出节奏关键路径。pre-TX flush / 迟到 drop 改经环（系统环本身已 ≤100ms drop-to-live）。
+
 ## 1.0 — AAP 主线里程碑（gearhead 硬下线）
 
 versionCode **10000** / versionName **1.0**。主版本升至 **1.0**：原生 AAP + 无线 CarPlay 双轨为正式出口；不再绑定 AA/gearhead 版本号；Google gearhead 投影硬下线。

@@ -111,6 +111,12 @@ class CarPlayGlCompositor {
     private var windowStart = 0L
     private var rateLogTick = 0
 
+    /**
+     * Pending forced frames. Bumped from any thread on layout / encoder changes
+     * (AtomicInteger); consumed (getAndSet(0)) only on the GL thread in [drawFrame].
+     */
+    private val forceFrames = AtomicInteger(0)
+
     private val mvpMatrix = FloatArray(16)
     private val identityTex = GlUtil.IDENTITY_MATRIX.copyOf()
 
@@ -219,6 +225,7 @@ class CarPlayGlCompositor {
 
     fun updateDensityDpi(dpi: Int) {
         densityDpi = dpi.coerceAtLeast(1)
+        forceFrames.addAndGet(2)
     }
 
     fun currentDensityDpi(): Int = densityDpi
@@ -232,6 +239,7 @@ class CarPlayGlCompositor {
         contentTop = top.coerceAtLeast(0)
         layoutWidth = width.coerceAtLeast(0)
         layoutHeight = height.coerceAtLeast(0)
+        forceFrames.addAndGet(3)
         Log.i(
             CarPlayConsts.TAG,
             "CarPlayGlCompositor contentRect=${contentLeft},${contentTop} " +
@@ -258,6 +266,7 @@ class CarPlayGlCompositor {
         handler.post {
             applyPaneBufferSize(0, pw, h)
             applyPaneBufferSize(1, sw, h)
+            forceFrames.addAndGet(3)
         }
     }
 
@@ -282,6 +291,7 @@ class CarPlayGlCompositor {
                 encoderWindow = EglWindowSurface(core, surface)
                 encoderAttached.set(true)
                 deliveredFrames.set(0)
+                forceFrames.set(2)
                 windowStart = SystemClock.uptimeMillis()
                 handler.removeCallbacks(renderTick)
                 handler.post(renderTick)
@@ -488,23 +498,41 @@ class CarPlayGlCompositor {
 
     private fun drawFrame() {
         // Drain pending OES frames even when encoder is not yet attached (avoid queue stall).
+        var newPaneFrame = false
         for (i in 0..1) {
             val pending = synchronized(frameAvailable) {
                 val v = frameAvailable[i]
                 frameAvailable[i] = false
                 v
             }
-            if (pending) {
-                try {
-                    surfaceTextures[i]?.updateTexImage()
-                } catch (e: Throwable) {
-                    Log.w(CarPlayConsts.TAG, "updateTexImage pane=$i failed", e)
-                }
+            if (!pending) continue
+            newPaneFrame = true
+            try {
+                surfaceTextures[i]?.updateTexImage()
+            } catch (e: Throwable) {
+                Log.w(CarPlayConsts.TAG, "updateTexImage pane=$i failed", e)
             }
         }
 
         if (!encoderAttached.get()) return
         val window = encoderWindow ?: return
+
+        val hid = pullHidShellState()
+        val key = buildChromeKey(hid)
+        val force = forceFrames.getAndSet(0)
+        val dirty = newPaneFrame || force > 0 || key != lastChromeKey ||
+            CarPlayAppPickerOverlay.isVisible() ||
+            CarPlayRecentsOverlay.isVisible()
+        if (!dirty) {
+            // Static scene: no new pane frame, chrome / layout unchanged. Skip the GL
+            // redraw + swap — C2's REPEAT_PREVIOUS_FRAME_AFTER (one frame interval)
+            // then emits one tiny repeat so the wire stays paced. Count it as
+            // delivered: the supply cadence is intact, the rate report must not
+            // mistake a static screen for a stall.
+            CarPlayMediaClock.ensureRunning()
+            deliveredFrames.incrementAndGet()
+            return
+        }
         window.makeCurrent()
 
         GLES20.glViewport(0, 0, encodeWidth, encodeHeight)
@@ -567,7 +595,7 @@ class CarPlayGlCompositor {
                 chromeFullscreen = false
             }
         }
-        drawChromeLayer(seamX, chromeFullscreen, ox, oy, lw, lh)
+        drawChromeLayer(hid, key, seamX, chromeFullscreen, ox, oy, lw, lh)
 
         // Shared media clock (not frameIndex): audio RTP uses the same epoch so DiPlay
         // can keep lip-sync when audio SETUP starts after the encoder is already running.
@@ -577,7 +605,53 @@ class CarPlayGlCompositor {
         window.setPresentationTime(ptsNs)
         if (window.swapBuffers()) {
             deliveredFrames.incrementAndGet()
+        } else {
+            // Swap failed — force one redraw next tick so the frame is not lost.
+            forceFrames.addAndGet(1)
         }
+    }
+
+    /**
+     * Content signature for chrome / layout, built once per tick in [drawFrame]. The
+     * seam formula mirrors [drawChromeLayer] (fullscreen = -1, else divider position)
+     * so any visible layout / chrome change flips the skip decision.
+     */
+    private fun buildChromeKey(hid: HidShellPull): ChromeKey {
+        val ox = contentLeft.coerceIn(0, (encodeWidth - 1).coerceAtLeast(0))
+        val oy = contentTop.coerceIn(0, (encodeHeight - 1).coerceAtLeast(0))
+        val lw = layoutW()
+        val lh = layoutH()
+        val gap = SplitPane.dividerPx(densityDpi)
+        val usable = (lw - gap).coerceAtLeast(2)
+        val fs = CarPlayInputBridge.fullscreenPane
+        val raw = CarPlayInputBridge.primaryRatio.coerceIn(0f, 1f)
+        val leftW = when {
+            hid.peelPreview ->
+                (usable * hid.peelRatio.coerceIn(0f, 1f)).toInt().coerceIn(0, usable)
+            SplitPane.isFullscreenPane(fs) -> 0
+            raw < SplitPane.MIN_RATIO || raw > SplitPane.MAX_RATIO ->
+                (usable * raw).toInt().coerceIn(0, usable)
+            else -> splitStripSizes(raw).first
+        }
+        val seam = if (SplitPane.isFullscreenPane(fs) && !hid.peelPreview) -1 else leftW + gap / 2
+        return ChromeKey(
+            seam = seam,
+            fullscreen = if (hid.peelPreview) false else SplitPane.isFullscreenPane(fs),
+            ox = ox,
+            oy = oy,
+            lw = lw,
+            lh = lh,
+            dpi = densityDpi,
+            showPicker = CarPlayAppPickerOverlay.isVisible(),
+            showRecents = CarPlayRecentsOverlay.isVisible(),
+            imePane = CarPlayImeChip.pane,
+            imeLabel = CarPlayImeChip.label,
+            ratioQ = (CarPlayInputBridge.primaryRatio * 1000f).toInt(),
+            peelQ = if (hid.peelPreview) (hid.peelRatio * 1000f).toInt() else -1,
+            cursorVisible = hid.cursorVisible,
+            cursorX = if (hid.cursorVisible) hid.cursorX.toInt() else 0,
+            cursorY = if (hid.cursorVisible) hid.cursorY.toInt() else 0,
+        )
     }
 
     /**
@@ -663,6 +737,8 @@ class CarPlayGlCompositor {
      * GPU texture — skip Canvas clear/redraw and [GLUtils.texImage2D] (~full encode ARGB).
      */
     private fun drawChromeLayer(
+        hid: HidShellPull,
+        key: ChromeKey,
         seamX: Int,
         fullscreen: Boolean,
         ox: Int,
@@ -670,9 +746,8 @@ class CarPlayGlCompositor {
         lw: Int,
         lh: Int,
     ) {
-        val hid = pullHidShellState()
-        val showPicker = CarPlayAppPickerOverlay.isVisible()
-        val showRecents = CarPlayRecentsOverlay.isVisible()
+        val showPicker = key.showPicker
+        val showRecents = key.showRecents
         val chromeFs = if (hid.peelPreview) false else fullscreen
         val chromeSeam = if (hid.peelPreview) {
             val gap = SplitPane.dividerPx(densityDpi)
@@ -682,31 +757,10 @@ class CarPlayGlCompositor {
         } else {
             seamX
         }
-        val imePane = CarPlayImeChip.pane
-        val imeLabel = CarPlayImeChip.label
-        val ratioQ = (CarPlayInputBridge.primaryRatio * 1000f).toInt()
-        val peelQ = if (hid.peelPreview) (hid.peelRatio * 1000f).toInt() else -1
-        // Recents / picker may mutate every frame (scroll, task list) — always redraw while open.
-        val liveShell = showPicker || showRecents
-        val key = ChromeKey(
-            seam = chromeSeam,
-            fullscreen = chromeFs,
-            ox = ox,
-            oy = oy,
-            lw = lw,
-            lh = lh,
-            dpi = densityDpi,
-            showPicker = showPicker,
-            showRecents = showRecents,
-            imePane = imePane,
-            imeLabel = imeLabel,
-            ratioQ = ratioQ,
-            peelQ = peelQ,
-            cursorVisible = hid.cursorVisible,
-            cursorX = if (hid.cursorVisible) hid.cursorX.toInt() else 0,
-            cursorY = if (hid.cursorVisible) hid.cursorY.toInt() else 0,
-        )
+        val imePane = key.imePane
+        val imeLabel = key.imeLabel
         val bmp = ensureOverlayBitmap()
+        val liveShell = showPicker || showRecents
         val dirty = liveShell ||
             !chromeGpuSynced ||
             key != lastChromeKey
@@ -820,6 +874,7 @@ class CarPlayGlCompositor {
         existing?.recycle()
         chromeGpuSynced = false
         lastChromeKey = null
+        forceFrames.addAndGet(2)
         return Bitmap.createBitmap(encodeWidth, encodeHeight, Bitmap.Config.ARGB_8888).also {
             overlayBitmap = it
         }

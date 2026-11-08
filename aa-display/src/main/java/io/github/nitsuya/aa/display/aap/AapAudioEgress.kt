@@ -5,6 +5,7 @@ import aap_protobuf.service.media.shared.message.AudioConfigurationOuterClass.Au
 import aap_protobuf.service.media.sink.message.AudioStreamTypeOuterClass.AudioStreamType
 import android.util.Log
 import io.github.nitsuya.aa.display.CoreApi
+import io.github.nitsuya.aa.display.util.AudioPullRing
 import net.prototux.aare.aap.channels.AudioChannel
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -148,6 +149,7 @@ class AapAudioEgress {
             return
         }
         if (!mediaPumping.compareAndSet(false, true)) return
+        MEDIA.ring.start()
         try {
             ch.startPlayback()
         } catch (e: Throwable) {
@@ -168,6 +170,7 @@ class AapAudioEgress {
 
     private fun stopMediaPump() {
         if (!mediaPumping.compareAndSet(true, false)) return
+        MEDIA.ring.stop()
         mediaWorker?.interrupt()
         mediaWorker = null
         runCatching { mediaChannel?.stopPlayback() }
@@ -181,6 +184,7 @@ class AapAudioEgress {
             return
         }
         if (!guidancePumping.compareAndSet(false, true)) return
+        GUIDANCE.ring.start()
         try {
             ch.startPlayback()
         } catch (e: Throwable) {
@@ -201,6 +205,7 @@ class AapAudioEgress {
 
     private fun stopGuidancePump() {
         if (!guidancePumping.compareAndSet(true, false)) return
+        GUIDANCE.ring.stop()
         guidanceWorker?.interrupt()
         guidanceWorker = null
         runCatching { guidanceChannel?.stopPlayback() }
@@ -222,9 +227,8 @@ class AapAudioEgress {
                     val ns = (sleepNs % 1_000_000L).toInt()
                     Thread.sleep(ms, ns)
                 } else if (sleepNs < -PACKET_INTERVAL_NS) {
-                    val behind =
-                        ((-sleepNs) / PACKET_INTERVAL_NS).toInt().coerceIn(1, MAX_DISCARD_PACKETS)
-                    discardStale(profile, bytesPerPacket, behind)
+                    // Drop the backlog locally; the system ring is already drop-to-live.
+                    profile.ring.clear()
                     nextPacketAt = System.nanoTime()
                 }
 
@@ -232,7 +236,7 @@ class AapAudioEgress {
                 // when offset headroom starts at 0 (see MediaSinkChannel.sendData).
                 val packet = ByteArray(10 + bytesPerPacket)
                 val got = try {
-                    profile.pull(bytesPerPacket)
+                    profile.ring.read(bytesPerPacket, 20)
                 } catch (e: Throwable) {
                     if (!pullFailLogged) {
                         pullFailLogged = true
@@ -272,12 +276,23 @@ class AapAudioEgress {
         val sampleRate: Int,
         val channels: Int,
         val pull: (Int) -> ByteArray,
-    )
+    ) {
+        /**
+         * App-local drop-to-live ring in front of the system capture ring: the
+         * puller keeps the Binder round trips off the 20 ms pacing loop.
+         */
+        val ring = AudioPullRing(
+            "aap-$label",
+            capacityBytes = (sampleRate * channels * 2L / 1000L).toInt() * 600,
+            highWatermarkBytes = (sampleRate * channels * 2L / 1000L).toInt() * 300,
+            lowWatermarkBytes = (sampleRate * channels * 2L / 1000L).toInt() * 50,
+            pull,
+        )
+    }
 
     companion object {
         private const val PACKET_INTERVAL_MS = 20L
         private const val PACKET_INTERVAL_NS = PACKET_INTERVAL_MS * 1_000_000L
-        private const val MAX_DISCARD_PACKETS = 50
         private const val BITS = 16
         private const val MEDIA_RATE = 48_000
         private const val MEDIA_CH = 2
@@ -308,26 +323,9 @@ class AapAudioEgress {
                 c.numberOfBits == BITS
 
         private fun flushPreTx(profile: Profile) {
-            var dropped = 0
-            for (i in 0 until 8) {
-                val got = try {
-                    profile.pull(64 * 1024)
-                } catch (_: Throwable) {
-                    ByteArray(0)
-                }
-                if (got.isEmpty()) break
-                dropped += got.size
-            }
+            val dropped = profile.ring.flushUpstream()
             if (dropped > 0) {
                 Log.i(AapConsts.TAG, "AapAudio ${profile.label} flushed pre-TX ${dropped / 1024}KB")
-            }
-        }
-
-        private fun discardStale(profile: Profile, bytesPerPacket: Int, packets: Int) {
-            val want = bytesPerPacket * packets.coerceIn(1, MAX_DISCARD_PACKETS)
-            try {
-                profile.pull(want)
-            } catch (_: Throwable) {
             }
         }
     }

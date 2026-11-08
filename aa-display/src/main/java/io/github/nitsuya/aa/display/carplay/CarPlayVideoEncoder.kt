@@ -27,7 +27,11 @@ import kotlin.concurrent.thread
  * [encodeCanvas] the same Surface concurrently.
  */
 class CarPlayVideoEncoder(
-    /** bytes, ptsUs, isKey, isCodecConfig */
+    /**
+     * bytes, ptsUs, isKey, isCodecConfig. The `bytes` array is a pooled buffer that
+     * is reclaimed as soon as this callback returns — consumers must not retain it
+     * (screen / RTP egress write synchronously; the AAP bridge copies out).
+     */
     private val onEncodedAccessUnit: (ByteArray, Long, Boolean, Boolean) -> Unit,
 ) {
     private val running = AtomicBoolean(false)
@@ -36,6 +40,37 @@ class CarPlayVideoEncoder(
     private val surfaceFrameFailLogged = AtomicBoolean(false)
     private val drainFailLogged = AtomicBoolean(false)
     private val droppedFrames = AtomicLong(0)
+
+    /**
+     * Reusable drain buffers — the old per-frame ByteArray churn (~2–3 arrays per
+     * frame at 60 fps) caused GC pauses in the background FGS that showed up as
+     * encode hitches. Codec-config AUs are excluded: the screen egress retains the
+     * config buffer across re-SETUP.
+     */
+    private val auPoolLock = Any()
+    private val auPool = ArrayDeque<ByteArray>()
+
+    private fun acquireAuBuffer(size: Int): ByteArray {
+        synchronized(auPoolLock) {
+            var i = 0
+            while (i < auPool.size) {
+                val b = auPool[i]
+                if (b.size >= size) {
+                    auPool.removeAt(i)
+                    return b
+                }
+                i++
+            }
+        }
+        return ByteArray(size)
+    }
+
+    private fun releaseAuBuffer(buf: ByteArray, isCodecConfig: Boolean) {
+        if (isCodecConfig || buf.size > MAX_POOL_BUFFER) return
+        synchronized(auPoolLock) {
+            if (auPool.size < POOL_CAPACITY) auPool.addLast(buf)
+        }
+    }
 
     /** Frames dropped for back-pressure (converter busy / surface unusable), since process start. */
     fun dropCount(): Long = droppedFrames.get()
@@ -374,20 +409,25 @@ class CarPlayVideoEncoder(
                 }
             }
             outIndex >= 0 -> {
+                    var bytes: ByteArray? = null
+                    var config = false
                     try {
                         val buffer = encoder.getOutputBuffer(outIndex)
                         if (buffer != null && info.size > 0) {
-                            val bytes = ByteArray(info.size)
+                            bytes = acquireAuBuffer(info.size)
                             buffer.position(info.offset)
                             buffer.limit(info.offset + info.size)
                             buffer.get(bytes)
                             val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-                            val config = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                            config = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
                             onEncodedAccessUnit(bytes, info.presentationTimeUs, key, config)
                         }
                     } catch (e: Throwable) {
                         Log.e(CarPlayConsts.TAG, "AVC drain failed", e)
                     } finally {
+                        // Codec-config AUs are retained by the screen egress across
+                        // re-SETUP — never pool those.
+                        bytes?.let { releaseAuBuffer(it, config) }
                         try {
                             encoder.releaseOutputBuffer(outIndex, false)
                         } catch (_: Throwable) {
@@ -425,6 +465,26 @@ class CarPlayVideoEncoder(
         return soft.coerceIn(8_000_000, 30_000_000)
     }
 
+    /** CSM-derived bitrate for the current size/rate — the adaptive ceiling. */
+    fun baseBitrate(): Int = bitrateFor(fps.coerceIn(1, 120))
+
+    /**
+     * Live bitrate change via [MediaCodec.setParameters] (no codec recycle, no
+     * re-CONFIG). Used by the AAP adaptive controller under link congestion.
+     */
+    fun setBitrate(bps: Int) {
+        val encoder = codec ?: return
+        if (!running.get()) return
+        try {
+            val params = Bundle()
+            params.putInt(MediaFormat.KEY_BIT_RATE, bps)
+            encoder.setParameters(params)
+            Log.i(CarPlayConsts.TAG, "AVC bitrate → ${bps / 1_000_000}M")
+        } catch (e: Throwable) {
+            Log.w(CarPlayConsts.TAG, "AVC setBitrate failed", e)
+        }
+    }
+
     private fun applyCommonVideoKeys(format: MediaFormat, fps: Int) {
         val rate = fps.coerceIn(1, 120)
         format.setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(rate))
@@ -441,9 +501,14 @@ class CarPlayVideoEncoder(
         format.setInteger(MediaFormat.KEY_CAPTURE_RATE, rate)
         format.setInteger(MediaFormat.KEY_OPERATING_RATE, rate)
         format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+        // KEY_REPEAT_PREVIOUS_FRAME_AFTER is in NANOSECONDS: the old 1_000_000/rate
+        // (16 µs @ 60) made C2 re-emit the last frame at drain-loop speed whenever
+        // supply hiccuped — a full P-frame TCP burst into the HU. One frame interval
+        // caps repeats at the supply cadence; static scenes (GL compositor skip) then
+        // emit one tiny repeat per frame, keeping the wire paced.
         format.setLong(
             MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,
-            1_000_000L / rate,
+            1_000_000_000L / rate,
         )
         try {
             format.setInteger(
@@ -483,5 +548,11 @@ class CarPlayVideoEncoder(
                 MediaCodecInfo.CodecProfileLevel.AVCLevel41
             else -> MediaCodecInfo.CodecProfileLevel.AVCLevel5
         }
+    }
+
+    companion object {
+        /** 1920×1080@60 IDR bursts can exceed this; keep such buffers out of the pool. */
+        private const val MAX_POOL_BUFFER = 1_000_000
+        private const val POOL_CAPACITY = 12
     }
 }

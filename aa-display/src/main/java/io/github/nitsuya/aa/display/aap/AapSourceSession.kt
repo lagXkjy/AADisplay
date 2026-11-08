@@ -331,6 +331,12 @@ class AapSourceSession(
                 widthMargin,
                 heightMargin,
             )
+            main.postDelayed({
+                if (!running.get() || videoCh !== activeVideo || bridge !== display) return@postDelayed
+                val base = runCatching { bridge.baseVideoBitrate() }.getOrDefault(0)
+                videoBitrateCtrl.reset(base)
+                startVideoBitrateCtrl()
+            }, 1_000)
             onStatus("正在打开车机画面…")
         }
 
@@ -361,6 +367,99 @@ class AapSourceSession(
 
     @Volatile
     private var activeVideo: VideoChannel? = null
+
+    /**
+     * Link-aware video bitrate. aare's VideoChannel already measures the HU ack
+     * window (`ackLatencyMs` send→ack, `sendLatencyMs` queue→socket, cumulative
+     * `congestionDrops`) — the fields are exposed "for the phone's adaptive bitrate"
+     * but nothing consumed them. This controller maps those to a live
+     * `setParameters(KEY_BIT_RATE)` step change, never a codec recycle:
+     * two congested windows step the CSM-derived base down (×2/3), three clean
+     * windows step back up, clamped to [base/2, base].
+     */
+    private val videoBitrateCtrl = object : Runnable {
+        @Volatile var base = 0
+        @Volatile var current = 0
+        private var badWindows = 0
+        private var goodWindows = 0
+        private var lastCongestionDrops = 0L
+        private var lastChangeAt = 0L
+
+        fun reset(baseBps: Int) {
+            base = baseBps
+            current = baseBps
+            badWindows = 0
+            goodWindows = 0
+            lastCongestionDrops = 0L
+        }
+
+        override fun run() {
+            while (running.get()) {
+                try {
+                    Thread.sleep(3_000)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                if (!running.get()) break
+                evaluate()
+            }
+        }
+
+        private fun evaluate() {
+            val v = activeVideo ?: return
+            if (base <= 0 || !v.started) return
+            if (!v.focused) return
+            val dropsDelta = v.congestionDrops - lastCongestionDrops
+            lastCongestionDrops = v.congestionDrops
+            val congested = dropsDelta > 0 || v.ackLatencyMs > ACK_LATENCY_BAD_MS ||
+                v.sendLatencyMs > SEND_LATENCY_BAD_MS
+            val clean = !congested && v.ackLatencyMs < ACK_LATENCY_GOOD_MS &&
+                v.sendLatencyMs < SEND_LATENCY_GOOD_MS
+            badWindows = if (congested) badWindows + 1 else 0
+            goodWindows = if (clean) goodWindows + 1 else 0
+            if (badWindows < 2 && goodWindows < 3) return
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastChangeAt < 6_000L) return
+            val floor = (base / 2).coerceAtLeast(2_000_000)
+            val next = when {
+                badWindows >= 2 -> {
+                    badWindows = 0
+                    (current * 2 / 3).coerceAtLeast(floor)
+                }
+                else -> {
+                    goodWindows = 0
+                    (current * 3 / 2).coerceAtMost(base)
+                }
+            }
+            if (next == current) return
+            Log.i(
+                AapConsts.TAG,
+                "AAP video bitrate ${current / 1_000_000}M → ${next / 1_000_000}M " +
+                    "(ack=${v.ackLatencyMs}ms send=${v.sendLatencyMs}ms drops+=$dropsDelta " +
+                    "pending=${v.pendingFrames})",
+            )
+            current = next
+            lastChangeAt = now
+            display?.setVideoBitrate(next)
+        }
+    }
+
+    @Volatile
+    private var videoBitrateWorker: Thread? = null
+
+    private fun startVideoBitrateCtrl() {
+        if (videoBitrateWorker?.isAlive == true) return
+        videoBitrateCtrl.base = 0
+        videoBitrateWorker = thread(name = "aap-video-bitrate", isDaemon = true) {
+            videoBitrateCtrl.run()
+        }
+    }
+
+    private fun stopVideoBitrateCtrl() {
+        videoBitrateWorker?.interrupt()
+        videoBitrateWorker = null
+        videoBitrateCtrl.base = 0
+    }
 
     private val audioListener = object : AudioChannel.Listener {
         override fun onAudioReady(channel: AudioChannel, config: AudioConfiguration) {
@@ -557,6 +656,7 @@ class AapSourceSession(
                 inputKeys.reset()
                 CarPlayRecentsOverlay.close()
                 CarPlayAppPickerOverlay.close()
+                stopVideoBitrateCtrl()
                 display?.stop()
                 display = null
                 aap = null
@@ -590,6 +690,7 @@ class AapSourceSession(
         inputKeys.reset()
         CarPlayRecentsOverlay.close()
         CarPlayAppPickerOverlay.close()
+        stopVideoBitrateCtrl()
         runCatching { aap?.stop() }
         aap = null
         runCatching { transport?.close() }
@@ -628,6 +729,12 @@ class AapSourceSession(
             VideoCodecResolutionType.VIDEO_1440x2560 -> 1440 to 2560
             VideoCodecResolutionType.VIDEO_2160x3840 -> 2160 to 3840
         }
+
+        /** Sustained ack latency (send→HU ack) beyond this counts as congestion. */
+        private const val ACK_LATENCY_BAD_MS = 300L
+        private const val SEND_LATENCY_BAD_MS = 1_000L
+        private const val ACK_LATENCY_GOOD_MS = 150L
+        private const val SEND_LATENCY_GOOD_MS = 300L
     }
 
     /** Keep CarPlay-shared pane router in sync with HUIG content size + live split layout. */
