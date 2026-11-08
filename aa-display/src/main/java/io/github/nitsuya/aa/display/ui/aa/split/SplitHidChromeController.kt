@@ -102,14 +102,12 @@ internal class SplitHidChromeController(private val c: SplitDisplayController) {
                     val ratio = (event.x / c.mWidth.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
                     CoreManagerService.publishLockedPeelPreview(true, ratio)
                 } else {
+                    // Preview only — same as CarPlayInputBridge.previewRatio / EXECUTION §15.10.
+                    // Live setSplitRatio during HID drag storms VD resize + USB AAP.
                     // Unclamped 0..1 so Host seam can pass the 20/80 stop into the
-                    // fullscreen-enter band (same idea as finger raw-X settle).
+                    // fullscreen-enter band (finger raw-X settle).
                     val raw = (event.x / c.mWidth.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
                     CoreManagerService.publishHidDividerPreview(true, raw)
-                    val next = SplitPane.clampRatio(raw)
-                    if (abs(next - c.mRatio) >= 0.001f) {
-                        c.setSplitRatio(next)
-                    }
                 }
                 return true
             }
@@ -149,7 +147,7 @@ internal class SplitHidChromeController(private val c: SplitDisplayController) {
                     }
                     wasDragging -> {
                         // Same settle as CarPlayInputBridge.settleRatioOrFullscreen:
-                        // edge drag → fullscreen; otherwise ratio already applied on MOVE.
+                        // edge drag → fullscreen; otherwise one VD resize on UP.
                         val raw = event.x / c.mWidth.coerceAtLeast(1).toFloat()
                         val fsPane = SplitPane.fullscreenPaneForRawRatio(raw)
                         if (fsPane != null) {
@@ -157,6 +155,13 @@ internal class SplitHidChromeController(private val c: SplitDisplayController) {
                             logDebug(
                                 SplitDisplayController.TAG,
                                 "hidChrome drag → fullscreen pane=$fsPane raw=$raw",
+                            )
+                        } else {
+                            val clamped = raw.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+                            c.setSplitRatio(clamped)
+                            logDebug(
+                                SplitDisplayController.TAG,
+                                "hidChrome drag settle ratio=$clamped",
                             )
                         }
                     }

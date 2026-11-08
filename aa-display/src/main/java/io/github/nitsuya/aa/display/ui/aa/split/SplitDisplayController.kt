@@ -760,16 +760,24 @@ class SplitDisplayController(
             SplitPresentationGuard.evictForeignPresentations(this, "pressKey")
             val nextPrev =
                 action == KeyEvent.KEYCODE_MEDIA_NEXT || action == KeyEvent.KEYCODE_MEDIA_PREVIOUS
-            // After pane swap, mFocusedPane may still sit on 高德 while LivePlay is the other
-            // VD — MEDIA_* would then hit the system media session (QQ). Prefer any live pane.
+            // After pane swap, mFocusedPane may still sit on 高德 while LivePlay / Douyin Feed
+            // is the other VD — MEDIA_* would then hit the system media session (QQ 车载,
+            // often still PLAYING off-stack). Prefer any live or video-front pane.
             var knownLive = false
+            var knownVideo = false
             val displayId = if (nextPrev) {
                 val liveId = resolvePaneDisplayId { input.isLiveStyleTopActivity(it) }
                 if (liveId != Display.INVALID_DISPLAY) {
                     knownLive = true
                     liveId
                 } else {
-                    resolveKeyInjectionDisplayId()
+                    val videoId = resolvePaneDisplayId { isVideoPackageFrontOnDisplay(it) }
+                    if (videoId != Display.INVALID_DISPLAY) {
+                        knownVideo = true
+                        videoId
+                    } else {
+                        resolveKeyInjectionDisplayId()
+                    }
                 }
             } else {
                 resolveKeyInjectionDisplayId()
@@ -789,12 +797,12 @@ class SplitDisplayController(
                 )
                 paneForDisplayId(displayId)?.let { mFocusedPane = it }
             }
-            // knownLive: already confirmed by resolvePaneDisplayId — skip a second ATMS walk.
+            // knownLive/video: already confirmed by resolvePaneDisplayId — skip a second walk.
             val live = knownLive || input.isLiveStyleTopActivity(displayId)
             val topPkg = topTask?.packageName
-            // Douyin live / feed: vertical fling on the focused VD — never skipToNext on
-            // buried QQ (that resumed music under Douyin and ANR'd aweme).
-            val videoFeed = MusicAppClassifier.isVideoPackage(topPkg)
+            // Douyin live / feed: vertical fling on the video VD — never skipToNext on
+            // off-stack QQ (that resumed music under Douyin and ANR'd aweme).
+            val videoFeed = knownVideo || MusicAppClassifier.isVideoPackage(topPkg)
             if (nextPrev && (live || videoFeed)) {
                 return@runOnHandlerBlocking input.injectLiveRoomSwipe(
                     displayId,
@@ -911,6 +919,16 @@ class SplitDisplayController(
             if (predicate(displayId)) return displayId
         }
         return Display.INVALID_DISPLAY
+    }
+
+    /** True when the visible front root on [displayId] is a short-video package (抖音). */
+    private fun isVideoPackageFrontOnDisplay(displayId: Int): Boolean {
+        if (displayId == Display.INVALID_DISPLAY) return false
+        paneForDisplayId(displayId)?.let { pane ->
+            if (MusicAppClassifier.isVideoPackage(stacks.front(pane))) return true
+        }
+        val front = ownership.frontRootTaskOnDisplay(displayId) ?: return false
+        return MusicAppClassifier.isVideoPackage(front.topActivity?.packageName)
     }
 
     /** Prefer the focused pane when it still has a user task; otherwise any occupied AA pane. */

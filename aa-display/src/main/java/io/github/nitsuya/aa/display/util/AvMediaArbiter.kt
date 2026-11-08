@@ -126,6 +126,13 @@ object AvMediaArbiter {
             return null
         }
 
+        // 高德 focused + 抖音 other front: FeedPlayerSession is often STOPPED while the
+        // clip still audibly plays; do not hand transport to off-stack PLAYING QQ.
+        val other = layout?.otherFront()?.trim()?.takeIf { it.isNotEmpty() }
+        if (other != null && MusicAppClassifier.isVideoPackage(other)) {
+            return null
+        }
+
         pickWinner(context, sessions, layout)?.let { return it }
 
         val pausedMusic = eligible.filter {

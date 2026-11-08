@@ -5,6 +5,7 @@ import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import javax.net.ssl.SSLException
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
@@ -88,6 +89,12 @@ class Cryptor(
     private var netOut: ByteBuffer = ByteBuffer.allocate(session.packetBufferSize)
     private var appIn: ByteBuffer = ByteBuffer.allocate(session.applicationBufferSize)
     private val empty = ByteBuffer.allocate(0)
+
+    /**
+     * First 8 bytes (hex) of the nonce/IV of each accepted record, oldest first. A failed record
+     * whose nonce matches one of these is a replay: the transport delivered the same bytes twice.
+     */
+    private val recentNonces = ArrayDeque<String>()
 
     @Volatile var handshakeDone = false
         private set(value) {
@@ -183,12 +190,21 @@ class Cryptor(
         val out = java.io.ByteArrayOutputStream(length)
         while (input.hasRemaining()) {
             appIn.clear()
-            val r = engine.unwrap(input, appIn)
+            val recordStart = input.position()
+            val r: SSLEngineResult = try {
+                engine.unwrap(input, appIn)
+            } catch (e: SSLException) {
+                // A record that fails authentication ends the session; say what it looked like so
+                // the log line distinguishes replay vs desync vs peer-side crypto failure.
+                // (wrap() positions are absolute into [record], so recordStart needs no offset.)
+                throw AapException("TLS record failed authentication: " +
+                    describeRecord(record, recordStart, offset + length - recordStart), e)
+            }
             when (r.status) {
                 SSLEngineResult.Status.BUFFER_OVERFLOW -> { appIn = ByteBuffer.allocate(appIn.capacity() * 2); continue }
                 SSLEngineResult.Status.BUFFER_UNDERFLOW -> throw AapException("truncated TLS record in frame")
                 SSLEngineResult.Status.CLOSED -> throw AapException("TLS closed")
-                SSLEngineResult.Status.OK -> Unit
+                SSLEngineResult.Status.OK -> if (r.bytesConsumed() > 0) rememberNonce(record, recordStart)
             }
             appIn.flip()
             out.write(appIn.array(), 0, appIn.limit())
@@ -196,6 +212,59 @@ class Cryptor(
         }
         return out.toByteArray()
     }
+
+    private fun rememberNonce(record: ByteArray, pos: Int) {
+        if (record.size - pos < 13) return
+        recentNonces.addLast(hexOf(record, pos + 5, 8))
+        while (recentNonces.size > 64) recentNonces.removeFirst()
+    }
+
+    /**
+     * One failed record, described for the session-failure log:
+     * - a nonce that matches a recent accepted record  -> transport replay (bytes delivered twice);
+     * - a header that is not an application-data record -> the stream desynced earlier (lost/extra bytes);
+     * - otherwise -> the peer sealed something we cannot authenticate (peer-side key/sequence issue).
+     */
+    private fun describeRecord(b: ByteArray, pos: Int, len: Int): String {
+        if (len < 5) return "short record (${len} bytes)"
+        val type = b[pos].toInt() and 0xff
+        val kind = when (type) {
+            0x16 -> "handshake"
+            0x17 -> "app-data"
+            0x15 -> "alert"
+            0x14 -> "change-cipher-spec"
+            else -> "unknown-type 0x${type.toString(16)}"
+        }
+        val sb = StringBuilder("kind=").append(kind).append(" len=").append(len)
+        if (len >= 13) {
+            val nonce = hexOf(b, pos + 5, 8)
+            sb.append(" nonce=").append(nonce)
+            val dup = recentNonces.indexOf(nonce)
+            if (dup >= 0) {
+                sb.append(" NONCE-DUPLICATE (a record from the last ").append(recentNonces.size)
+                    .append(" was delivered again: transport replay)")
+            } else {
+                val last = recentNonces.lastOrNull()
+                last?.let {
+                    sb.append(" last-accepted=").append(it)
+                    val gap = nonceToLong(nonce) - nonceToLong(it)
+                    when {
+                        gap == 1L -> sb.append(" (=expected next: peer sealed a record we cannot authenticate)")
+                        gap > 1L -> sb.append(" (NONCE-GAP: ${gap - 1} record(s) lost in transport, stream still aligned)")
+                        else -> sb.append(" (nonce not sequential: stream desynced)")
+                    }
+                }
+            }
+        }
+        sb.append(" head=").append(hexOf(b, pos, minOf(16, len)))
+        return sb.toString()
+    }
+
+    private fun hexOf(b: ByteArray, pos: Int, len: Int): String =
+        (0 until len).joinToString("") { "%02x".format(b[pos + it].toInt() and 0xff) }
+
+    private fun nonceToLong(hex: String): Long =
+        (0 until hex.length / 2).fold(0L) { acc, i -> acc shl 8 or (hex.substring(2 * i, 2 * i + 2).toLong(16) and 0xff) }
 
     private object AcceptAll : X509TrustManager {
         override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit

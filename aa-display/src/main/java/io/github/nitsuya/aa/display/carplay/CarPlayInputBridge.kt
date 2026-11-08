@@ -53,8 +53,6 @@ object CarPlayInputBridge {
     @Volatile
     var peelPreviewActive: Boolean = false
 
-    /** Peel tab hit band at the left edge while fullscreen (fraction of width). */
-    private const val PEEL_ZONE = 0.05f
     private const val RATIO_PREVIEW_INTERVAL_MS = 100L
     /** Normalized move slop before a press becomes a drag (~AA touchSlop × 2). */
     private const val DRAG_SLOP = 0.02f
@@ -206,6 +204,28 @@ object CarPlayInputBridge {
         )
     }
 
+    /**
+     * Fullscreen peel short-tab hit — same geometry as [HidSplitLayout.isPeelHit] /
+     * [SplitPane.peelHitContains]. Must not arm a full-height left strip: that
+     * swallowed app chrome (e.g. 返回) along the entire Y axis.
+     */
+    private fun peelTabHit(xNorm: Float, yNorm: Float): Boolean {
+        val w = shellWidth()
+        val h = shellHeight()
+        val dpi = densityDpi.coerceAtLeast(160)
+        val scale = dpi / 160f
+        val xPx = xNorm * w
+        val yPx = yNorm * h
+        val edge = (SplitPane.PEEL_EDGE_HIT_MIN_DP * scale).coerceAtLeast(1f)
+        val sideBySide = w >= h
+        if (sideBySide) {
+            if (xPx > edge) return false
+        } else {
+            if (yPx > edge) return false
+        }
+        return SplitPane.peelHitContains(xPx, yPx, w, h, scale)
+    }
+
     /** Debug: how far the finger is from the live seam (encode px). */
     private fun dividerSeamDeltaPx(xNorm: Float): Float {
         val w = shellWidth()
@@ -257,7 +277,7 @@ object CarPlayInputBridge {
                 ratioAtDown = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
 
                 if (inFullscreen) {
-                    chromeArmed = x < PEEL_ZONE
+                    chromeArmed = peelTabHit(x, y)
                     chromeDownOnGrip = false
                     if (!chromeArmed) return false
                     Log.i(
