@@ -12,7 +12,7 @@ import io.github.nitsuya.aa.display.xposed.BridgeService
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
-import io.github.qauxv.util.Initiator
+import io.github.nitsuya.aa.display.xposed.util.Initiator
 import java.io.File
 import java.lang.reflect.Method
 

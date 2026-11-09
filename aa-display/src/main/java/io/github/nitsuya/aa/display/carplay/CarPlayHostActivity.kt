@@ -54,6 +54,15 @@ class CarPlayHostActivity : Activity() {
             finish()
             return
         }
+        // Channel gate: a system-recreated trampoline must not re-arm CarPlay (FGS + host GL)
+        // while the user is on AAP — the re-arm rebinds the shared split VDs and leaves AAP
+        // with audio up / video black.
+        if (!CarPlayChannel.useCarPlayEgress(applicationContext)) {
+            Log.i(CarPlayConsts.TAG, "CarPlayHostActivity on non-CarPlay channel — skip re-arm")
+            launchGate.set(false)
+            finish()
+            return
+        }
         current = this
         launchGate.set(false)
         // Sync boot so SETUP in the same tick sees a live compositor.

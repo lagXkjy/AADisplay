@@ -37,6 +37,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 |------|------|
 | `xposed/` | `XposedInit`、Binder 桥、`CoreManager` / `CoreManagerService` |
 | `xposed/hook/` | system_server 钩子（`AndroidHook`、`Vd*`、`PhoneHid*` 等；**无** gearhead `Aa*Hook`） |
+| `ui/base/` | `BaseActivity`（ViewBinding + edge-to-edge insets；原 vendored `duzhaokun123.template` 已内化，反射 inflate 改为 `bind()` 抽象方法） |
 | `ui/main/` | 手机端激活状态页（`MainActivity`，`CATEGORY_INFO`；无桌面图标，经 LSPosed 打开；CarPlay 控件经 `carplay/CarPlayStatusUi` 绑定） |
 | `ui/aa/` | 双 VD 分屏控制器与协作类（Host GL / AAP 出画；Car SDK 壳已删） |
 | `ui/window/` | 显示会话策略（`DisplaySessionPolicy`：Delay Destroy / keep-awake；二次出口 live 门控；手机悬浮 UI 已移除） |
@@ -47,10 +48,11 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | `util/` | `LastSplitStore`、广播常量、触控改写等 |
 | `model/` | 最近任务等模型 |
 
-Vendored 基座（**非必要不改**）：
+外部 / 派生依赖：
 
-- `io.github.duzhaokun123.template` — UI 基类 / ViewBinding 工具
-- `io.github.qauxv` — `Initiator`、`CommonContextWrapper` 等
+- Xposed API（`libs/*.jar`，`compileOnly`）、EzXHelper（jitpack，反射工具）
+- QAuxiliary 派生（AGPLv3，保留署名头）已内化至 `xposed/util/`：`Initiator`、`CommonContextWrapper`（+ `SavedInstanceStatePatchedClassReferencer`）
+- 原 vendored `duzhaokun123.template`（UI 基类）与 `io.github.qauxv` 源码树已删除，分别内化至 `ui/base/` 与 `xposed/util/`
 
 ## 3. 架构与关键入口
 
@@ -171,7 +173,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 - **隐藏 API**：变更走 `lib-stub` + Rikka Refine；勿在主模块硬编码未 stub 的 framework 类。
 - **混淆**：ProGuard 已 keep `io.github.nitsuya.aa.display.**`；新增反射 / Xposed 目标仍需评估 AA 版本与混淆差异。
 - **资源 package id**：工程保留 `0x64`（Xposed 友好），勿随意改。
-- **Vendored 包**：`template` / `qauxv` 非必要不改。
+- **QAuxiliary 派生代码**（`xposed/util/Initiator`、`CommonContextWrapper`）：保留 AGPL 署名头；行为（ClassLoader 语义）非必要不改。
 
 ## 6. 按场景的改动指引
 

@@ -40,6 +40,22 @@ class AapDisplayBridge(
     private var heightMargin = 0
     private var displayId = Display.INVALID_DISPLAY
 
+    private var vdCreateRetries = 0
+
+    private val vdCreateRetryRunnable = Runnable { retryCreateSplitDisplayIfNeeded() }
+
+    @Volatile
+    private var pendingCreateW = 0
+
+    @Volatile
+    private var pendingCreateH = 0
+
+    @Volatile
+    private var pendingCreateDpi = 0
+
+    @Volatile
+    private var pendingCreateRatio = SplitPane.DEFAULT_RATIO
+
     private val encoder = CarPlayVideoEncoder { bytes, ptsUs, key, config ->
         val ch = video ?: return@CarPlayVideoEncoder
         if (config) {
@@ -86,6 +102,8 @@ class AapDisplayBridge(
     private val vdListener = object : IVirtualDisplayCreatedListener.Stub() {
         override fun onAvailableDisplay(displayId: Int, create: Boolean) {
             this@AapDisplayBridge.displayId = displayId
+            vdCreateRetries = 0
+            main.removeCallbacks(vdCreateRetryRunnable)
             Log.i(AapConsts.TAG, "AapDisplayBridge VD ready id=$displayId create=$create")
             onStatus("画面已打开")
             compositor?.primarySurface()?.let { CoreApi.setPaneSurface(SplitPane.PRIMARY, it) }
@@ -222,7 +240,16 @@ class AapDisplayBridge(
                 "encode=${width}x$height dpi=$dpi ratio=$ratio fullscreen=$fs",
         )
         try {
+            pendingCreateW = contentW
+            pendingCreateH = contentH
+            pendingCreateDpi = dpi
+            pendingCreateRatio = ratio
             CoreApi.onCreateSplitDisplay(contentW, contentH, dpi, ratio, primary, secondary, vdListener)
+            // CoreApi silently skips when the AADD binder is cold — retry until the VD
+            // ready callback lands (same pattern as CarPlayHostRuntime).
+            vdCreateRetries = 0
+            main.removeCallbacks(vdCreateRetryRunnable)
+            main.postDelayed(vdCreateRetryRunnable, VD_CREATE_RETRY_MS)
         } catch (e: Throwable) {
             Log.e(AapConsts.TAG, "onCreateSplitDisplay failed", e)
             onStatus("打开分屏失败，请重试")
@@ -251,6 +278,43 @@ class AapDisplayBridge(
         main.post(syncBridgeLayoutRunnable)
         main.postDelayed(syncBridgeLayoutRunnable, 400L)
         main.postDelayed(syncBridgeLayoutRunnable, 1200L)
+    }
+
+    private fun retryCreateSplitDisplayIfNeeded() {
+        if (!running.get()) return
+        val gl = compositor ?: return
+        if (displayId != Display.INVALID_DISPLAY) return
+        if (vdCreateRetries >= VD_CREATE_RETRY_MAX) {
+            Log.w(
+                AapConsts.TAG,
+                "AapDisplayBridge VD create gave up after $VD_CREATE_RETRY_MAX tries",
+            )
+            onStatus("打开分屏失败，请重试")
+            return
+        }
+        val primary = gl.primarySurface()
+        val secondary = gl.secondarySurface()
+        if (primary == null || secondary == null) return
+        vdCreateRetries++
+        Log.w(
+            AapConsts.TAG,
+            "AapDisplayBridge VD create retry $vdCreateRetries/$VD_CREATE_RETRY_MAX " +
+                "(CoreApi bridge may be cold)",
+        )
+        try {
+            CoreApi.onCreateSplitDisplay(
+                pendingCreateW,
+                pendingCreateH,
+                pendingCreateDpi,
+                pendingCreateRatio,
+                primary,
+                secondary,
+                vdListener,
+            )
+        } catch (e: Throwable) {
+            Log.e(AapConsts.TAG, "AapDisplayBridge VD create retry failed", e)
+        }
+        main.postDelayed(vdCreateRetryRunnable, VD_CREATE_RETRY_MS)
     }
 
     private fun syncBridgeLayoutFromCore() {
@@ -289,6 +353,8 @@ class AapDisplayBridge(
         if (!running.getAndSet(false) && compositor == null) return
         Log.i(AapConsts.TAG, "AapDisplayBridge tearDown $reason")
         main.removeCallbacks(syncBridgeLayoutRunnable)
+        main.removeCallbacks(vdCreateRetryRunnable)
+        vdCreateRetries = 0
         video = null
         // CarPlay may already own the shared split VDs after a channel switch.
         val destroyShared = !ProjectionSessionGate.isOwnedByOther(
@@ -313,4 +379,7 @@ class AapDisplayBridge(
         encoder.stop()
         displayId = Display.INVALID_DISPLAY
     }
+
+    private val VD_CREATE_RETRY_MS = 500L
+    private val VD_CREATE_RETRY_MAX = 12
 }

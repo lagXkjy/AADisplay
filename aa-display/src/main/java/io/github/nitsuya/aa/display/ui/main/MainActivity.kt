@@ -5,13 +5,14 @@ import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.view.MotionEvent
+import android.view.LayoutInflater
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.Toast
 import android.content.Intent
-import io.github.duzhaokun123.template.bases.BaseActivity
+import io.github.nitsuya.aa.display.ui.base.BaseActivity
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
@@ -23,7 +24,10 @@ import io.github.nitsuya.aa.display.carplay.CarPlayStatusUi
 import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
 import io.github.nitsuya.aa.display.util.DisplayDpiStore
 
-class MainActivity : BaseActivity<ActivityMainBinding>(ActivityMainBinding::class.java) {
+class MainActivity : BaseActivity<ActivityMainBinding>() {
+
+    override fun bind(inflater: LayoutInflater): ActivityMainBinding =
+        ActivityMainBinding.inflate(inflater)
 
     @SuppressLint("SetTextI18n")
     override fun initData() {

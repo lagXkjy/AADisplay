@@ -85,9 +85,14 @@ class CarPlayProjectionService : Service() {
                 return START_NOT_STICKY
             }
             CarPlayConsts.ACTION_CONNECT -> {
-                // Wireless CarPlay is the only Source egress; normalize anything else.
+                // Honor the persisted selection: a stray CONNECT (system_server BootArm on a
+                // stale Settings mirror, trampoline recreate, sticky re-delivery) must NOT
+                // rewrite the user's choice back to CarPlay — that re-arms CP over a live
+                // AAP session and rebinds the shared split VDs (audio up / video black).
                 if (!CarPlayChannel.useCarPlayEgress(this)) {
-                    CarPlayChannel.set(this, CarPlayChannel.CHANNEL_CARPLAY)
+                    tearDown("channel-not-carplay")
+                    stopSelf()
+                    return START_NOT_STICKY
                 }
                 ensureForeground()
                 val launchHost = intent.getBooleanExtra(EXTRA_LAUNCH_HOST_TRAMPOLINE, true)

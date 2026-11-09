@@ -40,10 +40,13 @@ import io.github.nitsuya.aa.display.xposed.hook.VdOrientationFill
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
-import io.github.duzhaokun123.template.utils.runIO
-import io.github.duzhaokun123.template.utils.runMain
-import io.github.qauxv.ui.CommonContextWrapper
+
+import io.github.nitsuya.aa.display.xposed.util.CommonContextWrapper
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 
 class CoreManagerService private constructor() : ICoreManager.Stub() {
 
@@ -1316,5 +1319,13 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         runIO { noteUserInteraction() }
     }
 }
+
+/** Main-thread coroutine shorthand (singleton service, process-lifetime scope). */
+private fun runMain(block: suspend CoroutineScope.() -> Unit) =
+    GlobalScope.launch(Dispatchers.Main, block = block)
+
+/** IO-thread coroutine shorthand (singleton service, process-lifetime scope). */
+private fun runIO(block: suspend CoroutineScope.() -> Unit) =
+    GlobalScope.launch(Dispatchers.IO, block = block)
 
 

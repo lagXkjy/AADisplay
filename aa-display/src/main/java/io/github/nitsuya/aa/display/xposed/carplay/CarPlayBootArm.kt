@@ -140,11 +140,50 @@ object CarPlayBootArm {
     /**
      * Prefer Settings.Global mirror (CE-safe once unlocked); fall back to app filesDir.
      */
+    /**
+     * Best-effort read of the app's channel file (both storage path spellings).
+     * Null when missing or unreadable (e.g. CE still locked) — callers fall back to
+     * the Settings mirror / default.
+     */
+    private fun readChannelFile(app: Context): Int? {
+        val userId = Process.myUid() / 100_000
+        val paths = listOf(
+            "/data/user/$userId/$TARGET_PACKAGE/files/aadisplay_carplay_channel",
+            "/data/data/$userId/$TARGET_PACKAGE/files/aadisplay_carplay_channel",
+        )
+        for (path in paths) {
+            val f = File(path)
+            if (!f.isFile) continue
+            val text = try {
+                f.readText().trim()
+            } catch (_: Throwable) {
+                continue
+            }
+            val parsed = when (text) {
+                CarPlayChannel.CHANNEL_CARPLAY.toString(), "cp", "carplay" -> CarPlayChannel.CHANNEL_CARPLAY
+                CarPlayChannel.CHANNEL_CARPLAY_USB.toString(), "cp-usb", "carplay-usb", "usb" -> CarPlayChannel.CHANNEL_CARPLAY_USB
+                CarPlayChannel.CHANNEL_AAP.toString(), "aap", "native-aa" -> CarPlayChannel.CHANNEL_AAP
+                CarPlayChannel.CHANNEL_AA.toString(), "aa" -> CarPlayChannel.CHANNEL_AA
+                else -> null
+            }
+            if (parsed != null) return parsed
+        }
+        return null
+    }
+
     private fun isCarPlayChannelSelected(app: Context): Boolean {
         try {
             val v = Settings.Global.getInt(app.contentResolver, SETTINGS_CHANNEL, -1)
             when (v) {
-                CarPlayChannel.CHANNEL_CARPLAY -> return true
+                CarPlayChannel.CHANNEL_CARPLAY -> {
+                    // The app-side mirror write needs WRITE_SETTINGS and usually fails, so
+                    // this copy can be stale after the user switched to AAP. When the app
+                    // file is readable it is the fresh source of truth — a stale mirror must
+                    // not re-arm CarPlay over a live AAP session. Unreadable (CE locked /
+                    // missing) → keep trusting the mirror (early-boot arm predates unlock).
+                    if (readChannelFile(app) == CarPlayChannel.CHANNEL_AAP) return false
+                    return true
+                }
                 CarPlayChannel.CHANNEL_CARPLAY_USB -> {
                     // Retired wired selection — migrate to default.
                     val fallback = CarPlayChannel.defaultChannel(app)

@@ -19,20 +19,18 @@
  * <https://www.gnu.org/licenses/>
  * <https://github.com/cinit/QAuxiliary/blob/master/LICENSE.md>.
  */
-package io.github.qauxv.util;
+package io.github.nitsuya.aa.display.xposed.util
 
-public class Initiator {
-    private static ClassLoader sHostClassLoader;
+/**
+ * Host-process class loader holder, populated from [io.github.nitsuya.aa.display.xposed.hook.AndroidHook]
+ * so UI class-load helpers can reach host framework classes (e.g. androidx) in external processes.
+ */
+object Initiator {
+    private var sHostClassLoader: ClassLoader? = null
 
-    private Initiator() {
-        throw new AssertionError("No instance for you!");
+    fun init(classLoader: ClassLoader) {
+        sHostClassLoader = classLoader
     }
 
-    public static void init(ClassLoader classLoader) {
-        sHostClassLoader = classLoader;
-    }
-
-    public static ClassLoader getHostClassLoader() {
-        return sHostClassLoader;
-    }
+    fun getHostClassLoader(): ClassLoader? = sHostClassLoader
 }

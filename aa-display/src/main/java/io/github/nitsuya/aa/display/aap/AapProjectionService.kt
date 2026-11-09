@@ -183,8 +183,13 @@ class AapProjectionService : Service() {
                 PhoneCertStore.ensureExtracted(this, force = true)
             }
             AapConsts.ACTION_CONNECT, null -> {
+                // Symmetric with CarPlayProjectionService: a stray start while the user is
+                // on CarPlay must self-stop, not rewrite the channel back to AAP and steal
+                // the shared split VDs from a live CarPlay session.
                 if (!CarPlayChannel.useAapEgress(this)) {
-                    CarPlayChannel.set(this, CarPlayChannel.CHANNEL_AAP)
+                    tearDown("channel-not-aap")
+                    stopSelf()
+                    return START_NOT_STICKY
                 }
                 ensureForeground()
                 ensureSession()

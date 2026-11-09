@@ -64,6 +64,12 @@ object CarPlayHostRuntime {
             vdCreateRetries = 0
             mainHandler.removeCallbacks(vdCreateRetryRunnable)
             Log.i(CarPlayConsts.TAG, "CarPlayHostRuntime onAvailableDisplay id=$displayId create=$create")
+            // AAP may own the shared split VDs (or have just gone live) — rebinding our
+            // surfaces would steal the pane buffer queues and leave AAP video black.
+            if (ProjectionSessionGate.isOwnedByOther(ProjectionSessionGate.OWNER_CARPLAY)) {
+                Log.i(CarPlayConsts.TAG, "onAvailableDisplay skip pane rebind — other egress owns displays")
+                return
+            }
             primarySurface?.let { CoreApi.setPaneSurface(SplitPane.PRIMARY, it) }
             secondarySurface?.let { CoreApi.setPaneSurface(SplitPane.SECONDARY, it) }
             if (create) maybeLaunchDefaultApps()
@@ -214,6 +220,13 @@ object CarPlayHostRuntime {
         val primary = primarySurface
         val secondary = secondarySurface
         if (primary == null || secondary == null) return
+        // Same rule as stopMain / releaseOrphansIfIdle: never rebind the shared split VDs
+        // while the other egress is live — the last binder to setPaneSurface wins and a
+        // stray re-arm would leave the live channel with audio up / video black.
+        if (ProjectionSessionGate.isOwnedByOther(ProjectionSessionGate.OWNER_CARPLAY)) {
+            Log.i(CarPlayConsts.TAG, "requestCreateSplitDisplay($reason) skip — other egress owns displays")
+            return
+        }
         try {
             CoreApi.onCreateSplitDisplay(
                 pendingCreateW,
