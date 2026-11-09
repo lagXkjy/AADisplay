@@ -100,8 +100,7 @@ object CarPlayStatusUi {
     ) {
         val target = when {
             channel == CarPlayChannel.CHANNEL_AAP -> CarPlayChannel.CHANNEL_AAP
-            channel == CarPlayChannel.CHANNEL_CARPLAY ||
-                channel == CarPlayChannel.CHANNEL_CARPLAY_USB -> channel
+            channel == CarPlayChannel.CHANNEL_CARPLAY -> channel
             else -> CarPlayChannel.defaultChannel(activity)
         }
         ChannelOrchestrator.switchTo(activity, target) {

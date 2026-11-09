@@ -28,16 +28,14 @@ object SplitPane {
 
     /**
      * Peel inset from the outer screen edge. 0 = flush adsorb to the frame
-     * (FacetBar is usually GONE; an 80dp inset left the short tab floating in content).
-     * Coolwalk left-rail steal must route the peel hit-band into AaDisplay UI
-     * ([ICoreManager.touchAaDisplay]) so the flush handle stays tappable.
+     * (an 80dp inset left the short tab floating in content).
      */
     const val FULLSCREEN_PEEL_INSET_DP = 0
 
     /**
-     * Minimum peel hit strip along the short axis when flush to the edge, so Coolwalk
-     * rail-band coordinates (typically ~80px) still land on [SplitDividerView] after
-     * [ICoreManager.touchAaDisplay] inject. Visual tab stays [PEEL_TAB_THICKNESS_DP].
+     * Minimum peel hit strip along the short axis when flush to the edge, so rail-band
+     * coordinates (typically ~80px) still land on [SplitDividerView]. Visual tab stays
+     * [PEEL_TAB_THICKNESS_DP].
      */
     const val PEEL_EDGE_HIT_MIN_DP = 80
 
@@ -218,13 +216,13 @@ object SplitPane {
     }
 
     /**
-     * Whether a Coolwalk rail-steal point lands on the flush peel tab hit band
+     * Whether a rail-steal point lands on the flush peel tab hit band
      * (centered on the long axis). Shared by AA UI geometry and `:car` steal routing.
      * When [parentW]/[parentH] are unknown (≤0), returns true so steal still tries
-     * [ICoreManager.touchAaDisplay] rather than falling through to a pane inject.
+     * the peel tab rather than falling through to a pane inject.
      *
      * [density] must match [SplitDividerView] peel layout (`dp * density`) — treating
-     * DP as raw px undersized the Coolwalk band vs the real tab and routed handle
+     * DP as raw px undersized the rail band vs the real tab and routed handle
      * taps into the pane VD (dead handle, live left strip elsewhere).
      */
     fun peelHitContains(

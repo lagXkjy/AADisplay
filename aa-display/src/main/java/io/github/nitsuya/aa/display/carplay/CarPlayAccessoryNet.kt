@@ -38,7 +38,7 @@ object CarPlayAccessoryNet {
     /**
      * Unconnected TCP socket routed to the accessory AP.
      * @param allowUnbound when true and no accessory [Network] is held, return a plain
-     *   [Socket] (lab HU-stub loopback / 127.0.0.1 only — never for real car AP dials).
+     *   [Socket] (lab loopback / 127.0.0.1 only — never for real car AP dials).
      * @throws IllegalStateException if no live accessory Network (caller should retry
      * after Wi‑Fi handoff), or if bind fails after clearing a stale handle.
      */

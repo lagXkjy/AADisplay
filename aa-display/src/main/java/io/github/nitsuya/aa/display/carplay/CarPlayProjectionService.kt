@@ -24,9 +24,6 @@ class CarPlayProjectionService : Service() {
     companion object {
         private val sessionRef = AtomicReference<CarPlaySourceSession?>(null)
         private val glCompositorRef = AtomicReference<CarPlayGlCompositor?>(null)
-        private val usbStageRef = AtomicReference<String?>(null)
-        private val usbStageListeners =
-            java.util.concurrent.CopyOnWriteArrayList<(String) -> Unit>()
 
         /**
          * CarPlay-only Host GPU compositor (SurfaceTexture → GLES → encoder).
@@ -48,23 +45,6 @@ class CarPlayProjectionService : Service() {
 
         /** True once [ensureSession] created a live [CarPlaySourceSession] (RFCOMM listening). */
         fun isSessionArmed(): Boolean = sessionRef.get() != null
-
-        fun usbDaemonStage(): String? = usbStageRef.get()
-
-        fun addUsbStageListener(listener: (String) -> Unit) {
-            usbStageListeners.add(listener)
-            usbStageRef.get()?.let { listener(it) }
-        }
-
-        internal fun publishUsbStage(stage: String) {
-            usbStageRef.set(stage)
-            for (l in usbStageListeners) {
-                try {
-                    l(stage)
-                } catch (_: Throwable) {
-                }
-            }
-        }
 
         fun stop(context: Context) {
             val i = Intent(context, CarPlayProjectionService::class.java).setAction(CarPlayConsts.ACTION_STOP)
@@ -105,13 +85,12 @@ class CarPlayProjectionService : Service() {
                 return START_NOT_STICKY
             }
             CarPlayConsts.ACTION_CONNECT -> {
-                // Preserve USB channel if already selected; otherwise default wireless.
+                // Wireless CarPlay is the only Source egress; normalize anything else.
                 if (!CarPlayChannel.useCarPlayEgress(this)) {
                     CarPlayChannel.set(this, CarPlayChannel.CHANNEL_CARPLAY)
                 }
                 ensureForeground()
-                val launchHost = intent.getBooleanExtra(EXTRA_LAUNCH_HOST_TRAMPOLINE, true) &&
-                    !CarPlayChannel.useUsbCarPlay(this)
+                val launchHost = intent.getBooleanExtra(EXTRA_LAUNCH_HOST_TRAMPOLINE, true)
                 safeEnsureSession(launchHostTrampoline = launchHost)
             }
             // System restart / sticky re-delivery: only re-arm when the user chose CarPlay.

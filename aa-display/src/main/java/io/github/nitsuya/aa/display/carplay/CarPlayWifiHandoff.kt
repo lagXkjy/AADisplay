@@ -949,6 +949,18 @@ class CarPlayWifiHandoff(context: Context) {
 
     companion object {
         private const val REJOIN_DELAY_MS = 400L
+
+        /**
+         * Pick a dialable address from the `0x4301` list, preferring non-link-local
+         * (global IPv6 / IPv4) over `fe80:`.
+         */
+        fun pickDialHost(addresses: List<String>): String? {
+            val nonLl = addresses.firstOrNull {
+                it.isNotBlank() && !it.startsWith("fe80:", ignoreCase = true)
+            }
+            if (nonLl != null) return nonLl
+            return addresses.firstOrNull { it.isNotBlank() }
+        }
         private const val ASSOCIATION_WATCH_MS = 1_200L
         private const val HOLDING_RETRY_MS = 1_500L
         /** Min gap between specifier re-requests once the agent is already gone. */

@@ -107,25 +107,6 @@ object Iap2Csm {
     }
 
     /**
-     * USB / NCM path `0x4300`: wired group only (param 0). Available=`1`, id is a
-     * stable transport string (USB serial or all-zero BT placeholder).
-     * Grounded: ncm_carplayd `iap2_auth.c` + MIB3 wired half of [mib3CarPlayAvailability].
-     */
-    fun carPlayAvailabilityWired(transportId: String): ByteArray {
-        val available = byteArrayOf(WIRELESS_CP_AVAILABLE.toByte())
-        val wired = encodeGroup(
-            linkedMapOf(
-                0x0000 to available,
-                0x0001 to Iap2Framing.utf8Param(transportId),
-            ),
-        )
-        return Iap2Framing.encodeCsm(
-            CARPLAY_AVAILABILITY,
-            linkedMapOf(0x0000 to wired),
-        )
-    }
-
-    /**
      * MIB3 `0x4300`: wired group (param 0) and wireless group (param 1).
      * Available is the byte `1`. The id is the Bluetooth address, not the Wi-Fi STA.
      */

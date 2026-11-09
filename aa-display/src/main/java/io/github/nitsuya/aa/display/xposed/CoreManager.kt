@@ -198,21 +198,6 @@ object CoreManager : ICoreManager, DeathRecipient {
         tryTouchPane(pane, motionEvent)
     }
 
-    /** Retired Coolwalk rail steal — ordinal kept. */
-    override fun touchPrimaryPane(motionEvent: MotionEvent) {
-        // no-op
-    }
-
-    /** Retired Car SDK presentation inject — ordinal kept. */
-    override fun touchAaDisplay(motionEvent: MotionEvent) {
-        // no-op
-    }
-
-    /** Retired Car SDK presentation id report — ordinal kept. */
-    override fun reportAaUiDisplayId(displayId: Int) {
-        // no-op
-    }
-
     override fun hideIme() {
         try {
             getService()?.hideIme()
@@ -223,27 +208,6 @@ object CoreManager : ICoreManager, DeathRecipient {
 
     override fun getImePane(): Int {
         return getService()?.imePane ?: SplitPane.FULLSCREEN_NONE
-    }
-
-    /** Retired Coolwalk rail report — ordinal kept. */
-    override fun reportCoolwalkRailSnapshot(
-        phase: Int,
-        touchRailWidthPx: Int,
-        fullHuWidthPx: Int,
-        facetDisplayId: Int,
-    ) {
-        // no-op
-    }
-
-    /** Retired Coolwalk rail snapshot — ordinal kept. */
-    override fun getCoolwalkRailSnapshot(): IntArray = intArrayOf(0, 0, 0, -1)
-
-    /** Retired Coolwalk reconnect epoch — ordinal kept. */
-    override fun getCoolwalkReconnectEpochMs(): Long = 0L
-
-    /** Retired Coolwalk full-bleed poke — ordinal kept. */
-    override fun notifyCoolwalkFullBleed() {
-        // no-op
     }
 
     /** @return false when binder missing or the remote call throws (caller must not swallow HU events).

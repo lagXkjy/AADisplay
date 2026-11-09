@@ -226,8 +226,6 @@ Keep-awake 硬规则：
 | `hideIme` **oneway** | Host「收起键盘」 | WMS/IMM hide |
 | `getImePane` | IME chip 同步 | -1 隐藏；0/1 为正在显示 IME 的窗 |
 | `touchPane` **oneway** | Host / AAP 触控 → 窗 | 注入对应 VD |
-| `touchPrimaryPane` / `touchAaDisplay` / `reportAaUiDisplayId` | — | **no-op**（AIDL ordinal 保留） |
-| `reportCoolwalk*` / `notifyCoolwalkFullBleed` | — | **no-op**（AIDL ordinal 保留） |
 | `getRecentTask` | `CarPlayRecentsOverlay` | 左=PRIMARY 栈，中=SECONDARY，右=手机 |
 | `reportCarPlaySessionLive` | AAP / CarPlay 会话 | 二次出口 live → Delay Destroy 门控 |
 

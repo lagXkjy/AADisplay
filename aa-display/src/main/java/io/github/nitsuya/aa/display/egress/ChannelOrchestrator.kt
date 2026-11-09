@@ -126,9 +126,7 @@ object ChannelOrchestrator {
                 AapUsbProbe.tryAttachExisting(app)
                 Log.i(AapConsts.TAG, "ChannelOrchestrator armed AAP")
             }
-            CarPlayChannel.CHANNEL_CARPLAY,
-            CarPlayChannel.CHANNEL_CARPLAY_USB,
-            -> {
+            CarPlayChannel.CHANNEL_CARPLAY -> {
                 stopAapAwait(app)
                 if (gen != generation.get()) return
                 CarPlayProjectionService.start(app, launchHostTrampoline = false)
@@ -186,10 +184,7 @@ object ChannelOrchestrator {
         return when (channel) {
             CarPlayChannel.CHANNEL_AAP -> CarPlayChannel.CHANNEL_AAP
             CarPlayChannel.CHANNEL_CARPLAY -> CarPlayChannel.CHANNEL_CARPLAY
-            CarPlayChannel.CHANNEL_CARPLAY_USB ->
-                if (CarPlayChannel.USB_CARPLAY_ENABLED) CarPlayChannel.CHANNEL_CARPLAY_USB
-                else CarPlayChannel.defaultChannel(app)
-            else -> CarPlayChannel.defaultChannel(app)
+            else -> CarPlayChannel.defaultChannel(app) // includes retired AA / USB sentinels
         }
     }
 }

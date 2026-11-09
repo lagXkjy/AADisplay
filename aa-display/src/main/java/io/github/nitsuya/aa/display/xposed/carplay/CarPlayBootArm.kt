@@ -146,8 +146,7 @@ object CarPlayBootArm {
             when (v) {
                 CarPlayChannel.CHANNEL_CARPLAY -> return true
                 CarPlayChannel.CHANNEL_CARPLAY_USB -> {
-                    if (CarPlayChannel.USB_CARPLAY_ENABLED) return true
-                    // Leftover wired selection while USB is disabled.
+                    // Retired wired selection — migrate to default.
                     val fallback = CarPlayChannel.defaultChannel(app)
                     mirrorSettings(app, fallback)
                     return fallback == CarPlayChannel.CHANNEL_CARPLAY
@@ -181,10 +180,7 @@ object CarPlayBootArm {
                     return true
                 }
                 CarPlayChannel.CHANNEL_CARPLAY_USB.toString(), "cp-usb", "carplay-usb", "usb" -> {
-                    if (CarPlayChannel.USB_CARPLAY_ENABLED) {
-                        mirrorSettings(app, CarPlayChannel.CHANNEL_CARPLAY_USB)
-                        return true
-                    }
+                    // Retired wired selection — migrate to default.
                     val fallback = CarPlayChannel.defaultChannel(app)
                     mirrorSettings(app, fallback)
                     return fallback == CarPlayChannel.CHANNEL_CARPLAY ||

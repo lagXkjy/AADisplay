@@ -235,7 +235,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 | **Android Auto（AAP，默认 AA 出口）** | [docs/AAP_NATIVE.md](docs/AAP_NATIVE.md)；`aap/`（`AapProjectionService` / `PhoneCertStore` / `AaApkKeyExtractor`）；`vendor/aare-aap`；通道 `CarPlayChannel.CHANNEL_AAP`；出画见 [docs/EXECUTION.md](docs/EXECUTION.md) §14.3 |
 | **gearhead 原路（已硬下线）** | [docs/GEARHEAD_LEGACY.md](docs/GEARHEAD_LEGACY.md)；[`archive/gearhead-aa/`](archive/gearhead-aa/) |
 | 无线 CarPlay 出口（与 AAP 双轨） | [docs/EXECUTION.md](docs/EXECUTION.md) §14（§14.1 播放链路速查 + 包边界）；**建连时序** [docs/CARPLAY_CONNECT.md](docs/CARPLAY_CONNECT.md)；**连热点仍走流量** [docs/CARPLAY_WIFI_CELLULAR.md](docs/CARPLAY_WIFI_CELLULAR.md)；协议外参 [docs/CARPLAY_REFS.md](docs/CARPLAY_REFS.md)；`carplay/`、`egress/ProjectionSessionGate`（二次出口 live）、`xposed/carplay/`；iAP2 → `protocol/Iap2Session.kt` |
-| **有线 CarPlay（USB fake-iPhone，WIP）** | 归档 [`archive/usb-carplay/`](archive/usb-carplay/)（`usb-gadget` / 文档 / pair 实验室）；App 侧 `CarPlayUsb*` 仍在树内但 `CarPlayChannel.USB_CARPLAY_ENABLED=false`，UI 隐藏，残留 `cp-usb` 回落 `defaultChannel()` |
+| **有线 CarPlay（USB fake-iPhone，已下线）** | 归档 [`archive/usb-carplay/`](archive/usb-carplay/)（`usb-gadget` / 文档 / pair 实验室）；App 侧 `CarPlayUsb*` 代码已删除，`CHANNEL_CARPLAY_USB` 仅保留为迁移哨兵（残留 `cp-usb` 回落 `defaultChannel()`） |
 | 重连分辨率结算 | `CoreManagerService.resolveDisplayProfile`（锁定客户端上报尺寸；Coolwalk FacetBar 已删，历史见 [docs/archive/COOLWALK_FACETBAR.md](docs/archive/COOLWALK_FACETBAR.md)） |
 | 仪表横条歌词 | `xposed/cluster/ClusterLyricMirror.kt`；AAP `AapNowPlaying` / CarPlay NP |
 | 音视频单发声 / 三源仪表 | `util/AvMediaArbiter.kt`、`util/MusicAppClassifier.kt`；`SplitBuriedPlayback` |

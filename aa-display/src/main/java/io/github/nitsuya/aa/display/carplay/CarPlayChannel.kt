@@ -11,9 +11,10 @@ import java.io.File
  *
  * Channels are **mutually exclusive** — one paints at a time:
  *  - [CHANNEL_CARPLAY]: wireless CarPlay Source + [CarPlayHostActivity] GL panes.
- *  - [CHANNEL_CARPLAY_USB]: wired fake-iPhone path (WIP; gated by [USB_CARPLAY_ENABLED]).
  *  - [CHANNEL_AAP]: Android Auto over AAP (custom protocol) — replaces stock gearhead.
  *  - [CHANNEL_AA]: retired Google gearhead path; read only as a migrate sentinel → [defaultChannel].
+ *  - [CHANNEL_CARPLAY_USB]: retired wired fake-iPhone path (WIP abandoned);
+ *    read only as a migrate sentinel → [defaultChannel].
  *
  * Persistence uses [Context.getFilesDir] (not SharedPreferences).
  *
@@ -24,18 +25,13 @@ object CarPlayChannel {
     /** Retired stock Google AA (gearhead). Never active; migrates to [defaultChannel]. */
     const val CHANNEL_AA = 0
     const val CHANNEL_CARPLAY = 1
+    /** Retired wired fake-iPhone path. Never active; migrates to [defaultChannel]. */
     const val CHANNEL_CARPLAY_USB = 2
     /** AAP egress — phone-as-client protocol stack. */
     const val CHANNEL_AAP = 3
 
     /** Package used only for CarService cert extraction (not runtime hooks). */
     const val GEARHEAD_PACKAGE = "com.google.android.projection.gearhead"
-
-    /**
-     * Wired USB CarPlay egress — WIP. Keep false for public builds so leftover `cp-usb`
-     * cannot arm FGS or enter [CarPlaySourceSession] USB transport.
-     */
-    const val USB_CARPLAY_ENABLED = false
 
     private const val FILE_NAME = "aadisplay_carplay_channel"
     /** Mirrored for system_server [io.github.nitsuya.aa.display.xposed.carplay.CarPlayBootArm]. */
@@ -85,42 +81,28 @@ object CarPlayChannel {
         }
     }
 
-    /** Active CarPlay Source egress (not AAP). USB counts only when [USB_CARPLAY_ENABLED]. */
-    fun useCarPlayEgress(context: Context): Boolean {
-        val ch = get(context)
-        return ch == CHANNEL_CARPLAY || (USB_CARPLAY_ENABLED && ch == CHANNEL_CARPLAY_USB)
-    }
-
-    fun useUsbCarPlay(context: Context): Boolean =
-        USB_CARPLAY_ENABLED && get(context) == CHANNEL_CARPLAY_USB
+    /** Active CarPlay Source egress (not AAP). */
+    fun useCarPlayEgress(context: Context): Boolean =
+        get(context) == CHANNEL_CARPLAY
 
     fun useWirelessCarPlay(context: Context): Boolean = get(context) == CHANNEL_CARPLAY
 
     fun useAapEgress(context: Context): Boolean = get(context) == CHANNEL_AAP
 
     private fun resolveActive(app: Context, channel: Int, clearDirty: Boolean): Int {
-        if (channel == CHANNEL_CARPLAY_USB && !USB_CARPLAY_ENABLED) {
-            val fallback = defaultChannel(app)
-            if (clearDirty) {
-                writeFile(app, fallback)
-                Log.i(CarPlayConsts.TAG, "CarPlayChannel USB disabled — cleared leftover cp-usb → $fallback")
-            }
-            return fallback
-        }
-        if (channel == CHANNEL_AA) {
+        if (channel == CHANNEL_CARPLAY_USB || channel == CHANNEL_AA) {
             val fallback = defaultChannel(app)
             if (clearDirty) {
                 writeFile(app, fallback)
                 Log.i(
                     CarPlayConsts.TAG,
-                    "CarPlayChannel retired gearhead AA — cleared leftover aa → $fallback",
+                    "CarPlayChannel retired channel=$channel — cleared leftover → $fallback",
                 )
             }
             return fallback
         }
         return when (channel) {
             CHANNEL_CARPLAY -> CHANNEL_CARPLAY
-            CHANNEL_CARPLAY_USB -> CHANNEL_CARPLAY_USB
             CHANNEL_AAP -> CHANNEL_AAP
             else -> defaultChannel(app)
         }
@@ -128,9 +110,8 @@ object CarPlayChannel {
 
     private fun normalizeForWrite(app: Context, channel: Int): Int = when (channel) {
         CHANNEL_CARPLAY -> CHANNEL_CARPLAY
-        CHANNEL_CARPLAY_USB -> if (USB_CARPLAY_ENABLED) CHANNEL_CARPLAY_USB else defaultChannel(app)
         CHANNEL_AAP -> CHANNEL_AAP
-        else -> defaultChannel(app) // includes retired CHANNEL_AA
+        else -> defaultChannel(app) // includes retired CHANNEL_AA / CHANNEL_CARPLAY_USB
     }
 
     private fun migrateLegacy(app: Context): Int? {

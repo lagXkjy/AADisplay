@@ -877,21 +877,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         mSplitController?.onTouchPane(pane, event)
     }
 
-    /** Retired Coolwalk rail steal — ordinal kept; use [touchPane]. */
-    override fun touchPrimaryPane(event: MotionEvent) {
-        // no-op
-    }
-
-    /** Retired Car SDK presentation inject — ordinal kept. */
-    override fun touchAaDisplay(event: MotionEvent) {
-        // no-op
-    }
-
-    /** Retired Car SDK presentation id report — ordinal kept. */
-    override fun reportAaUiDisplayId(displayId: Int) {
-        // no-op
-    }
-
     override fun hideIme() {
         runIO {
             noteUserInteraction()
@@ -901,27 +886,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun getImePane(): Int {
         return mSplitController?.getImePane() ?: SplitPane.FULLSCREEN_NONE
-    }
-
-    /** Retired Coolwalk rail report — ordinal kept. */
-    override fun reportCoolwalkRailSnapshot(
-        phase: Int,
-        touchRailWidthPx: Int,
-        fullHuWidthPx: Int,
-        facetDisplayId: Int,
-    ) {
-        // no-op
-    }
-
-    /** Retired Coolwalk rail snapshot — ordinal kept. */
-    override fun getCoolwalkRailSnapshot(): IntArray = intArrayOf(0, 0, 0, -1)
-
-    /** Retired Coolwalk reconnect epoch — ordinal kept. */
-    override fun getCoolwalkReconnectEpochMs(): Long = 0L
-
-    /** Retired Coolwalk full-bleed poke — ordinal kept. */
-    override fun notifyCoolwalkFullBleed() {
-        // no-op
     }
 
     override fun getRecentTask(): RecentTask {

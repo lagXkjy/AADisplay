@@ -7,7 +7,9 @@ import io.github.nitsuya.aa.display.model.RecentTask;
 
 interface ICoreManager {
 
+    /** Framework module version loaded in system_server; empty when not active. */
     String getVersionName();
+    /** Module build time; 0 when the framework side is not loaded (activation sentinel). */
     long getBuildTime();
 
     /** Create dual-pane virtual displays for custom split. [ratio] is primary fraction (0.2..0.8). */
@@ -44,10 +46,6 @@ interface ICoreManager {
      * InputManager; install + reboot required so system_server Stub matches.
      */
     oneway void touchPane(int pane, in MotionEvent motionEvent);
-    /**
-     * Retired Coolwalk left-rail steal — ordinal kept; use [touchPane].
-     */
-    oneway void touchPrimaryPane(in MotionEvent motionEvent);
 
     RecentTask getRecentTask();
 
@@ -67,16 +65,6 @@ interface ICoreManager {
     int getSplitFullscreenPane();
 
     /**
-     * Retired Car SDK presentation inject — ordinal kept (no-op).
-     */
-    oneway void touchAaDisplay(in MotionEvent motionEvent);
-
-    /**
-     * Retired Car SDK presentation id report — ordinal kept (no-op).
-     */
-    oneway void reportAaUiDisplayId(int displayId);
-
-    /**
      * Hide the IME on pane VirtualDisplays without bringTaskToFront (which
      * steals IME focus and leaves a stuck keyboard). Appended at end for Stub ordinals.
      */
@@ -85,24 +73,6 @@ interface ICoreManager {
      * -1 when hidden; PRIMARY(0) / SECONDARY(1) when an IME window is showing on that pane.
      */
     int getImePane();
-
-    /**
-     * Retired Coolwalk rail report — ordinal kept (no-op).
-     */
-    oneway void reportCoolwalkRailSnapshot(int phase, int touchRailWidthPx, int fullHuWidthPx, int facetDisplayId);
-
-    /**
-     * Retired Coolwalk rail snapshot — ordinal kept; returns zeros.
-     */
-    int[] getCoolwalkRailSnapshot();
-
-    /** Retired Coolwalk reconnect epoch — ordinal kept; returns 0. */
-    long getCoolwalkReconnectEpochMs();
-
-    /**
-     * Retired Coolwalk full-bleed poke — ordinal kept (no-op).
-     */
-    oneway void notifyCoolwalkFullBleed();
 
     /**
      * Recent VD-column tap: synchronous bring-to-front / launch on [pane].
