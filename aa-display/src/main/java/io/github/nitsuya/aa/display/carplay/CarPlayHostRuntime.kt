@@ -7,6 +7,7 @@ import android.util.Log
 import android.view.Display
 import android.view.Surface
 import io.github.nitsuya.aa.display.CoreApi
+import io.github.nitsuya.aa.display.egress.ProjectionSessionGate
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.LastSplitStore
 import io.github.nitsuya.aa.display.xposed.IVirtualDisplayCreatedListener
@@ -77,9 +78,21 @@ object CarPlayHostRuntime {
      * Destroy leftover system_server split VDs when this process is listen-only
      * (Host never started). force-stop / crash used to leave Douyin/maps rendering
      * into orphan 60fps VirtualDisplays and keep the phone hot.
+     *
+     * Must not run while AAP (or any secondary egress) is live: AAP owns the same
+     * split VDs via [io.github.nitsuya.aa.display.aap.AapDisplayBridge]. Guarding only
+     * on [isRunning] is CarPlay-local and would null AAP's pane surfaces → chrome OK,
+     * panes black.
      */
     fun releaseOrphansIfIdle(reason: String) {
         if (isRunning()) return
+        if (ProjectionSessionGate.isCarPlayLive()) {
+            Log.i(
+                CarPlayConsts.TAG,
+                "releaseOrphansIfIdle($reason) skipped — secondary egress live",
+            )
+            return
+        }
         Log.i(CarPlayConsts.TAG, "CarPlayHostRuntime releaseOrphansIfIdle reason=$reason")
         runCatching { CoreApi.setPaneSurface(SplitPane.PRIMARY, null) }
         runCatching { CoreApi.setPaneSurface(SplitPane.SECONDARY, null) }

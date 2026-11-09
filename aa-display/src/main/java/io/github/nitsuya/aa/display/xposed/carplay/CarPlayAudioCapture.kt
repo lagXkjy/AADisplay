@@ -36,18 +36,17 @@ import java.util.concurrent.atomic.AtomicLong
  * - **speech** — navigation / assistant (SETUP `audioType=speech`, 16 kHz mono) via [pullSpeech]
  *
  * Separation rules (DiPlay mixes both; duplicate PCM = echo):
- * - Media prefer AudioPolicy RENDER|LOOP_BACK → REMOTE_SUBMIX (true route off speaker),
- *   then [AudioPlaybackCaptureConfiguration] + [MediaProjection], then unfiltered
- *   [MediaRecorder.AudioSource.REMOTE_SUBMIX]. Entertainment, alerts, **and**
- *   telephony downlink / ringtone (on media so Audi AAC path hears calls — MIB3
- *   never opens speech PCM).
- * - Speech is AudioPolicy [AudioMix] RENDER|LOOP_BACK for nav/assistant only.
- *   Never mirror media into speech. MediaProjection cannot match NAVIGATION or
- *   call usages — those only leave the phone speaker on AudioPolicy RENDER.
+ * - Media prefers unfiltered [MediaRecorder.AudioSource.REMOTE_SUBMIX] (speaker-mix
+ *   tap). This is the scheme that still hears 高德 TTS: those tracks bake
+ *   [AudioAttributes.FLAG_NO_MEDIA_PROJECTION] while using USAGE_MEDIA, so
+ *   AudioPolicy RENDER / MediaProjection APC succeed yet exclude them (music OK,
+ *   nav silent). RENDER/APC code paths remain as unused helpers; do not re-arm
+ *   them via deferred upgrade.
+ * - Speech is AudioPolicy [AudioMix] for nav/assistant only when that mix opens;
+ *   never a second remotesubmix (echo). Gaode TTS rides the media ring.
  *
- * Mute: playback-capture → stream mute (pre-volume tap) + local-device mute.
- * audio-policy-render → **no** mute (speaker is out of the path).
- * remotesubmix fallback → no mute (device mute zeros the tap on some OEMs).
+ * Mute: remotesubmix → **no** mute (device mute zeros the tap on some OEMs).
+ * playback-capture / audio-policy-render mute rules kept for the dormant helpers.
  *
  * Scope: phone→car **playback** (media, nav, ringtone, call downlink). Car mic
  * uplink / full CarPlay telephony protocol is out of scope here.
@@ -363,68 +362,24 @@ object CarPlayAudioCapture {
         var mMode = "none"
         var sMode = "none"
         try {
-            // Prefer true AudioPolicy RENDER (media off speaker) + speech LOOP_BACK.
-            // Do NOT hold a REMOTE_SUBMIX AudioRecord seed across registerAudioPolicy —
-            // Samsung returns code=-1 while the port is busy. Device bind uses Builder
-            // field poke (no live AudioDeviceInfo required).
-            val renderArm = tryOpenAudioPolicyRender(ctx)
-            if (renderArm != null) {
-                mediaRec = renderArm.mediaRecord
-                speechRec = renderArm.speechRecord
-                policy = renderArm.policy
-                mMode = "audio-policy-render"
-                sMode = renderArm.speechMode
-                // Keep projection if register used setMediaProjection (policy holds it).
-                proj = renderArm.projection
-            } else {
-                // Do not mark RENDER unavailable yet — in-place upgrade retries while
-                // remotesubmix stays live (keeps AudioDeviceInfo).
-                proj = obtainMediaProjection(ctx)
-                if (proj != null) {
-                    runCatching {
-                        proj.registerCallback(
-                            object : MediaProjection.Callback() {
-                                override fun onStop() {
-                                    if (ignoringProjectionStop) return
-                                    // Session still live → rebuild tap, keep phone mute.
-                                    // Full unmute only when desired=false (FGS tearDown).
-                                    log(TAG, "MediaProjection stopped — rearm if desired")
-                                    scheduleRearm("projection-stop")
-                                }
-                            },
-                            handler,
-                        )
-                    }
-                    attachProjectionVirtualDisplay(proj, handler)
-                    mediaRec = openPlaybackCaptureRecord(
-                        ctx,
-                        proj,
-                        MEDIA_SAMPLE_RATE,
-                        MEDIA_CHANNEL_MASK,
-                        PLAYBACK_CAPTURE_USAGES,
-                    )
-                    if (mediaRec != null) {
-                        mMode = "playback-capture"
-                    } else {
-                        releaseProjectionVirtualDisplay()
-                    }
-                }
-                if (mediaRec == null) {
-                    mediaRec = openRemoteSubmixRecord(MEDIA_SAMPLE_RATE, MEDIA_CHANNEL_MASK)
-                    mMode = "remote-submix"
-                }
-                // Speech: AudioPolicy loopback for nav/assistant (separate policy).
-                // Pass media's projection — never construct a second one (that stops the
-                // current MediaProjection and kills playback-capture AudioRecord).
-                val speechPair = openSpeechRecord(
-                    ctx,
-                    mediaIsPlaybackCapture = mMode == "playback-capture",
-                    mediaProjection = proj,
-                )
-                speechRec = speechPair.first
-                policy = speechPair.second
-                sMode = speechPair.third
-            }
+            // REMOTE_SUBMIX first (rolled back from RENDER/APC). RENDER was excluding
+            // FLAG_NO_MEDIA_PROJECTION players (高德 16 kHz USAGE_MEDIA TTS) while still
+            // capturing normal music — car heard media, never nav. Remotesubmix taps the
+            // speaker mix and still includes those tracks. Never deferred-upgrade away.
+            audioPolicyRenderUnavailable = true
+            mediaRec = openRemoteSubmixRecord(MEDIA_SAMPLE_RATE, MEDIA_CHANNEL_MASK)
+            mMode = "remote-submix"
+            // Optional speech tap for true NAVIGATION/ASSISTANT usages only. Do not open
+            // a second remotesubmix (same PCM on media+speech = DiPlay echo). Gaode TTS
+            // is USAGE_MEDIA and stays on the media ring above.
+            val speechPair = openSpeechRecord(
+                ctx,
+                mediaIsPlaybackCapture = false,
+                mediaProjection = null,
+            )
+            speechRec = speechPair.first
+            policy = speechPair.second
+            sMode = speechPair.third
 
             if (mediaRec == null || mediaRec.state != AudioRecord.STATE_INITIALIZED) {
                 val st = mediaRec?.state ?: -1
@@ -540,41 +495,7 @@ object CarPlayAudioCapture {
                     "usagesSpeech=${SPEECH_CAPTURE_USAGES.toList()} phoneMuted=$phoneMuted " +
                     "speakerDeviceMuted=$speakerDeviceMuted (vols=${savedVolumes?.toList()})",
             )
-            when {
-                mMode == "audio-policy-render" -> audioPolicyRenderUnavailable = false
-                (mMode == "remote-submix" || mMode == "playback-capture") &&
-                    !audioPolicyRenderUnavailable -> {
-                    // Lower tiers: retry RENDER in place after AudioDeviceInfo is warm.
-                    // Do NOT force-rearm (that drops the remotesubmix device again).
-                    handler.postDelayed(
-                        {
-                            synchronized(opLock) {
-                                if (!desired.get() ||
-                                    !armed.get() ||
-                                    audioPolicyRenderUnavailable ||
-                                    (mediaMode != "remote-submix" &&
-                                        mediaMode != "playback-capture")
-                                ) {
-                                    return@synchronized
-                                }
-                                log(
-                                    TAG,
-                                    "deferred $mediaMode → audio-policy-render in-place upgrade",
-                                )
-                                if (!tryUpgradeToAudioPolicyRenderLocked()) {
-                                    audioPolicyRenderUnavailable = true
-                                    log(
-                                        TAG,
-                                        "audio-policy-render still unavailable after " +
-                                            "in-place upgrade — further retries suppressed",
-                                    )
-                                }
-                            }
-                        },
-                        RENDER_UPGRADE_DELAY_MS,
-                    )
-                }
-            }
+            // Stay on remotesubmix — no deferred RENDER/APC upgrade (breaks 高德 TTS).
             scheduleWatchdog(handler)
         } catch (e: Throwable) {
             log(TAG, "enable failed — staying idle", e)

@@ -483,15 +483,12 @@ class CarPlayVideoEncoder(
         format.setInteger(MediaFormat.KEY_CAPTURE_RATE, rate)
         format.setInteger(MediaFormat.KEY_OPERATING_RATE, rate)
         format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-        // KEY_REPEAT_PREVIOUS_FRAME_AFTER is in NANOSECONDS: the old 1_000_000/rate
-        // (16 µs @ 60) made C2 re-emit the last frame at drain-loop speed whenever
-        // supply hiccuped — a full P-frame TCP burst into the HU. One frame interval
-        // caps repeats at the supply cadence; static scenes (GL compositor skip) then
-        // emit one tiny repeat per frame, keeping the wire paced.
-        format.setLong(
-            MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,
-            1_000_000_000L / rate,
-        )
+        // Do NOT set KEY_REPEAT_PREVIOUS_FRAME_AFTER. On QTI C2 a one-frame-interval
+        // REPEAT (or a mis-scaled value) can re-emit faster than the GL supply cadence
+        // and flood the single AAP USB writer → audio queue stall → TLS NONCE-GAP drop.
+        // A 1e9/rate "nanoseconds" value instead starved static scenes into black.
+        // Wire pacing for static scenes is owned by CarPlayGlCompositor: it still
+        // swapBuffers the previous color buffer with a monotonic PTS, without redraw.
         try {
             format.setInteger(
                 MediaFormat.KEY_BITRATE_MODE,

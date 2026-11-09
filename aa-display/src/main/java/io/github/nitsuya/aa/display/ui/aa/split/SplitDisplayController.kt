@@ -1413,6 +1413,14 @@ class SplitDisplayController(
             log(TAG, "swapPanes: both panes empty")
             return false
         }
+        // Fullscreen: the cross-move puts the other pane's app into the *visible* buffer.
+        // With one side empty there is nothing to switch to — no-op instead of a black flash.
+        if (SplitPane.isFullscreenPane(mFullscreenPane) &&
+            (snapPrimary.isEmpty() || snapSecondary.isEmpty())
+        ) {
+            log(TAG, "swapPanes: fullscreen with one empty pane — no-op")
+            return false
+        }
 
         val frontPrimary = mPanePackages[SplitPane.PRIMARY]
             ?: snapPrimary.lastOrNull()?.packageName
@@ -1441,10 +1449,16 @@ class SplitDisplayController(
         // Prefer remembered fronts when still present after swap.
         frontSecondary?.let { stacks.moveToTop(SplitPane.PRIMARY, it) }
         frontPrimary?.let { stacks.moveToTop(SplitPane.SECONDARY, it) }
-        mFocusedPane = if (mFocusedPane == SplitPane.PRIMARY) {
-            SplitPane.SECONDARY
+        if (SplitPane.isFullscreenPane(mFullscreenPane)) {
+            // Keep the visible (fullscreen) pane — and its focus. Its buffer now hosts the
+            // other app; flipping would re-show the original app.
+            mFocusedPane = mFullscreenPane
         } else {
-            SplitPane.PRIMARY
+            mFocusedPane = if (mFocusedPane == SplitPane.PRIMARY) {
+                SplitPane.SECONDARY
+            } else {
+                SplitPane.PRIMARY
+            }
         }
 
         val afterPrimary = ownership.snapshotUserRootTasks(primaryDisplay)
@@ -1467,11 +1481,9 @@ class SplitDisplayController(
 
         // Sizes follow the apps (unless fullscreen — both stay full buffer).
         if (SplitPane.isFullscreenPane(mFullscreenPane)) {
-            mFullscreenPane = if (mFullscreenPane == SplitPane.PRIMARY) {
-                SplitPane.SECONDARY
-            } else {
-                SplitPane.PRIMARY
-            }
+            // Do NOT flip mFullscreenPane: the cross-move already put the other app into the
+            // visible pane. Flipping re-shows the *same* app, and the app-side GL only picks
+            // the flip up on its next quiet pull → user sees a flash that reverts.
             // Keep the pre-fullscreen split ratio; do not invert while FS.
         } else {
             mRatio = SplitPane.clampRatio(1f - mRatio)

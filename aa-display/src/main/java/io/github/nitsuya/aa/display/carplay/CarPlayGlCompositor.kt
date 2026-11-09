@@ -110,6 +110,8 @@ class CarPlayGlCompositor {
     private var fps = CarPlayConsts.DEFAULT_VIDEO_FPS
     private var frameIntervalMs = 1_000L / CarPlayConsts.DEFAULT_VIDEO_FPS
     private var frameIndex = 0L
+    /** Last EGL presentation time submitted to the encoder surface (ns). */
+    private var lastPtsNs = 0L
 
     private val deliveredFrames = AtomicInteger(0)
     private var windowStart = 0L
@@ -295,6 +297,7 @@ class CarPlayGlCompositor {
                 encoderWindow = EglWindowSurface(core, surface)
                 encoderAttached.set(true)
                 deliveredFrames.set(0)
+                lastPtsNs = 0L
                 forceFrames.set(2)
                 lastHidState = HidShellPull()
                 quietTicks = QUIET_PULL_TICKS
@@ -506,7 +509,6 @@ class CarPlayGlCompositor {
 
     private fun drawFrame() {
         // Drain pending OES frames even when encoder is not yet attached (avoid queue stall).
-        val newFrame = booleanArrayOf(false, false)
         for (i in 0..1) {
             val pending = synchronized(frameAvailable) {
                 val v = frameAvailable[i]
@@ -514,7 +516,6 @@ class CarPlayGlCompositor {
                 v
             }
             if (!pending) continue
-            newFrame[i] = true
             try {
                 surfaceTextures[i]?.updateTexImage()
             } catch (e: Throwable) {
@@ -536,36 +537,15 @@ class CarPlayGlCompositor {
             lastHidState
         }
         val key = buildChromeKey(hid)
-        val force = forceFrames.getAndSet(0)
-        // Fullscreen draws only the visible pane; a new frame on the *hidden* pane
-        // (buried video / live map) must not flip dirty, or every hidden frame would
-        // re-encode unchanged visible content. Mirror the draw branch below: peel
-        // preview / ratio-morph draw BOTH scissored, split draws both.
-        val rawDirty = CarPlayInputBridge.primaryRatio.coerceIn(0f, 1f)
-        val bothVisible = !SplitPane.isFullscreenPane(CarPlayInputBridge.fullscreenPane) ||
-            CarPlayInputBridge.peelPreviewActive || hid.peelPreview ||
-            rawDirty < SplitPane.MIN_RATIO || rawDirty > SplitPane.MAX_RATIO
-        val newPaneFrame = if (bothVisible) {
-            newFrame[0] || newFrame[1]
-        } else if (CarPlayInputBridge.fullscreenPane == SplitPane.PRIMARY) {
-            newFrame[0]
-        } else {
-            newFrame[1]
-        }
-        val dirty = newPaneFrame || force > 0 || key != lastChromeKey ||
-            CarPlayAppPickerOverlay.isVisible() ||
-            CarPlayRecentsOverlay.isVisible()
-        if (!dirty) {
-            // Static scene: no new *visible* pane frame, chrome / layout unchanged. Skip
-            // the GL redraw + swap — C2's REPEAT_PREVIOUS_FRAME_AFTER (one frame interval)
-            // then emits one tiny repeat so the wire stays paced. Count it as
-            // delivered: the supply cadence is intact, the rate report must not
-            // mistake a static screen for a stall. Hidden-pane frames are drained above
-            // (updateTexImage) so their buffer queue never stalls.
-            CarPlayMediaClock.ensureRunning()
-            deliveredFrames.incrementAndGet()
-            return
-        }
+        // Consume layout/encoder force tokens even though we always redraw below.
+        forceFrames.getAndSet(0)
+        // Always redraw + swap when the encoder is attached. An earlier "static skip"
+        // (no swap, rely on KEY_REPEAT_PREVIOUS_FRAME_AFTER) either starved the HU
+        // (REPEAT too long → black panes, chrome still moved) or flooded AAP USB
+        // (REPEAT too short / OEM mis-scale → writer stall → TLS NONCE-GAP drop).
+        // EGL window surfaces are not BUFFER_PRESERVED, so a swap-without-redraw is
+        // also unsafe. Cheap wins stay: quiet HID pull + chrome dirty-region upload.
+        // OES frames (incl. hidden fullscreen pane) are drained above so queues never stall.
         window.makeCurrent()
 
         GLES20.glViewport(0, 0, encodeWidth, encodeHeight)
@@ -633,7 +613,7 @@ class CarPlayGlCompositor {
         // Shared media clock (not frameIndex): audio RTP uses the same epoch so DiPlay
         // can keep lip-sync when audio SETUP starts after the encoder is already running.
         CarPlayMediaClock.ensureRunning()
-        val ptsNs = CarPlayMediaClock.videoTimestampNs()
+        val ptsNs = nextPresentationTimeNs()
         frameIndex++
         window.setPresentationTime(ptsNs)
         if (window.swapBuffers()) {
@@ -642,6 +622,19 @@ class CarPlayGlCompositor {
             // Swap failed — force one redraw next tick so the frame is not lost.
             forceFrames.addAndGet(1)
         }
+    }
+
+    /** Strictly monotonic PTS for MediaCodec Surface input (avoids GraphicBufferSource drops). */
+    private fun nextPresentationTimeNs(): Long {
+        val clock = CarPlayMediaClock.videoTimestampNs()
+        val minStepNs = (1_000_000_000L / fps.coerceIn(1, 120)).coerceAtLeast(1L)
+        val next = when {
+            lastPtsNs <= 0L -> clock.coerceAtLeast(minStepNs)
+            clock > lastPtsNs -> clock
+            else -> lastPtsNs + minStepNs
+        }
+        lastPtsNs = next
+        return next
     }
 
     /**
