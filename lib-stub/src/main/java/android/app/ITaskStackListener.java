@@ -1,7 +1,6 @@
 package android.app;
 
 import android.content.ComponentName;
-import android.hardware.display.IDisplayManager;
 import android.os.Binder;
 import android.os.IBinder;
 import android.os.IInterface;
@@ -52,7 +51,7 @@ public interface ITaskStackListener extends IInterface {
     void onTaskbarIconVisibleChangeRequest(ComponentName componentName, boolean z) throws RemoteException;
 
     abstract class Stub extends Binder implements ITaskStackListener {
-        public static IDisplayManager asInterface(IBinder binder) {
+        public static ITaskStackListener asInterface(IBinder binder) {
             throw new UnsupportedOperationException();
         }
         @Override

@@ -7,7 +7,9 @@
 
 # AAP (AARE + aap_protobuf): protobuf-javalite resolves schema fields by name
 # (e.g. instanceId_). R8 renaming → "Field instanceId_ for … not found" right after TLS.
--keep class aap_protobuf.** { *; }
+# allowshrinking: channel dispatch is by message id and unknown ids are ignored,
+# so unreferenced generated messages (radio/mediabrowser/…) may be removed.
+-keep,allowshrinking class aap_protobuf.** { *; }
 -keep class net.prototux.aare.** { *; }
 -keep class * extends com.google.protobuf.GeneratedMessageLite { *; }
 -keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite {
