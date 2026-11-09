@@ -5,8 +5,10 @@ import android.os.Looper;
 /**
  * @hide compile-only stub — runtime resolves to framework {@code android.view.InputFilter}.
  * Subclasses in the module dex load against the bootclasspath implementation.
+ * Members kept are exactly what the module uses (ctor / onInputEvent / sendInputEvent);
+ * install / uninstall are driven via reflection on InputManagerService.
  */
-public abstract class InputFilter extends IInputFilter.Stub {
+public abstract class InputFilter {
     public InputFilter(Looper looper) {
         throw new RuntimeException("STUB");
     }
@@ -14,28 +16,7 @@ public abstract class InputFilter extends IInputFilter.Stub {
     public void onInputEvent(InputEvent event, int policyFlags) {
     }
 
-    public void onInstalled() {
-    }
-
-    public void onUninstalled() {
-    }
-
     protected final void sendInputEvent(InputEvent event, int policyFlags) {
-        throw new RuntimeException("STUB");
-    }
-
-    @Override
-    public void install(IInputFilterHost host) {
-        throw new RuntimeException("STUB");
-    }
-
-    @Override
-    public void uninstall() {
-        throw new RuntimeException("STUB");
-    }
-
-    @Override
-    public void filterInputEvent(InputEvent event, int policyFlags) {
         throw new RuntimeException("STUB");
     }
 }

@@ -209,19 +209,6 @@ class CarPlaySourceSession(
             onAirPlayResolved = { info -> onAirPlayEndpoint(info) },
         )
         bonjour = bj
-        Thread {
-            var waits = 0
-            while (running.get() && rtspSession.localPort <= 0 && waits < 50) {
-                Thread.sleep(20)
-                waits++
-            }
-            val port = rtspSession.localPort
-            if (port > 0) {
-                val mac = bluetooth?.localAddress().orEmpty()
-                bj.registerControl(port, mac)
-            }
-            bj.startCtrlDiscovery()
-        }.start()
 
         val sourceIdentity = CarPlayProfileRegistry.defaultSource()
         val link = CarPlayBluetoothLink(
@@ -290,6 +277,22 @@ class CarPlaySourceSession(
                 )
             },
         )
+        // Register Bonjour only after [link] is assigned — RTSP often binds before this
+        // method returns, so an earlier thread raced `bluetooth == null` and advertised
+        // ctrl TXT without `id` (HU then never invites).
+        Thread {
+            var waits = 0
+            while (running.get() && rtspSession.localPort <= 0 && waits < 50) {
+                Thread.sleep(20)
+                waits++
+            }
+            val port = rtspSession.localPort
+            if (port > 0) {
+                val mac = link.localAddress()
+                bj.registerControl(port, mac)
+            }
+            bj.startCtrlDiscovery()
+        }.start()
         link.start()
     }
 

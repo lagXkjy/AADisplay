@@ -152,6 +152,12 @@ class AapSession(
     private val seq = AtomicLong()
     /** Throttle for the audio write-queue stall warning in [writeLoop]. */
     private val lastAudioQueueWaitLogMs = AtomicLong(0)
+    /**
+     * Age (ms) of the last message polled from the write queue — 0 when the queue is empty.
+     * Grows without bound while the link backs up; the phone's stall watchdog reads it.
+     */
+    @Volatile var oldestQueueWaitMs = 0L
+        private set
     private val closed = AtomicBoolean(false)
     private val runningEntered = AtomicBoolean(false)
     private val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { r ->
@@ -258,7 +264,11 @@ class AapSession(
     private fun writeLoop() {
         try {
             while (!closed.get()) {
-                val m = queue.poll(500, TimeUnit.MILLISECONDS) ?: continue
+                val m = queue.poll(500, TimeUnit.MILLISECONDS) ?: run {
+                    oldestQueueWaitMs = 0
+                    continue
+                }
+                oldestQueueWaitMs = (System.nanoTime() - m.enqueuedAtNs) / 1_000_000L
                 // One socket: an audio frame queued behind a video write blocked in the kernel
                 // (Wi-Fi congestion / buffer bloat) arrives past its real-time timestamp.
                 // Throttled marker of link-side delay, distinct from phone-side supply gaps.

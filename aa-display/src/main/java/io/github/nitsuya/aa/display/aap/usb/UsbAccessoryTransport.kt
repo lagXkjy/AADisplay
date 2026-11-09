@@ -50,6 +50,10 @@ class UsbAccessoryTransport(usb: UsbManager, val accessory: UsbAccessory) : Tran
     // [fdOut] is wrapped in [timing] so a blocking stall (the HU's input endpoint not ready)
     // shows up with its size: ~200 ms stalls preceded the 11-09 HU-side TLS close_notify.
     private val fdOut = FileOutputStream(fd.fileDescriptor)
+    // Nanosecond start of the write currently inside the kernel (0 = not blocked). A USB bulk
+    // write cannot be interrupted; the only escape is closing the fd, so the phone's stall
+    // watchdog reads this to decide when to do that.
+    @Volatile private var inflightSinceNs = 0L
     private val timing = object : OutputStream() {
         @Volatile private var lastStallLogMs = 0L
         override fun write(b: Int) {
@@ -58,9 +62,14 @@ class UsbAccessoryTransport(usb: UsbManager, val accessory: UsbAccessory) : Tran
 
         override fun write(b: ByteArray, off: Int, len: Int) {
             val t0 = System.nanoTime()
+            if (len > 0) inflightSinceNs = t0
             try {
                 fdOut.write(b, off, len)
+            } catch (t: Throwable) {
+                inflightSinceNs = 0L
+                throw t
             } finally {
+                inflightSinceNs = 0L
                 val ms = (System.nanoTime() - t0) / 1_000_000
                 if (ms > 50) {
                     val now = SystemClock.elapsedRealtime()
@@ -74,6 +83,13 @@ class UsbAccessoryTransport(usb: UsbManager, val accessory: UsbAccessory) : Tran
     }
 
     override val output: OutputStream = BufferedOutputStream(timing, 64 * 1024)
+
+    /** How long the current kernel USB write has been blocked, in ms (0 when not blocked). */
+    fun inflightWriteMs(): Long {
+        val t = inflightSinceNs
+        if (t == 0L) return 0
+        return (System.nanoTime() - t) / 1_000_000
+    }
 
     private val closed = AtomicBoolean(false)
 

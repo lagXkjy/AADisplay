@@ -168,9 +168,9 @@ internal class SplitVdLifecycle(private val c: SplitDisplayController) {
     /**
      * Keep system decorations off pane VDs (status / nav / launcher).
      *
-     * Pre-A16: [IWindowManager.setShouldShowSystemDecors].
-     * A16+: AIDL removed; [vdFlags] already omits
-     * [DisplayManagerHidden.VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS]
+     * Pre-A16: IWindowManager.setShouldShowSystemDecors (called via reflection).
+     * A16+: AIDL removed; vdFlags() already omits
+     * VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS
      * (create-time equivalent). Still write
      * [DisplayWindowSettings.setShouldShowSystemDecorsLocked] when present so OEM
      * TRUSTED defaults cannot re-enable decorations — same policy, not a soft skip.

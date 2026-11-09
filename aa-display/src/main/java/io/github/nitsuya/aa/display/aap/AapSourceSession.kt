@@ -501,6 +501,75 @@ class AapSourceSession(
         healthWorker = null
     }
 
+    /** USB write-stall watchdog worker; same lifecycle as [healthWorker]. */
+    private var stallWorker: Thread? = null
+    /** elapsedRealtime the write path was first seen stalled; 0 = healthy. */
+    @Volatile private var stallSinceMs = 0L
+    /** elapsedRealtime of the previous stall-kill (0 = none this session). */
+    @Volatile private var lastStallKillMs = 0L
+    /** True while the most recent close was our own stall-kill (status + re-probe). */
+    @Volatile private var closedByStall = false
+
+    /**
+     * USB write-stall watchdog.
+     *
+     * The AOA output endpoint can stall two ways (11-09: audio + video froze on the car while
+     * the link stayed "up" for 10+ minutes, reader still receiving): one write blocked in the
+     * kernel for minutes, or a sustained slow endpoint (~10 ms per write) where the session's
+     * write queue settles at a constant ~8 s delay — inbound traffic keeps flowing, so no I/O
+     * error fires and the session never fails or recovers. A blocked USB write cannot be
+     * interrupted; the only escape is closing the fd, so once the stall is confirmed this
+     * closes the transport: the session fails, and the USB probe re-attaches a fresh one.
+     */
+    private fun startStallMonitor() {
+        if (stallWorker?.isAlive == true) return
+        stallWorker = thread(name = "aap-usb-stall", isDaemon = true) {
+            while (running.get()) {
+                try {
+                    Thread.sleep(USB_STALL_CHECK_MS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                if (!running.get()) break
+                val s = aap ?: continue
+                if (s.state != AapSession.State.RUNNING) continue
+                val usb = transport as? UsbAccessoryTransport ?: continue
+                val inflightMs = usb.inflightWriteMs()
+                val queueWaitMs = s.oldestQueueWaitMs
+                val bad = inflightMs > USB_WRITE_BLOCK_KILL_MS ||
+                    queueWaitMs > USB_QUEUE_WAIT_BAD_MS
+                if (!bad) {
+                    stallSinceMs = 0L
+                    continue
+                }
+                val now = SystemClock.elapsedRealtime()
+                if (stallSinceMs == 0L) stallSinceMs = now
+                // A write blocked in the kernel kills immediately (nothing drains behind it);
+                // a slow endpoint must stay slow first, so a single USB blip doesn't cycle.
+                if (inflightMs <= USB_WRITE_BLOCK_KILL_MS && now - stallSinceMs < USB_STALL_SUSTAIN_MS) continue
+                stallSinceMs = 0L
+                val prevKillMs = lastStallKillMs
+                lastStallKillMs = now
+                closedByStall = true
+                // Same endpoint stalling again soon: soft reopen can't fix it, require replug.
+                if (prevKillMs > 0 && now - prevKillMs < USB_STALL_REKILL_WINDOW_MS) {
+                    usbReplugRequired.set(true)
+                }
+                Log.w(
+                    AapConsts.TAG,
+                    "USB write stall — killing session (inflight=${inflightMs}ms " +
+                        "queueWait=${queueWaitMs}ms replugGate=${usbReplugRequired.get()})",
+                )
+                runCatching { usb.close() }
+            }
+        }
+    }
+
+    private fun stopStallMonitor() {
+        stallWorker?.interrupt()
+        stallWorker = null
+    }
+
     private fun sessionAgeMs(): Long =
         if (sessionStartMs > 0) SystemClock.uptimeMillis() - sessionStartMs else -1
 
@@ -912,6 +981,7 @@ class AapSourceSession(
             batteryReporter.start(session)
             audioEgress.start()
             startHealthTicker()
+            startStallMonitor()
             // HUIG: request focus before MEDIA; wait for AudioFocusNotification to start pump.
             runCatching {
                 session.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_GAIN)
@@ -925,6 +995,7 @@ class AapSourceSession(
 
         override fun onClosed(session: AapSession, reason: String, error: Throwable?) {
             stopHealthTicker()
+            stopStallMonitor()
             releaseCpuWakeLock()
             // One summary of where the session stood when it died (state/age/rtt/transport);
             // the reason above says who ended it. For a wired link, the drain loop's first
@@ -951,6 +1022,10 @@ class AapSourceSession(
                 usbReplugRequired.set(true)
                 onStatus("请拔掉数据线再插上")
                 Log.w(AapConsts.TAG, "USB TLS fault — soft attach blocked until unplug/replug")
+            } else if (closedByStall && wasUsb) {
+                onStatus(
+                    if (usbReplugRequired.get()) "请拔掉数据线再插上" else "链路拥塞，正在自动重连…",
+                )
             } else {
                 onStatus("已断开，可重新连接")
             }
@@ -975,11 +1050,22 @@ class AapSourceSession(
                 transport = null
                 activeVideo = null
                 reportLive(false)
+                if (closedByStall && wasUsb && !usbReplugRequired.get()) {
+                    // Give the head unit time to time out its own keep-alive and reset, then
+                    // re-arm the probe window to re-attach the (still plugged) accessory.
+                    main.postDelayed({
+                        if (running.get() && transport == null && aap == null) {
+                            AapProjectionService.start(app)
+                        }
+                    }, USB_STALL_REATTACH_DELAY_MS)
+                }
+                closedByStall = false
             }
         }
     }
 
     private fun tearDownSession(reason: String) {
+        stopStallMonitor()
         Log.i(AapConsts.TAG, "tearDownSession $reason (age=${sessionAgeMs()}ms state=${aap?.state ?: "none"})")
         runCatching {
             aap?.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_RELEASE)
@@ -1039,6 +1125,18 @@ class AapSourceSession(
         /** Health telemetry cadence (disconnection forensics). */
         private const val HEALTH_INTERVAL_MS = 15_000L
 
+        /** [startStallMonitor] tick. */
+        private const val USB_STALL_CHECK_MS = 2_000L
+        /** One write blocked in the kernel longer than this kills the session. */
+        private const val USB_WRITE_BLOCK_KILL_MS = 5_000L
+        /** Write-queue age of a polled message that counts as a stalled link. */
+        private const val USB_QUEUE_WAIT_BAD_MS = 3_000L
+        /** How long the link must stay bad before the slow-endpoint kill (blip immunity). */
+        private const val USB_STALL_SUSTAIN_MS = 10_000L
+        /** Two stall-kills within this window → soft reopen is hopeless, require replug. */
+        private const val USB_STALL_REKILL_WINDOW_MS = 10 * 60_000L
+        /** Delay before re-arming the USB probe after a stall-kill (HU keep-alive reset). */
+        private const val USB_STALL_REATTACH_DELAY_MS = 8_000L
         /** Sustained ack latency (send→HU ack) beyond this counts as congestion. */
         private const val ACK_LATENCY_BAD_MS = 300L
         private const val SEND_LATENCY_BAD_MS = 1_000L
