@@ -23,15 +23,23 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * system_server early arm for wireless CarPlay Source.
  *
- * App-side [io.github.nitsuya.aa.display.carplay.CarPlayAutoArmReceiver] cannot receive
- * [BluetoothAdapter.ACTION_STATE_CHANGED] while stopped
- * (`Background execution not allowed`). Some OEMs enable Bluetooth (and classic HU
- * reconnect) ~15–20s before [Intent.ACTION_BOOT_COMPLETED] starts the app — the HU
- * SDP for `…cafe` fails (`scn=0`) and backs off; the second connect works after cafe
- * is finally listening.
+ * All background FGS arming lives here (system context, no background
+ * restrictions): BT ON / user-unlocked / boot / package-replace. The app-side
+ * manifest receivers were removed — arming a `connectedDevice` FGS from app
+ * background (adapter off, no device connected) is force-killed on Android 13,
+ * the 5s FGS deadline then expires with the process dead and the pending
+ * `ForegroundServiceDidNotStartInTimeException` poisons every process incarnation
+ * the next FGS start spawns (crash loop until consumed).
  *
- * This watch runs in system_server (no background-broadcast ban) and starts the app
- * FGS as soon as BT is ON and CE storage is unlocked, when the user last chose CarPlay.
+ * Some OEMs enable Bluetooth (and classic HU reconnect) ~15–20s before
+ * [Intent.ACTION_BOOT_COMPLETED] starts the app — the HU
+ * SDP for `…cafe` fails (`scn=0`) and backs off; the second connect works after cafe
+ * is finally listening. This watch runs in system_server (no background-broadcast
+ * ban) and starts the app FGS as soon as BT is ON and CE storage is unlocked,
+ * when the user last chose CarPlay.
+ *
+ * Foreground re-arm (status page open) stays app-side: CarPlayStatusUi /
+ * ChannelOrchestrator.ensureArmedCurrent.
  */
 object CarPlayBootArm {
     private const val TAG = "AAD_CpBootArm"
@@ -65,6 +73,10 @@ object CarPlayBootArm {
                     }
                     Intent.ACTION_USER_UNLOCKED -> tryArm(app, "user-unlocked")
                     Intent.ACTION_BOOT_COMPLETED -> tryArm(app, "boot-completed")
+                    Intent.ACTION_PACKAGE_REPLACED -> {
+                        if (intent.data?.schemeSpecificPart != TARGET_PACKAGE) return
+                        tryArm(app, "pkg-replaced")
+                    }
                 }
             }
         }
@@ -73,6 +85,11 @@ object CarPlayBootArm {
             addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
             addAction(Intent.ACTION_USER_UNLOCKED)
             addAction(Intent.ACTION_BOOT_COMPLETED)
+            // Package-replace re-arm moved here with the app-side receivers:
+            // `adb install -r` kills the app FGS. MY_PACKAGE_REPLACED is scoped to the
+            // replaced package (never delivered to system_server) — use the system-wide
+            // PACKAGE_REPLACED and guard by package name in onReceive.
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
         }
         try {
             if (Build.VERSION.SDK_INT >= 33) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2 — 开机 FGS 崩溃环修复（后台 arm 收敛到 system_server）
+
+versionCode **10101** / versionName **1.2**。
+
+- **重启后 App 连续崩两次（`ForegroundServiceDidNotStartInTimeException`）：** Android 13 下 App 侧 `CarPlayAutoArmReceiver` / `AapAutoArmReceiver`（manifest）在后台 arm `connectedDevice` FGS（BT 未连接）被系统 force-kill；5s FGS 时限在进程已死时到期，挂起异常毒化后续两次进程 incarnation（异常在 `onStartCommand` 前投递，App 侧无法拦截），第三次才自愈——cafe 监听白白延后 10s+。删除两个 App 侧 receiver 与 manifest 块；后台 arm 收敛为 system_server `CarPlayBootArm` 唯一路径（无后台限制），并新增 `MY_PACKAGE_REPLACED`（data 过滤本包）承接换包重 arm；前台重 arm 仍走状态页 `ChannelOrchestrator.ensureArmedCurrent`。
+
 ## 1.1 — 编码 / 推流链路优化
 
 versionCode **10100** / versionName **1.1**。

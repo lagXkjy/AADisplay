@@ -25,6 +25,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <uses-feature
@@ -98,17 +99,8 @@
                 android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
                 android:resource="@xml/aap_usb_accessory_filter" />
         </activity>
-        <receiver
-            android:name=".aap.AapAutoArmReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.USER_UNLOCKED" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-                <action android:name="android.bluetooth.adapter.action.STATE_CHANGED" />
-            </intent-filter>
-        </receiver>
-        <!-- Refresh CarService leaf when gearhead is installed / updated (keep cert if removed). -->
+        <!-- Refresh CarService leaf when gearhead is installed / updated (keep cert if removed).
+             FGS arming is system-side only (xposed CarPlayBootArm / status UI) — see docs/CARPLAY_CONNECT.md. -->
         <receiver
             android:name=".aap.AaCertPackageReceiver"
             android:exported="true">
@@ -116,21 +108,6 @@
                 <action android:name="android.intent.action.PACKAGE_ADDED" />
                 <action android:name="android.intent.action.PACKAGE_REPLACED" />
                 <data android:scheme="package" />
-            </intent-filter>
-        </receiver>
-        <!-- Re-arm cafe RFCOMM after reboot / replace / unlock / BT ON (channel=CarPlay).
-             Some OEMs bring BT (A2DP sound) up before BOOT_COMPLETED; STATE_ON must
-             arm …cafe before the HU SDP backs off.
-             Must be exported=true: targetSdk 36 + exported=false drops system
-             BOOT_COMPLETED / USER_UNLOCKED / BT STATE_CHANGED, so cafe never listens. -->
-        <receiver
-            android:name=".carplay.CarPlayAutoArmReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.USER_UNLOCKED" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-                <action android:name="android.bluetooth.adapter.action.STATE_CHANGED" />
             </intent-filter>
         </receiver>
     </application>

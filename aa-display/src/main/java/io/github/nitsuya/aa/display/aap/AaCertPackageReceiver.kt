@@ -10,7 +10,8 @@ import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
  * When Android Auto is installed or updated, refresh the on-disk CarService identity.
  *
  * Does not start the AAP FGS — only [PhoneCertStore.ensureExtracted]. Channel arm stays with
- * [AapAutoArmReceiver]. Uninstall is ignored so a previously extracted leaf remains usable.
+ * the system-side [io.github.nitsuya.aa.display.xposed.carplay.CarPlayBootArm] /
+ * status UI (app-side arm receivers were removed — see docs/CARPLAY_CONNECT.md). Uninstall is ignored so a previously extracted leaf remains usable.
  */
 class AaCertPackageReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {

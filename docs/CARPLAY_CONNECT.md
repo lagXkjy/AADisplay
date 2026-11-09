@@ -28,16 +28,15 @@
 | 触发 | 行为 | 代码 |
 |------|------|------|
 | 状态页「出口通道 = CarPlay」 | `CarPlayChannel` 持久化 → `CarPlayProjectionService.CONNECT` | `CarPlayStatusUi`、`CarPlayChannel` |
-| 开机 / BT ON / 解锁 | 若通道已是 CarPlay → **system_server** 尽早起 FGS listen `…cafe`（绕过 app 后台广播禁令） | `xposed/carplay/CarPlayBootArm` |
-| 开机 / 换包 / 解锁（回退） | App 侧 `BOOT_COMPLETED` 阶梯武装 | `CarPlayAutoArmReceiver` |
+| 开机 / BT ON / 解锁 / 换包 | 若通道已是 CarPlay → **system_server** 尽早起 FGS listen `…cafe`（绕过 app 后台广播禁令；App 侧 arm receiver 已删，后台 arm 唯一路径） | `xposed/carplay/CarPlayBootArm` |
 | STOP / 切回 AA | `tearDown` → 停 Session / Host；通道改 AA | `CarPlayProjectionService` |
 
 通道文件：`filesDir/aadisplay_carplay_channel`（`0`=AA，`1`=CarPlay）。默认 **AA**，真车行为不变。
 
-FGS `ensureSession()`（开机 AutoArm / 切通道）只做**监听**：
+FGS `ensureSession()`（开机 BootArm / 切通道）只做**监听**：
 
 1. `CarPlaySourceSession.start()` → BT cafe + RTSP listen（**不** `reportLive`、**不** Host、**不** MediaCodec）
-2. AutoArm / BootArm 传 `launchHostTrampoline=false`
+2. BootArm / UI 传 `launchHostTrampoline=false`
 
 真正建连时 `prepareMediaPipeline(reason)`（硬约束顺序）：
 
@@ -55,7 +54,7 @@ FGS `ensureSession()`（开机 AutoArm / 切通道）只做**监听**：
 
 ```mermaid
 sequenceDiagram
-    participant UI as StatusUi / AutoArm
+    participant UI as StatusUi / BootArm
     participant FGS as ProjectionService
     participant SS as SourceSession
     participant BT as BluetoothLink
@@ -180,8 +179,7 @@ sequenceDiagram
 | 类 | 连接职责 |
 |----|----------|
 | `CarPlayChannel` | AA ↔ CarPlay 互斥通道持久化 |
-| `CarPlayBootArm`（system_server） | BT ON / 解锁时起 FGS（首连关键） |
-| `CarPlayAutoArmReceiver` | BOOT_COMPLETED / 换包回退武装 |
+| `CarPlayBootArm`（system_server） | 后台 FGS 武装唯一路径：BT ON / 解锁 / 开机 / 换包 |
 | `CarPlayProjectionService` | FGS 拥有 Session；live 上报 |
 | `CarPlaySourceSession` | 编排 Bonjour + BT + iAP2 + Wi‑Fi + RTSP |
 | `CarPlayBluetoothLink` | RFCOMM listen/dial、名称/可发现、配对监听 |
