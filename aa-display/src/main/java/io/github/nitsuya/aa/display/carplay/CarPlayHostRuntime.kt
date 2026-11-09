@@ -395,12 +395,24 @@ object CarPlayHostRuntime {
             started.set(false)
             mainHandler.removeCallbacks(vdCreateRetryRunnable)
             vdCreateRetries = 0
-            CarPlayAppPickerOverlay.unbind()
-            CarPlayImeChip.unbind()
             CarPlayProjectionService.attachGlCompositor(null)
-            runCatching { CoreApi.setPaneSurface(SplitPane.PRIMARY, null) }
-            runCatching { CoreApi.setPaneSurface(SplitPane.SECONDARY, null) }
-            runCatching { CoreApi.onDestroyDisplay() }
+            // Same rule as releaseOrphansIfIdle: AAP may already own the shared split
+            // VDs / overlays after a channel switch. Only tear local GL; leave panes alone.
+            val destroyShared = !ProjectionSessionGate.isOwnedByOther(
+                ProjectionSessionGate.OWNER_CARPLAY,
+            )
+            if (destroyShared) {
+                CarPlayAppPickerOverlay.unbind()
+                CarPlayImeChip.unbind()
+                runCatching { CoreApi.setPaneSurface(SplitPane.PRIMARY, null) }
+                runCatching { CoreApi.setPaneSurface(SplitPane.SECONDARY, null) }
+                runCatching { CoreApi.onDestroyDisplay() }
+            } else {
+                Log.i(
+                    CarPlayConsts.TAG,
+                    "CarPlayHostRuntime stop skip shared VD teardown — other egress owns displays",
+                )
+            }
             try {
                 compositor?.stop()
             } catch (_: Throwable) {

@@ -302,8 +302,10 @@ class AapAudioEgress {
         val ring = AudioPullRing(
             "aap-$label",
             capacityBytes = (sampleRate * channels * 2L / 1000L).toInt() * 600,
-            highWatermarkBytes = (sampleRate * channels * 2L / 1000L).toInt() * 300,
-            lowWatermarkBytes = (sampleRate * channels * 2L / 1000L).toInt() * 50,
+            // Tight latency budget: content older than this is shipped anyway (video is
+            // latest-frame), so a fat ring only adds steady A/V lag. 100 ms high / 20 ms low.
+            highWatermarkBytes = (sampleRate * channels * 2L / 1000L).toInt() * 100,
+            lowWatermarkBytes = (sampleRate * channels * 2L / 1000L).toInt() * 20,
             pull,
         )
     }

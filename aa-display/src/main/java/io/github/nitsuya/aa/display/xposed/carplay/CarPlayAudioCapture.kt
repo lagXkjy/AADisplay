@@ -151,8 +151,8 @@ object CarPlayAudioCapture {
      * so a matched producer/consumer cannot sit forever at ~200ms of sticky latency.
      * Applied on both write and pull so capture drops stale PCM before TX recovers.
      */
-    private const val LIVE_HIGH_MS = 100
-    private const val LIVE_LOW_MS = 40
+    private const val LIVE_HIGH_MS = 60
+    private const val LIVE_LOW_MS = 20
     private const val MEDIA_HIGH_WATERMARK_BYTES = MEDIA_BYTES_PER_MS * LIVE_HIGH_MS
     private const val MEDIA_LOW_WATERMARK_BYTES = MEDIA_BYTES_PER_MS * LIVE_LOW_MS
     private const val SPEECH_HIGH_WATERMARK_BYTES = SPEECH_BYTES_PER_MS * LIVE_HIGH_MS
@@ -1300,11 +1300,11 @@ object CarPlayAudioCapture {
                 channelMask,
                 AudioFormat.ENCODING_PCM_16BIT,
             ).coerceAtLeast(if (sampleRate >= 40_000) MEDIA_READ_BYTES else SPEECH_READ_BYTES)
-            // Keep the native capture buffer small — minBuf*4 held ~100ms+ of stale PCM
-            // before it ever reached the ring during rapid screen switches.
+            // Keep the native capture buffer at the platform minimum — any larger holds
+            // stale PCM in the driver buffer on top of the ring depths (adds steady A/V lag).
             val builder = AudioRecord.Builder()
                 .setAudioFormat(format)
-                .setBufferSizeInBytes(minBuf * 2)
+                .setBufferSizeInBytes(minBuf)
                 .setAudioPlaybackCaptureConfig(config)
             // Attribution / OEM policy checks prefer a real Context in system_server.
             runCatching {
@@ -1494,7 +1494,7 @@ object CarPlayAudioCapture {
                 sampleRate,
                 channelMask,
                 AudioFormat.ENCODING_PCM_16BIT,
-                minBuf * 2,
+                minBuf,
             )
         } catch (e: Throwable) {
             log(TAG, "REMOTE_SUBMIX open failed rate=$sampleRate", e)
@@ -2198,7 +2198,7 @@ object CarPlayAudioCapture {
             val rec = ctor.newInstance(
                 attrs,
                 recordFormat,
-                minBuf * 2,
+                minBuf,
                 AudioManager.AUDIO_SESSION_ID_GENERATE,
             ) as AudioRecord
             log(
@@ -2535,7 +2535,8 @@ object CarPlayAudioCapture {
                     log(
                         TAG,
                         "no pull for ${PULL_TIMEOUT_MS / 1000}s — rearm keep-mute " +
-                            "(desired=true, not unmuting)",
+                            "(desired=true, not unmuting) " +
+                            "availMedia=${mediaRing.availableBytes}B availSpeech=${speechRing.availableBytes}B",
                     )
                     lastPullMs.set(System.currentTimeMillis())
                     scheduleRearm("pull-timeout")
@@ -2646,6 +2647,10 @@ object CarPlayAudioCapture {
         private var available = 0
         var dropped = 0L
             private set
+
+        /** Bytes currently buffered (for watchdog / pull-timeout diagnostics). */
+        val availableBytes: Int
+            get() = synchronized(lock) { available }
 
         fun clear() {
             synchronized(lock) {

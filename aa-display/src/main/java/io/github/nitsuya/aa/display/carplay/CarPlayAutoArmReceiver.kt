@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import io.github.nitsuya.aa.display.egress.ChannelOrchestrator
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -101,6 +102,13 @@ class CarPlayAutoArmReceiver : BroadcastReceiver() {
                 )
                 return
             }
+            if (ChannelOrchestrator.isSwitchInProgress()) {
+                Log.i(
+                    CarPlayConsts.TAG,
+                    "CarPlayAutoArm skip action=$action reason=$reason — channel switch",
+                )
+                return
+            }
             if (debounce) {
                 val now = SystemClock.elapsedRealtime()
                 val prev = lastArmElapsed.get()
@@ -110,10 +118,10 @@ class CarPlayAutoArmReceiver : BroadcastReceiver() {
                 }
                 lastArmElapsed.set(now)
             }
-            Log.i(CarPlayConsts.TAG, "CarPlayAutoArm action=$action reason=$reason → start FGS")
+            Log.i(CarPlayConsts.TAG, "CarPlayAutoArm action=$action reason=$reason → ensureArmed")
             try {
-                // Listen-only: FGS + cafe RFCOMM / RTSP. Host/encoder wait for HU dial.
-                CarPlayProjectionService.start(app, launchHostTrampoline = false)
+                // Serializes with channel switch; also stops a stray AAP FGS if any.
+                ChannelOrchestrator.ensureArmedCurrent(app)
             } catch (e: Throwable) {
                 Log.e(CarPlayConsts.TAG, "CarPlayAutoArm start FGS failed ($reason)", e)
                 if (debounce) lastArmElapsed.set(0L)

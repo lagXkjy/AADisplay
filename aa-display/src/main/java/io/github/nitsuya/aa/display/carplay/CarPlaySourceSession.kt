@@ -15,6 +15,7 @@ import java.net.InetAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -73,6 +74,8 @@ class CarPlaySourceSession(
     private val mediaPrepared = AtomicBoolean(false)
     @Volatile private var lastWifiSsid: String? = null
     @Volatile private var pendingAudioReleaseReason = ""
+    /** Bumped on cancel / reschedule so a dequeued release runnable aborts. */
+    private val audioReleaseEpoch = AtomicInteger(0)
 
     /**
      * HU media gone, but DiPlay often TEARDOWNs and SETUPs again within a couple
@@ -80,19 +83,17 @@ class CarPlaySourceSession(
      * real disconnect without flashing the speaker on a soft reconnect.
      */
     private val releasePhoneAudio = Runnable {
+        val epoch = audioReleaseEpoch.get()
         if (!running.get()) return@Runnable
         if (rtsp?.isStreaming() == true) {
             Log.i(CarPlayConsts.TAG, "skip phone audio release — streaming again")
             return@Runnable
         }
+        if (epoch != audioReleaseEpoch.get()) return@Runnable
         val reason = pendingAudioReleaseReason
         Log.i(CarPlayConsts.TAG, "CarPlay HU gone ($reason) — restore phone volume")
-        ProjectionSessionGate.setCarPlayLive(false)
-        try {
-            CoreApi.reportCarPlaySessionLive(false)
-        } catch (e: Throwable) {
-            Log.e(CarPlayConsts.TAG, "reportCarPlaySessionLive(false) failed", e)
-        }
+        reportOwnerLive(false)
+        if (epoch != audioReleaseEpoch.get()) return@Runnable
         releaseHostPipeline(reason)
     }
 
@@ -190,13 +191,8 @@ class CarPlaySourceSession(
         if (!running.get()) return
         cancelPhoneAudioRelease()
         val first = mediaPrepared.compareAndSet(false, true)
-        ProjectionSessionGate.setCarPlayLive(true)
-        try {
-            // Before Host onCreateSplitDisplay so Coolwalk does not shrink VD panes.
-            CoreApi.reportCarPlaySessionLive(true)
-        } catch (e: Throwable) {
-            Log.e(CarPlayConsts.TAG, "reportCarPlaySessionLive failed ($reason)", e)
-        }
+        // Before Host onCreateSplitDisplay so Coolwalk does not shrink VD panes.
+        reportOwnerLive(true)
         if (!first && CarPlayHostRuntime.isRunning()) {
             CarPlayHostRuntime.compositorOrNull()?.let { gl ->
                 if (glCompositor !== gl) {
@@ -918,6 +914,7 @@ class CarPlaySourceSession(
 
     private fun schedulePhoneAudioRelease(reason: String) {
         if (!running.get()) return
+        audioReleaseEpoch.incrementAndGet()
         pendingAudioReleaseReason = reason
         Log.i(CarPlayConsts.TAG, "schedule phone audio release ($reason)")
         mainHandler.removeCallbacks(releasePhoneAudio)
@@ -925,7 +922,20 @@ class CarPlaySourceSession(
     }
 
     private fun cancelPhoneAudioRelease() {
+        audioReleaseEpoch.incrementAndGet()
         mainHandler.removeCallbacks(releasePhoneAudio)
+    }
+
+    private fun reportOwnerLive(live: Boolean) {
+        val aggregate = ProjectionSessionGate.setOwnerLive(
+            ProjectionSessionGate.OWNER_CARPLAY,
+            live,
+        )
+        try {
+            CoreApi.reportCarPlaySessionLive(aggregate)
+        } catch (e: Throwable) {
+            Log.e(CarPlayConsts.TAG, "reportCarPlaySessionLive($aggregate) failed", e)
+        }
     }
 
     fun stop() {
@@ -960,7 +970,8 @@ class CarPlaySourceSession(
         rtsp = null
         usbMode.set(false)
         mediaPrepared.set(false)
-        ProjectionSessionGate.setCarPlayLive(false)
+        // Release CP owner only; aggregate report happens in ProjectionService.tearDown.
+        ProjectionSessionGate.setOwnerLive(ProjectionSessionGate.OWNER_CARPLAY, false)
     }
 
     companion object {

@@ -174,6 +174,10 @@ class AapSession(
      */
     @Volatile private var deadAfterMs = 20_000L
     @Volatile private var pingEvidence = false
+    /** The head unit's own ping timeout (ms) from the discovery config; 0 = unset. */
+    @Volatile private var pingTimeoutMs = 0L
+    /** Throttle for slow ping-ack diagnostics in [handleControl]. */
+    private val lastPingAckSlowLogMs = AtomicLong(0)
 
     /** Round trip of the last ping, for diagnostics. */
     @Volatile var lastRttMs = -1L
@@ -218,14 +222,15 @@ class AapSession(
         queue.offer(Outgoing(priority, seq.incrementAndGet(), channel, control, encrypted, plain, length, onSent))
     }
 
-    fun send(channel: Int, id: Int, body: MessageLite, control: Boolean = false, priority: Int = Priority.CONTROL) {
+    fun send(channel: Int, id: Int, body: MessageLite, control: Boolean = false, priority: Int = Priority.CONTROL,
+             onSent: (() -> Unit)? = null) {
         val size = body.serializedSize
         val plain = ByteArray(2 + size)
         plain[0] = (id shr 8).toByte(); plain[1] = id.toByte()
         val out = com.google.protobuf.CodedOutputStream.newInstance(plain, 2, size)
         body.writeTo(out)
         out.checkNoSpaceLeft()
-        sendRaw(channel, plain, control = control, encrypted = true, priority = priority)
+        sendRaw(channel, plain, control = control, encrypted = true, priority = priority, onSent = onSent)
     }
 
     fun sendControl(id: Int, body: MessageLite) = send(0, id, body)
@@ -355,7 +360,22 @@ class AapSession(
             ControlMsg.PING_REQUEST -> {
                 pingEvidence = true
                 val req = PingRequest.parseFrom(msg.bodyBytes())
-                sendControl(ControlMsg.PING_RESPONSE, PingResponse.newBuilder().setTimestamp(req.timestamp).build())
+                // Disconnection forensics: the head unit's keep-alive is ping -> our answer.
+                // Measure how long the answer sits in the phone's write path (queue + pipe);
+                // if that rivals the head unit's timeout, the head unit drops the session.
+                val sentAt = System.nanoTime()
+                send(0, ControlMsg.PING_RESPONSE, PingResponse.newBuilder().setTimestamp(req.timestamp).build(),
+                    onSent = {
+                        val waitedMs = (System.nanoTime() - sentAt) / 1_000_000
+                        if (waitedMs > PING_ACK_SLOW_MS) {
+                            val nowMs = System.currentTimeMillis()
+                            if (nowMs - lastPingAckSlowLogMs.get() > 2_000L) {
+                                lastPingAckSlowLogMs.set(nowMs)
+                                log.w("ping answer left the phone ${waitedMs}ms after the head unit's ping " +
+                                    "(write path busy; head unit keepalive timeout=${pingTimeoutMs}ms)")
+                            }
+                        }
+                    })
             }
             ControlMsg.PING_RESPONSE -> {
                 pingEvidence = true
@@ -491,6 +511,9 @@ class AapSession(
         resp.connectionConfiguration?.pingConfiguration?.let { pc ->
             if (pc.hasIntervalMs() && pc.intervalMs > 0) pingIntervalMs = pc.intervalMs.toLong().coerceIn(250, 5_000)
             if (pc.hasTimeoutMs() && pc.timeoutMs > 0) deadAfterMs = maxOf(pc.timeoutMs.toLong() * 3, 20_000L)
+            pingTimeoutMs = if (pc.hasTimeoutMs()) pc.timeoutMs.toLong() else 0
+            // Know the head unit's keep-alive patience: a session it drops usually did so on this.
+            log.i("head unit keepalive: interval=${pc.intervalMs}ms timeout=${pc.timeoutMs}ms")
         }
         val wanted = callbacks.onServiceDiscovery(this, resp)
         state = State.OPENING
@@ -590,6 +613,9 @@ class AapSession(
         const val PROTOCOL_MINOR = 7
 
         private fun now() = System.nanoTime() / 1_000_000
+
+        /** Ping-ack slower than this is logged: the head unit's timeout is usually ~1 s. */
+        private const val PING_ACK_SLOW_MS = 250L
 
         fun describe(r: ServiceDiscoveryResponse): String {
             val hu = r.headunitInfo

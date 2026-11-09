@@ -92,9 +92,12 @@ class CarPlayProjectionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             CarPlayConsts.ACTION_STOP -> {
-                // XOR egress: stop CarPlay → default channel (AAP if AA installed, else stay CP).
-                // Never re-enter soft-off gearhead CHANNEL_AA.
-                if (CarPlayChannel.isAndroidAutoInstalled(this)) {
+                // XOR egress: user stopped while still on CarPlay → fall back to default
+                // (AAP if AA installed). Skip rewrite when ChannelOrchestrator already
+                // persisted AAP / another channel — otherwise STOP flaps the file mid-switch.
+                if (CarPlayChannel.useCarPlayEgress(this) &&
+                    CarPlayChannel.isAndroidAutoInstalled(this)
+                ) {
                     CarPlayChannel.set(this, CarPlayChannel.defaultChannel(this))
                 }
                 tearDown("stop-intent")
@@ -209,13 +212,16 @@ class CarPlayProjectionService : Service() {
         session = null
         sessionRef.set(null)
         CarPlayHostRuntime.stop(reason)
-        reportLive(false)
+        // Report aggregate live — do not force false if AAP already acquired the bit.
+        reportAggregateLive()
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
-    private fun reportLive(live: Boolean) {
+    private fun reportAggregateLive() {
         try {
-            CoreApi.reportCarPlaySessionLive(live)
+            CoreApi.reportCarPlaySessionLive(
+                io.github.nitsuya.aa.display.egress.ProjectionSessionGate.isCarPlayLive(),
+            )
         } catch (e: Throwable) {
             Log.e(CarPlayConsts.TAG, "reportCarPlaySessionLive failed", e)
         }

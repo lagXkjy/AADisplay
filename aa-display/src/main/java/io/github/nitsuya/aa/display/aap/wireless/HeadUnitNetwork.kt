@@ -59,6 +59,30 @@ internal class HeadUnitNetwork(
     @Volatile private var pending: CompletableFuture<JoinResult>? = null
     @Volatile private var released = false
 
+    /** Throttle for [logRssi]; the AP's RSSI moves in small steps Android may report in bursts. */
+    @Volatile private var lastRssiLogMs = 0L
+
+    /**
+     * Diagnostics only: surface the signal level on the head unit's AP so a gradual Wi-Fi
+     * degradation (distance, channel scan, interference) is visible in logcat before the
+     * link drops and kills the AAP session.
+     */
+    private fun logRssi(caps: NetworkCapabilities, ssid: String) {
+        val rssi = (caps.transportInfo as? WifiInfo)?.rssi ?: return
+        // RSSI_UNKNOWN is gone from the API 36 SDK; real AP readings are roughly -130..0.
+        if (rssi <= -127 || rssi > 0) return
+        val now = System.currentTimeMillis()
+        if (now - lastRssiLogMs < 10_000) return
+        lastRssiLogMs = now
+        val level = when {
+            rssi >= -60 -> "strong"
+            rssi >= -70 -> "fair"
+            rssi >= -80 -> "weak"
+            else -> "very weak"
+        }
+        log.i("wireless: \"$ssid\" rssi=${rssi}dBm ($level)")
+    }
+
     /** Blocks until the phone has an IPv4 address on the head unit's network, or fails. */
     fun join(credentials: WifiCredentials): JoinResult {
         if (released) return JoinResult.Failed(WppStatus.WIFI_NETWORK_UNAVAILABLE, "cancelled")
@@ -92,6 +116,11 @@ internal class HeadUnitNetwork(
             // onAvailable can come before DHCP results are visible; wait for an IPv4 address.
             override fun onLinkPropertiesChanged(n: Network, lp: LinkProperties) {
                 if (n == network && ipv4(lp) != null) result.complete(joined(lp))
+            }
+
+            // Disconnection forensics: RSSI trend on the head unit's AP while the session is up.
+            override fun onCapabilitiesChanged(n: Network, caps: NetworkCapabilities) {
+                if (n == network) logRssi(caps, credentials.ssid)
             }
 
             // Not found within the timeout, or the user declined the dialog.
@@ -243,7 +272,11 @@ internal class HeadUnitNetwork(
             object : ConnectivityManager.NetworkCallback(ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO) {
                 override fun onCapabilitiesChanged(n: Network, caps: NetworkCapabilities) {
                     val info = caps.transportInfo as? WifiInfo ?: return
-                    if (unquote(info.ssid) == ssid && bssidMatches(info.bssid, wantBssid)) found.complete(n)
+                    if (unquote(info.ssid) == ssid && bssidMatches(info.bssid, wantBssid)) {
+                        if (!found.isDone) found.complete(n)
+                        // Same reuse path as join(): keep the RSSI trend visible.
+                        logRssi(caps, ssid)
+                    }
                 }
                 override fun onLost(n: Network) = onExistingLost(n, found)
             }

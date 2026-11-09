@@ -12,6 +12,7 @@ import io.github.nitsuya.aa.display.carplay.CarPlayGlCompositor
 import io.github.nitsuya.aa.display.carplay.CarPlayImeChip
 import io.github.nitsuya.aa.display.carplay.CarPlayInputBridge
 import io.github.nitsuya.aa.display.carplay.CarPlayVideoEncoder
+import io.github.nitsuya.aa.display.egress.ProjectionSessionGate
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.util.LastSplitStore
 import io.github.nitsuya.aa.display.xposed.IVirtualDisplayCreatedListener
@@ -289,16 +290,27 @@ class AapDisplayBridge(
         Log.i(AapConsts.TAG, "AapDisplayBridge tearDown $reason")
         main.removeCallbacks(syncBridgeLayoutRunnable)
         video = null
-        runCatching { CoreApi.setPaneSurface(SplitPane.PRIMARY, null) }
-        runCatching { CoreApi.setPaneSurface(SplitPane.SECONDARY, null) }
-        runCatching { CoreApi.onDestroyDisplay() }
+        // CarPlay may already own the shared split VDs after a channel switch.
+        val destroyShared = !ProjectionSessionGate.isOwnedByOther(
+            ProjectionSessionGate.OWNER_AAP,
+        )
+        if (destroyShared) {
+            runCatching { CoreApi.setPaneSurface(SplitPane.PRIMARY, null) }
+            runCatching { CoreApi.setPaneSurface(SplitPane.SECONDARY, null) }
+            runCatching { CoreApi.onDestroyDisplay() }
+            CarPlayInputBridge.fullscreenPane = SplitPane.FULLSCREEN_NONE
+            CarPlayAppPickerOverlay.close()
+            CarPlayAppPickerOverlay.unbind()
+            CarPlayImeChip.unbind()
+        } else {
+            Log.i(
+                AapConsts.TAG,
+                "AapDisplayBridge tearDown skip shared VD — other egress owns displays",
+            )
+        }
         runCatching { compositor?.stop() }
         compositor = null
         encoder.stop()
         displayId = Display.INVALID_DISPLAY
-        CarPlayInputBridge.fullscreenPane = SplitPane.FULLSCREEN_NONE
-        CarPlayAppPickerOverlay.close()
-        CarPlayAppPickerOverlay.unbind()
-        CarPlayImeChip.unbind()
     }
 }

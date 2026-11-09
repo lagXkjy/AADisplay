@@ -7,8 +7,8 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
 import io.github.nitsuya.aa.display.carplay.CarPlayChannel
+import io.github.nitsuya.aa.display.egress.ChannelOrchestrator
 
 /** Re-arm [AapProjectionService] after boot / unlock / BT ON when channel is AAP. */
 class AapAutoArmReceiver : BroadcastReceiver() {
@@ -23,9 +23,12 @@ class AapAutoArmReceiver : BroadcastReceiver() {
         val pending = goAsync()
         mainHandler.post {
             try {
-                PhoneCertStore.ensureExtracted(app, force = false)
-                AapProjectionService.start(app)
-                Log.i(AapConsts.TAG, "AapAutoArm action=$action → FGS")
+                if (ChannelOrchestrator.isSwitchInProgress()) {
+                    Log.i(AapConsts.TAG, "AapAutoArm skip action=$action — channel switch")
+                    return@post
+                }
+                ChannelOrchestrator.ensureArmedCurrent(app)
+                Log.i(AapConsts.TAG, "AapAutoArm action=$action → ensureArmed")
             } catch (e: Throwable) {
                 Log.e(AapConsts.TAG, "AapAutoArm failed", e)
             } finally {

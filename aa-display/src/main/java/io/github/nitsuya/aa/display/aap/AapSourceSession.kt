@@ -11,14 +11,23 @@ import aap_protobuf.service.media.sink.message.VideoConfigurationOuterClass.Vide
 import aap_protobuf.service.media.sink.message.VideoFrameRateTypeOuterClass.VideoFrameRateType
 import aap_protobuf.service.sensorsource.message.SensorBatchOuterClass.SensorBatch
 import android.bluetooth.BluetoothDevice
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.usb.UsbManager
+import android.net.wifi.WifiManager
+import android.os.PowerManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
+import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
+import io.github.nitsuya.aa.display.aap.usb.UsbAccessoryTransport
 import io.github.nitsuya.aa.display.aap.wireless.WirelessAutoStarter
 import io.github.nitsuya.aa.display.aap.wireless.WirelessConnector
 import io.github.nitsuya.aa.display.aap.wireless.WirelessException
@@ -74,6 +83,45 @@ class AapSourceSession(
     private val certAttempt = AtomicInteger(0)
     private var wireless: WirelessConnector? = null
     private var autoStarter: WirelessAutoStarter? = null
+    private var wifiStateReceiver: BroadcastReceiver? = null
+    private var usbStateReceiver: BroadcastReceiver? = null
+    /** uptime anchor for session age in diagnostics; SystemClock.uptimeMillis. */
+    @Volatile private var sessionStartMs = 0L
+    /** Health telemetry worker; started in onRunning, stopped on close/teardown. */
+    private var healthWorker: Thread? = null
+    /** rxBytes at the last health tick, for the throughput delta. */
+    private var lastHealthRxBits: Pair<Long, Long> = 0L to 0L
+    /**
+     * CPU wake lock held while the session is live.
+     *
+     * Root cause of the "head unit cuts the session" issue: when the phone panel times out
+     * (息屏) the SoC drops to deep low-power (all cores 787 MHz — see SDHMS:LOAD at 17:07),
+     * the USB writer starves for >3 s, the head unit's keep-alive (interval=1s, timeout=3s)
+     * expires and it kills the session with a TLS close. The display-scoped keep-awake in
+     * DisplaySessionPolicy keeps the VDs lit but does not hold the CPU awake; a partial wake
+     * lock is the direct lever. Cost is neutral: the encode pipeline already keeps the SoC
+     * busy while the session is live, and the phone is plugged in.
+     */
+    @Volatile private var cpuWakeLock: PowerManager.WakeLock? = null
+
+    private fun acquireCpuWakeLock() {
+        if (cpuWakeLock?.isHeld == true) return
+        try {
+            val pm = app.getSystemService(PowerManager::class.java) ?: return
+            val lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "${BuildConfig.APPLICATION_ID}:AapLive")
+            lock.acquire()
+            cpuWakeLock = lock
+            Log.i(AapConsts.TAG, "cpu wake lock acquired (session live)")
+        } catch (e: Throwable) {
+            Log.w(AapConsts.TAG, "cpu wake lock acquire failed", e)
+        }
+    }
+
+    private fun releaseCpuWakeLock() {
+        val lock = cpuWakeLock ?: return
+        cpuWakeLock = null
+        runCatching { if (lock.isHeld) lock.release() }
+    }
     private var transport: Transport? = null
     private var aap: AapSession? = null
     private var display: AapDisplayBridge? = null
@@ -94,6 +142,7 @@ class AapSourceSession(
     fun start() {
         if (!running.compareAndSet(false, true)) return
         onStatus("正在准备…")
+        armUsbStateMonitor()
         thread(name = "aap-boot", isDaemon = true) {
             try {
                 PhoneCertStore.ensureExtracted(app, force = false)
@@ -114,6 +163,10 @@ class AapSourceSession(
 
     fun stop() {
         running.set(false)
+        releaseCpuWakeLock()
+        stopHealthTicker()
+        removeWifiStateMonitor()
+        removeUsbStateMonitor()
         tearDownSession("stop")
         try {
             autoStarter?.unregister()
@@ -177,6 +230,7 @@ class AapSourceSession(
         onStatus("正在连接 $peerName…")
         // Mach-E (#74): right after BT comes up the car accepts RFCOMM but is not ready yet.
         // Retry twice inside this job (10s then 20s) when bootstrap fails whileNegotiating.
+        armWifiStateMonitor()
         // Do not hold @Synchronized across sleep — USB attach must still be able to bind.
         var attempt = 0
         while (true) {
@@ -314,8 +368,141 @@ class AapSourceSession(
             ),
         )
         aap = session
+        sessionStartMs = SystemClock.uptimeMillis()
         session.start()
     }
+
+    /**
+     * Wi-Fi state changes are the strongest precursor of a wireless AAP disconnect (single-radio
+     * phones drop the car's AP for scans; a dead AP ends the network request → transport close).
+     * Log every transition so the timing lines up with the session-close reason in logcat.
+     */
+    private fun armWifiStateMonitor() {
+        armUsbStateMonitor()
+        if (wifiStateReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                val state = intent.getIntExtra(WifiManager.EXTRA_WIFI_STATE, -1)
+                Log.w(AapConsts.TAG, "wifi state changed: ${wifiStateName(state)} (session=${aap?.state ?: "none"})")
+            }
+        }
+        runCatching {
+            // minSdk 33: the flag exists; the state broadcast is protected, not for other apps.
+            app.registerReceiver(receiver, IntentFilter(WifiManager.WIFI_STATE_CHANGED_ACTION),
+                android.content.Context.RECEIVER_NOT_EXPORTED)
+        }.onFailure {
+            Log.w(AapConsts.TAG, "cannot monitor wifi state", it)
+            return
+        }
+        wifiStateReceiver = receiver
+    }
+
+    /**
+     * Wired disconnect forensics: the USB port state (CONFIGURED → DISCONNECTED when the car
+     * drops the port or switches it to charge-only) plus AOA accessory attach/detach, so a port
+     * event lines up in time with the session-close reason.
+     */
+    private fun armUsbStateMonitor() {
+        if (usbStateReceiver != null) return
+        val usb = app.getSystemService(UsbManager::class.java) ?: return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                // ACTION_USB_STATE / EXTRA_USB_STATE constants are gone from the API 36 SDK;
+                // the strings are stable framework values.
+                val state = intent.getStringExtra("android.hardware.usb.extra.USB_STATE") ?: "?"
+                val accessories = runCatching { usb.accessoryList?.size ?: 0 }.getOrDefault(0)
+                Log.w(
+                    AapConsts.TAG,
+                    "usb state changed: $state accessories=$accessories (session=${aap?.state ?: "none"})",
+                )
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction("android.hardware.usb.action.USB_STATE")
+            addAction(UsbManager.ACTION_USB_ACCESSORY_ATTACHED)
+            addAction(UsbManager.ACTION_USB_ACCESSORY_DETACHED)
+        }
+        runCatching {
+            // minSdk 33: protected system broadcasts, not for other apps.
+            app.registerReceiver(receiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+        }.onFailure {
+            Log.w(AapConsts.TAG, "cannot monitor usb state", it)
+            return
+        }
+        usbStateReceiver = receiver
+    }
+
+    private fun removeWifiStateMonitor() {
+        val r = wifiStateReceiver ?: return
+        wifiStateReceiver = null
+        runCatching { app.unregisterReceiver(r) }
+    }
+
+    private fun removeUsbStateMonitor() {
+        val r = usbStateReceiver ?: return
+        usbStateReceiver = null
+        runCatching { app.unregisterReceiver(r) }
+    }
+
+    private fun wifiStateName(state: Int): String = when (state) {
+        // WifiManager.WIFI_STATE_* constants are gone from the API 36 SDK; values are stable.
+        0 -> "DISABLING"
+        1 -> "DISABLED"
+        2 -> "ENABLING"
+        3 -> "ENABLED"
+        4 -> "CONNECTING"
+        5 -> "CONNECTED"
+        6 -> "FAILURE"
+        7 -> "DISCONNECTING"
+        8 -> "DISCONNECTED"
+        else -> "UNKNOWN($state)"
+    }
+
+    /**
+     * Disconnection forensics: while the session is live, one line every 15 s with session age,
+     * AAP protocol state, keep-alive RTT and the video link's latency/drop metrics. A session
+     * that dies after a trend of rising ack/send latency or falling RSSI (HeadUnitNetwork) points
+     * at the Wi-Fi link; a sudden death with healthy metrics points at the head unit side.
+     */
+    private fun startHealthTicker() {
+        if (healthWorker?.isAlive == true) return
+        healthWorker = thread(name = "aap-health", isDaemon = true) {
+            while (running.get()) {
+                try {
+                    Thread.sleep(HEALTH_INTERVAL_MS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                if (!running.get()) break
+                val s = aap ?: continue
+                val upS = if (sessionStartMs > 0) (SystemClock.uptimeMillis() - sessionStartMs) / 1000 else -1
+                val video = activeVideo?.takeIf { it.started }?.let {
+                    " video[ack=${it.ackLatencyMs}ms send=${it.sendLatencyMs}ms pend=${it.pendingFrames} drops=${it.congestionDrops} focus=${it.focused}]"
+                } ?: ""
+                val usb = transport as? UsbAccessoryTransport
+                val usbInfo = if (usb != null) {
+                    val now = SystemClock.uptimeMillis()
+                    val dx = usb.rxBytes - lastHealthRxBits.first
+                    val dt = ((now - lastHealthRxBits.second) / 1000).coerceAtLeast(1)
+                    lastHealthRxBits = usb.rxBytes to now
+                    " usb[rx=${dx / 1024}KB/s ring=${usb.ringUsed()} fault=${usb.readFault?.message ?: "none"}]"
+                } else { lastHealthRxBits = 0L to SystemClock.uptimeMillis(); "" }
+                Log.i(
+                    AapConsts.TAG,
+                    "AAP health: up=${upS}s state=${s.state} rtt=${s.lastRttMs}ms " +
+                        "transport=${transport?.name ?: "none"}$video$usbInfo",
+                )
+            }
+        }
+    }
+
+    private fun stopHealthTicker() {
+        healthWorker?.interrupt()
+        healthWorker = null
+    }
+
+    private fun sessionAgeMs(): Long =
+        if (sessionStartMs > 0) SystemClock.uptimeMillis() - sessionStartMs else -1
 
     private val videoListener = object : VideoChannel.Listener {
         override fun chooseConfiguration(
@@ -444,7 +631,10 @@ class AapSourceSession(
             badWindows = 0
             goodWindows = 0
             lastCongestionDrops = 0L
+            lastCongestionLogAt = 0L
         }
+
+        @Volatile private var lastCongestionLogAt = 0L
 
         override fun run() {
             while (running.get()) {
@@ -466,6 +656,20 @@ class AapSourceSession(
             lastCongestionDrops = v.congestionDrops
             val congested = dropsDelta > 0 || v.ackLatencyMs > ACK_LATENCY_BAD_MS ||
                 v.sendLatencyMs > SEND_LATENCY_BAD_MS
+            // Disconnection forensics: surface rising head-unit ack latency / drops as soon as
+            // they appear (not only when a bitrate step happens) — a head unit that stops
+            // acking is usually the one that cuts the session a moment later.
+            if (congested) {
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastCongestionLogAt > 5_000L) {
+                    lastCongestionLogAt = now
+                    Log.i(
+                        AapConsts.TAG,
+                        "AAP video congestion: ack=${v.ackLatencyMs}ms send=${v.sendLatencyMs}ms " +
+                            "drops+=$dropsDelta pend=${v.pendingFrames} bitrate=${current / 1_000_000}M",
+                    )
+                }
+            }
             val clean = !congested && v.ackLatencyMs < ACK_LATENCY_GOOD_MS &&
                 v.sendLatencyMs < SEND_LATENCY_GOOD_MS
             badWindows = if (congested) badWindows + 1 else 0
@@ -703,9 +907,11 @@ class AapSourceSession(
 
         override fun onRunning(session: AapSession) {
             reportLive(true)
+            acquireCpuWakeLock()
             nowPlaying.start(app)
             batteryReporter.start(session)
             audioEgress.start()
+            startHealthTicker()
             // HUIG: request focus before MEDIA; wait for AudioFocusNotification to start pump.
             runCatching {
                 session.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_GAIN)
@@ -718,7 +924,19 @@ class AapSourceSession(
         }
 
         override fun onClosed(session: AapSession, reason: String, error: Throwable?) {
-            Log.i(AapConsts.TAG, "session closed: $reason", error)
+            stopHealthTicker()
+            releaseCpuWakeLock()
+            // One summary of where the session stood when it died (state/age/rtt/transport);
+            // the reason above says who ended it. For a wired link, the drain loop's first
+            // kernel I/O error is the ground truth behind a bare "read failed".
+            val usbFault = (transport as? UsbAccessoryTransport)?.readFault
+            if (usbFault != null) Log.w(AapConsts.TAG, "session closed: $reason — usb rx fault: ${usbFault.message}", usbFault)
+            Log.i(
+                AapConsts.TAG,
+                "session closed: $reason (age=${sessionAgeMs()}ms state=${session.state} " +
+                    "rtt=${session.lastRttMs}ms transport=${transport?.name ?: "none"})",
+                error,
+            )
             val errMsg = error?.message.orEmpty()
             val usbCryptoFault = errMsg.contains("encrypted frame before TLS") ||
                 errMsg.contains("NONCE-GAP") ||
@@ -762,7 +980,7 @@ class AapSourceSession(
     }
 
     private fun tearDownSession(reason: String) {
-        Log.i(AapConsts.TAG, "tearDownSession $reason")
+        Log.i(AapConsts.TAG, "tearDownSession $reason (age=${sessionAgeMs()}ms state=${aap?.state ?: "none"})")
         runCatching {
             aap?.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_RELEASE)
         }
@@ -783,9 +1001,12 @@ class AapSourceSession(
     }
 
     private fun reportLive(live: Boolean) {
-        ProjectionSessionGate.setCarPlayLive(live)
+        val aggregate = ProjectionSessionGate.setOwnerLive(
+            ProjectionSessionGate.OWNER_AAP,
+            live,
+        )
         try {
-            CoreApi.reportCarPlaySessionLive(live)
+            CoreApi.reportCarPlaySessionLive(aggregate)
         } catch (e: Throwable) {
             Log.w(AapConsts.TAG, "reportCarPlaySessionLive failed", e)
         }
@@ -814,6 +1035,9 @@ class AapSourceSession(
 
         /** Delay base for wireless "car not ready yet" retries (× attempt number). */
         private const val WIRELESS_RETRY_DELAY_MS = 10_000L
+
+        /** Health telemetry cadence (disconnection forensics). */
+        private const val HEALTH_INTERVAL_MS = 15_000L
 
         /** Sustained ack latency (send→HU ack) beyond this counts as congestion. */
         private const val ACK_LATENCY_BAD_MS = 300L

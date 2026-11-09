@@ -8,8 +8,8 @@ import android.widget.Toast
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.aap.AapProjectionService
-import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
 import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
+import io.github.nitsuya.aa.display.egress.ChannelOrchestrator
 import io.github.nitsuya.aa.display.egress.ProjectionSessionGate
 
 /**
@@ -82,7 +82,6 @@ object CarPlayStatusUi {
         // Persist + swap cards immediately so the radio and panels stay in sync,
         // even when a permission dialog delays arming the selected egress.
         CarPlayChannel.set(activity, channel)
-        stopOtherEgress(activity, channel)
         refresh(activity, binding)
         if ((channel == CarPlayChannel.CHANNEL_CARPLAY || channel == CarPlayChannel.CHANNEL_AAP) &&
             !CarPlayRuntimePerms.ensureWireless(activity)
@@ -94,47 +93,27 @@ object CarPlayStatusUi {
         finishApplyChannel(activity, binding, channel)
     }
 
-    private fun stopOtherEgress(activity: Activity, channel: Int) {
-        when (channel) {
-            CarPlayChannel.CHANNEL_AAP -> {
-                CarPlayProjectionService.stop(activity)
-                CarPlayHostActivity.current?.finish()
-            }
-            CarPlayChannel.CHANNEL_CARPLAY,
-            CarPlayChannel.CHANNEL_CARPLAY_USB,
-            -> AapProjectionService.stop(activity)
-        }
-    }
-
     private fun finishApplyChannel(
         activity: Activity,
         binding: ActivityMainBinding,
         channel: Int,
     ) {
-        CarPlayChannel.set(activity, channel)
-        when {
-            CarPlayChannel.useAapEgress(activity) -> {
-                stopOtherEgress(activity, CarPlayChannel.CHANNEL_AAP)
-                PhoneCertStore.ensureExtracted(activity, force = false)
-                AapProjectionService.start(activity)
-                io.github.nitsuya.aa.display.aap.usb.AapUsbProbe.tryAttachExisting(activity)
-                toast(activity, "已切到 Android Auto")
-            }
-            CarPlayChannel.useCarPlayEgress(activity) -> {
-                stopOtherEgress(activity, CarPlayChannel.CHANNEL_CARPLAY)
-                CarPlayProjectionService.start(activity, launchHostTrampoline = false)
-                CarPlayProjectionService.requestDiscoverable(activity)
-                toast(activity, "已切到无线 CarPlay，请到车机上连接")
-            }
-            else -> {
-                // Retired CHANNEL_AA or unknown → arm default.
-                val fallback = CarPlayChannel.defaultChannel(activity)
-                CarPlayChannel.set(activity, fallback)
-                finishApplyChannel(activity, binding, fallback)
-                return
-            }
+        val target = when {
+            channel == CarPlayChannel.CHANNEL_AAP -> CarPlayChannel.CHANNEL_AAP
+            channel == CarPlayChannel.CHANNEL_CARPLAY ||
+                channel == CarPlayChannel.CHANNEL_CARPLAY_USB -> channel
+            else -> CarPlayChannel.defaultChannel(activity)
         }
-        refresh(activity, binding)
+        ChannelOrchestrator.switchTo(activity, target) {
+            when {
+                CarPlayChannel.useAapEgress(activity) -> toast(activity, "已切到 Android Auto")
+                CarPlayChannel.useCarPlayEgress(activity) -> {
+                    CarPlayProjectionService.requestDiscoverable(activity)
+                    toast(activity, "已切到无线 CarPlay，请到车机上连接")
+                }
+            }
+            refresh(activity, binding)
+        }
     }
 
     fun handleLaunchIntent(activity: Activity, binding: ActivityMainBinding, intent: Intent?) {
@@ -158,11 +137,7 @@ object CarPlayStatusUi {
             pendingChannelAfterPerms = CarPlayChannel.CHANNEL_CARPLAY
             return
         }
-        try {
-            CarPlayProjectionService.start(activity, launchHostTrampoline = false)
-        } catch (e: Throwable) {
-            android.util.Log.e(CarPlayConsts.TAG, "ensureArmedIfCarPlay failed", e)
-        }
+        ChannelOrchestrator.ensureArmedCurrent(activity)
     }
 
     fun ensureArmedIfAap(activity: Activity) {
@@ -171,12 +146,7 @@ object CarPlayStatusUi {
             pendingChannelAfterPerms = CarPlayChannel.CHANNEL_AAP
             return
         }
-        try {
-            PhoneCertStore.ensureExtracted(activity, force = false)
-            AapProjectionService.start(activity)
-        } catch (e: Throwable) {
-            android.util.Log.e(CarPlayConsts.TAG, "ensureArmedIfAap failed", e)
-        }
+        ChannelOrchestrator.ensureArmedCurrent(activity)
     }
 
     @SuppressLint("SetTextI18n")

@@ -41,12 +41,51 @@ class UsbAccessoryTransport(usb: UsbManager, val accessory: UsbAccessory) : Tran
 
     override val input: InputStream = ring
 
+    /** RX ring occupancy for diagnostics (health ticker). */
+    fun ringUsed(): Int = ring.availableBytes()
+
     // The accessory fd has no kernel send buffer (unlike a TCP socket), so an unbuffered write
     // blocks per fragment on the USB bulk endpoint. Buffer so FrameWriter's per-fragment writes
     // coalesce into one write per message at its flush() — fewer blocking syscalls on the pipe.
-    override val output: OutputStream = BufferedOutputStream(FileOutputStream(fd.fileDescriptor), 64 * 1024)
+    // [fdOut] is wrapped in [timing] so a blocking stall (the HU's input endpoint not ready)
+    // shows up with its size: ~200 ms stalls preceded the 11-09 HU-side TLS close_notify.
+    private val fdOut = FileOutputStream(fd.fileDescriptor)
+    private val timing = object : OutputStream() {
+        @Volatile private var lastStallLogMs = 0L
+        override fun write(b: Int) {
+            val one = ByteArray(1); one[0] = b.toByte(); write(one, 0, 1)
+        }
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            val t0 = System.nanoTime()
+            try {
+                fdOut.write(b, off, len)
+            } finally {
+                val ms = (System.nanoTime() - t0) / 1_000_000
+                if (ms > 50) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastStallLogMs > 2_000L) {
+                        lastStallLogMs = now
+                        Log.w(AapConsts.TAG, "USB write blocked ${ms}ms (len=${len}B) — HU input endpoint slow")
+                    }
+                }
+            }
+        }
+    }
+
+    override val output: OutputStream = BufferedOutputStream(timing, 64 * 1024)
 
     private val closed = AtomicBoolean(false)
+
+    /**
+     * First kernel I/O error on the accessory fd (the real reason a wired session dies);
+     * the reader only sees the ring close, which says nothing.
+     */
+    @Volatile var readFault: Throwable? = null
+        private set
+    /** Bytes pulled from the USB pipe since attach; the health ticker turns the delta into a rate. */
+    @Volatile var rxBytes: Long = 0
+        private set
 
     private fun drainLoop() {
         val chunk = ByteArray(USB_BULK_READ_SIZE)
@@ -56,11 +95,16 @@ class UsbAccessoryTransport(usb: UsbManager, val accessory: UsbAccessory) : Tran
             while (!closed.get()) {
                 val n = try {
                     rawIn.read(chunk)
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    if (readFault == null) {
+                        readFault = t
+                        Log.w(AapConsts.TAG, "USB RX drain loop exited on I/O error: ${t.message}", t)
+                    }
                     break
                 }
                 if (n < 0) break
                 if (n == 0) continue
+                rxBytes += n
                 var off = 0
                 while (off < n && !closed.get()) {
                     val wrote = ring.writeBlocking(chunk, off, n - off)
@@ -95,6 +139,7 @@ class UsbAccessoryTransport(usb: UsbManager, val accessory: UsbAccessory) : Tran
         // Closing the fd unblocks drain's rawIn.read().
         runCatching { fd.close() }
         runCatching { rawIn.close() }
+        runCatching { fdOut.close() }
         runCatching { output.close() }
         ring.closeWriter()
         drain.interrupt()

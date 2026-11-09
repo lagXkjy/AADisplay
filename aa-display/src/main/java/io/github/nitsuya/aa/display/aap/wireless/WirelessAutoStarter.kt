@@ -43,6 +43,11 @@ class WirelessAutoStarter(
             val device = deviceOf(intent) ?: return
             when (intent.action) {
                 BluetoothDevice.ACTION_ACL_CONNECTED -> onAclConnected(device)
+                // Disconnection forensics: a dropped hands-free ACL is the phone losing the head
+                // unit at the BT layer; often shows up right before / after a wireless AAP death.
+                BluetoothDevice.ACTION_ACL_DISCONNECTED -> if (isHeadUnit(device)) {
+                    log.w("wireless: head unit ${device.address} ACL disconnected")
+                }
                 BluetoothDevice.ACTION_UUID -> if (device.address in sdpQueried && isHeadUnit(device)) {
                     log.i("wireless: ${device.address} offers Android Auto wireless (SDP)")
                     onHeadUnit(device)
@@ -82,7 +87,11 @@ class WirelessAutoStarter(
     }
 
     companion object {
-        val ACTIONS = listOf(BluetoothDevice.ACTION_ACL_CONNECTED, BluetoothDevice.ACTION_UUID)
+        val ACTIONS = listOf(
+            BluetoothDevice.ACTION_ACL_CONNECTED,
+            BluetoothDevice.ACTION_ACL_DISCONNECTED,
+            BluetoothDevice.ACTION_UUID,
+        )
 
         /**
          * For a manifest-declared receiver: the head unit [intent] (one of [ACTIONS]) is about, or

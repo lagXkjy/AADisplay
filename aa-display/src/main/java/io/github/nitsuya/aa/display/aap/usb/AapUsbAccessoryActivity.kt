@@ -16,6 +16,7 @@ import io.github.nitsuya.aa.display.aap.AapConsts
 import io.github.nitsuya.aa.display.aap.AapProjectionService
 import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
 import io.github.nitsuya.aa.display.carplay.CarPlayChannel
+import io.github.nitsuya.aa.display.egress.ChannelOrchestrator
 import kotlin.concurrent.thread
 
 /**
@@ -37,8 +38,8 @@ class AapUsbAccessoryActivity : Activity() {
             finish()
             return
         }
-        CarPlayChannel.set(this, CarPlayChannel.CHANNEL_AAP)
-        AapProjectionService.start(this)
+        // Persist + serialize stop-CP → start-AAP so USB attach cannot race Host teardown.
+        ChannelOrchestrator.switchTo(this, CarPlayChannel.CHANNEL_AAP)
         val app = applicationContext
         thread(name = "aap-usb-open", isDaemon = true) {
             var transport: UsbAccessoryTransport? = null

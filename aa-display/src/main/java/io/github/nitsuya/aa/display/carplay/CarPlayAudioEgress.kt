@@ -114,6 +114,7 @@ class CarPlayAudioEgress(
         var packets = 0
         var pulledTotal = 0L
         var pullFailLogged = false
+        var lastShortLogMs = 0L
         CarPlayMediaClock.ensureRunning()
         // Seed RTP from the shared media clock (same epoch as screen NTP), then advance
         // by exactly one packet of samples. Wall-clock RTP on every packet makes DiPlay
@@ -184,8 +185,8 @@ class CarPlayAudioEgress(
                     }
                     ByteArray(0)
                 }
-                if (got.isNotEmpty()) {
-                    val n = minOf(got.size, payload.size)
+                val n = minOf(got.size, payload.size)
+                if (n > 0) {
                     System.arraycopy(got, 0, payload, 0, n)
                     for (i in 0 until n / 2) {
                         val lo = payload[i * 2]
@@ -193,6 +194,20 @@ class CarPlayAudioEgress(
                         payload[i * 2 + 1] = lo
                     }
                     pulledTotal += n
+                }
+                if (n < bytesPerPacket && System.currentTimeMillis() - lastShortLogMs > 2_000L) {
+                    // Short/empty read → packet is silence-padded: the local ring ran dry
+                    // (puller starvation or upstream system-ring drop). Throttled marker of
+                    // a phone-side supply gap — distinct from the car-side underflow/queue
+                    // counters, and from the TX-late "cadence drop-live" marker.
+                    lastShortLogMs = System.currentTimeMillis()
+                    val deficitMs = (bytesPerPacket - n) * 1_000L / (profile.sampleRate * profile.channels * 2L)
+                    Log.i(
+                        CarPlayConsts.TAG,
+                        "CarPlay ${profile.label} audio short read deficit=${deficitMs}ms " +
+                            "avail=${ring.availableBytes}B ringDrop=${ring.droppedBytes}B " +
+                            "pulled=${pulledTotal / 1024}KB",
+                    )
                 }
                 rtp[0] = 0x80.toByte()
                 rtp[1] = PAYLOAD_TYPE.toByte()
@@ -238,7 +253,8 @@ class CarPlayAudioEgress(
                         CarPlayConsts.TAG,
                         "CarPlay ${profile.label} audio packet=$packets bytes=${datagram.size} " +
                             "ts=$timestamp clockMs=${CarPlayMediaClock.videoTimestampNs() / 1_000_000L} " +
-                            "pulled=${pulledTotal / 1024}KB",
+                            "pulled=${pulledTotal / 1024}KB " +
+                            "avail=${ring.availableBytes}B ringDrop=${ring.droppedBytes}B",
                     )
                 }
                 nextPacketAt += intervalNs
