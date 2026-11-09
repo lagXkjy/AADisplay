@@ -128,7 +128,7 @@ class SplitDisplayController(
     /** Explicit Recent/stack closes this session — must not backfill or restore from snapshot. */
     internal val mExplicitlyClosedPackages = mutableSetOf<String>()
     /**
-     * Written from Binder/IO ([moveTaskId]/[removeTask]) and read on the main handler
+     * Written from Binder/IO ([removeTask]) and read on the main handler
      * ([SplitOwnership.reclaimOwnedPackages]). Must be volatile so intentional move-off is not raced by reclaim.
      */
     @Volatile
@@ -966,25 +966,6 @@ class SplitDisplayController(
         }
     }
 
-    fun reorderPaneStack(pane: Int, packagesTopToBottom: Array<out String>): Boolean {
-        if (!SplitPane.isValid(pane)) return false
-        return ownership.runOnHandlerBlocking(false) {
-            reorderPaneStackOnHandler(pane, packagesTopToBottom.toList())
-        }
-    }
-
-    /** Drag-reordered VD stack; [packagesTopToBottom] index 0 = front (visible). */
-    private fun reorderPaneStackOnHandler(pane: Int, packagesTopToBottom: List<String>): Boolean {
-        if (!SplitPane.isValid(pane)) return false
-        val bottomToTop = packagesTopToBottom.asReversed()
-        stacks.setStackBottomToTop(pane, bottomToTop)
-        ownership.promoteStackFronts(listOf(pane))
-        mSuppressReclaimUntil = SystemClock.uptimeMillis() + SUPPRESS_RECLAIM_MS
-        launch.schedulePersistSnapshot()
-        notifySplitStateChanged()
-        return true
-    }
-
     fun startActivityOnPane(packageName: String, userId: Int, pane: Int): Boolean {
         // Same queue as move/remove/reclaim — Binder/IO must not interleave stack mutations.
         // runOnHandlerBlocking already runs inline when already on mHandler (restore loops).
@@ -1197,88 +1178,6 @@ class SplitDisplayController(
             log(TAG, "startActivityOnPane failed pkg=$packageName pane=$pane display=$displayId")
         }
         return ok
-    }
-
-    fun moveTaskIdAsync(taskId: Int, isVirtualDisplay: Boolean) {
-        postUserAction {
-            moveTaskIdOnHandler(taskId, if (isVirtualDisplay) mFocusedPane else null)
-        }
-    }
-
-    /** Move [taskId] onto PRIMARY/SECONDARY; [pane] must be a valid [SplitPane]. */
-    fun moveTaskIdToPaneAsync(taskId: Int, pane: Int) {
-        if (!SplitPane.isValid(pane)) return
-        postUserAction { moveTaskIdOnHandler(taskId, targetPane = pane) }
-    }
-
-    /**
-     * @param targetPane null = phone (DEFAULT_DISPLAY); otherwise PRIMARY/SECONDARY VD.
-     */
-    private fun moveTaskIdOnHandler(taskId: Int, targetPane: Int?): Boolean {
-        val isVirtualDisplay = targetPane != null
-        val targetDisplayId = if (isVirtualDisplay) {
-            input.displayIdFor(targetPane!!) ?: return false
-        } else {
-            Display.DEFAULT_DISPLAY
-        }
-        if (targetDisplayId == Display.INVALID_DISPLAY) return false
-        val packageName = ownership.findPackageForTask(taskId)
-        val vacatedPanes = mutableListOf<Int>()
-        if (!isVirtualDisplay) {
-            // Cancel any armed reclaim before ownership is cleared — otherwise a prior
-            // stack-changed debounce can yank the task straight back onto the VD.
-            suppressReclaimUntilSettle()
-            ownership.forgetOwnership(taskId, packageName)
-            // Must clear pane bookkeeping: getPanePackage prefers mPanePackages when ATMS
-            // is empty / chrome-only, so a stale pkg keeps the AA empty overlay hidden
-            // forever after recent-task swipe moves the app to the phone.
-            vacatedPanes += ownership.clearPanePackageForTask(taskId, packageName)
-        } else {
-            val pane = targetPane!!
-            // Push onto stack (evict bottom if full); do not kill other stack apps.
-            if (!packageName.isNullOrBlank() &&
-                !stacks.contains(pane, packageName) &&
-                stacks.packagesBottomToTop(pane).size >= PaneAppStack.MAX_PER_PANE
-            ) {
-                val bottom = stacks.packagesBottomToTop(pane).firstOrNull()
-                if (!bottom.isNullOrBlank() && bottom != packageName) {
-                    ownership.evictPackageFromPane(pane, bottom)
-                }
-            }
-            if (!packageName.isNullOrBlank()) {
-                // Same vacate→push window as startActivityOnPane: hold reclaim until stacked.
-                suppressReclaimUntilSettle()
-                ownership.vacateOtherPanesHolding(packageName, pane)
-            }
-        }
-        try {
-            Instances.iActivityTaskManager.moveRootTaskToDisplay(taskId, targetDisplayId)
-        } catch (e: Throwable) {
-            log(TAG, "moveRootTaskToDisplay error:", e)
-        }
-        if (isVirtualDisplay) {
-            val pane = targetPane!!
-            if (!packageName.isNullOrBlank()) {
-                stacks.pushToTop(pane, packageName)
-                ownership.markOwnership(packageName, targetDisplayId)
-                VdDensityPin.markPackageOnVirtualDisplay(packageName, targetDisplayId)
-                ownership.enforceStackFrontAudio(pane)
-                buriedPlayback.claimSpeakerForFront(packageName)
-                buriedPlayback.scheduleEnforceSingleSounder("moveTask")
-            }
-            mFocusedPane = pane
-        } else {
-            VdDensityPin.clearPackageVirtualDisplay(packageName)
-            // Promote remaining stack fronts; strip chrome only on emptied panes.
-            vacatedPanes.distinct().forEach { pane ->
-                if (stacks.front(pane) == null) {
-                    input.displayIdFor(pane)?.let { ownership.removeChromeTasksOnDisplay(it) }
-                }
-            }
-        }
-        launch.schedulePersistSnapshot()
-        notifySplitStateChanged()
-        return ownership.bringTaskToFront(taskId)
     }
 
     fun moveTaskToFrontAsync(taskId: Int) {

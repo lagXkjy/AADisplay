@@ -27,7 +27,6 @@ interface ICoreManager {
     float getSplitRatio();
     /** Package currently owned by [pane], or null/empty when vacant. */
     String getPanePackage(int pane);
-    void setFocusedPane(int pane);
     int getFocusedPane();
     /** Swap user task stacks between PRIMARY and SECONDARY panes; ratio follows apps. */
     void swapSplitPanes();
@@ -35,9 +34,6 @@ interface ICoreManager {
 
     void startActivity(String packageName, int userId);
     void startActivityOnPane(String packageName, int userId, int pane);
-    void moveTaskId(int taskId, boolean isVirtualDisplay);
-    /** Move task onto PRIMARY/SECONDARY virtual-display pane (not the phone). */
-    void moveTaskIdToPane(int taskId, int pane);
     void moveTaskToFront(int taskId);
     void removeTask(int taskId);
     void pressKey(int action);
@@ -48,12 +44,6 @@ interface ICoreManager {
     oneway void touchPane(int pane, in MotionEvent motionEvent);
 
     RecentTask getRecentTask();
-
-    /**
-     * Reorder a VD pane stack after Recents drag. [packagesTopToBottom] index 0 = front.
-     * Appended at end for Stub ordinals.
-     */
-    boolean reorderPaneStack(int pane, in String[] packagesTopToBottom);
 
     /**
      * Enter fullscreen for PRIMARY(0)/SECONDARY(1), or exit with -1.
@@ -100,8 +90,6 @@ interface ICoreManager {
     int getVdDensityDpi();
     /** Live session DPI from SplitDisplayController; 0 when no active VD session. */
     int getEffectiveVdDensityDpi();
-    /** Last HU-reported density before manual override; 0 when unknown. */
-    int getReportedHostDensityDpi();
 
     /**
      * AADisplay process reports wireless CarPlay Source session liveness.

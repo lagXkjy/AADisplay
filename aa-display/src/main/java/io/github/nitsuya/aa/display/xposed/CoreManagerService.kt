@@ -108,9 +108,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         }
 
         private var mLockedDisplayProfile: DisplayProfile? = null
-        /** Last HU-reported density from AAP / CarPlay before manual override. */
-        @Volatile
-        private var mLastReportedHostDensityDpi = 0
         private val mMainHandler = Handler(Looper.getMainLooper())
 
         private fun persistVdDensityDpi(dpi: Int): Boolean {
@@ -140,14 +137,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
         /** Prefer client-reported host density (AAP / CarPlay encode canvas). */
         private fun resolveReportedHostDensityDpi(clientReported: Int): Int {
-            val host = clientReported
-            if (host > 0) {
-                mLastReportedHostDensityDpi = host
-                if (hasSystemContext) {
-                    DisplayDpiStore.saveLastHuReported(host, systemContext.contentResolver)
-                }
-            }
-            return host
+            return clientReported
         }
 
         private fun resolveEffectiveDensityDpi(reportedHostDpi: Int): Int {
@@ -752,10 +742,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         return mSplitController?.getPanePackage(pane)
     }
 
-    override fun setFocusedPane(pane: Int) {
-        mSplitController?.setFocusedPane(pane)
-    }
-
     override fun getFocusedPane(): Int {
         return mSplitController?.mFocusedPane ?: SplitPane.PRIMARY
     }
@@ -835,20 +821,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 
     override fun getEffectiveVdDensityDpi(): Int = getDensityDpi()
 
-    override fun getReportedHostDensityDpi(): Int {
-        if (mLastReportedHostDensityDpi > 0) return mLastReportedHostDensityDpi
-        if (!hasSystemContext) return 0
-        return DisplayDpiStore.loadLastHuReported(systemContext.contentResolver)
-    }
-
-    override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
-        mSplitController?.moveTaskIdAsync(taskId, isVirtualDisplay)
-    }
-
-    override fun moveTaskIdToPane(taskId: Int, pane: Int) {
-        mSplitController?.moveTaskIdToPaneAsync(taskId, pane)
-    }
-
     override fun moveTaskToFront(taskId: Int) {
         mSplitController?.moveTaskToFrontAsync(taskId)
     }
@@ -856,13 +828,6 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     @SuppressLint("MissingPermission")
     override fun removeTask(taskId: Int) {
         mSplitController?.removeTaskAsync(taskId)
-    }
-
-    override fun reorderPaneStack(pane: Int, packagesTopToBottom: Array<out String>?): Boolean {
-        val pkgs = packagesTopToBottom ?: return false
-        val controller = mSplitController ?: return false
-        // Synchronous — Recent drag must not reload before stack order is persisted.
-        return controller.reorderPaneStack(pane, pkgs)
     }
 
     override fun pressKey(action: Int) {

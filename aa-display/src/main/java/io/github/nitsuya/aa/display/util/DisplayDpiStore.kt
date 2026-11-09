@@ -18,10 +18,7 @@ object DisplayDpiStore {
     private const val TAG = "AADisplay_DisplayDpiStore"
     const val PATH = "/data/system/aadisplay_vd_density.properties"
     const val SETTINGS_DPI = "aadisplay_vd_density_dpi"
-    /** Last density reported by gearhead HU presentation (read-only hint for manual tuning). */
-    const val SETTINGS_HU_LAST = "aadisplay_vd_density_hu_last"
     private const val FILE_DPI = "VdDensityDpi"
-    private const val FILE_HU_LAST = "HuReportedDensityDpi"
 
     const val MIN_DPI = 120
     const val MAX_DPI = 640
@@ -31,9 +28,6 @@ object DisplayDpiStore {
     /** In-memory authoritative copy when OEM rejects unknown Settings.Global keys. */
     @Volatile
     private var cachedDpi: Int? = null
-
-    @Volatile
-    private var cachedHuReportedDpi: Int? = null
 
     /** Returns configured override; `0` when auto/unset. */
     fun loadConfigured(contentResolver: ContentResolver? = null): Int {
@@ -91,57 +85,6 @@ object DisplayDpiStore {
         return settingsOk || fileOk
     }
 
-    fun invalidateCache() {
-        synchronized(cacheLock) {
-            cachedDpi = null
-            cachedHuReportedDpi = null
-        }
-    }
-
-    /**
-     * Remember the latest HU-reported density from gearhead (informational; not the manual override).
-     */
-    fun saveLastHuReported(dpi: Int, contentResolver: ContentResolver? = null): Boolean {
-        if (dpi <= 0) return false
-        synchronized(cacheLock) {
-            if (cachedHuReportedDpi == dpi) return true
-        }
-        var settingsOk = false
-        if (contentResolver != null) {
-            try {
-                Settings.Global.putString(contentResolver, SETTINGS_HU_LAST, dpi.toString())
-                settingsOk = true
-            } catch (e: Throwable) {
-                Log.w(TAG, "settings hu-last save failed", e)
-            }
-        }
-        val fileOk = updateFile { props ->
-            props.setProperty(FILE_HU_LAST, dpi.toString())
-        }
-        if (settingsOk || fileOk) {
-            synchronized(cacheLock) {
-                cachedHuReportedDpi = dpi
-            }
-            Log.d(TAG, "hu reported saved dpi=$dpi settings=$settingsOk file=$fileOk")
-        }
-        return settingsOk || fileOk
-    }
-
-    /** Last HU-reported density; `0` when unknown. */
-    fun loadLastHuReported(contentResolver: ContentResolver? = null): Int {
-        cachedHuReportedDpi?.let { if (it > 0) return it }
-        synchronized(cacheLock) {
-            cachedHuReportedDpi?.let { if (it > 0) return it }
-            val loaded = loadHuFromSettings(contentResolver)
-                ?: loadHuFromFile()
-                ?: 0
-            if (loaded > 0) {
-                cachedHuReportedDpi = loaded
-            }
-            return loaded
-        }
-    }
-
     /** `0` = auto; otherwise clamp to [MIN_DPI]..[MAX_DPI]. */
     fun normalize(dpi: Int): Int {
         if (dpi <= 0) return 0
@@ -173,30 +116,6 @@ object DisplayDpiStore {
             Log.w(TAG, "load file failed", e)
             null
         }
-    }
-
-    private fun loadHuFromSettings(cr: ContentResolver?): Int? {
-        if (cr == null) return null
-        return try {
-            parseHuReportedDpi(Settings.Global.getString(cr, SETTINGS_HU_LAST))
-        } catch (e: Throwable) {
-            Log.w(TAG, "load hu settings failed", e)
-            null
-        }
-    }
-
-    private fun loadHuFromFile(): Int? {
-        return try {
-            parseHuReportedDpi(readProps().getProperty(FILE_HU_LAST))
-        } catch (e: Throwable) {
-            Log.w(TAG, "load hu file failed", e)
-            null
-        }
-    }
-
-    private fun parseHuReportedDpi(raw: String?): Int {
-        val value = raw?.trim()?.toIntOrNull() ?: return 0
-        return if (value <= 0) 0 else value
     }
 
     private fun readProps(): Properties {

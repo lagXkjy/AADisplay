@@ -4,13 +4,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.PixelFormat
 import android.hardware.display.VirtualDisplay
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
-import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.ImageReader
 import android.media.MediaRecorder
@@ -75,14 +73,6 @@ object CarPlayAudioCapture {
     )
 
     /**
-     * 48 kHz media CarPlay stream: entertainment, alerts, and telephony downlink /
-     * ringtone. Calls stay on media (not speech) so MIB3 AAC hears them — Audi never
-     * opens type-100 speech.
-     *
-     * Full list is for AudioPolicy RENDER (true route). PlaybackCapture only ever
-     * matches MEDIA/GAME/UNKNOWN per platform docs — see [PLAYBACK_CAPTURE_USAGES].
-     */
-    /**
      * RENDER media usages that never trip CAPTURE_VOICE_COMMUNICATION_OUTPUT.
      * Voice/call usages are appended only when that permission is granted
      * (see [mediaCaptureUsagesForRender]).
@@ -107,16 +97,6 @@ object CarPlayAudioCapture {
     private val MEDIA_CAPTURE_USAGES =
         MEDIA_CAPTURE_USAGES_BASE + MEDIA_CAPTURE_USAGES_VOICE
 
-    /**
-     * Usages accepted by [AudioPlaybackCaptureConfiguration] on AOSP / One UI.
-     * Broader matching does not capture more audio and can make
-     * [AudioManager.registerAudioPolicyStatic] reject the policy on Samsung.
-     */
-    private val PLAYBACK_CAPTURE_USAGES = intArrayOf(
-        AudioAttributes.USAGE_MEDIA,
-        AudioAttributes.USAGE_GAME,
-        AudioAttributes.USAGE_UNKNOWN,
-    )
 
     /** Nav / assistant on the 16 kHz speech CarPlay stream (DiPlay; skipped on MIB3). */
     private val SPEECH_CAPTURE_USAGES = intArrayOf(
@@ -133,7 +113,6 @@ object CarPlayAudioCapture {
     private const val MEDIA_MIX_CHANNEL_MASK = AudioFormat.CHANNEL_OUT_STEREO
     /** DiPlay voice bit PCM_FORMAT[0x10] = 16 kHz mono. */
     private const val SPEECH_SAMPLE_RATE = 16_000
-    private const val SPEECH_CHANNEL_MASK = AudioFormat.CHANNEL_IN_MONO
     private const val SPEECH_MIX_CHANNEL_MASK = AudioFormat.CHANNEL_OUT_MONO
 
     private const val MEDIA_BYTES_PER_MS = MEDIA_SAMPLE_RATE * 2 /* ch */ * 2 /* s16 */ / 1000
@@ -1277,107 +1256,6 @@ object CarPlayAudioCapture {
         armed.get() && speechMode == "audio-policy-mix" && speechRecord != null
     }
 
-    private fun openPlaybackCaptureRecord(
-        ctx: Context,
-        proj: MediaProjection,
-        sampleRate: Int,
-        channelMask: Int,
-        usages: IntArray,
-    ): AudioRecord? {
-        return try {
-            val configBuilder = AudioPlaybackCaptureConfiguration.Builder(proj)
-            for (usage in usages) {
-                configBuilder.addMatchingUsage(usage)
-            }
-            val config = configBuilder.build()
-            val format = AudioFormat.Builder()
-                .setSampleRate(sampleRate)
-                .setChannelMask(channelMask)
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .build()
-            val minBuf = AudioRecord.getMinBufferSize(
-                sampleRate,
-                channelMask,
-                AudioFormat.ENCODING_PCM_16BIT,
-            ).coerceAtLeast(if (sampleRate >= 40_000) MEDIA_READ_BYTES else SPEECH_READ_BYTES)
-            // Keep the native capture buffer at the platform minimum — any larger holds
-            // stale PCM in the driver buffer on top of the ring depths (adds steady A/V lag).
-            val builder = AudioRecord.Builder()
-                .setAudioFormat(format)
-                .setBufferSizeInBytes(minBuf)
-                .setAudioPlaybackCaptureConfig(config)
-            // Attribution / OEM policy checks prefer a real Context in system_server.
-            runCatching {
-                val setCtx = AudioRecord.Builder::class.java.methods.firstOrNull { m ->
-                    m.name == "setContext" &&
-                        m.parameterTypes.size == 1 &&
-                        m.parameterTypes[0] == Context::class.java
-                }
-                setCtx?.invoke(builder, ctx)
-            }
-            builder.build()
-        } catch (e: Throwable) {
-            log(TAG, "playback-capture open failed usages=${usages.toList()}", e)
-            null
-        }
-    }
-
-    private fun releaseSeedRemoteSubmix(seed: AudioRecord?) {
-        if (seed == null) return
-        runCatching { seed.stop() }
-        runCatching { seed.release() }
-    }
-
-    /**
-     * Attach a 1×1 VirtualDisplay to [proj] before playback-capture.
-     * Samsung AudioPolicy often rejects projection-backed mixes with no active display.
-     */
-    private fun attachProjectionVirtualDisplay(proj: MediaProjection, handler: Handler) {
-        releaseProjectionVirtualDisplay()
-        try {
-            val reader = ImageReader.newInstance(1, 1, PixelFormat.RGBA_8888, 2)
-            // API 36+: (name, w, h, dpi, flags, surface, callback, handler)
-            // API 33:   (name, w, h, dpi, surface, flags) — reflect if needed.
-            val vd: VirtualDisplay = runCatching {
-                proj.createVirtualDisplay(
-                    "aad-apc",
-                    /* width = */ 1,
-                    /* height = */ 1,
-                    /* dpi = */ 160,
-                    /* flags = */ 0,
-                    reader.surface,
-                    /* callback = */ null,
-                    handler,
-                )
-            }.recoverCatching {
-                val m = MediaProjection::class.java.methods.first { method ->
-                    method.name == "createVirtualDisplay" &&
-                        method.parameterTypes.size == 6 &&
-                        method.parameterTypes[4] == android.view.Surface::class.java
-                }
-                m.invoke(
-                    proj,
-                    "aad-apc",
-                    1,
-                    1,
-                    160,
-                    reader.surface,
-                    0,
-                ) as VirtualDisplay?
-            }.getOrNull() ?: run {
-                runCatching { reader.close() }
-                log(TAG, "playback-capture VirtualDisplay create returned null")
-                return
-            }
-            projectionImageReader = reader
-            projectionVirtualDisplay = vd
-            log(TAG, "playback-capture VirtualDisplay attached id=${vd.display?.displayId}")
-        } catch (e: Throwable) {
-            releaseProjectionVirtualDisplay()
-            log(TAG, "playback-capture VirtualDisplay attach failed", e)
-        }
-    }
-
     private fun releaseProjectionVirtualDisplay() {
         runCatching { projectionVirtualDisplay?.release() }
         projectionVirtualDisplay = null
@@ -1951,31 +1829,6 @@ object CarPlayAudioCapture {
         throw IllegalStateException(
             "AudioMix.Builder.setDevice bind failed: ${errors.joinToString("; ")}",
         )
-    }
-
-    /**
-     * Optionally open REMOTE_SUBMIX so a sink [AudioDeviceInfo] may appear.
-     * Field-poke bind no longer depends on this; kept as a best-effort assist.
-     */
-    private fun ensureRemoteSubmixDeviceSeedLocked(): AudioRecord? {
-        if (findRemoteSubmixDeviceInfo("0") != null) {
-            logDebug(TAG, "REMOTE_SUBMIX sink AudioDeviceInfo already present — skip seed")
-            return null
-        }
-        val seed = openRemoteSubmixRecord(MEDIA_SAMPLE_RATE, MEDIA_CHANNEL_MASK)
-        if (seed == null || seed.state != AudioRecord.STATE_INITIALIZED) {
-            runCatching { seed?.release() }
-            logDebug(TAG, "REMOTE_SUBMIX seed open failed (field-poke bind still attempted)")
-            return null
-        }
-        runCatching { seed.startRecording() }
-        val info = findRemoteSubmixDeviceInfo("0")
-        log(
-            TAG,
-            "seeded REMOTE_SUBMIX info=" +
-                (info?.let { "type=${it.type} addr=${it.address} sink=${it.isSink}" } ?: "null"),
-        )
-        return seed
     }
 
     /** Resolve a **sink** REMOTE_SUBMIX for [AudioMix.Builder.setDevice]. */

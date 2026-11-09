@@ -1344,10 +1344,6 @@ class CarPlayRtspSession(
                 rate,
                 formatBit,
             )
-            // Cadence realign only snaps the RTP pacer clock (in AacAudioEgress). Do NOT
-            // POST modesChanged here: Audi often underruns during track-skip / pane-swap
-            // (playback=[] / PAUSED); reclaim then latches the mixer mute while AAC continues.
-            egress?.onCadenceGap = null
             // Keep local control socket open so HU RTCP has a peer (CSM does the same).
             thread(name = "carplay-audio-rtcp", isDaemon = true) {
                 val buf = ByteArray(2048)
@@ -1933,8 +1929,6 @@ class CarPlayRtspSession(
         }
         return null
     }
-
-    private fun align16(v: Int): Int = (v.coerceAtLeast(16) + 15) and 15.inv()
 
     /** 1..2^31-1 so binary plist writes a 4-byte int (DiPlay echoes this width). */
     private fun newStreamConnectionId(): Long {

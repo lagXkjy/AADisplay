@@ -83,10 +83,6 @@ object CoreManager : ICoreManager, DeathRecipient {
         return getService()?.getPanePackage(pane)
     }
 
-    override fun setFocusedPane(pane: Int) {
-        getService()?.setFocusedPane(pane)
-    }
-
     override fun getFocusedPane(): Int {
         return getService()?.focusedPane ?: SplitPane.PRIMARY
     }
@@ -161,33 +157,12 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
-    override fun getReportedHostDensityDpi(): Int {
-        return try {
-            getService()?.reportedHostDensityDpi ?: 0
-        } catch (e: Throwable) {
-            Log.e(TAG, "getReportedHostDensityDpi failed", e)
-            0
-        }
-    }
-
-    override fun moveTaskId(taskId: Int, isVirtualDisplay: Boolean) {
-        getService()?.moveTaskId(taskId, isVirtualDisplay)
-    }
-
-    override fun moveTaskIdToPane(taskId: Int, pane: Int) {
-        getService()?.moveTaskIdToPane(taskId, pane)
-    }
-
     override fun moveTaskToFront(taskId: Int) {
         getService()?.moveTaskToFront(taskId)
     }
 
     override fun removeTask(taskId: Int) {
         getService()?.removeTask(taskId)
-    }
-
-    override fun reorderPaneStack(pane: Int, packagesTopToBottom: Array<out String>?): Boolean {
-        return getService()?.reorderPaneStack(pane, packagesTopToBottom) ?: false
     }
 
     override fun pressKey(action: Int) {

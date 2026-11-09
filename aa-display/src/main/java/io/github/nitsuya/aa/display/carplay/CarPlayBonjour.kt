@@ -180,9 +180,6 @@ class CarPlayBonjour(
         }
     }
 
-    /** Alias kept for call sites that predate the AirPlay split. */
-    fun startDiscovery() = startCtrlDiscovery()
-
     fun startAirPlayDiscovery() {
         if (!airplayDiscovering.compareAndSet(false, true)) return
         try {

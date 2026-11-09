@@ -4,6 +4,8 @@
 
 versionCode **10100** / versionName **1.1**。
 
+- **最小代码面清理（行为不变）：** 删 CarPlay 音频捕获旧路径残留（`openPlaybackCaptureRecord` / 1×1 VD 附挂 / REMOTE_SUBMIX seed 等零引用私有函数）、5 个无调用方 AIDL 方法全链（`moveTaskId` / `moveTaskIdToPane` / `reorderPaneStack` / `setFocusedPane` / `getReportedHostDensityDpi`，含 HU 密度持久化整对，`ICoreManager` 42→37）及 3 个死 View id；净删 ~460 行。清单见 `docs/AUDIT_MINIMAL_CODE.md`；`releaseProjectionVirtualDisplay` no-op 化留二期真机回归。
+
 - **同步 AARE：** `vendor/aare-aap` 对齐 [prototux/AARE](https://github.com/prototux/AARE) `main` @ `5ac79ba`（含 proto optional / Ford 零值字段、原生焦点回投 re-START、无线 `whileNegotiating`）。保留 AADisplay 本地叠层（音频写队列日志、TLS nonce 诊断、`PROJECTED_NO_INPUT_FOCUS`）。消费端跟进：无线未就绪重试、每类音频只喂首通道、Hyundai 0×0 触控回落视频尺寸。
 - **分隔条 settle 卡顿：** `ratio-settle` 仅对尺寸变化的 pane 做 1px VD nudge，跳过 OneUI 上无效的 `bringTaskToFront` / `resizeTask`；throttle 窗口内 pending nudge OR 合并。
 - **方控下一曲打到栈外 QQ：** 分屏高德+抖音时焦点常停在高德；`MEDIA_NEXT` 只偏爱 Live 窗，不认另一侧抖音 Feed，于是 `pickMediaKeyTarget` 落到仍 PLAYING 的 `qqmusiccar`（可不在分屏栈里）。改为 NEXT/PREV 也优先视频前台窗并上滑切条；另一窗是抖音时不再把 transport 交给音乐会话。

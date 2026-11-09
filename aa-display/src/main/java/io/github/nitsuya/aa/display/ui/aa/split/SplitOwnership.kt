@@ -608,38 +608,6 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
     }
 
     /**
-     * Remove [packageName] from pane stacks when a task intentionally leaves a VD.
-     * Promotes the new stack front when the removed package was on top.
-     * @return panes that lost this package (stack may still be non-empty)
-     */
-    fun clearPanePackageForTask(taskId: Int, packageName: String?): List<Int> {
-        if (!packageName.isNullOrBlank()) {
-            val vacated = c.stacks.removeFromAll(packageName)
-            if (vacated.isNotEmpty()) {
-                promoteStackFronts(vacated)
-                return vacated
-            }
-        }
-        for (pane in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
-            val displayId = c.input.displayIdFor(pane) ?: continue
-            val onPane = tryOrNull {
-                Instances.iActivityTaskManager.getAllRootTaskInfosOnDisplay(displayId)
-            }.orEmpty().any { it.taskId == taskId }
-            if (onPane) {
-                if (!packageName.isNullOrBlank()) {
-                    c.stacks.remove(pane, packageName)
-                } else {
-                    // Unknown package: clear front only if stack is empty after ATMS walk.
-                    c.mPanePackages[pane] = c.stacks.front(pane)
-                }
-                promoteStackFronts(listOf(pane))
-                return listOf(pane)
-            }
-        }
-        return emptyList()
-    }
-
-    /**
      * Bring the current stack-front task to the foreground for each pane.
      * @param settleAv when false, skip cross-pane MediaSession arbitration (close / swap fast path).
      */

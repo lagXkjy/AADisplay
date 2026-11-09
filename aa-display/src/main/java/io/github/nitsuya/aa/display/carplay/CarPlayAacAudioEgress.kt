@@ -68,13 +68,6 @@ class CarPlayAacAudioEgress(
     private val peakBehindMs = AtomicLong(0L)
     private val pulledBytes = AtomicLong(0L)
 
-    /**
-     * Optional hook when the RTP pacer falls far behind (~500ms). Kept for diagnostics;
-     * RtspSession intentionally leaves this null — posting modesChanged during a gap
-     * latches Audi MainAudio mute while AAC still flows.
-     */
-    @Volatile var onCadenceGap: (() -> Unit)? = null
-
     /** @return false when TX is already running. */
     fun start(): Boolean {
         if (!running.compareAndSet(false, true)) return false
@@ -224,6 +217,8 @@ class CarPlayAacAudioEgress(
                         val ns = (sleepNs % 1_000_000L).toInt()
                         Thread.sleep(ms, ns)
                     } else if (sleepNs < -frameNs * REALIGN_FRAMES) {
+                        // Realign snaps the RTP pacer clock only — never POST modesChanged:
+                        // Audi underruns on track-skip/pane-swap and would latch mixer mute.
                         val behindMs = -sleepNs / 1_000_000L
                         nextSendAt = System.nanoTime()
                         realignCount.incrementAndGet()
@@ -233,10 +228,6 @@ class CarPlayAacAudioEgress(
                             "CarPlay AAC cadence realign behindMs=$behindMs " +
                                 "packet=$packets q=${auQueue.size}",
                         )
-                        runCatching { onCadenceGap?.invoke() }
-                            .onFailure { e ->
-                                Log.w(CarPlayConsts.TAG, "onCadenceGap failed", e)
-                            }
                     }
                     // Mildly behind: skip sleep and send ASAP to catch up (no clock snap).
                 }
