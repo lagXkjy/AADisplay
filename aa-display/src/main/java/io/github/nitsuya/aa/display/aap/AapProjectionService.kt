@@ -12,7 +12,10 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
@@ -31,6 +34,12 @@ class AapProjectionService : Service() {
         private val pendingTransport = AtomicReference<PendingTransport?>(null)
         private val attachLock = Any()
         @Volatile private var lastStatus: String = "未启动"
+
+        private const val USB_PROBE_WINDOW_MS = 20_000L
+        private const val USB_PROBE_INTERVAL_MS = 500L
+        /** API 31+; string keeps older compile SDKs from needing a hard reference. */
+        private const val ACTION_USB_ACCESSORY_HANDSHAKE =
+            "android.hardware.usb.action.USB_ACCESSORY_HANDSHAKE"
 
         private data class PendingTransport(
             val transport: Transport,
@@ -53,6 +62,9 @@ class AapProjectionService : Service() {
         fun isSessionArmed(): Boolean = sessionRef.get() != null
 
         fun isProtocolLive(): Boolean = sessionRef.get()?.isProtocolLive() == true
+
+        fun hasActiveTransport(): Boolean =
+            sessionRef.get()?.hasActiveTransport() == true || pendingTransport.get() != null
 
         fun lastStatus(): String = lastStatus
 
@@ -119,12 +131,41 @@ class AapProjectionService : Service() {
 
     private var session: AapSourceSession? = null
     private var usbDetachRegistered = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var usbProbeUntilElapsed = 0L
+    private val usbProbeTick = object : Runnable {
+        override fun run() {
+            if (!CarPlayChannel.useAapEgress(this@AapProjectionService)) return
+            if (isProtocolLive() || hasActiveTransport()) return
+            AapUsbProbe.tryAttachExisting(this@AapProjectionService)
+            if (SystemClock.elapsedRealtime() < usbProbeUntilElapsed) {
+                mainHandler.postDelayed(this, USB_PROBE_INTERVAL_MS)
+            }
+        }
+    }
 
     private val usbDetachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_DETACHED) return
-            Log.i(AapConsts.TAG, "USB accessory detached — clear replug gate")
-            clearUsbReplugRequired()
+            when (intent?.action) {
+                UsbManager.ACTION_USB_ACCESSORY_DETACHED -> {
+                    Log.i(AapConsts.TAG, "USB accessory detached — clear replug gate")
+                    clearUsbReplugRequired()
+                }
+                UsbManager.ACTION_USB_ACCESSORY_ATTACHED -> {
+                    // Prefer Activity path; this is a safety net when ATTACHED is also delivered
+                    // as a broadcast to the armed FGS (OEM-dependent).
+                    Log.i(AapConsts.TAG, "USB accessory attached broadcast — probe")
+                    clearUsbReplugRequired()
+                    scheduleUsbProbeWindow("attached-broadcast")
+                }
+                else -> {
+                    // API 31+: USB_ACCESSORY_HANDSHAKE — AOA START / timeout telemetry.
+                    if (intent?.action == ACTION_USB_ACCESSORY_HANDSHAKE) {
+                        Log.i(AapConsts.TAG, "USB accessory handshake — probe")
+                        scheduleUsbProbeWindow("handshake")
+                    }
+                }
+            }
         }
     }
 
@@ -167,7 +208,7 @@ class AapProjectionService : Service() {
         if (sessionRef.get() != null) {
             drainPendingTransport()
             // Session may have been armed before DHU entered accessory mode — keep probing.
-            AapUsbProbe.tryAttachExisting(this)
+            scheduleUsbProbeWindow("ensure-existing")
             return
         }
         val s = AapSourceSession(this) { status ->
@@ -182,12 +223,30 @@ class AapProjectionService : Service() {
         updateNotification(lastStatus)
         drainPendingTransport()
         // DHU may already be in accessory mode with a missed ATTACHED (wrong filter / UriActivity).
-        AapUsbProbe.tryAttachExisting(this)
+        // Also cover the race where AOA START arrives a few seconds after FGS arm.
+        scheduleUsbProbeWindow("ensure-new")
+    }
+
+    /**
+     * Poll [UsbManager.getAccessoryList] for a short window. DHU/AOA often appears after the
+     * first probe; without a retry the kernel hits ACCESSORY_MODE_ENTER_TIMEOUT (~10s) and
+     * DHU reports Attached → immediate read/write fail.
+     */
+    private fun scheduleUsbProbeWindow(reason: String) {
+        val until = SystemClock.elapsedRealtime() + USB_PROBE_WINDOW_MS
+        if (until > usbProbeUntilElapsed) usbProbeUntilElapsed = until
+        mainHandler.removeCallbacks(usbProbeTick)
+        Log.i(AapConsts.TAG, "USB probe window start reason=$reason for ${USB_PROBE_WINDOW_MS}ms")
+        mainHandler.post(usbProbeTick)
     }
 
     private fun registerUsbDetachReceiver() {
         if (usbDetachRegistered) return
-        val filter = IntentFilter(UsbManager.ACTION_USB_ACCESSORY_DETACHED)
+        val filter = IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_ACCESSORY_DETACHED)
+            addAction(UsbManager.ACTION_USB_ACCESSORY_ATTACHED)
+            addAction(ACTION_USB_ACCESSORY_HANDSHAKE)
+        }
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(usbDetachReceiver, filter, RECEIVER_NOT_EXPORTED)
         } else {
@@ -205,6 +264,8 @@ class AapProjectionService : Service() {
 
     private fun tearDown(reason: String) {
         Log.i(AapConsts.TAG, "AapProjectionService tearDown $reason")
+        mainHandler.removeCallbacks(usbProbeTick)
+        usbProbeUntilElapsed = 0L
         unregisterUsbDetachReceiver()
         pendingTransport.getAndSet(null)?.let { runCatching { it.transport.close() } }
         sessionRef.getAndSet(null)?.stop()

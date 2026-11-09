@@ -41,6 +41,7 @@ import net.prototux.aare.aap.channels.InputChannel
 import net.prototux.aare.aap.channels.MediaPlaybackChannel
 import net.prototux.aare.aap.channels.SensorChannel
 import net.prototux.aare.aap.channels.VideoChannel
+import net.prototux.aare.aap.wireless.WirelessBootstrapException
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -80,6 +81,8 @@ class AapSourceSession(
     private val nowPlaying = AapNowPlaying()
     private val inputKeys = AapInputKeys(app)
     private val batteryReporter = AapBatteryReporter(app)
+    /** All HU audio sinks opened this session; only the first of each streamType is fed. */
+    private val audioChannels = ArrayList<AudioChannel>()
     private var touchW = AapConsts.DEFAULT_VIDEO_WIDTH
     private var touchH = AapConsts.DEFAULT_VIDEO_HEIGHT
     private var videoW = AapConsts.DEFAULT_VIDEO_WIDTH
@@ -163,7 +166,6 @@ class AapSourceSession(
         }
     }
 
-    @Synchronized
     private fun connectDevice(device: BluetoothDevice) {
         if (!running.get()) return
         if (aap != null) {
@@ -173,32 +175,62 @@ class AapSourceSession(
         val connector = wireless ?: return
         val peerName = runCatching { device.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: "车机"
         onStatus("正在连接 $peerName…")
-        val t = try {
-            connector.connectBlocking(device)
-        } catch (e: WirelessPermissionException) {
-            onStatus("需要蓝牙权限，请到系统设置里允许")
-            return
-        } catch (e: WirelessException) {
-            onStatus("连接失败，请在车机上重试")
-            Log.w(AapConsts.TAG, "wireless connect failed", e)
-            return
-        } catch (e: Throwable) {
-            onStatus("连接失败，请重试")
-            Log.e(AapConsts.TAG, "connectDevice", e)
+        // Mach-E (#74): right after BT comes up the car accepts RFCOMM but is not ready yet.
+        // Retry twice inside this job (10s then 20s) when bootstrap fails whileNegotiating.
+        // Do not hold @Synchronized across sleep — USB attach must still be able to bind.
+        var attempt = 0
+        while (true) {
+            if (!running.get() || aap != null) return
+            val t = try {
+                connector.connectBlocking(device)
+            } catch (e: WirelessPermissionException) {
+                onStatus("需要蓝牙权限，请到系统设置里允许")
+                return
+            } catch (e: Throwable) {
+                val carNotReady = generateSequence<Throwable>(e) { it.cause }
+                    .any { it is WirelessBootstrapException && it.whileNegotiating }
+                if (carNotReady && attempt < 2 && running.get() && aap == null) {
+                    attempt++
+                    val delayMs = attempt * WIRELESS_RETRY_DELAY_MS
+                    Log.w(
+                        AapConsts.TAG,
+                        "wireless: car not ready yet; retry $attempt/2 in ${delayMs / 1000}s (${e.message})",
+                    )
+                    onStatus("车机尚未就绪，${delayMs / 1000}s 后重试…")
+                    try {
+                        Thread.sleep(delayMs)
+                    } catch (_: InterruptedException) {
+                        return
+                    }
+                    continue
+                }
+                if (e is WirelessException) {
+                    onStatus("连接失败，请在车机上重试")
+                    Log.w(AapConsts.TAG, "wireless connect failed", e)
+                } else {
+                    onStatus("连接失败，请重试")
+                    Log.e(AapConsts.TAG, "connectDevice", e)
+                }
+                return
+            }
+            // USB may have bound while we blocked in RFCOMM/Wi‑Fi.
+            if (aap != null) {
+                Log.i(AapConsts.TAG, "drop wireless transport; session already live")
+                runCatching { t.close() }
+                return
+            }
+            startAap(t, peerKey = device.address, trustOnFirstUse = true, sendPings = true)
             return
         }
-        // USB may have bound while we blocked in RFCOMM/Wi‑Fi.
-        if (aap != null) {
-            Log.i(AapConsts.TAG, "drop wireless transport; session already live")
-            runCatching { t.close() }
-            return
-        }
-        startAap(t, peerKey = device.address, trustOnFirstUse = true, sendPings = true)
     }
 
     /** True when [t] is the live transport with an AAP session already up. */
     @Synchronized
     fun isBoundTo(t: Transport): Boolean = transport === t && aap != null
+
+    /** True while a transport fd is held (incl. mid-TLS) — soft USB probe must not reopen. */
+    @Synchronized
+    fun hasActiveTransport(): Boolean = transport != null
 
     /** True only after service discovery completed — not during TLS / failed handshake. */
     fun isProtocolLive(): Boolean = aap?.state == AapSession.State.RUNNING
@@ -484,10 +516,18 @@ class AapSourceSession(
 
     private val audioListener = object : AudioChannel.Listener {
         override fun onAudioReady(channel: AudioChannel, config: AudioConfiguration) {
+            if (!isPrimaryAudio(channel)) return
             audioEgress.onChannelReady(channel, config)
             audioEgress.attach(channel)
         }
     }
+
+    /**
+     * Some cars offer two media / guidance sinks (Ford Mustang Mach-E, AARE #74). Feeding both
+     * made the second replace the first mid-capture; keep only the first of each kind.
+     */
+    private fun isPrimaryAudio(channel: AudioChannel): Boolean =
+        audioChannels.firstOrNull { it.streamType == channel.streamType } === channel
 
     private val inputListener = object : InputChannel.Listener {
         override fun onInput(report: InputReport) {
@@ -600,6 +640,7 @@ class AapSourceSession(
             response: ServiceDiscoveryResponse,
         ): List<ServiceChannel> {
             val channels = ArrayList<ServiceChannel>()
+            audioChannels.clear()
             for (s in response.channelsList) {
                 when {
                     s.hasMediaSinkService() && s.mediaSinkService.videoConfigsCount > 0 &&
@@ -611,17 +652,23 @@ class AapSourceSession(
                     s.hasMediaSinkService() && s.mediaSinkService.videoConfigsCount == 0 -> {
                         val audio = AudioChannel(s, audioListener)
                         channels += audio
+                        audioChannels += audio
                         // May attach later on onAudioReady when config lands.
-                        audio.config?.let { audioEgress.attach(audio) }
+                        if (isPrimaryAudio(audio)) {
+                            audio.config?.let { audioEgress.attach(audio) }
+                        }
                     }
                     s.hasInputSourceService() -> {
                         val input = InputChannel(s, inputListener)
                         input.touchScreen?.let { ts ->
-                            touchW = ts.width.coerceAtLeast(1)
-                            touchH = ts.height.coerceAtLeast(1)
+                            // Hyundai GEN5 Wide advertises 0×0; treat nonpositive as unspecified
+                            // and keep the video-sized default (using 1×1 blows up every touch).
+                            if (ts.width > 0) touchW = ts.width
+                            if (ts.height > 0) touchH = ts.height
                             Log.i(
                                 AapConsts.TAG,
-                                "AAP touchscreen ${touchW}x$touchH type=${ts.type} secondary=${ts.isSecondary}",
+                                "AAP touchscreen advertised=${ts.width}x${ts.height} " +
+                                    "using=${touchW}x$touchH type=${ts.type} secondary=${ts.isSecondary}",
                             )
                             syncTouchBridgeLayout()
                         } ?: Log.w(AapConsts.TAG, "AAP input has no touchscreen; keep default ${touchW}x$touchH")
@@ -643,6 +690,13 @@ class AapSourceSession(
                     }
                 }
             }
+            Log.i(
+                AapConsts.TAG,
+                "AAP audio: " + audioChannels.joinToString { ch ->
+                    "${ch.streamType.name.removePrefix("AUDIO_STREAM_")}#${ch.id}" +
+                        if (isPrimaryAudio(ch)) "" else " (unused: second of this kind)"
+                },
+            )
             onStatus("车机已认出本机，正在接通…")
             return channels
         }
@@ -688,6 +742,7 @@ class AapSourceSession(
                 }
                 batteryReporter.stop()
                 audioEgress.stop()
+                audioChannels.clear()
                 nowPlaying.stop()
                 inputKeys.reset()
                 inputHandler.removeCallbacksAndMessages(null)
@@ -757,6 +812,9 @@ class AapSourceSession(
             VideoCodecResolutionType.VIDEO_2160x3840 -> 2160 to 3840
         }
 
+        /** Delay base for wireless "car not ready yet" retries (× attempt number). */
+        private const val WIRELESS_RETRY_DELAY_MS = 10_000L
+
         /** Sustained ack latency (send→HU ack) beyond this counts as congestion. */
         private const val ACK_LATENCY_BAD_MS = 300L
         private const val SEND_LATENCY_BAD_MS = 1_000L
@@ -816,4 +874,5 @@ class AapSourceSession(
         lastTouchMoveLogMs = now
         return true
     }
+
 }

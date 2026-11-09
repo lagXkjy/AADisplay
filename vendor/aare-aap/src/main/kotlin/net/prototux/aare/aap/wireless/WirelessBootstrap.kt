@@ -46,8 +46,16 @@ sealed interface JoinResult {
     class Failed(val status: Int, val message: String) : JoinResult
 }
 
-class WirelessBootstrapException(message: String, val status: Int = WppStatus.WIFI_NETWORK_UNAVAILABLE, cause: Throwable? = null) :
-    Exception(message, cause)
+class WirelessBootstrapException(
+    message: String,
+    val status: Int = WppStatus.WIFI_NETWORK_UNAVAILABLE,
+    cause: Throwable? = null,
+    /**
+     * Failed before the head unit told us its endpoint and network (it hung up, went silent,
+     * or sent something unusable): a car that isn't ready yet, so trying again later can work.
+     */
+    val whileNegotiating: Boolean = false,
+) : Exception(message, cause)
 
 /**
  * Phone side of the Bluetooth RFCOMM bootstrap of wireless Android Auto: learn the head unit's
@@ -173,7 +181,9 @@ class WirelessBootstrap(
         if (!closed.compareAndSet(false, true)) return
         runCatching { input.close() }
         runCatching { output.close() }
-        inbox.put(Inbound.End(null))
+        // offer, not put: the queue is unbounded, and put() throws when close() runs on an
+        // interrupted thread (an AAP session closing from its own timer).
+        inbox.offer(Inbound.End(null))
     }
 
     // ---- phase 1: learn the endpoint and the credentials ----
@@ -386,14 +396,14 @@ class WirelessBootstrap(
                     // Answered here so pings are answered even while connectWifi() blocks.
                     sendQuietly(WppMessageId.PING_RESPONSE, frame.payload)
                 } else {
-                    inbox.put(Inbound.Message(frame))
+                    inbox.offer(Inbound.Message(frame))
                 }
             }
         } catch (e: IOException) {
             if (!closed.get()) error = e
         }
         linkEnded = true
-        inbox.put(Inbound.End(error))
+        inbox.offer(Inbound.End(error))
     }
 
     private fun send(id: Int, payload: ByteArray) {
@@ -442,7 +452,8 @@ class WirelessBootstrap(
     }
 
     private fun fail(message: String, status: Int = WppStatus.WIFI_NETWORK_UNAVAILABLE, cause: Throwable? = null) =
-        WirelessBootstrapException(message, status, cause).also { log.e("wireless: $message", cause) }
+        WirelessBootstrapException(message, status, cause, whileNegotiating = state == State.NEGOTIATING)
+            .also { log.e("wireless: $message", cause) }
 
     private fun now() = System.nanoTime() / 1_000_000
 

@@ -34,6 +34,11 @@ object AapUsbProbe {
             Log.i(AapConsts.TAG, "USB probe: AAP already live — skip")
             return
         }
+        // Handshake in progress (TLS / service discovery) — do not openAccessory again.
+        if (AapProjectionService.hasActiveTransport()) {
+            Log.i(AapConsts.TAG, "USB probe: transport already bound — skip")
+            return
+        }
         if (AapProjectionService.isUsbReplugRequired()) {
             Log.i(AapConsts.TAG, "USB probe: blocked until unplug/replug (TLS fault)")
             return
@@ -80,10 +85,13 @@ object AapUsbProbe {
                 return
             }
         }
-        if (AapProjectionService.isProtocolLive()) return
-        PhoneCertStore.ensureExtracted(app, force = false)
+        if (AapProjectionService.isProtocolLive() || AapProjectionService.hasActiveTransport()) return
+        // Hold the AOA fd before cert extract — system exits accessory mode ~10s without open.
         val transport = UsbAccessoryTransport(usb, target)
         val peer = "usb:${target.manufacturer}:${target.model}:${target.version}"
+        Log.i(AapConsts.TAG, "USB probe: accessory opened name=${transport.name}")
+        runCatching { PhoneCertStore.ensureExtracted(app, force = false) }
+            .onFailure { Log.e(AapConsts.TAG, "USB probe: cert extract failed", it) }
         val ok = AapProjectionService.attachTransport(transport, peer, trustOnFirstUse = true)
         Log.i(AapConsts.TAG, "USB probe: attachTransport accepted=$ok")
         if (!ok) {

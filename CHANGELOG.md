@@ -4,6 +4,7 @@
 
 versionCode **10100** / versionName **1.1**。
 
+- **同步 AARE：** `vendor/aare-aap` 对齐 [prototux/AARE](https://github.com/prototux/AARE) `main` @ `5ac79ba`（含 proto optional / Ford 零值字段、原生焦点回投 re-START、无线 `whileNegotiating`）。保留 AADisplay 本地叠层（音频写队列日志、TLS nonce 诊断、`PROJECTED_NO_INPUT_FOCUS`）。消费端跟进：无线未就绪重试、每类音频只喂首通道、Hyundai 0×0 触控回落视频尺寸。
 - **分隔条 settle 卡顿：** `ratio-settle` 仅对尺寸变化的 pane 做 1px VD nudge，跳过 OneUI 上无效的 `bringTaskToFront` / `resizeTask`；throttle 窗口内 pending nudge OR 合并。
 - **方控下一曲打到栈外 QQ：** 分屏高德+抖音时焦点常停在高德；`MEDIA_NEXT` 只偏爱 Live 窗，不认另一侧抖音 Feed，于是 `pickMediaKeyTarget` 落到仍 PLAYING 的 `qqmusiccar`（可不在分屏栈里）。改为 NEXT/PREV 也优先视频前台窗并上滑切条；另一窗是抖音时不再把 transport 交给音乐会话。
 - **静态帧跳过（Host GL）：** 一 tick 内双窗无新帧、且分隔条 / 全屏 / 键盘条 / HID 光标（`ChromeKey`）与布局均未变时，跳过 GL 重绘 + swap；C2 按帧间隔复读上一帧保持线路节拍。静止画面（音乐 App、地图不移动）省 GPU / C2 转色 / 带宽；rate 统计把复读帧计入 delivered，不假触发 60→30 降档。

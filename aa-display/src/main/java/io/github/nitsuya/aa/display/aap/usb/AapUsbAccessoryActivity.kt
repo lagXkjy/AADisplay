@@ -43,18 +43,6 @@ class AapUsbAccessoryActivity : Activity() {
         thread(name = "aap-usb-open", isDaemon = true) {
             var transport: UsbAccessoryTransport? = null
             try {
-                // Warm cert before openAccessory — HU may time out if TLS waits on DEX extract.
-                PhoneCertStore.ensureExtracted(app, force = false)
-                val armedDeadline = SystemClock.elapsedRealtime() + SESSION_WAIT_MS
-                while (!AapProjectionService.isSessionArmed() &&
-                    SystemClock.elapsedRealtime() < armedDeadline
-                ) {
-                    Thread.sleep(100)
-                }
-                if (!AapProjectionService.isSessionArmed()) {
-                    Log.w(AapConsts.TAG, "USB AAP: FGS session not armed in time")
-                }
-
                 val usb = app.getSystemService(UsbManager::class.java)
                     ?: throw IllegalStateException("UsbManager missing")
                 if (!usb.hasPermission(accessory)) {
@@ -64,8 +52,34 @@ class AapUsbAccessoryActivity : Activity() {
                         return@thread
                     }
                 }
+                // openAccessory MUST beat UsbDeviceManager's ~10s ACCESSORY_MODE_ENTER_TIMEOUT.
+                // Cert extract / FGS arm happen after the fd is held — delaying open lets the
+                // kernel exit AOA and DHU immediately fails read/write after Attached.
                 transport = UsbAccessoryTransport(usb, accessory)
                 val peer = "usb:${accessory.manufacturer}:${accessory.model}:${accessory.version}"
+                Log.i(AapConsts.TAG, "USB AAP accessory opened name=${transport.name}")
+
+                // Warm cert while fd is held; HU TLS still needs the CarService leaf.
+                runCatching { PhoneCertStore.ensureExtracted(app, force = false) }
+                    .onFailure { Log.e(AapConsts.TAG, "USB AAP cert extract failed", it) }
+
+                val armedDeadline = SystemClock.elapsedRealtime() + SESSION_WAIT_MS
+                while (!AapProjectionService.isSessionArmed() &&
+                    SystemClock.elapsedRealtime() < armedDeadline
+                ) {
+                    // Keep retrying attach so pending queue is set before ensureSession.
+                    AapProjectionService.attachTransport(
+                        transport,
+                        peerKey = peer,
+                        trustOnFirstUse = true,
+                        fromAccessoryAttached = true,
+                    )
+                    Thread.sleep(100)
+                }
+                if (!AapProjectionService.isSessionArmed()) {
+                    Log.w(AapConsts.TAG, "USB AAP: FGS session not armed in time")
+                }
+
                 // ATTACHED intent = physical (re)plug — clear TLS-desync soft-attach gate.
                 val accepted = AapProjectionService.attachTransport(
                     transport,

@@ -49,4 +49,4 @@
 
 ## 协议来源
 
-`vendor/aare-aap`：vendored [prototux/AARE](https://github.com/prototux/AARE) `aap` 模块（GPL-3.0-or-later）。
+`vendor/aare-aap`：vendored [prototux/AARE](https://github.com/prototux/AARE) `aap` 模块（GPL-3.0-or-later），当前 pin `5ac79ba`。

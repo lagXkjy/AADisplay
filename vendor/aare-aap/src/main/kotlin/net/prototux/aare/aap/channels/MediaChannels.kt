@@ -78,6 +78,12 @@ abstract class MediaSinkChannel(service: Service, name: String, private val code
         }
     }
 
+    /**
+     * Send priority of this stream's DATA. START and STOP use it too, so they stay in order with
+     * the data around them instead of overtaking it at control priority.
+     */
+    protected abstract val dataPriority: Int
+
     protected open fun onConfig(cfg: Config) {}
     protected open fun onAcked() {}
     protected open fun onOtherMessage(msg: AapMessage) {}
@@ -87,14 +93,14 @@ abstract class MediaSinkChannel(service: Service, name: String, private val code
         mediaSession = sessionCounter.incrementAndGet()
         unacked.set(0)
         sentSinceStart.set(0)
-        send(MediaMsg.START, Start.newBuilder().setSessionId(mediaSession).setConfigurationIndex(configIndex).build())
+        send(MediaMsg.START, Start.newBuilder().setSessionId(mediaSession).setConfigurationIndex(configIndex).build(), dataPriority)
         started = true
     }
 
     protected fun stopStream() {
         if (!started) return
         started = false
-        send(MediaMsg.STOP, Stop.getDefaultInstance())
+        send(MediaMsg.STOP, Stop.getDefaultInstance(), dataPriority)
     }
 
     /**
@@ -184,6 +190,8 @@ class VideoChannel(
     val configs: List<VideoConfiguration> = service.mediaSinkService.videoConfigsList
     @Volatile var chosen: VideoConfiguration? = null
         private set
+    /** The configuration index of the running stream, to START a new session on the same one. */
+    @Volatile private var startIndex = 0
     @Volatile var focused = false
         private set
 
@@ -211,17 +219,20 @@ class VideoChannel(
     private val sentAt = ArrayDeque<Long>()
 
     override val openPriority = 0
+    override val dataPriority = Priority.VIDEO
 
     override fun onConfig(cfg: Config) {
         if (!ready) return
         val index = listener.chooseConfiguration(configs, configIndices).coerceIn(0, configs.size - 1)
         chosen = configs[index]
+        startIndex = index
         synchronized(lock) { sentAt.clear() }
         startStream(index)
         listener.onVideoStart(index, configs[index])
-        // Ask to be shown; head units answer with a focus notification.
+        // Ask to be shown; head units answer with a focus notification. At the data priority so
+        // it follows START: the head unit must not be asked to show a stream it hasn't started.
         send(MediaMsg.VIDEO_FOCUS_REQUEST, VideoFocusRequestNotification.newBuilder()
-            .setMode(VideoFocusMode.VIDEO_FOCUS_PROJECTED).setReason(VideoFocusReason.UNKNOWN).build())
+            .setMode(VideoFocusMode.VIDEO_FOCUS_PROJECTED).setReason(VideoFocusReason.UNKNOWN).build(), dataPriority)
     }
 
     override fun onOtherMessage(msg: AapMessage) {
@@ -229,8 +240,6 @@ class VideoChannel(
             MediaMsg.VIDEO_FOCUS_NOTIFICATION -> {
                 val n = VideoFocusNotification.parseFrom(msg.bodyBytes())
                 listener.onVideoFocusMode(n.focus, n.unsolicited)
-                val projected = n.focus == VideoFocusMode.VIDEO_FOCUS_PROJECTED ||
-                    n.focus == VideoFocusMode.VIDEO_FOCUS_PROJECTED_NO_INPUT_FOCUS
                 // PROJECTED_NO_INPUT_FOCUS: HU shows our video but keeps touch. Re-request full
                 // PROJECTED so touchscreen reports reach the phone (keys may still work).
                 if (n.focus == VideoFocusMode.VIDEO_FOCUS_PROJECTED_NO_INPUT_FOCUS) {
@@ -240,18 +249,20 @@ class VideoChannel(
                             .setMode(VideoFocusMode.VIDEO_FOCUS_PROJECTED)
                             .setReason(VideoFocusReason.UNKNOWN)
                             .build(),
+                        dataPriority,
                     )
                 }
-                setFocus(projected)
+                setFocus(n.focus)
             }
             MediaMsg.VIDEO_FOCUS_REQUEST -> {
                 // Some head units ask us to change focus; we comply and confirm.
                 val r = VideoFocusRequestNotification.parseFrom(msg.bodyBytes())
-                val projected = r.mode == VideoFocusMode.VIDEO_FOCUS_PROJECTED
+                val projected = isProjected(r.mode)
+                // Confirm the projected mode it asked for (with or without input focus).
                 send(MediaMsg.VIDEO_FOCUS_NOTIFICATION, VideoFocusNotification.newBuilder()
-                    .setFocus(if (projected) VideoFocusMode.VIDEO_FOCUS_PROJECTED else VideoFocusMode.VIDEO_FOCUS_NATIVE)
+                    .setFocus(if (projected) r.mode else VideoFocusMode.VIDEO_FOCUS_NATIVE)
                     .setUnsolicited(false).build())
-                setFocus(projected)
+                setFocus(r.mode)
             }
             MediaMsg.UPDATE_UI_CONFIG_REQUEST -> {
                 // The head unit changes the layout at runtime (insets, theme): apply it and
@@ -266,13 +277,23 @@ class VideoChannel(
         }
     }
 
-    private fun setFocus(projected: Boolean) {
+    private fun setFocus(mode: VideoFocusMode) {
+        val projected = isProjected(mode)
         val changed = projected != focused
         focused = projected
         if (projected) {
+            // Some head units throw their decoder away while they show their own screen (the
+            // reverse camera on LG GEN5, #109) and only build a new one on a START: if we stopped
+            // the stream for a full native focus, start a fresh session now so the picture returns.
+            if (!started) startStream(startIndex)
             synchronized(lock) { needKeyFrame = true; while (pending.isNotEmpty()) pending.removeFirst().let { it.recycle(it.buf) } }
-            // resend codec config: some head units reset their decoder when focus returns
+            // Resend the codec config after the (re)start, the same as at connection.
             codecConfig?.let { sendCodecConfigData(it, 0, it.size, Priority.VIDEO) }
+        } else if (mode == VideoFocusMode.VIDEO_FOCUS_NATIVE) {
+            // Full native: the head unit shows its own screen (reverse, "exit to car"). Stop the
+            // stream so it can tear its decoder down cleanly; we re-START when projection returns.
+            // A transient native (a brief overlay) keeps the stream open; we just stop feeding it.
+            stopStream()
         }
         if (changed || projected) listener.onVideoFocus(projected)
     }
@@ -356,6 +377,10 @@ class VideoChannel(
     companion object {
         /** About a quarter second at 30 fps: more than that and we're just adding latency. */
         const val MAX_PENDING = 8
+
+        /** Our projection is on screen, with or without input focus (native, transient native: not). */
+        private fun isProjected(mode: VideoFocusMode) =
+            mode == VideoFocusMode.VIDEO_FOCUS_PROJECTED || mode == VideoFocusMode.VIDEO_FOCUS_PROJECTED_NO_INPUT_FOCUS
     }
 }
 
@@ -370,6 +395,7 @@ class AudioChannel(service: Service, private val listener: Listener? = null) :
     }
 
     val streamType: AudioStreamType = service.mediaSinkService.audioType
+    override val dataPriority = Priority.AUDIO
     /** Underflows the car reported on this stream (0x800B). */
     @Volatile var underflows = 0
         private set
