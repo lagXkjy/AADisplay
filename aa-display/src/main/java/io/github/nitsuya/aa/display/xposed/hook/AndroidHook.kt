@@ -142,58 +142,80 @@ object AndroidHook : BaseHook() {
         isSystemServerProcessCached = readIsSystemServerProcess()
         systemServerClassLoader = lpparam.classLoader
         isSystemServerHooked = true
-        Initiator.init(lpparam.classLoader)
+        runCatching { Initiator.init(lpparam.classLoader) }
+            .onFailure { log(tagName, "Initiator.init failed", it) }
         log(tagName, "xposed init")
         hookSuppressAaDisplayBroadcastWtf(lpparam.classLoader)
         var serviceManagerHook: XC_MethodHook.Unhook? = null
-        serviceManagerHook = findMethod("android.os.ServiceManager") {
-            name == "addService"
-        }.hookBefore { param ->
-            if (param.args[0] == "package") {
-                serviceManagerHook?.unhook()
-                val pms = param.args[1] as IPackageManager
-                log(tagName, "Got pms: $pms")
-                runCatching {
-                    BridgeService.register(pms)
-                    log(tagName, "Bridge service injected")
-                }.onFailure {
-                    log(tagName, "System service crashed", it)
+        runCatching {
+            serviceManagerHook = findMethod("android.os.ServiceManager") {
+                name == "addService"
+            }.hookBefore { param ->
+                try {
+                    if (param.args.getOrNull(0) == "package" &&
+                        param.args.getOrNull(1) is IPackageManager
+                    ) {
+                        serviceManagerHook?.unhook()
+                        val pms = param.args[1] as IPackageManager
+                        log(tagName, "Got pms: $pms")
+                        runCatching {
+                            BridgeService.register(pms)
+                            log(tagName, "Bridge service injected")
+                        }.onFailure {
+                            log(tagName, "System service crashed", it)
+                        }
+                    }
+                } catch (_: Throwable) {
+                    // Never propagate into ServiceManager.addService (PMS boot path).
                 }
             }
+        }.onFailure {
+            log(tagName, "ServiceManager hook install failed — AADD bridge unavailable", it)
         }
 
         // One UI 8.5+ may reorder/wrap AMS ctor params; do not require Context at [0].
         var activityManagerServiceConstructorHook: List<XC_MethodHook.Unhook> = emptyList()
-        activityManagerServiceConstructorHook =
-            findAllConstructors("com.android.server.am.ActivityManagerService") {
-                true
-            }.hookAfter { param ->
-                if (captureSystemContext(param.thisObject, param.args)) {
-                    activityManagerServiceConstructorHook.forEach { hook -> hook.unhook() }
+        runCatching {
+            activityManagerServiceConstructorHook =
+                findAllConstructors("com.android.server.am.ActivityManagerService") {
+                    true
+                }.hookAfter { param ->
+                    try {
+                        if (captureSystemContext(param.thisObject, param.args)) {
+                            activityManagerServiceConstructorHook.forEach { hook -> hook.unhook() }
+                        }
+                    } catch (_: Throwable) {
+                        // Never propagate into the AMS constructor.
+                    }
                 }
-            }.also {
-                if (it.isEmpty()) {
-                    log(tagName, "no ActivityManagerService constructor found")
-                } else {
-                    log(tagName, "hooked ${it.size} ActivityManagerService constructor(s)")
-                }
-            }
+        }.onFailure {
+            log(tagName, "AMS constructor hook install failed — systemContext capture unavailable", it)
+        }
+        if (activityManagerServiceConstructorHook.isEmpty()) {
+            log(tagName, "no ActivityManagerService constructor found")
+        } else {
+            log(tagName, "hooked ${activityManagerServiceConstructorHook.size} ActivityManagerService constructor(s)")
+        }
 
         var activityManagerServiceSystemReadyHook: XC_MethodHook.Unhook? = null
-        activityManagerServiceSystemReadyHook =
-            findMethod("com.android.server.am.ActivityManagerService") {
-                name == "systemReady"
-            }.hookAfter { param ->
-                activityManagerServiceSystemReadyHook?.unhook()
-                runCatching {
-                    if (!CoreManagerService.hasSystemContext) {
-                        captureSystemContext(param.thisObject, param.args)
+        runCatching {
+            activityManagerServiceSystemReadyHook =
+                findMethod("com.android.server.am.ActivityManagerService") {
+                    name == "systemReady"
+                }.hookAfter { param ->
+                    activityManagerServiceSystemReadyHook?.unhook()
+                    runCatching {
+                        if (!CoreManagerService.hasSystemContext) {
+                            captureSystemContext(param.thisObject, param.args)
+                        }
+                        CoreManagerService.systemReady()
+                        log(tagName, "system ready")
+                    }.onFailure {
+                        log(tagName, "systemReady failed", it)
                     }
-                    CoreManagerService.systemReady()
-                    log(tagName, "system ready")
-                }.onFailure {
-                    log(tagName, "systemReady failed", it)
                 }
-            }
+        }.onFailure {
+            log(tagName, "systemReady hook install failed — CoreManagerService will not arm", it)
+        }
     }
 }
