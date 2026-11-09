@@ -30,8 +30,6 @@ object CarPlayRuntimePerms {
             .toTypedArray()
     }
 
-    fun hasWireless(context: Context): Boolean = wirelessRequired(context).isEmpty()
-
     /**
      * @return true if already granted (caller may start FGS immediately);
      * false if a system dialog was shown (resume on [onRequestResult]).

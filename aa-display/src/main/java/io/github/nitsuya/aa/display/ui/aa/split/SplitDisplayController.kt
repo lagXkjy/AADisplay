@@ -116,12 +116,6 @@ class SplitDisplayController(
     val secondaryDisplayId: Int
         get() = mCachedSecondaryDisplayId
 
-    /** Retired Car SDK presentation id — always invalid (AIDL ordinal kept elsewhere). */
-    val mAaUiDisplayId: Int
-        get() = Display.INVALID_DISPLAY
-
-    fun aaUiDisplayId(): Int = Display.INVALID_DISPLAY
-
     internal var mPrimary: VirtualDisplay? = null
     internal var mSecondary: VirtualDisplay? = null
     internal var mPrimarySurface: Surface? = null

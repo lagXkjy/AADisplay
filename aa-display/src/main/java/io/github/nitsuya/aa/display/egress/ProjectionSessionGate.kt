@@ -49,32 +49,4 @@ object ProjectionSessionGate {
             return owners.any { it != self }
         }
     }
-
-    /** True when [owner] currently holds the live bit. */
-    fun isOwnedBy(owner: String): Boolean {
-        synchronized(lock) {
-            return owner in owners
-        }
-    }
-
-    /**
-     * Legacy boolean write used only where the caller is the sole egress.
-     * Prefer [setOwnerLive]. Kept so a mistaken single-bit clear cannot be
-     * reintroduced without an owner key at new call sites.
-     */
-    @Deprecated("Use setOwnerLive(owner, live)", ReplaceWith("setOwnerLive(owner, live)"))
-    fun setCarPlayLive(live: Boolean) {
-        synchronized(lock) {
-            if (live) {
-                // Ambiguous owner — treat as CarPlay for backward safety.
-                owners.add(OWNER_CARPLAY)
-            } else {
-                owners.clear()
-            }
-            secondaryEgressLive.set(owners.isNotEmpty())
-        }
-    }
-
-    /** True when secondary egress is live — Host / AAP GL owns touch + encoder path. */
-    fun shouldUseCarPlayHost(): Boolean = secondaryEgressLive.get()
 }

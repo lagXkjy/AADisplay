@@ -491,12 +491,6 @@ class Iap2Session(
         }, "iap2-syn-ready").apply { isDaemon = true }.start()
     }
 
-    private fun maybeSendSyn(reason: String) {
-        synchronized(lock) {
-            maybeSendSynLocked(reason)
-        }
-    }
-
     private fun maybeSendSynLocked(reason: String) {
         if (state != State.Detect && state != State.Negotiate) return
         if (peerLsp != null) return

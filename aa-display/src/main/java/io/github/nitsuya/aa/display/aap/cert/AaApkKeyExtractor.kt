@@ -85,8 +85,6 @@ object AaApkKeyExtractor {
         return extractFromDexBlobs(blobs, sourceLabel = paths.joinToString(",") { File(it).name })
     }
 
-    fun extractFromFile(path: String): Result = extractFromApkPaths(listOf(path))
-
     fun extractFromDexBlobs(
         blobs: List<Pair<String, ByteArray>>,
         sourceLabel: String,

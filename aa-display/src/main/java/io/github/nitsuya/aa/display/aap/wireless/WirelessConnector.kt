@@ -67,22 +67,6 @@ class WirelessConnector(context: Context, private val log: AapLog, private val o
     private val adapter: BluetoothAdapter? = context.getSystemService(BluetoothManager::class.java)?.adapter
 
     /**
-     * Bonded devices that publish the Android Auto wireless service. Devices whose services are
-     * not known yet get an SDP query (answered later by ACTION_UUID), so a head unit paired a
-     * moment ago may only show up on the next call; [refresh] queries every bonded device, for
-     * head units that enabled wireless after pairing (phones cache SDP results).
-     */
-    fun findHeadUnits(refresh: Boolean = false): List<BluetoothDevice> {
-        requirePermissions(bluetoothPermissions())
-        val adapter = adapter ?: return emptyList()
-        if (!adapter.isEnabled) return emptyList()
-        return adapter.bondedDevices.orEmpty().filter { device ->
-            if (refresh || device.uuids.isNullOrEmpty()) device.fetchUuidsWithSdp()
-            isHeadUnit(device)
-        }
-    }
-
-    /**
      * Bonded head units offering wireless Android Auto that are already connected over Bluetooth.
      * For the case where the car was connected before AARE could react to the ACL-connect
      * broadcast (#56): we can't wait for an edge that already passed, so we look at the current
@@ -129,8 +113,6 @@ class WirelessConnector(context: Context, private val log: AapLog, private val o
 
     /** Permissions [connect] needs on this Android version; the UI can request the missing ones. */
     fun requiredPermissions(): List<String> = bluetoothPermissions() + wifiPermissions()
-
-    fun missingPermissions(): List<String> = requiredPermissions().filter { !granted(it) }
 
     // ---- one connection attempt ----
 

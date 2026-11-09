@@ -149,13 +149,6 @@ object ClusterArtStore {
         artMissCount = 0
     }
 
-    fun artUriString(revision: Long = 0L): String? {
-        val f = artFile()
-        if (!f.exists() || f.length() <= 0L) return null
-        val base = Uri.fromFile(f).toString()
-        return if (revision > 0L) "$base?rev=$revision" else base
-    }
-
     fun publishFromMetadata(
         resolver: ContentResolver,
         metadata: MediaMetadata?,

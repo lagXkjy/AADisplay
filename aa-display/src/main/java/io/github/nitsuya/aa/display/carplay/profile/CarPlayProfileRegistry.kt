@@ -54,7 +54,4 @@ object CarPlayProfileRegistry {
     fun defaultSource(): CarPlaySourceIdentity = iphone14_2
 
     fun defaultHu(): CarPlayHuProfile = generic
-
-    fun huById(id: String): CarPlayHuProfile =
-        huProfiles.firstOrNull { it.id == id } ?: generic
 }
