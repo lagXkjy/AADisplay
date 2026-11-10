@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.carplay
 
+import android.os.Process
 import android.util.Log
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.carplay.protocol.BinaryPlist
@@ -99,6 +100,12 @@ class CarPlayAudioEgress(
     }
 
     private fun pump() {
+        // Same process hosts GL compose / video encode / screen TCP — a single
+        // scheduling dip >20 ms must not land in the audio cadence.
+        try {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        } catch (_: Throwable) {
+        }
         val socket = CarPlayAccessoryNet.openUdp()
         txSocket = socket
         val target = InetSocketAddress(host, dataPort)
@@ -115,6 +122,7 @@ class CarPlayAudioEgress(
         var pulledTotal = 0L
         var pullFailLogged = false
         var lastShortLogMs = 0L
+        var lastMildLateLogMs = 0L
         CarPlayMediaClock.ensureRunning()
         // Seed RTP from the shared media clock (same epoch as screen NTP), then advance
         // by exactly one packet of samples. Wall-clock RTP on every packet makes DiPlay
@@ -155,18 +163,34 @@ class CarPlayAudioEgress(
                     val ms = sleepNs / 1_000_000L
                     val ns = (sleepNs % 1_000_000L).toInt()
                     Thread.sleep(ms, ns)
-                } else if (sleepNs < -intervalNs) {
-                    // Late: never burst-send. Drop the backlog locally (the system ring
-                    // is already drop-to-live) so the next packet is live, then realign.
+                } else if (-sleepNs >= RESYNC_LATE_NS) {
+                    // Past the declared audioLatencyMs budget: buffered content is
+                    // stale — drop it (the system ring is already drop-to-live) and
+                    // realign the pacer clock.
                     Log.i(
                         CarPlayConsts.TAG,
                         "CarPlay ${profile.label} audio cadence drop-live " +
                             "behindMs=${-sleepNs / 1_000_000L} " +
                             "packet=$packets pulled=${pulledTotal / 1024}KB",
                     )
-                    // Drop the backlog locally; the system ring is already drop-to-live.
                     ring.clear()
                     nextPacketAt = System.nanoTime()
+                } else if (sleepNs < -intervalNs) {
+                    // 1–3 packets late (GL / video-encode / TCP burst in this process):
+                    // the ring holds at most ~60 ms of content (system ring
+                    // drop-to-live) — still inside the 80 ms audioLatencyMs budget.
+                    // Send ASAP without discarding; the old unconditional clear()
+                    // here turned every scheduling dip into an audible glitch.
+                    val t = System.currentTimeMillis()
+                    if (t - lastMildLateLogMs > 2_000L) {
+                        lastMildLateLogMs = t
+                        Log.i(
+                            CarPlayConsts.TAG,
+                            "CarPlay ${profile.label} audio mild-late " +
+                                "behindMs=${-sleepNs / 1_000_000L} packet=$packets — " +
+                                "sending live (no drop)",
+                        )
+                    }
                 }
 
                 val timestamp = rtpTimestamp
@@ -319,6 +343,11 @@ class CarPlayAudioEgress(
         /** ~10% under realtime to bleed any residual HU FIFO after settle. */
         private const val SOFT_PACE_INTERVAL_NS = PACKET_INTERVAL_NS * 11 / 10
         private const val SOFT_PACE_MS = 8_000L
+        /**
+         * Behind this much (~80 ms = [AUDIO_LATENCY_MS]) the buffered PCM is stale
+         * and must be dropped; milder lateness sends the still-live content.
+         */
+        val RESYNC_LATE_NS = PACKET_INTERVAL_NS * 4
         private const val PAYLOAD_TYPE = 96
         private val activeEgresses = AtomicInteger(0)
 

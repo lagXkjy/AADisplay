@@ -1,6 +1,8 @@
 package io.github.nitsuya.aa.display.util
 
 import android.os.Process
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -38,6 +40,12 @@ class AudioPullRing(
     @Volatile
     var worker: Thread? = null
         private set
+    /** Worker-side [flushUpstream] request (the puller is the only ring writer). */
+    private val flushRequested = AtomicBoolean(false)
+    @Volatile
+    private var flushSignal: CountDownLatch? = null
+    @Volatile
+    private var lastFlushedBytes = 0
 
     /** Bytes dropped to stay drop-to-live, since ring creation. */
     @Volatile
@@ -56,6 +64,31 @@ class AudioPullRing(
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             var failLogged = false
             while (running.get()) {
+                if (flushRequested.get()) {
+                    // Run the flush HERE: the worker is the only ring writer, so
+                    // drain-then-clear cannot race a concurrent write (a caller-side
+                    // clear used to miss / clobber the puller's just-written bytes).
+                    var dropped = 0
+                    var aborted = false
+                    for (i in 0 until MAX_FLUSH_PULLS) {
+                        val got = try {
+                            pull(PULL_MAX_BYTES)
+                        } catch (e: InterruptedException) {
+                            aborted = true
+                            ByteArray(0)
+                        } catch (_: Throwable) {
+                            ByteArray(0)
+                        }
+                        if (aborted || got.isEmpty()) break
+                        dropped += got.size
+                    }
+                    clear()
+                    lastFlushedBytes = dropped
+                    flushRequested.set(false)
+                    flushSignal?.countDown()
+                    if (aborted) break
+                    continue
+                }
                 val got = try {
                     pull(PULL_MAX_BYTES)
                 } catch (e: InterruptedException) {
@@ -92,6 +125,10 @@ class AudioPullRing(
         if (!running.compareAndSet(true, false)) return
         worker?.interrupt()
         worker = null
+        // Unblock a caller waiting on a pending worker-side flush.
+        flushRequested.set(false)
+        flushSignal?.countDown()
+        flushSignal = null
         clear()
     }
 
@@ -105,22 +142,37 @@ class AudioPullRing(
     }
 
     /**
-     * Drain the upstream system ring (up to 8 coarse pulls, stop at the first empty)
-     * and then [clear] the local ring. Use before TX arm / after a long gap so the
-     * first paced packet is live — same intent as the old pre-TX backlog flush, but
-     * the pulls run on the ring's worker-adjacent caller, never the RTP/PCM pacer.
+     * Drain the upstream system ring (up to [MAX_FLUSH_PULLS] coarse pulls, stop at
+     * the first empty) and then [clear] the local ring, so the first paced packet is
+     * live. Requested on the caller thread, executed on the puller worker — the only
+     * ring writer — so drain and clear cannot interleave with a concurrent write;
+     * the caller waits (bounded) for the worker to finish.
      *
      * @return bytes discarded from the system ring.
      */
     fun flushUpstream(): Int {
-        var dropped = 0
-        for (i in 0 until 8) {
-            val got = runCatching { pull(PULL_MAX_BYTES) }.getOrDefault(ByteArray(0))
-            if (got.isEmpty()) break
-            dropped += got.size
+        if (!running.get()) {
+            // Worker not running — nothing to race; drain directly.
+            var dropped = 0
+            for (i in 0 until MAX_FLUSH_PULLS) {
+                val got = runCatching { pull(PULL_MAX_BYTES) }.getOrDefault(ByteArray(0))
+                if (got.isEmpty()) break
+                dropped += got.size
+            }
+            clear()
+            return dropped
         }
-        clear()
-        return dropped
+        lastFlushedBytes = 0
+        val latch = CountDownLatch(1)
+        flushSignal = latch
+        flushRequested.set(true)
+        try {
+            latch.await(FLUSH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+        }
+        flushRequested.set(false)
+        flushSignal = null
+        return lastFlushedBytes
     }
 
     /** Append [data], dropping the oldest beyond the watermarks (4-byte aligned). */
@@ -212,6 +264,9 @@ class AudioPullRing(
     companion object {
         private const val PULL_MAX_BYTES = 64 * 1024
         private const val PULL_IDLE_MS = 8L
+        private const val MAX_FLUSH_PULLS = 8
+        /** Bounds the caller-side wait for the worker to finish a flush. */
+        private const val FLUSH_TIMEOUT_MS = 300L
 
         private fun logI(msg: String) {
             android.util.Log.i("AADisplay_AudioPullRing", msg)

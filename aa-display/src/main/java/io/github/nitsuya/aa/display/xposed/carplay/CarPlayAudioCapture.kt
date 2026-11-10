@@ -584,12 +584,19 @@ object CarPlayAudioCapture {
                         break
                     }
                     if (n > 0) {
-                        val chunk = if (n == buf.size) buf else buf.copyOf(n)
+                        // AudioRecord partial reads are not guaranteed frame-aligned
+                        // (stereo s16 = 4 B). An odd byte count shifts every downstream
+                        // s16 pair by one byte — the egress byte-swap then splices two
+                        // samples into one: persistent crackle until the next ring
+                        // clear on re-arm. Floor to whole frames.
+                        val len = n - n % 4
+                        if (len <= 0) continue
+                        val chunk = if (len == buf.size) buf else buf.copyOf(len)
                         mediaRing.write(chunk)
-                        written += n
+                        written += len
                         var peak = 0
                         var i = 0
-                        while (i + 1 < n) {
+                        while (i + 1 < len) {
                             val s = (chunk[i].toInt() and 0xff) or (chunk[i + 1].toInt() shl 8)
                             val abs = if (s < 0) -s else s
                             if (abs > peak) peak = abs
@@ -628,9 +635,12 @@ object CarPlayAudioCapture {
                         break
                     }
                     if (n > 0) {
-                        val chunk = if (n == buf.size) buf else buf.copyOf(n)
+                        // mono s16 frame = 2 B — same unaligned-partial-read guard.
+                        val len = n - n % 2
+                        if (len <= 0) continue
+                        val chunk = if (len == buf.size) buf else buf.copyOf(len)
                         speechRing.write(chunk)
-                        written += n
+                        written += len
                         if (!firstNonZeroLogged && chunk.any { it != 0.toByte() }) {
                             firstNonZeroLogged = true
                             log(TAG, "speech capture first non-zero PCM mode=$speechMode written=${written}B")
