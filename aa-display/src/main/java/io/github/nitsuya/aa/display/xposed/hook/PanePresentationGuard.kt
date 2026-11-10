@@ -1,10 +1,10 @@
 package io.github.nitsuya.aa.display.xposed.hook
 
 import android.view.WindowManager
-import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.XC_MethodHook
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPresentationGuard
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
+import io.github.nitsuya.aa.display.xposed.util.hookBefore
 import io.github.nitsuya.aa.display.xposed.util.log
 import java.lang.reflect.Method
 

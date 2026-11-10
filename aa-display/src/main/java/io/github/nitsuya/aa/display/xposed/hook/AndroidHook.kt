@@ -4,15 +4,19 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.IPackageManager
-import com.github.kyuubiran.ezxhelper.utils.*
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.util.AaSystemBroadcast
 import io.github.nitsuya.aa.display.xposed.BridgeService
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
+import io.github.nitsuya.aa.display.xposed.util.Initiator
+import io.github.nitsuya.aa.display.xposed.util.findAllConstructors
+import io.github.nitsuya.aa.display.xposed.util.findMethod
+import io.github.nitsuya.aa.display.xposed.util.getObjectAs
+import io.github.nitsuya.aa.display.xposed.util.hookAfter
+import io.github.nitsuya.aa.display.xposed.util.hookBefore
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
-import io.github.nitsuya.aa.display.xposed.util.Initiator
 import java.io.File
 import java.lang.reflect.Method
 
@@ -33,7 +37,7 @@ object AndroidHook : BaseHook() {
     fun isReadyForSystemHooks(): Boolean =
         isSystemServerHooked && isSystemServerProcessCached
 
-    /** Returns null when the method is absent — ezxhelper [findMethod] throws [NoSuchMethodException]. */
+    /** Returns null when the method is absent — [findMethod] throws [NoSuchMethodException]. */
     internal fun findSystemMethod(
         className: String,
         findSuper: Boolean = false,

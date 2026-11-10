@@ -3,11 +3,11 @@ package io.github.nitsuya.aa.display.xposed.hook
 import android.content.res.Configuration
 import android.graphics.Rect
 import android.view.Display
-import com.github.kyuubiran.ezxhelper.utils.getObject
-import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.XC_MethodHook
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.util.Instances
+import io.github.nitsuya.aa.display.xposed.util.getObject
+import io.github.nitsuya.aa.display.xposed.util.hookBefore
 import io.github.nitsuya.aa.display.xposed.util.log
 import java.lang.reflect.Field
 import java.lang.reflect.Method

@@ -131,5 +131,4 @@ dependencies {
     implementation("dev.rikka.tools.refine:runtime:4.4.0")
     compileOnly("dev.rikka.hidden:stub:4.4.0")
     compileOnly(files("./libs/de.robv.android.xposed_api_82.jar"))
-    implementation("com.github.kyuubiran:EzXHelper:1.0.3")
 }

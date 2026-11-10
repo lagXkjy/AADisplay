@@ -4,9 +4,9 @@ import android.content.pm.IPackageManager
 import android.os.Binder
 import android.os.Parcel
 import android.os.Process
-import com.github.kyuubiran.ezxhelper.utils.findMethod
-import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import io.github.nitsuya.aa.display.BuildConfig
+import io.github.nitsuya.aa.display.xposed.util.findMethod
+import io.github.nitsuya.aa.display.xposed.util.hookBefore
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 
@@ -23,7 +23,7 @@ object BridgeService {
         log(TAG, "Client uid: app=$appUid")
         log(TAG, "Service uid: ${Process.myUid()}")
         log(TAG, "Initialize service proxy")
-        pms.javaClass.findMethod(true) {
+        findMethod(pms.javaClass, findSuper = true) {
             name == "onTransact"
         }.hookBefore { param ->
             val code = param.args[0] as Int

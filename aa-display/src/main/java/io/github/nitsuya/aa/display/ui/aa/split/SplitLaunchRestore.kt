@@ -6,7 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Binder
 import android.os.SystemClock
 import android.view.Display
-import com.github.kyuubiran.ezxhelper.utils.tryOrNull
+import io.github.nitsuya.aa.display.xposed.util.tryOrNull
 import io.github.nitsuya.aa.display.util.LastSplitStore
 import io.github.nitsuya.aa.display.util.PmResolveCache
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin

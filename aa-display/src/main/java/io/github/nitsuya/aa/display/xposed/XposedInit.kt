@@ -1,13 +1,13 @@
 package io.github.nitsuya.aa.display.xposed
 
-import com.github.kyuubiran.ezxhelper.init.EzXHelperInit
-import com.github.kyuubiran.ezxhelper.utils.Log.logexIfThrow
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import io.github.nitsuya.aa.display.xposed.hook.AndroidHook
 import io.github.nitsuya.aa.display.xposed.hook.BaseHook
+import io.github.nitsuya.aa.display.xposed.util.ModuleInit
 import io.github.nitsuya.aa.display.xposed.util.log
+import io.github.nitsuya.aa.display.xposed.util.logexIfThrow
 
 class XposedInit : IXposedHookZygoteInit, IXposedHookLoadPackage{
     companion object {
@@ -15,7 +15,7 @@ class XposedInit : IXposedHookZygoteInit, IXposedHookLoadPackage{
     }
 
     override fun initZygote(startupParam: IXposedHookZygoteInit.StartupParam) {
-        EzXHelperInit.initZygote(startupParam)
+        ModuleInit.initZygote(startupParam)
     }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -31,7 +31,7 @@ class XposedInit : IXposedHookZygoteInit, IXposedHookLoadPackage{
     }
 
     private fun initHooks(lpparam: XC_LoadPackage.LoadPackageParam, vararg hook: BaseHook) {
-        EzXHelperInit.initHandleLoadPackage(lpparam)
+        ModuleInit.initHandleLoadPackage(lpparam)
         hook.forEach {
             runCatching {
                 if (it.isInit) return@forEach

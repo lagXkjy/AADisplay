@@ -8,11 +8,11 @@ import android.graphics.Rect
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Display
-import com.github.kyuubiran.ezxhelper.utils.argTypes
-import com.github.kyuubiran.ezxhelper.utils.args
-import com.github.kyuubiran.ezxhelper.utils.getObjectAs
-import com.github.kyuubiran.ezxhelper.utils.invokeMethod
-import com.github.kyuubiran.ezxhelper.utils.tryOrNull
+import io.github.nitsuya.aa.display.xposed.util.argTypes
+import io.github.nitsuya.aa.display.xposed.util.args
+import io.github.nitsuya.aa.display.xposed.util.getObjectAs
+import io.github.nitsuya.aa.display.xposed.util.invokeMethod
+import io.github.nitsuya.aa.display.xposed.util.tryOrNull
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug

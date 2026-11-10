@@ -16,10 +16,10 @@ import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.core.graphics.drawable.toBitmap
-import com.github.kyuubiran.ezxhelper.utils.argTypes
-import com.github.kyuubiran.ezxhelper.utils.args
-import com.github.kyuubiran.ezxhelper.utils.invokeMethod
-import com.github.kyuubiran.ezxhelper.utils.tryOrNull
+import io.github.nitsuya.aa.display.xposed.util.argTypes
+import io.github.nitsuya.aa.display.xposed.util.args
+import io.github.nitsuya.aa.display.xposed.util.invokeMethod
+import io.github.nitsuya.aa.display.xposed.util.tryOrNull
 import io.github.nitsuya.aa.display.model.RecentTaskInfo
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.PmIconCache
@@ -379,7 +379,7 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
     }
 
     companion object {
-        /** Hot path: resolve once — every MOVE used to re-lookup via ezxhelper invokeMethod. */
+        /** Hot path: resolve once — every MOVE used to re-lookup via reflect invokeMethod. */
         private val setDisplayIdMethod: Method? = runCatching {
             InputEvent::class.java.getMethod("setDisplayId", Int::class.javaPrimitiveType)
         }.getOrNull()

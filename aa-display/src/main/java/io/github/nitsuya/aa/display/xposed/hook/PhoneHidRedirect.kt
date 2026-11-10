@@ -13,8 +13,8 @@ import android.view.InputFilter
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
-import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.XC_MethodHook
+import io.github.nitsuya.aa.display.xposed.util.hookBefore
 import io.github.nitsuya.aa.display.ui.aa.split.HidCursorHit
 import io.github.nitsuya.aa.display.ui.aa.split.HidSplitLayout
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane

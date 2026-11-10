@@ -5,10 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.UserHandle
-import com.github.kyuubiran.ezxhelper.utils.argTypes
-import com.github.kyuubiran.ezxhelper.utils.args
-import com.github.kyuubiran.ezxhelper.utils.invokeMethod
-import com.github.kyuubiran.ezxhelper.utils.newInstance
+import io.github.nitsuya.aa.display.xposed.util.argTypes
+import io.github.nitsuya.aa.display.xposed.util.args
+import io.github.nitsuya.aa.display.xposed.util.invokeMethod
+import io.github.nitsuya.aa.display.xposed.util.newInstance
 
 /** Shared [Context.startActivityAsUser] reflection for cold launch vs task reorder. */
 internal object AaLaunchHelper {

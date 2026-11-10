@@ -4,9 +4,9 @@ import android.content.Context
 import android.os.Binder
 import android.provider.Settings
 import android.view.Display
-import com.github.kyuubiran.ezxhelper.utils.hookAfter
 import de.robv.android.xposed.XC_MethodHook
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
+import io.github.nitsuya.aa.display.xposed.util.hookAfter
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import java.lang.reflect.Field

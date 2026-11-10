@@ -2,9 +2,9 @@ package io.github.nitsuya.aa.display.xposed.hook
 
 import android.content.pm.ActivityInfo
 import android.view.Display
-import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import de.robv.android.xposed.XC_MethodHook
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
+import io.github.nitsuya.aa.display.xposed.util.hookBefore
 import io.github.nitsuya.aa.display.xposed.util.log
 import java.lang.reflect.Field
 import java.lang.reflect.Method

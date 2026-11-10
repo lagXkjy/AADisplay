@@ -50,7 +50,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 
 外部 / 派生依赖：
 
-- Xposed API（`libs/*.jar`，`compileOnly`）、EzXHelper（jitpack，反射工具）
+- Xposed API（`libs/*.jar`，`compileOnly`）；反射/挂钩工具为本模块 `xposed/util/Reflect.kt`（已移除 EzXHelper / jitpack）
 - QAuxiliary 派生（AGPLv3，保留署名头）已内化至 `xposed/util/`：`Initiator`、`CommonContextWrapper`（+ `SavedInstanceStatePatchedClassReferencer`）
 - 原 vendored `duzhaokun123.template`（UI 基类）与 `io.github.qauxv` 源码树已删除，分别内化至 `ui/base/` 与 `xposed/util/`
 

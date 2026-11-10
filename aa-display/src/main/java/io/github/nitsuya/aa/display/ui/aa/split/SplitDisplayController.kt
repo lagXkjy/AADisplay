@@ -16,7 +16,7 @@ import android.view.Display
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
-import com.github.kyuubiran.ezxhelper.utils.tryOrNull
+import io.github.nitsuya.aa.display.xposed.util.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AvMediaArbiter

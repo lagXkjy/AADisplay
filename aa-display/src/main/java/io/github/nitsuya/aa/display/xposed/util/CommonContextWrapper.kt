@@ -23,7 +23,6 @@ package io.github.nitsuya.aa.display.xposed.util
 
 import android.content.Context
 import android.view.ContextThemeWrapper
-import com.github.kyuubiran.ezxhelper.init.EzXHelperInit
 import io.github.nitsuya.aa.display.R
 
 /**
@@ -32,7 +31,7 @@ import io.github.nitsuya.aa.display.R
 class CommonContextWrapper(base: Context, theme: Int) : ContextThemeWrapper(base, theme) {
 
     init {
-        EzXHelperInit.addModuleAssetPath(resources)
+        ModuleInit.addModuleAssetPath(resources)
     }
 
     private var mXref: ClassLoader? = null

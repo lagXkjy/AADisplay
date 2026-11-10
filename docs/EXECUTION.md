@@ -62,7 +62,7 @@ sequenceDiagram
 入口文件：`aa-display/src/main/assets/xposed_init`  
 类：`xposed/XposedInit.kt`
 
-1. `initZygote` → EzXHelper。
+1. `initZygote` → `ModuleInit`（模块路径 / asset）。
 2. `handleLoadPackage` 路由，**仅** system_server；其余包（含 gearhead）不注入：
 
 | 条件 | 对象 | 进程确认 |
