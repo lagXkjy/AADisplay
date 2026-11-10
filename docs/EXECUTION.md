@@ -359,6 +359,7 @@ flowchart TB
 | Ctrl + ← / → / ↑ / ↓ 或 WASD | 比例 ±5%（`nudgeHidSplitRatio`） |
 | Ctrl + R 或 Ctrl + Tab 或 App Switch | Recents（`showHidRecentTask`） |
 | Ctrl + S | 对调两窗 |
+| PgUp / PgDn（无 Ctrl） | 上一曲 / 下一曲（飞鼠无媒体键时；走 `pressKey` 路径，消费不注入） |
 | 其它物理键 | `inject` 到当前焦点窗 |
 
 **折叠屏 / 多面板注意**

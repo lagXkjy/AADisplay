@@ -1084,6 +1084,18 @@ object PhoneHidRedirect {
             if (event.action == KeyEvent.ACTION_DOWN && handleChromeShortcut(event)) {
                 return true
             }
+            // 飞鼠 remap: PgUp/PgDn act as previous/next (many BT mice lack
+            // dedicated media keys). Route through the pressKey path like MEDIA_*.
+            // Ctrl+PgUp/Dn stays a normal key (injected into the focused app).
+            val keyCode = if (event.metaState and KeyEvent.META_CTRL_ON != 0) {
+                event.keyCode
+            } else {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_PAGE_UP -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+                    KeyEvent.KEYCODE_PAGE_DOWN -> KeyEvent.KEYCODE_MEDIA_NEXT
+                    else -> event.keyCode
+                }
+            }
             if (event.action == KeyEvent.ACTION_UP &&
                 event.metaState and KeyEvent.META_CTRL_ON != 0 &&
                 event.keyCode in setOf(
@@ -1096,11 +1108,12 @@ object PhoneHidRedirect {
             ) {
                 return true
             }
-            // Media keys: pressKey path (live swipe / AvMediaArbiter target). Consume
-            // DOWN+UP so MediaSession never delivers to idle Douyin FeedPlayerSession.
-            if (isHidMediaKey(event.keyCode)) {
+            // Media keys (incl. PgUp/PgDn remap): pressKey path (live swipe /
+            // AvMediaArbiter target). Consume DOWN+UP so MediaSession never
+            // delivers to idle Douyin FeedPlayerSession.
+            if (isHidMediaKey(keyCode)) {
                 if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                    CoreManagerService.dispatchHidMediaKey(event.keyCode)
+                    CoreManagerService.dispatchHidMediaKey(keyCode)
                 }
                 return true
             }
