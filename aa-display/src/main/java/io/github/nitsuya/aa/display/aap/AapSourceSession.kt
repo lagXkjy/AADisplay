@@ -290,9 +290,9 @@ class AapSourceSession(
     fun isProtocolLive(): Boolean = aap?.state == AapSession.State.RUNNING
 
     /**
-     * Soft [AapUsbProbe] must not reopen the same AOA accessory after TLS desync /
-     * mid-session crypto failure — HU still speaks encrypted frames. Cleared on
-     * USB DETACH or a fresh ATTACHED entry ([clearUsbReplugRequired]).
+     * Soft [AapUsbProbe] must not reopen the same AOA accessory after repeated TLS
+     * transport-gap deaths or mid-handshake crypto desync — HU still speaks encrypted
+     * frames. Cleared on USB DETACH or a fresh ATTACHED entry ([clearUsbReplugRequired]).
      */
     private val usbReplugRequired = AtomicBoolean(false)
 
@@ -370,6 +370,25 @@ class AapSourceSession(
         aap = session
         sessionStartMs = SystemClock.uptimeMillis()
         session.start()
+        // aap-usb-drain self-reports from UsbAccessoryTransport; boost TLS I/O here.
+        boostAapIoRealtimeThreads()
+    }
+
+    /**
+     * Ask system_server to reassert URGENT_AUDIO (−19) on aap-reader / aap-writer
+     * (linux tids via proc self task comm files). Drain reports itself from its loop.
+     */
+    private fun boostAapIoRealtimeThreads() {
+        val wanted = setOf("aap-reader", "aap-writer")
+        val tasks = java.io.File("/proc/self/task").listFiles() ?: return
+        for (dir in tasks) {
+            val name = runCatching { java.io.File(dir, "comm").readText().trim() }.getOrNull()
+                ?: continue
+            if (name !in wanted) continue
+            val tid = dir.name.toIntOrNull() ?: continue
+            runCatching { CoreApi.setThreadRealtimeBoost(tid, true) }
+                .onFailure { Log.w(AapConsts.TAG, "realtime boost request failed tid=$tid name=$name", it) }
+        }
     }
 
     /**
@@ -509,6 +528,13 @@ class AapSourceSession(
     @Volatile private var lastStallKillMs = 0L
     /** True while the most recent close was our own stall-kill (status + re-probe). */
     @Volatile private var closedByStall = false
+    /**
+     * elapsedRealtime of the previous USB transport-gap crypto death (NONCE-GAP / TLS record /
+     * TLS closed). Second hit inside [USB_STALL_REKILL_WINDOW_MS] gates soft attach to unplug.
+     */
+    @Volatile private var lastUsbCryptoFaultMs = 0L
+    /** True when onClosed scheduled a soft reattach for a transport-gap crypto fault. */
+    @Volatile private var closedByTransportGap = false
 
     /**
      * USB write-stall watchdog.
@@ -1040,19 +1066,35 @@ class AapSourceSession(
                 error,
             )
             val errMsg = error?.message.orEmpty()
-            val usbCryptoFault = errMsg.contains("encrypted frame before TLS") ||
-                errMsg.contains("NONCE-GAP") ||
+            // Mid-handshake desync: soft reopen of the same AOA cannot reset HU TLS.
+            val hardUsbCrypto = errMsg.contains("encrypted frame before TLS")
+            // Live-session transport loss (UI spike starved drain → one record dropped). First
+            // hit soft-reattaches like a write-stall; a second within the rekill window needs unplug.
+            val transportGapCrypto = errMsg.contains("NONCE-GAP") ||
                 errMsg.contains("TLS record failed") ||
                 errMsg.contains("TLS closed")
             val wasUsb = transport?.name?.startsWith("usb ") == true
+            closedByTransportGap = false
             if (session.certificateRejected) {
                 certAttempt.incrementAndGet()
                 onStatus("车机未接受连车信息，将自动换一种方式重试")
-            } else if (wasUsb && usbCryptoFault) {
-                // Soft reopen of the same AOA accessory cannot reset HU TLS — require unplug.
+            } else if (wasUsb && hardUsbCrypto) {
                 usbReplugRequired.set(true)
                 onStatus("请拔掉数据线再插上")
                 Log.w(AapConsts.TAG, "USB TLS fault — soft attach blocked until unplug/replug")
+            } else if (wasUsb && transportGapCrypto) {
+                val now = SystemClock.elapsedRealtime()
+                val prev = lastUsbCryptoFaultMs
+                lastUsbCryptoFaultMs = now
+                if (prev > 0 && now - prev < USB_STALL_REKILL_WINDOW_MS) {
+                    usbReplugRequired.set(true)
+                    onStatus("请拔掉数据线再插上")
+                    Log.w(AapConsts.TAG, "USB TLS fault — soft attach blocked until unplug/replug")
+                } else {
+                    closedByTransportGap = true
+                    onStatus("链路拥塞，正在自动重连…")
+                    Log.w(AapConsts.TAG, "USB TLS transport gap — soft reattach scheduled")
+                }
             } else if (closedByStall && wasUsb) {
                 onStatus(
                     if (usbReplugRequired.get()) "请拔掉数据线再插上" else "链路拥塞，正在自动重连…",
@@ -1060,6 +1102,8 @@ class AapSourceSession(
             } else {
                 onStatus("已断开，可重新连接")
             }
+            val softReattach = wasUsb && !usbReplugRequired.get() &&
+                (closedByStall || closedByTransportGap)
             main.post {
                 runCatching {
                     session.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_RELEASE)
@@ -1081,8 +1125,8 @@ class AapSourceSession(
                 transport = null
                 activeVideo = null
                 reportLive(false)
-                if (closedByStall && wasUsb && !usbReplugRequired.get()) {
-                    // Give the head unit time to time out its own keep-alive and reset, then
+                if (softReattach) {
+                    // Give the head unit time to time out its own keep-alive / half-open TLS, then
                     // re-arm the probe window to re-attach the (still plugged) accessory.
                     main.postDelayed({
                         if (running.get() && transport == null && aap == null) {
@@ -1091,6 +1135,7 @@ class AapSourceSession(
                     }, USB_STALL_REATTACH_DELAY_MS)
                 }
                 closedByStall = false
+                closedByTransportGap = false
             }
         }
     }

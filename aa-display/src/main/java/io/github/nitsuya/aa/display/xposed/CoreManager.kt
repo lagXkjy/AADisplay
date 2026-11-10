@@ -330,6 +330,14 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
+    override fun setThreadRealtimeBoost(tid: Int, enable: Boolean) {
+        try {
+            getService()?.setThreadRealtimeBoost(tid, enable)
+        } catch (e: Throwable) {
+            Log.e(TAG, "setThreadRealtimeBoost failed tid=$tid enable=$enable", e)
+        }
+    }
+
     override fun scrollPane(pane: Int, x: Int, y: Int, vScroll: Int, hScroll: Int) {
         try {
             getService()?.scrollPane(pane, x, y, vScroll, hScroll)

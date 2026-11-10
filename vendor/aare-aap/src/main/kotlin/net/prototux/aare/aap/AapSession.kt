@@ -208,6 +208,21 @@ class AapSession(
         log.i("session started on ${transport.name}")
     }
 
+    /**
+     * Android CFS ignores Java [Thread.setPriority] for scheduling share. Reflect into
+     * `Process.THREAD_PRIORITY_URGENT_AUDIO` when running on Android so reader/writer keep
+     * pace with the USB drain under phone UI spikes (TLS NONCE-GAP). No-op on plain JVM.
+     */
+    private fun boostAndroidThreadPriority() {
+        try {
+            val process = Class.forName("android.os.Process")
+            val prio = process.getField("THREAD_PRIORITY_URGENT_AUDIO").getInt(null)
+            process.getMethod("setThreadPriority", Int::class.javaPrimitiveType).invoke(null, prio)
+        } catch (_: Throwable) {
+            // non-Android host / restricted
+        }
+    }
+
     /** Ends the session politely: bye-bye, then close after a short grace period. */
     fun stop(reason: ByeByeReason = ByeByeReason.USER_SELECTION) {
         if (closed.get()) return
@@ -262,6 +277,7 @@ class AapSession(
     // ------------------------------------------------------------------ loops
 
     private fun writeLoop() {
+        boostAndroidThreadPriority()
         try {
             while (!closed.get()) {
                 val m = queue.poll(500, TimeUnit.MILLISECONDS) ?: run {
@@ -289,6 +305,7 @@ class AapSession(
     }
 
     private fun readLoop() {
+        boostAndroidThreadPriority()
         try {
             while (!closed.get()) {
                 val msg = reader.read()

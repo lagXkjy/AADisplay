@@ -202,4 +202,11 @@ interface ICoreManager {
      * Appended at end for Stub ordinals; requires system_server reload (reboot).
      */
     oneway void reportEgressChannel(int channel);
+
+    /**
+     * Reassert CFS nice −19 (URGENT_AUDIO) on a linux tid in the AADisplay process
+     * (AAP USB drain / reader / writer). enable=false restores DEFAULT.
+     * Appended at end for Stub ordinals; requires system_server reload (reboot).
+     */
+    oneway void setThreadRealtimeBoost(int tid, boolean enable);
 }

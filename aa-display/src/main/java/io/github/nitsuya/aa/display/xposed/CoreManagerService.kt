@@ -32,6 +32,7 @@ import android.view.KeyEvent
 import io.github.nitsuya.aa.display.xposed.carplay.CarPlayAudioCapture
 import io.github.nitsuya.aa.display.xposed.carplay.CarPlayBootArm
 import io.github.nitsuya.aa.display.xposed.carplay.CarPlayProcessBoost
+import io.github.nitsuya.aa.display.xposed.carplay.ThreadRealtimeBoost
 import io.github.nitsuya.aa.display.xposed.hook.PanePresentationGuard
 import io.github.nitsuya.aa.display.xposed.hook.PaneDisplayGroupForce
 import io.github.nitsuya.aa.display.xposed.hook.PhoneHidRedirect
@@ -228,6 +229,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 .onFailure { log(TAG, "CarPlayAudioCapture.install failed", it) }
             runCatching { CarPlayProcessBoost.install(systemContext) }
                 .onFailure { log(TAG, "CarPlayProcessBoost.install failed", it) }
+            runCatching { ThreadRealtimeBoost.install() }
+                .onFailure { log(TAG, "ThreadRealtimeBoost.install failed", it) }
             runCatching { CarPlayBootArm.install(systemContext) }
                 .onFailure { log(TAG, "CarPlayBootArm.install failed", it) }
         }
@@ -871,6 +874,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         mSessionPolicy?.onSecondaryEgressLiveChanged(live)
         runCatching { CarPlayProcessBoost.setBoost(live) }
             .onFailure { logDebug(TAG, "CarPlayProcessBoost.setBoost failed") }
+        if (!live) {
+            runCatching { ThreadRealtimeBoost.clearAll() }
+                .onFailure { logDebug(TAG, "ThreadRealtimeBoost.clearAll failed") }
+        }
         // Capture + phone mute follow secondary-egress FGS (CarPlay / AAP), not individual RTSP
         // audio SETUP/TEARDOWN. DiPlay soft-reconnect briefly drops UDP egresses; if we
         // disarmed there, phone speaker came back before the next SETUP remuted.
@@ -882,6 +889,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 )
             }
         logDebug(TAG, "reportCarPlaySessionLive live=$live")
+    }
+
+    override fun setThreadRealtimeBoost(tid: Int, enable: Boolean) {
+        runCatching { ThreadRealtimeBoost.setBoost(tid, enable) }
+            .onFailure { logDebug(TAG, "ThreadRealtimeBoost.setBoost failed tid=$tid") }
     }
 
     override fun isCarPlaySessionLive(): Boolean = carPlaySessionLive

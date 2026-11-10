@@ -3,8 +3,10 @@ package io.github.nitsuya.aa.display.aap.usb
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.os.ParcelFileDescriptor
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.aap.AapConsts
 import net.prototux.aare.aap.AapException
 import net.prototux.aare.aap.Transport
@@ -102,8 +104,17 @@ class UsbAccessoryTransport(usb: UsbManager, val accessory: UsbAccessory) : Tran
     /** Bytes pulled from the USB pipe since attach; the health ticker turns the delta into a rate. */
     @Volatile var rxBytes: Long = 0
         private set
+    /** Linux tid of aap-usb-drain; reported to system_server for SCHED_FIFO. */
+    @Volatile private var drainTid = 0
 
     private fun drainLoop() {
+        // Java Thread.MAX_PRIORITY alone is weak on Android CFS; match AapAudioEgress so a
+        // phone UI spike (Settings / SF) cannot starve the AOA kernel RX drain → TLS NONCE-GAP.
+        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
+        // system_server reasserts −19 in case OEM demotes the drain under UI load.
+        drainTid = Process.myTid()
+        runCatching { CoreApi.setThreadRealtimeBoost(drainTid, true) }
+            .onFailure { Log.w(AapConsts.TAG, "USB drain nice boost request failed", it) }
         val chunk = ByteArray(USB_BULK_READ_SIZE)
         var lastHighLogMs = 0L
         var lastFullLogMs = 0L
@@ -152,6 +163,11 @@ class UsbAccessoryTransport(usb: UsbManager, val accessory: UsbAccessory) : Tran
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        val tid = drainTid
+        if (tid > 0) {
+            drainTid = 0
+            runCatching { CoreApi.setThreadRealtimeBoost(tid, false) }
+        }
         // Closing the fd unblocks drain's rawIn.read().
         runCatching { fd.close() }
         runCatching { rawIn.close() }
