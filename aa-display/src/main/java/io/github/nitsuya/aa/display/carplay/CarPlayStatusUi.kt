@@ -1,6 +1,5 @@
 package io.github.nitsuya.aa.display.carplay
 
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.view.View
@@ -149,7 +148,6 @@ object CarPlayStatusUi {
         ChannelOrchestrator.ensureArmedCurrent(activity)
     }
 
-    @SuppressLint("SetTextI18n")
     fun refresh(activity: Activity, binding: ActivityMainBinding) {
         val live = try {
             CoreApi.isCarPlaySessionLive

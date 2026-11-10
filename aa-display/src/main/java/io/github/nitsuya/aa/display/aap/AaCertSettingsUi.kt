@@ -1,6 +1,5 @@
 package io.github.nitsuya.aa.display.aap
 
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.os.Handler
 import android.os.Looper
@@ -72,7 +71,6 @@ object AaCertSettingsUi {
         }
     }
 
-    @SuppressLint("SetTextI18n")
     private fun applyStatus(
         activity: Activity,
         binding: ActivityMainBinding,

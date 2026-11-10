@@ -176,7 +176,7 @@ class CarPlaySourceSession(
         if (!running.get()) return
         cancelPhoneAudioRelease()
         val first = mediaPrepared.compareAndSet(false, true)
-        // Before Host onCreateSplitDisplay so Coolwalk does not shrink VD panes.
+        // Arm the session gate before Host onCreateSplitDisplay so pane creation is live.
         reportOwnerLive(true)
         if (!first && CarPlayHostRuntime.isRunning()) {
             CarPlayHostRuntime.compositorOrNull()?.let { gl ->
