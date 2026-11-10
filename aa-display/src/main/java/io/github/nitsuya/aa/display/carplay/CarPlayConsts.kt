@@ -51,6 +51,19 @@ object CarPlayConsts {
     const val DEGRADE_RATE_FRACTION = 0.5f
 
     /**
+     * Content-driven supply cap (GlCompositor). When OES arrivals stay below
+     * [CONTENT_SLOW_FPS] (e.g. Douyin ~25 Hz HEVC), tick 60→30 so we stop
+     * re-encoding duplicate frames. Recover when content climbs above
+     * [CONTENT_FAST_FPS]. Does not recycle MediaCodec — only the GL pump interval.
+     */
+    const val CONTENT_SLOW_FPS = 36f
+    const val CONTENT_FAST_FPS = 50f
+    /** 2 s windows × 2 → ~4 s to engage the content cap. */
+    const val CONTENT_CADENCE_WINDOW_MS = 2_000L
+    const val CONTENT_SLOW_WINDOWS = 2
+    const val CONTENT_FAST_WINDOWS = 3
+
+    /**
      * AVC encode resolution. The HU decodes whatever the source sends and scales to its
      * display; the buffer-input RGB→NV12 conversion cost scales with pixel count, so encode
      * at 1280x720 instead of the 1920x720 composite (panes stay 960x720, scaled into the

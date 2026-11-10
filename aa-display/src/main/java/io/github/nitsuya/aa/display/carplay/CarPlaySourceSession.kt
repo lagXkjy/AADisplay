@@ -715,16 +715,30 @@ class CarPlaySourceSession(
      * the supply 60→30 after [DEGRADE_WINDOWS] bad windows; a healthy 30 fps supply recovers
      * to 60 after [RECOVER_WINDOWS] good ones. The DiPlay host decodes at its own user fps,
      * so this only throttles our production + bandwidth.
+     *
+     * When [CarPlayGlCompositor] content-caps the tick (slow VD apps like Douyin), the
+     * report's target is already 30 — do not treat that as link failure or fight it with
+     * encoder recycle. Branch on session [supplyFps], not the compositor effective target.
      */
     private fun onRateReport(targetFps: Int, actualFps: Float) {
         if (!running.get() || encoder.currentFps() == 0) return
+        if (glCompositor?.isContentLimited() == true) {
+            // Content is the bottleneck; reset degrade hysteresis so a later quiet
+            // UI scene can recover cleanly without a stale bad-window streak.
+            badRateWindows = 0
+            goodRateWindows = 0
+            lastDropCount = encoder.dropCount()
+            return
+        }
         val drops = encoder.dropCount()
         val dropRatePerSec = (drops - lastDropCount) * 1000f / RATE_REPORT_WINDOW_MS
         lastDropCount = drops
-        val poor = actualFps < targetFps * CarPlayConsts.DEGRADE_RATE_FRACTION ||
-            dropRatePerSec > targetFps * 0.15f
-        val good = !poor && actualFps >= targetFps * 0.8f
-        if (targetFps >= CarPlayConsts.DEFAULT_VIDEO_FPS) {
+        // Prefer session supply over compositor effective (may already be pressure-capped).
+        val sessionTarget = supplyFps
+        val poor = actualFps < sessionTarget * CarPlayConsts.DEGRADE_RATE_FRACTION ||
+            dropRatePerSec > sessionTarget * 0.15f
+        val good = !poor && actualFps >= sessionTarget * 0.8f
+        if (sessionTarget >= CarPlayConsts.DEFAULT_VIDEO_FPS) {
             badRateWindows = if (poor) badRateWindows + 1 else 0
             goodRateWindows = 0
             if (badRateWindows >= DEGRADE_WINDOWS) {
@@ -732,7 +746,7 @@ class CarPlaySourceSession(
                 Log.w(
                     CarPlayConsts.TAG,
                     "CarPlay supply degraded 60→30 (rate=${"%.1f".format(actualFps)}fps " +
-                        "dropRate=${"%.1f".format(dropRatePerSec)}fps)",
+                        "dropRate=${"%.1f".format(dropRatePerSec)}fps effTarget=$targetFps)",
                 )
                 applySupplyFps(CarPlayConsts.DEGRADED_VIDEO_FPS)
             }
@@ -752,6 +766,11 @@ class CarPlaySourceSession(
 
     private fun applySupplyFps(fps: Int) {
         supplyFps = fps
+        // Soft cap the GL pump immediately (no codec recycle). Encoder rebind below may
+        // be deferred while screen streaming — pressure still cuts GPU/encode work now.
+        glCompositor?.setPressureFps(
+            if (fps < CarPlayConsts.DEFAULT_VIDEO_FPS) fps else 0,
+        )
         mainHandler.post {
             if (!running.get()) return@post
             if (rtsp?.isStreaming() == true) {

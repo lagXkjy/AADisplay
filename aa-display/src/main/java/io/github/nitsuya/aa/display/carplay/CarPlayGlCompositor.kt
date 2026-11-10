@@ -107,7 +107,17 @@ class CarPlayGlCompositor {
     private var densityDpi: Int = 160
     private val paneBufferW = intArrayOf(0, 0)
     private val paneBufferH = intArrayOf(0, 0)
+    /** Negotiated / attachEncoder supply rate (HU preference). */
     private var fps = CarPlayConsts.DEFAULT_VIDEO_FPS
+    /**
+     * Congestion / thermal pressure cap from the session (0 = unset).
+     * [effectiveFps] = min(negotiated, pressure, contentCap).
+     */
+    @Volatile
+    private var pressureFps = 0
+    /** True while OES content arrival stays well below negotiated 60 Hz. */
+    @Volatile
+    private var contentLimited = false
     private var frameIntervalMs = 1_000L / CarPlayConsts.DEFAULT_VIDEO_FPS
     private var frameIndex = 0L
     /** Last EGL presentation time submitted to the encoder surface (ns). */
@@ -116,6 +126,12 @@ class CarPlayGlCompositor {
     private val deliveredFrames = AtomicInteger(0)
     private var windowStart = 0L
     private var rateLogTick = 0
+
+    /** Per-pane OES arrival counts for the current content-cadence window. */
+    private val oesPaneArrivals = intArrayOf(0, 0)
+    private var contentWindowStart = 0L
+    private var contentSlowWindows = 0
+    private var contentFastWindows = 0
 
     /**
      * Pending forced frames. Bumped from any thread on layout / encoder changes
@@ -177,6 +193,29 @@ class CarPlayGlCompositor {
     fun primarySurface(): Surface? = primarySurfaceRef.get()
     fun secondarySurface(): Surface? = secondarySurfaceRef.get()
     fun isEncoderAttached(): Boolean = encoderAttached.get()
+
+    /**
+     * True while the GL pump is capped at [CarPlayConsts.DEGRADED_VIDEO_FPS] because
+     * VirtualDisplay content is arriving slower than negotiated 60 Hz (video apps).
+     * Sessions must not treat the resulting under-delivery vs 60 as link failure.
+     */
+    fun isContentLimited(): Boolean = contentLimited
+
+    /**
+     * Session congestion / thermal pressure cap. Pass 0 to clear.
+     * Does not recycle MediaCodec — only changes the GL tick interval.
+     */
+    fun setPressureFps(fps: Int) {
+        val next = if (fps <= 0) 0 else fps.coerceIn(1, 120)
+        if (pressureFps == next) return
+        pressureFps = next
+        val handler = renderHandler
+        if (handler == null) {
+            applyEffectiveFpsLocked()
+            return
+        }
+        handler.post { applyEffectiveFpsLocked() }
+    }
 
     /**
      * Boots the GL render thread, creates dual OES pane Surfaces for VirtualDisplay sinks.
@@ -292,7 +331,15 @@ class CarPlayGlCompositor {
                 encodeWidth = width.coerceAtLeast(16)
                 encodeHeight = height.coerceAtLeast(16)
                 this.fps = fps.coerceIn(1, 120)
-                frameIntervalMs = (1_000L / this.fps).coerceAtLeast(1L)
+                // Keep an existing pressure cap across re-attach (AAP congestion); reset
+                // content cadence so a fresh stream re-measures OES arrival.
+                contentLimited = false
+                contentSlowWindows = 0
+                contentFastWindows = 0
+                oesPaneArrivals[0] = 0
+                oesPaneArrivals[1] = 0
+                contentWindowStart = SystemClock.uptimeMillis()
+                applyEffectiveFpsLocked()
                 val core = eglCore ?: return@Runnable
                 encoderWindow = EglWindowSurface(core, surface)
                 encoderAttached.set(true)
@@ -375,12 +422,31 @@ class CarPlayGlCompositor {
         secondarySurfaceRef.set(null)
         encoderAttached.set(false)
         onRateReport = null
+        pressureFps = 0
+        contentLimited = false
+        contentSlowWindows = 0
+        contentFastWindows = 0
+        oesPaneArrivals[0] = 0
+        oesPaneArrivals[1] = 0
+        contentWindowStart = 0L
         lastHidState = HidShellPull()
         quietTicks = QUIET_PULL_TICKS
         hidCursorDrawable = null
         lastHidOpenRecentsSeq = Float.NaN
         lastHidFlipSeq = Float.NaN
         Log.i(CarPlayConsts.TAG, "CarPlayGlCompositor stopped")
+    }
+
+    /** min(negotiated, pressure, contentCap) — GL tick + PTS step use this. */
+    private fun effectiveFps(): Int {
+        val pressure = pressureFps.takeIf { it > 0 } ?: fps
+        val contentCap = if (contentLimited) CarPlayConsts.DEGRADED_VIDEO_FPS else fps
+        return minOf(fps, pressure, contentCap).coerceIn(1, 120)
+    }
+
+    private fun applyEffectiveFpsLocked() {
+        val eff = effectiveFps()
+        frameIntervalMs = (1_000L / eff).coerceAtLeast(1L)
     }
 
     private fun bootGl(paneWidth: Int, paneHeight: Int) {
@@ -516,6 +582,7 @@ class CarPlayGlCompositor {
                 v
             }
             if (!pending) continue
+            oesPaneArrivals[i]++
             try {
                 surfaceTextures[i]?.updateTexImage()
             } catch (e: Throwable) {
@@ -538,14 +605,12 @@ class CarPlayGlCompositor {
         }
         val key = buildChromeKey(hid)
         // Consume layout/encoder force tokens even though we always redraw below.
-        forceFrames.getAndSet(0)
-        // Always redraw + swap when the encoder is attached. An earlier "static skip"
-        // (no swap, rely on KEY_REPEAT_PREVIOUS_FRAME_AFTER) either starved the HU
-        // (REPEAT too long → black panes, chrome still moved) or flooded AAP USB
-        // (REPEAT too short / OEM mis-scale → writer stall → TLS NONCE-GAP drop).
-        // EGL window surfaces are not BUFFER_PRESERVED, so a swap-without-redraw is
-        // also unsafe. Cheap wins stay: quiet HID pull + chrome dirty-region upload.
-        // OES frames (incl. hidden fullscreen pane) are drained above so queues never stall.
+        val forced = forceFrames.getAndSet(0) > 0
+        // Content-cadence throttle (60→30 when VD apps produce slowly). Always redraw +
+        // swap on each tick — EGL window surfaces are not BUFFER_PRESERVED, and
+        // KEY_REPEAT_PREVIOUS_FRAME_AFTER previously starved HUs or flooded AAP USB.
+        // Cheap wins stay: quiet HID pull + chrome dirty-region upload + tick interval.
+        evaluateContentCadence(hid, key, forced)
         window.makeCurrent()
 
         GLES20.glViewport(0, 0, encodeWidth, encodeHeight)
@@ -624,10 +689,88 @@ class CarPlayGlCompositor {
         }
     }
 
+    /**
+     * Engage / release the content fps cap from OES arrival rate. Interactive chrome
+     * (cursor, peel, Recents, picker, forced layout) temporarily lifts the cap so
+     * overlays stay smooth.
+     */
+    private fun evaluateContentCadence(hid: HidShellPull, key: ChromeKey, forced: Boolean) {
+        if (fps <= CarPlayConsts.DEGRADED_VIDEO_FPS) {
+            if (contentLimited) {
+                contentLimited = false
+                contentSlowWindows = 0
+                contentFastWindows = 0
+                applyEffectiveFpsLocked()
+            }
+            return
+        }
+        val interactive = forced ||
+            hid.cursorVisible ||
+            hid.peelPreview ||
+            key.showPicker ||
+            key.showRecents ||
+            SplitPane.isValid(key.imePane)
+        if (interactive) {
+            contentSlowWindows = 0
+            contentFastWindows = 0
+            if (contentLimited) {
+                contentLimited = false
+                applyEffectiveFpsLocked()
+            }
+            // Still count arrivals so the next quiet window starts clean.
+            oesPaneArrivals[0] = 0
+            oesPaneArrivals[1] = 0
+            contentWindowStart = SystemClock.uptimeMillis()
+            return
+        }
+        val now = SystemClock.uptimeMillis()
+        if (contentWindowStart == 0L) {
+            contentWindowStart = now
+            return
+        }
+        val dt = now - contentWindowStart
+        if (dt < CarPlayConsts.CONTENT_CADENCE_WINDOW_MS) return
+        val contentFps = maxOf(oesPaneArrivals[0], oesPaneArrivals[1]) * 1000f / dt
+        oesPaneArrivals[0] = 0
+        oesPaneArrivals[1] = 0
+        contentWindowStart = now
+        when {
+            contentFps < CarPlayConsts.CONTENT_SLOW_FPS -> {
+                contentSlowWindows++
+                contentFastWindows = 0
+                if (!contentLimited && contentSlowWindows >= CarPlayConsts.CONTENT_SLOW_WINDOWS) {
+                    contentLimited = true
+                    applyEffectiveFpsLocked()
+                    Log.i(
+                        CarPlayConsts.TAG,
+                        "CarPlayGlCompositor content ${"%.1f".format(contentFps)}fps → tick 30 " +
+                            "(negotiated=$fps pressure=${pressureFps.takeIf { it > 0 } ?: "-"})",
+                    )
+                }
+            }
+            contentFps >= CarPlayConsts.CONTENT_FAST_FPS -> {
+                contentFastWindows++
+                contentSlowWindows = 0
+                if (contentLimited && contentFastWindows >= CarPlayConsts.CONTENT_FAST_WINDOWS) {
+                    contentLimited = false
+                    applyEffectiveFpsLocked()
+                    Log.i(
+                        CarPlayConsts.TAG,
+                        "CarPlayGlCompositor content ${"%.1f".format(contentFps)}fps → tick $fps",
+                    )
+                }
+            }
+            else -> {
+                contentSlowWindows = 0
+                contentFastWindows = 0
+            }
+        }
+    }
+
     /** Strictly monotonic PTS for MediaCodec Surface input (avoids GraphicBufferSource drops). */
     private fun nextPresentationTimeNs(): Long {
         val clock = CarPlayMediaClock.videoTimestampNs()
-        val minStepNs = (1_000_000_000L / fps.coerceIn(1, 120)).coerceAtLeast(1L)
+        val minStepNs = (1_000_000_000L / effectiveFps()).coerceAtLeast(1L)
         val next = when {
             lastPtsNs <= 0L -> clock.coerceAtLeast(minStepNs)
             clock > lastPtsNs -> clock
@@ -1022,14 +1165,22 @@ class CarPlayGlCompositor {
         val actual = deliveredFrames.get() * 1000f / dt
         deliveredFrames.set(0)
         windowStart = now
+        val eff = effectiveFps()
         rateLogTick++
         if (rateLogTick % 3 == 0) {
+            val extras = buildString {
+                if (contentLimited) append(" contentCap")
+                if (pressureFps > 0) append(" pressure=$pressureFps")
+            }
             Log.i(
                 CarPlayConsts.TAG,
-                "CarPlayGlCompositor rate ~${"%.1f".format(actual)}fps target=$fps",
+                "CarPlayGlCompositor rate ~${"%.1f".format(actual)}fps " +
+                    "target=$eff negotiated=$fps$extras",
             )
         }
-        onRateReport?.invoke(fps, actual)
+        // Report effective tick target so sessions don't treat content-capped 30
+        // as a failed 60 supply. Link degrade still uses drop counts separately.
+        onRateReport?.invoke(eff, actual)
     }
 
     companion object {

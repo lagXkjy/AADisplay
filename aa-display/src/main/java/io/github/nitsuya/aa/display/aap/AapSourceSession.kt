@@ -643,7 +643,7 @@ class AapSourceSession(
             main.postDelayed({
                 if (!running.get() || videoCh !== activeVideo || bridge !== display) return@postDelayed
                 val base = runCatching { bridge.baseVideoBitrate() }.getOrDefault(0)
-                videoBitrateCtrl.reset(base)
+                videoBitrateCtrl.reset(base, bridge.negotiatedFps())
                 startVideoBitrateCtrl()
             }, 1_000)
             onStatus("正在打开车机画面…")
@@ -678,29 +678,36 @@ class AapSourceSession(
     private var activeVideo: VideoChannel? = null
 
     /**
-     * Link-aware video bitrate. aare's VideoChannel already measures the HU ack
-     * window (`ackLatencyMs` send→ack, `sendLatencyMs` queue→socket, cumulative
-     * `congestionDrops`) — the fields are exposed "for the phone's adaptive bitrate"
-     * but nothing consumed them. This controller maps those to a live
-     * `setParameters(KEY_BIT_RATE)` step change, never a codec recycle:
-     * two congested windows step the CSM-derived base down (×2/3), three clean
-     * windows step back up, clamped to [base/2, base].
+     * Link-aware video bitrate + fps pressure. aare's VideoChannel already measures the
+     * HU ack window (`ackLatencyMs` send→ack, `sendLatencyMs` queue→socket, cumulative
+     * `congestionDrops`) — the fields are exposed "for the phone's adaptive bitrate".
+     * This controller maps those to:
+     * - live `setParameters(KEY_BIT_RATE)` (never a codec recycle): two congested windows
+     *   step the CSM-derived base down (×2/3), three clean windows step back up,
+     *   clamped to [base/2, base];
+     * - GL pump pressure 60→30 via [AapDisplayBridge.setPressureFps] when the negotiated
+     *   rate is 60 and congestion persists (same windows) — no MediaCodec recycle.
      */
     private val videoBitrateCtrl = object : Runnable {
         @Volatile var base = 0
         @Volatile var current = 0
+        @Volatile var negotiatedFps = AapConsts.DEFAULT_VIDEO_FPS
+        @Volatile var pressureFps = 0
         private var badWindows = 0
         private var goodWindows = 0
         private var lastCongestionDrops = 0L
         private var lastChangeAt = 0L
 
-        fun reset(baseBps: Int) {
+        fun reset(baseBps: Int, fps: Int) {
             base = baseBps
             current = baseBps
+            negotiatedFps = fps.coerceIn(1, 60)
+            pressureFps = 0
             badWindows = 0
             goodWindows = 0
             lastCongestionDrops = 0L
             lastCongestionLogAt = 0L
+            display?.setPressureFps(0)
         }
 
         @Volatile private var lastCongestionLogAt = 0L
@@ -735,7 +742,8 @@ class AapSourceSession(
                     Log.i(
                         AapConsts.TAG,
                         "AAP video congestion: ack=${v.ackLatencyMs}ms send=${v.sendLatencyMs}ms " +
-                            "drops+=$dropsDelta pend=${v.pendingFrames} bitrate=${current / 1_000_000}M",
+                            "drops+=$dropsDelta pend=${v.pendingFrames} bitrate=${current / 1_000_000}M " +
+                            "fpsPressure=${pressureFps.takeIf { it > 0 } ?: "-"}",
                     )
                 }
             }
@@ -747,26 +755,47 @@ class AapSourceSession(
             val now = android.os.SystemClock.uptimeMillis()
             if (now - lastChangeAt < 6_000L) return
             val floor = (base / 2).coerceAtLeast(2_000_000)
-            val next = when {
-                badWindows >= 2 -> {
-                    badWindows = 0
-                    (current * 2 / 3).coerceAtLeast(floor)
-                }
-                else -> {
-                    goodWindows = 0
-                    (current * 3 / 2).coerceAtMost(base)
-                }
+            val nextBitrate = when {
+                badWindows >= 2 -> (current * 2 / 3).coerceAtLeast(floor)
+                else -> (current * 3 / 2).coerceAtMost(base)
             }
-            if (next == current) return
-            Log.i(
-                AapConsts.TAG,
-                "AAP video bitrate ${current / 1_000_000}M → ${next / 1_000_000}M " +
-                    "(ack=${v.ackLatencyMs}ms send=${v.sendLatencyMs}ms drops+=$dropsDelta " +
-                    "pending=${v.pendingFrames})",
-            )
-            current = next
+            val wantPressure = when {
+                badWindows >= 2 && negotiatedFps >= CarPlayConsts.DEFAULT_VIDEO_FPS ->
+                    CarPlayConsts.DEGRADED_VIDEO_FPS
+                goodWindows >= 3 -> 0
+                else -> pressureFps
+            }
+            val bitrateChanged = nextBitrate != current
+            val fpsChanged = wantPressure != pressureFps
+            if (!bitrateChanged && !fpsChanged) {
+                badWindows = 0
+                goodWindows = 0
+                return
+            }
+            if (badWindows >= 2) badWindows = 0 else goodWindows = 0
             lastChangeAt = now
-            display?.setVideoBitrate(next)
+            if (bitrateChanged) {
+                Log.i(
+                    AapConsts.TAG,
+                    "AAP video bitrate ${current / 1_000_000}M → ${nextBitrate / 1_000_000}M " +
+                        "(ack=${v.ackLatencyMs}ms send=${v.sendLatencyMs}ms drops+=$dropsDelta " +
+                        "pending=${v.pendingFrames})",
+                )
+                current = nextBitrate
+                display?.setVideoBitrate(nextBitrate)
+            }
+            if (fpsChanged) {
+                pressureFps = wantPressure
+                Log.i(
+                    AapConsts.TAG,
+                    if (wantPressure > 0) {
+                        "AAP video pressure fps → $wantPressure (negotiated=$negotiatedFps)"
+                    } else {
+                        "AAP video pressure fps cleared (negotiated=$negotiatedFps)"
+                    },
+                )
+                display?.setPressureFps(wantPressure)
+            }
         }
     }
 
@@ -785,6 +814,8 @@ class AapSourceSession(
         videoBitrateWorker?.interrupt()
         videoBitrateWorker = null
         videoBitrateCtrl.base = 0
+        videoBitrateCtrl.pressureFps = 0
+        display?.setPressureFps(0)
     }
 
     private val audioListener = object : AudioChannel.Listener {

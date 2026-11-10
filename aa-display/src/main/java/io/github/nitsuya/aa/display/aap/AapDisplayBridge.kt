@@ -166,6 +166,17 @@ class AapDisplayBridge(
         main.post { encoder.setBitrate(bps) }
     }
 
+    /**
+     * Congestion / thermal pressure cap on the GL pump only (no MediaCodec recycle).
+     * Pass 0 to clear. Used by [AapSourceSession] for 60→30 under link pressure.
+     */
+    fun setPressureFps(fps: Int) {
+        main.post { compositor?.setPressureFps(fps) }
+    }
+
+    /** Negotiated encode fps from the last [startFor] (HU preference). */
+    fun negotiatedFps(): Int = fps
+
     fun stop() {
         main.post { tearDown("stop") }
     }
