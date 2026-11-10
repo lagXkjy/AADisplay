@@ -4,6 +4,8 @@
 
 versionCode **10103** / versionName **1.4**。
 
+- **无线 CarPlay 音频偶发卡顿（有声音但卡一下，视频正常）：** 三处修复——① 音频发送线程升到音频实时优先级，且轻微迟到（<80ms）不再丢弃已缓冲的音频直接发，只有迟到超预算才丢弃重对齐（原来一抖就丢，车上听感就是卡一下）；② 连接时「清旧音频」操作改为在专用线程单点执行，消除与并发写入的竞态（旧音频可能混进直播流）；③ 音频采样写入按帧对齐，封死一条会产生电流杂音的错位路径。
+
 - **车机丢音频焦点应答 → 车机侧永远没音乐：** `onRunning` 只发一次 `AUDIO_FOCUS_REQUEST(GAIN)`，车机（Jancar 系 HU）在自身会话未就绪时不回音，`mediaFocused` 恒 false，MEDIA 泵永不启动，且全链路无错可查。移植 AARE v1.4.0 #143：新增 `aap/FocusRetry`（纯 Kotlin，GPL 署名头）——1s 后重问一次，之后每 2s release+gain 再问，最多 15 次；车机**任何**焦点回音（含它自己的决定）即停。`AapSourceSession` 驱动（main handler 检查，`focusLock` 护状态；reader 线程收 `onAudioFocus` 清退），重试与 rearm 走 `Priority.AUDIO` 不与流数据抢序；会话结束 / teardown 摘除检查。`AapAudioEgress` 只加一个 `hasMediaFocus()` 只读口，泵逻辑不变。
 - 同批核对 AARE v1.4.0 其余修复：proto `required`→`optional`（#103）、双同类音频通道只喂第一个（#104）、无线 bootstrap `whileNegotiating` 重试（#106）、倒车 full-native 后 re-START video（#110）——均已在 vendor pin `5ac79ba` 或本仓对应实现（`5ac79ba`…`v1.4.0` 对 `aap` 库模块 diff 为 0，无需重 pin）。
 
