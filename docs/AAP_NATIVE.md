@@ -30,7 +30,7 @@
 
 | 主屏 H.264 + 双 VD 分屏 | `AapDisplayBridge`（复用 CarPlay GL/AVC） |
 | 触控 | `CarPlayInputBridge.injectNormalized` → pane 本地坐标 |
-| 媒体 / 导航提示 PCM → 车机 | `AapAudioEgress` |
+| 媒体 / 导航提示 PCM → 车机 | `AapAudioEgress`（焦点无应答重试 `FocusRetry`：1s 重问 / 2s×15 release+gain，任何回音即停，AARE v1.4.0 #143） |
 | 仪表 Now Playing / 歌词 | `AapNowPlaying` ← `ClusterLyricStore` |
 | 方向盘媒体键 | `AapInputKeys`（短按媒体/音量；长按右换窗 / 左 Recent） |
 | 旋钮 / 触控板 | `RelativeEvent` → `scrollPane`；touchpad 同触控 |

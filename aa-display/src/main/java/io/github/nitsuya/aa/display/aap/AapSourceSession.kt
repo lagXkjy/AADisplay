@@ -41,6 +41,7 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import aap_protobuf.service.inputsource.message.TouchEventOuterClass.TouchEvent
 import net.prototux.aare.aap.AapLog
 import net.prototux.aare.aap.AapSession
+import net.prototux.aare.aap.Priority
 import net.prototux.aare.aap.PhoneDescription
 import net.prototux.aare.aap.ServiceChannel
 import net.prototux.aare.aap.SessionOptions
@@ -126,6 +127,16 @@ class AapSourceSession(
     private var aap: AapSession? = null
     private var display: AapDisplayBridge? = null
     private val audioEgress = AapAudioEgress()
+    /**
+     * Re-asking a car that never answers our media audio-focus request (AARE v1.4.0 #143: a
+     * Jancar HU drops the request made before its session is ready, and the MEDIA pump then
+     * never starts — the car is silent with no error anywhere). One re-ask after 1 s, then
+     * release + re-ask every 2 s, at most 15 times; any focus word from the car ends it.
+     */
+    private val mediaFocusRetry = FocusRetry()
+    // Guards mediaFocusRetry: the check fires on main, answers arrive on the AAP reader thread.
+    private val focusLock = Any()
+    private val focusCheck = Runnable { checkMediaFocus() }
     private val nowPlaying = AapNowPlaying()
     private val inputKeys = AapInputKeys(app)
     private val batteryReporter = AapBatteryReporter(app)
@@ -859,6 +870,37 @@ class AapSourceSession(
     private fun isPrimaryAudio(channel: AudioChannel): Boolean =
         audioChannels.firstOrNull { it.streamType == channel.streamType } === channel
 
+    /** With [focusLock] held. Times are uptimeMillis, the main handler's clock. */
+    private fun scheduleFocusCheck() {
+        main.removeCallbacks(focusCheck)
+        mediaFocusRetry.nextCheckAtMs()?.let { main.postAtTime(focusCheck, it) }
+    }
+
+    /**
+     * No answer to the media focus request yet: ask again. Without this, a head unit that drops
+     * the request (session not ready on its side) leaves the car silent forever. The sends use
+     * [Priority.AUDIO], the same as the stream's STOP/data, so a retry can't overtake them.
+     */
+    private fun checkMediaFocus() {
+        val s = aap ?: return
+        val action = synchronized(focusLock) {
+            val now = SystemClock.uptimeMillis()
+            // A grant is in: the request got through, whatever the pump decided with it.
+            if (audioEgress.hasMediaFocus()) mediaFocusRetry.onAnswered() else mediaFocusRetry.due(now)
+            scheduleFocusCheck()
+        }
+        when (action) {
+            FocusRetry.Action.Ask -> runCatching { s.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_GAIN, Priority.AUDIO) }
+            FocusRetry.Action.Rearm -> runCatching {
+                s.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_RELEASE, Priority.AUDIO)
+                s.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_GAIN, Priority.AUDIO)
+            }
+            is FocusRetry.Action.GiveUp ->
+                Log.w(AapConsts.TAG, "audio focus: the car never answered (asked ${action.asked} times); media stays silent")
+            FocusRetry.Action.None -> {}
+        }
+    }
+
     private val inputListener = object : InputChannel.Listener {
         override fun onInput(report: InputReport) {
             // Copy refs only — protobuf messages are immutable; Binder inject off reader thread.
@@ -1043,10 +1085,20 @@ class AapSourceSession(
             runCatching {
                 session.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_GAIN)
             }.onFailure { Log.w(AapConsts.TAG, "requestAudioFocus failed", it) }
+            synchronized(focusLock) {
+                mediaFocusRetry.onRequested(SystemClock.uptimeMillis())
+                scheduleFocusCheck()
+            }
             onStatus("已连上车机")
         }
 
         override fun onAudioFocus(session: AapSession, notification: AudioFocusNotification) {
+            // Any word from the car (a grant or its own decision) ends the asking.
+            synchronized(focusLock) {
+                val asked = mediaFocusRetry.onAnswered()
+                if (asked != null) Log.i(AapConsts.TAG, "audio focus answered after $asked asks")
+                scheduleFocusCheck()
+            }
             audioEgress.onAudioFocus(notification.focusState)
         }
 
@@ -1109,6 +1161,7 @@ class AapSourceSession(
                     session.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_RELEASE)
                 }
                 batteryReporter.stop()
+                main.removeCallbacks(focusCheck)
                 audioEgress.stop()
                 audioChannels.clear()
                 nowPlaying.stop()
@@ -1147,6 +1200,7 @@ class AapSourceSession(
             aap?.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_RELEASE)
         }
         batteryReporter.stop()
+        main.removeCallbacks(focusCheck)
         audioEgress.stop()
         nowPlaying.stop()
         inputKeys.reset()

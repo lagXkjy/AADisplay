@@ -91,6 +91,9 @@ class AapAudioEgress {
         }
     }
 
+    /** The car's last focus word lets the MEDIA pump run (read by the focus-retry check). */
+    fun hasMediaFocus(): Boolean = mediaFocused.get()
+
     fun onAudioFocus(state: AudioFocusStateType) {
         when (state) {
             AudioFocusStateType.AUDIO_FOCUS_STATE_GAIN,
