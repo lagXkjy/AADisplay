@@ -13,7 +13,7 @@ import android.util.Log
 import io.github.nitsuya.aa.display.aap.AapConsts
 import io.github.nitsuya.aa.display.aap.AapProjectionService
 import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
-import io.github.nitsuya.aa.display.carplay.CarPlayChannel
+import io.github.nitsuya.aa.display.egress.EgressChannel
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -29,7 +29,7 @@ object AapUsbProbe {
     private val busy = AtomicBoolean(false)
 
     fun tryAttachExisting(context: Context) {
-        if (!CarPlayChannel.useAapEgress(context)) return
+        if (!EgressChannel.useAapEgress(context)) return
         if (AapProjectionService.isProtocolLive()) {
             Log.i(AapConsts.TAG, "USB probe: AAP already live — skip")
             return

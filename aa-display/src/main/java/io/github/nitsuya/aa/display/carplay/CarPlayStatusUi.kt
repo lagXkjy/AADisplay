@@ -10,6 +10,7 @@ import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.aap.AapProjectionService
 import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
 import io.github.nitsuya.aa.display.egress.ChannelOrchestrator
+import io.github.nitsuya.aa.display.egress.EgressChannel
 import io.github.nitsuya.aa.display.egress.ProjectionSessionGate
 
 /**
@@ -33,14 +34,14 @@ object CarPlayStatusUi {
                 return@setOnCheckedChangeListener
             }
             val channel = when (checkedId) {
-                R.id.rb_channel_cp -> CarPlayChannel.CHANNEL_CARPLAY
-                R.id.rb_channel_aap -> CarPlayChannel.CHANNEL_AAP
-                else -> CarPlayChannel.defaultChannel(activity)
+                R.id.rb_channel_cp -> EgressChannel.CHANNEL_CARPLAY
+                R.id.rb_channel_aap -> EgressChannel.CHANNEL_AAP
+                else -> EgressChannel.defaultChannel(activity)
             }
             applyChannel(activity, binding, channel)
         }
         binding.btnCarplayHost.setOnClickListener {
-            applyChannel(activity, binding, CarPlayChannel.CHANNEL_CARPLAY)
+            applyChannel(activity, binding, EgressChannel.CHANNEL_CARPLAY)
             CarPlayProjectionService.requestDiscoverable(activity)
         }
         binding.btnBtDiscoverable.setOnClickListener {
@@ -48,7 +49,7 @@ object CarPlayStatusUi {
             toast(activity, "请允许手机被车机发现")
         }
         binding.btnAapReconnect.setOnClickListener {
-            applyChannel(activity, binding, CarPlayChannel.CHANNEL_AAP)
+            applyChannel(activity, binding, EgressChannel.CHANNEL_AAP)
         }
         channelChangeFromUser = true
         ensureArmedIfCarPlay(activity)
@@ -69,7 +70,7 @@ object CarPlayStatusUi {
             }
             return
         }
-        val channel = pendingChannelAfterPerms ?: CarPlayChannel.CHANNEL_CARPLAY
+        val channel = pendingChannelAfterPerms ?: EgressChannel.CHANNEL_CARPLAY
         pendingChannelAfterPerms = null
         finishApplyChannel(activity, binding, channel)
     }
@@ -81,9 +82,9 @@ object CarPlayStatusUi {
     ) {
         // Persist + swap cards immediately so the radio and panels stay in sync,
         // even when a permission dialog delays arming the selected egress.
-        CarPlayChannel.set(activity, channel)
+        EgressChannel.set(activity, channel)
         refresh(activity, binding)
-        if ((channel == CarPlayChannel.CHANNEL_CARPLAY || channel == CarPlayChannel.CHANNEL_AAP) &&
+        if ((channel == EgressChannel.CHANNEL_CARPLAY || channel == EgressChannel.CHANNEL_AAP) &&
             !CarPlayRuntimePerms.ensureWireless(activity)
         ) {
             pendingChannelAfterPerms = channel
@@ -99,14 +100,14 @@ object CarPlayStatusUi {
         channel: Int,
     ) {
         val target = when {
-            channel == CarPlayChannel.CHANNEL_AAP -> CarPlayChannel.CHANNEL_AAP
-            channel == CarPlayChannel.CHANNEL_CARPLAY -> channel
-            else -> CarPlayChannel.defaultChannel(activity)
+            channel == EgressChannel.CHANNEL_AAP -> EgressChannel.CHANNEL_AAP
+            channel == EgressChannel.CHANNEL_CARPLAY -> channel
+            else -> EgressChannel.defaultChannel(activity)
         }
         ChannelOrchestrator.switchTo(activity, target) {
             when {
-                CarPlayChannel.useAapEgress(activity) -> toast(activity, "已切到 Android Auto")
-                CarPlayChannel.useCarPlayEgress(activity) -> {
+                EgressChannel.useAapEgress(activity) -> toast(activity, "已切到 Android Auto")
+                EgressChannel.useCarPlayEgress(activity) -> {
                     CarPlayProjectionService.requestDiscoverable(activity)
                     toast(activity, "已切到无线 CarPlay，请到车机上连接")
                 }
@@ -118,7 +119,7 @@ object CarPlayStatusUi {
     fun handleLaunchIntent(activity: Activity, binding: ActivityMainBinding, intent: Intent?) {
         when (intent?.action) {
             CarPlayConsts.ACTION_CONNECT -> {
-                applyChannel(activity, binding, CarPlayChannel.CHANNEL_CARPLAY)
+                applyChannel(activity, binding, EgressChannel.CHANNEL_CARPLAY)
             }
             CarPlayConsts.ACTION_STOP -> {
                 CarPlayProjectionService.stop(activity)
@@ -129,20 +130,20 @@ object CarPlayStatusUi {
     }
 
     fun ensureArmedIfCarPlay(activity: Activity) {
-        if (!CarPlayChannel.useCarPlayEgress(activity)) return
-        if (CarPlayChannel.useWirelessCarPlay(activity) &&
+        if (!EgressChannel.useCarPlayEgress(activity)) return
+        if (EgressChannel.useWirelessCarPlay(activity) &&
             !CarPlayRuntimePerms.ensureWireless(activity)
         ) {
-            pendingChannelAfterPerms = CarPlayChannel.CHANNEL_CARPLAY
+            pendingChannelAfterPerms = EgressChannel.CHANNEL_CARPLAY
             return
         }
         ChannelOrchestrator.ensureArmedCurrent(activity)
     }
 
     fun ensureArmedIfAap(activity: Activity) {
-        if (!CarPlayChannel.useAapEgress(activity)) return
+        if (!EgressChannel.useAapEgress(activity)) return
         if (!CarPlayRuntimePerms.ensureWireless(activity)) {
-            pendingChannelAfterPerms = CarPlayChannel.CHANNEL_AAP
+            pendingChannelAfterPerms = EgressChannel.CHANNEL_AAP
             return
         }
         ChannelOrchestrator.ensureArmedCurrent(activity)
@@ -155,13 +156,13 @@ object CarPlayStatusUi {
         } catch (_: Throwable) {
             ProjectionSessionGate.isCarPlayLive()
         }
-        val channel = CarPlayChannel.get(activity)
-        val carPlay = CarPlayChannel.useCarPlayEgress(activity)
-        val aap = CarPlayChannel.useAapEgress(activity)
+        val channel = EgressChannel.get(activity)
+        val carPlay = EgressChannel.useCarPlayEgress(activity)
+        val aap = EgressChannel.useAapEgress(activity)
         val armed = CarPlayProjectionService.isSessionArmed()
         val aapArmed = AapProjectionService.isSessionArmed()
         val hostUp = CarPlayHostRuntime.isRunning()
-        val aaInstalled = CarPlayChannel.isAndroidAutoInstalled(activity)
+        val aaInstalled = EgressChannel.isAndroidAutoInstalled(activity)
 
         val (cpState, cpDetail, cpColor) = when {
             !carPlay -> Triple("", "", activity.getColor(R.color.color_text_primary))
@@ -214,7 +215,7 @@ object CarPlayStatusUi {
         }
 
         val wantId = when (channel) {
-            CarPlayChannel.CHANNEL_CARPLAY -> R.id.rb_channel_cp
+            EgressChannel.CHANNEL_CARPLAY -> R.id.rb_channel_cp
             else -> R.id.rb_channel_aap
         }
         if (binding.rgCarplayChannel.checkedRadioButtonId != wantId) {

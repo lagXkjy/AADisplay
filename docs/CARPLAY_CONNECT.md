@@ -27,7 +27,7 @@
 
 | 触发 | 行为 | 代码 |
 |------|------|------|
-| 状态页「出口通道 = CarPlay」 | `CarPlayChannel` 持久化 → `CarPlayProjectionService.CONNECT` | `CarPlayStatusUi`、`CarPlayChannel` |
+| 状态页「出口通道 = CarPlay」 | `EgressChannel` 持久化 → `CarPlayProjectionService.CONNECT` | `CarPlayStatusUi`、`EgressChannel` |
 | 开机 / BT ON / 解锁 / 换包 | 若通道已是 CarPlay → **system_server** 尽早起 FGS listen `…cafe`（绕过 app 后台广播禁令；App 侧 arm receiver 已删，后台 arm 唯一路径） | `xposed/carplay/CarPlayBootArm` |
 | STOP / 切回 AA | `tearDown` → 停 Session / Host；通道改 AA | `CarPlayProjectionService` |
 
@@ -178,7 +178,7 @@ sequenceDiagram
 
 | 类 | 连接职责 |
 |----|----------|
-| `CarPlayChannel` | AA ↔ CarPlay 互斥通道持久化 |
+| `EgressChannel`（`egress/` 中性层） | AA ↔ CarPlay 互斥通道持久化 |
 | `CarPlayBootArm`（system_server） | 后台 FGS 武装唯一路径：BT ON / 解锁 / 开机 / 换包 |
 | `CarPlayProjectionService` | FGS 拥有 Session；live 上报 |
 | `CarPlaySourceSession` | 编排 Bonjour + BT + iAP2 + Wi‑Fi + RTSP |

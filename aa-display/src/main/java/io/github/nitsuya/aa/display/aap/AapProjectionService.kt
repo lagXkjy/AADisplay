@@ -20,7 +20,8 @@ import android.util.Log
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
 import io.github.nitsuya.aa.display.aap.usb.AapUsbProbe
-import io.github.nitsuya.aa.display.carplay.CarPlayChannel
+import io.github.nitsuya.aa.display.egress.EgressChannel
+import io.github.nitsuya.aa.display.egress.ProjectionEgress
 import io.github.nitsuya.aa.display.ui.main.MainActivity
 import net.prototux.aare.aap.Transport
 import java.util.concurrent.atomic.AtomicReference
@@ -29,7 +30,7 @@ import java.util.concurrent.atomic.AtomicReference
  * Foreground service owning [AapSourceSession] for native AAP egress (no gearhead hooks).
  */
 class AapProjectionService : Service() {
-    companion object {
+    companion object : ProjectionEgress {
         private val sessionRef = AtomicReference<AapSourceSession?>(null)
         private val pendingTransport = AtomicReference<PendingTransport?>(null)
         private val attachLock = Any()
@@ -113,6 +114,37 @@ class AapProjectionService : Service() {
             return true
         }
 
+        // --- ProjectionEgress backend (neutral egress layer; ChannelOrchestrator only sees this) ---
+
+        override val channelId: Int get() = EgressChannel.CHANNEL_AAP
+
+        override fun isArmed(): Boolean = isSessionArmed()
+
+        /** Pre-arm: cert extract → FGS → USB probe (same steps as the pre-refactor orchestrator path). */
+        override fun arm(context: Context) {
+            PhoneCertStore.ensureExtracted(context, force = false)
+            start(context)
+            AapUsbProbe.tryAttachExisting(context)
+        }
+
+        override fun stopAndAwait(context: Context, timeoutMs: Long, pollMs: Long) {
+            if (!isSessionArmed()) return
+            Log.i(AapConsts.TAG, "AAP stop (await)")
+            stop(context)
+            val deadline = SystemClock.elapsedRealtime() + timeoutMs
+            while (isSessionArmed()) {
+                if (SystemClock.elapsedRealtime() >= deadline) {
+                    Log.w(AapConsts.TAG, "AAP stopAndAwait timeout — proceeding")
+                    return
+                }
+                try {
+                    Thread.sleep(pollMs)
+                } catch (_: InterruptedException) {
+                    return
+                }
+            }
+        }
+
         private fun drainPendingTransport() {
             val pending = synchronized(attachLock) {
                 pendingTransport.getAndSet(null)
@@ -135,7 +167,7 @@ class AapProjectionService : Service() {
     private var usbProbeUntilElapsed = 0L
     private val usbProbeTick = object : Runnable {
         override fun run() {
-            if (!CarPlayChannel.useAapEgress(this@AapProjectionService)) return
+            if (!EgressChannel.useAapEgress(this@AapProjectionService)) return
             if (isProtocolLive() || hasActiveTransport()) return
             AapUsbProbe.tryAttachExisting(this@AapProjectionService)
             if (SystemClock.elapsedRealtime() < usbProbeUntilElapsed) {
@@ -186,7 +218,7 @@ class AapProjectionService : Service() {
                 // Symmetric with CarPlayProjectionService: a stray start while the user is
                 // on CarPlay must self-stop, not rewrite the channel back to AAP and steal
                 // the shared split VDs from a live CarPlay session.
-                if (!CarPlayChannel.useAapEgress(this)) {
+                if (!EgressChannel.useAapEgress(this)) {
                     tearDown("channel-not-aap")
                     stopSelf()
                     return START_NOT_STICKY
@@ -195,7 +227,7 @@ class AapProjectionService : Service() {
                 ensureSession()
             }
             else -> {
-                if (CarPlayChannel.useAapEgress(this)) {
+                if (EgressChannel.useAapEgress(this)) {
                     ensureForeground()
                     ensureSession()
                 } else {

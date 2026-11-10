@@ -9,10 +9,15 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
+import io.github.nitsuya.aa.display.egress.EgressChannel
+import io.github.nitsuya.aa.display.egress.ProjectionEgress
 import io.github.nitsuya.aa.display.ui.main.MainActivity
 import java.util.concurrent.atomic.AtomicReference
 
@@ -21,7 +26,7 @@ import java.util.concurrent.atomic.AtomicReference
  * CarPlay paints only via Host GL.
  */
 class CarPlayProjectionService : Service() {
-    companion object {
+    companion object : ProjectionEgress {
         private val sessionRef = AtomicReference<CarPlaySourceSession?>(null)
         private val glCompositorRef = AtomicReference<CarPlayGlCompositor?>(null)
 
@@ -63,6 +68,41 @@ class CarPlayProjectionService : Service() {
                 CarPlayBluetoothLink.launchDiscoverableDialog(context)
             }
         }
+
+        // --- ProjectionEgress backend (neutral egress layer; ChannelOrchestrator only sees this) ---
+
+        private val mainHandler = Handler(Looper.getMainLooper())
+
+        override val channelId: Int get() = EgressChannel.CHANNEL_CARPLAY
+
+        override fun isArmed(): Boolean = isSessionArmed()
+
+        override fun arm(context: Context) {
+            start(context, launchHostTrampoline = false)
+        }
+
+        override fun finishHost(context: Context) {
+            mainHandler.post { CarPlayHostActivity.current?.finish() }
+        }
+
+        override fun stopAndAwait(context: Context, timeoutMs: Long, pollMs: Long) {
+            if (!isSessionArmed() && !CarPlayHostRuntime.isRunning()) return
+            Log.i(CarPlayConsts.TAG, "CarPlay stop (await)")
+            finishHost(context)
+            stop(context)
+            val deadline = SystemClock.elapsedRealtime() + timeoutMs
+            while (isSessionArmed() || CarPlayHostRuntime.isRunning()) {
+                if (SystemClock.elapsedRealtime() >= deadline) {
+                    Log.w(CarPlayConsts.TAG, "CarPlay stopAndAwait timeout — proceeding")
+                    return
+                }
+                try {
+                    Thread.sleep(pollMs)
+                } catch (_: InterruptedException) {
+                    return
+                }
+            }
+        }
     }
 
     private var session: CarPlaySourceSession? = null
@@ -75,10 +115,10 @@ class CarPlayProjectionService : Service() {
                 // XOR egress: user stopped while still on CarPlay → fall back to default
                 // (AAP if AA installed). Skip rewrite when ChannelOrchestrator already
                 // persisted AAP / another channel — otherwise STOP flaps the file mid-switch.
-                if (CarPlayChannel.useCarPlayEgress(this) &&
-                    CarPlayChannel.isAndroidAutoInstalled(this)
+                if (EgressChannel.useCarPlayEgress(this) &&
+                    EgressChannel.isAndroidAutoInstalled(this)
                 ) {
-                    CarPlayChannel.set(this, CarPlayChannel.defaultChannel(this))
+                    EgressChannel.set(this, EgressChannel.defaultChannel(this))
                 }
                 tearDown("stop-intent")
                 stopSelf()
@@ -89,7 +129,7 @@ class CarPlayProjectionService : Service() {
                 // stale Settings mirror, trampoline recreate, sticky re-delivery) must NOT
                 // rewrite the user's choice back to CarPlay — that re-arms CP over a live
                 // AAP session and rebinds the shared split VDs (audio up / video black).
-                if (!CarPlayChannel.useCarPlayEgress(this)) {
+                if (!EgressChannel.useCarPlayEgress(this)) {
                     tearDown("channel-not-carplay")
                     stopSelf()
                     return START_NOT_STICKY
@@ -100,7 +140,7 @@ class CarPlayProjectionService : Service() {
             }
             // System restart / sticky re-delivery: only re-arm when the user chose CarPlay.
             else -> {
-                if (CarPlayChannel.useCarPlayEgress(this)) {
+                if (EgressChannel.useCarPlayEgress(this)) {
                     ensureForeground()
                     safeEnsureSession(launchHostTrampoline = true)
                 } else {

@@ -42,7 +42,7 @@ AADisplay 是 [Nitsuya/AADisplay](https://github.com/Nitsuya/AADisplay) 的生�
 | `ui/aa/` | 双 VD 分屏控制器与协作类（Host GL / AAP 出画；Car SDK 壳已删） |
 | `ui/window/` | 显示会话策略（`DisplaySessionPolicy`：Delay Destroy / keep-awake；二次出口 live 门控；手机悬浮 UI 已移除） |
 | `ui/aa/split/` | 双 VD / 分屏门面 `SplitDisplayController` + 协作类（`SplitVdLifecycle` / `SplitLaunchRestore` / `SplitOwnership` / `SplitInputRecents` / `SplitImeController` / `PaneAppStack` / `SplitLockedPeelController` 等；每窗最多 3 应用保活） |
-| `egress/` | 二次出口门控：`ProjectionSessionGate`（CarPlay ∪ AAP 会话是否存活；无协议依赖；AIDL 仍名 CarPlay） |
+| `egress/` | 二次出口中性层：`EgressChannel`（通道选择持久化，契约冻结）＋ `ProjectionSessionGate`（CarPlay ∪ AAP 会话是否存活；AIDL 仍名 CarPlay）＋ `ProjectionEgress`（协议后端契约/注册表）＋ `ChannelOrchestrator`（注册表驱动切换，不 import 协议包） |
 | `carplay/` | 无线 CarPlay Source：协议 / 编码 / Host / FGS / 状态页绑定 |
 | `xposed/carplay/` | system_server 侧 CarPlay 能力（`CarPlayAudioCapture` / `CarPlayProcessBoost` / `CarPlayBootArm`；非协议栈） |
 | `util/` | `LastSplitStore`、广播常量、触控改写等 |
@@ -97,7 +97,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 
 ### LSPosed scope
 
-见 `aa-display/src/main/res/values/arrays.xml`：仅 `android` + 本模块包。Google gearhead 投屏已硬下线（见 [docs/GEARHEAD_LEGACY.md](docs/GEARHEAD_LEGACY.md)）。`CarPlayChannel`：已装 AA 默认 `CHANNEL_AAP`，未装默认 `CHANNEL_CARPLAY`；`CHANNEL_AA` 仅迁移哨兵。
+见 `aa-display/src/main/res/values/arrays.xml`：仅 `android` + 本模块包。Google gearhead 投屏已硬下线（见 [docs/GEARHEAD_LEGACY.md](docs/GEARHEAD_LEGACY.md)）。`EgressChannel`：已装 AA 默认 `CHANNEL_AAP`，未装默认 `CHANNEL_CARPLAY`；`CHANNEL_AA` 仅迁移哨兵（契约：files `aadisplay_carplay_channel` / Settings.Global 同名 key / 通道数值 id 冻结）。
 仪表歌词：QQ 音乐车载（`com.tencent.qqmusiccar`）+ QQ 音乐 HD（`com.tencent.qqmusicpad`）+ 汽水（`com.luna.music`）——三源同时只能一个播放。音视频互斥：`AvMediaArbiter`；`ClusterLyricMirror` → `ClusterLyricStore` → AAP `AapNowPlaying` / CarPlay NP（见 `docs/CLUSTER_LYRIC_CLOCK.md`）。
 
 ## 4. 构建与验证
@@ -201,6 +201,14 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 - `ui/window/DisplaySessionPolicy.kt`（原 `DisplayWindow`）：Delay Destroy = 180s、双 VD keep-awake；无手机悬浮 UI
 - 通过 `CoreApi` 操作任务，不直接碰 system VirtualDisplay
 
+### 新增出画协议（扩展入口）
+
+1. 新协议包（参考 `carplay/` / `aap/` 拆分：协议 / 编码 / FGS / 状态 UI）；协议栈只跑在 App 进程，不进 system_server
+2. `egress/EgressChannel.kt` 加通道常量（不复用退役 id；**不动** files 文件名 / Settings.Global key / 既有数值 id）；`xposed/carplay/CarPlayBootArm` 若需后台 arm 再补镜像读取
+3. FGS companion 实现 `egress/ProjectionEgress`（`channelId` / `isArmed` / `arm` / `stopAndAwait` / `finishHost`）并注册进 `ProjectionEgressRegistry` —— `ChannelOrchestrator` 切换/互斥编排自动生效，无需改 `when`
+4. `egress/ProjectionSessionGate` 加 owner key（参 `OWNER_AAP`）；AIDL `reportCarPlaySessionLive` 名称冻结复用
+5. 状态页加卡片（`ui/main/MainActivity` + `CarPlayStatusUi` 模式）；仅当需要 LSPosed 钩子时动 `arrays.xml` scope
+
 ### 虚拟屏多应用栈（Max 3）
 
 - `ui/aa/split/PaneAppStack.kt`：每窗底→顶有序栈；栈顶 = 显示；满则挤底
@@ -235,7 +243,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 | 系统 VirtualDisplay / Binder 桥 | `xposed/hook/AndroidHook.kt`、`CoreManagerService.kt` |
 | VD DPI pin / Metrics 镜像 / 竖屏 letterbox 铺满 / Presentation 拦截 / IME 落屏 | `xposed/hook/VdDensityPin.kt`、`VdMetricsMirror.kt`、`VdOrientationFill.kt`、`PanePresentationGuard.kt`、`VdImeDisplayPin.kt` |
 | 手机蓝牙键鼠（操作 / 双窗 / 分隔条 / 堆栈） | [docs/EXECUTION.md](docs/EXECUTION.md) §10.1；`xposed/hook/PhoneHidRedirect.kt` |
-| **Android Auto（AAP，默认 AA 出口）** | [docs/AAP_NATIVE.md](docs/AAP_NATIVE.md)；`aap/`（`AapProjectionService` / `PhoneCertStore` / `AaApkKeyExtractor`）；`vendor/aare-aap`；通道 `CarPlayChannel.CHANNEL_AAP`；出画见 [docs/EXECUTION.md](docs/EXECUTION.md) §14.3 |
+| **Android Auto（AAP，默认 AA 出口）** | [docs/AAP_NATIVE.md](docs/AAP_NATIVE.md)；`aap/`（`AapProjectionService` / `PhoneCertStore` / `AaApkKeyExtractor`）；`vendor/aare-aap`；通道 `EgressChannel.CHANNEL_AAP`；出画见 [docs/EXECUTION.md](docs/EXECUTION.md) §14.3 |
 | **gearhead 原路（已硬下线）** | [docs/GEARHEAD_LEGACY.md](docs/GEARHEAD_LEGACY.md)；[`archive/gearhead-aa/`](archive/gearhead-aa/) |
 | 无线 CarPlay 出口（与 AAP 双轨） | [docs/EXECUTION.md](docs/EXECUTION.md) §14（§14.1 播放链路速查 + 包边界）；**建连时序** [docs/CARPLAY_CONNECT.md](docs/CARPLAY_CONNECT.md)；**连热点仍走流量** [docs/CARPLAY_WIFI_CELLULAR.md](docs/CARPLAY_WIFI_CELLULAR.md)；协议外参 [docs/CARPLAY_REFS.md](docs/CARPLAY_REFS.md)；`carplay/`、`egress/ProjectionSessionGate`（二次出口 live）、`xposed/carplay/`；iAP2 → `protocol/Iap2Session.kt` |
 | **有线 CarPlay（USB fake-iPhone，已下线）** | 归档 [`archive/usb-carplay/`](archive/usb-carplay/)（`usb-gadget` / 文档 / pair 实验室）；App 侧 `CarPlayUsb*` 代码已删除，`CHANNEL_CARPLAY_USB` 仅保留为迁移哨兵（残留 `cp-usb` 回落 `defaultChannel()`） |

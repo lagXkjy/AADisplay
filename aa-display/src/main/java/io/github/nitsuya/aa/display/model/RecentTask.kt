@@ -8,10 +8,6 @@ data class RecentTask(
     val primaryDisplay: List<RecentTaskInfo>,
     val secondaryDisplay: List<RecentTaskInfo>,
 ) : Parcelable {
-    /** Combined virtual-display tasks (primary + secondary). */
-    val virtualDisplay: List<RecentTaskInfo>
-        get() = primaryDisplay + secondaryDisplay
-
     constructor(parcel: Parcel) : this(
         parcel.createTypedArrayList(RecentTaskInfo)!!,
         parcel.createTypedArrayList(RecentTaskInfo)!!,

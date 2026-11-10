@@ -38,7 +38,7 @@
 - `CoreApi.kt`（顶层 `val`）、`xposed/CoreManager.kt`、`xposed/util/Utils.kt`（顶层 `fun log/logDebug` 被广泛 import）
 - `lib-stub/` 全部 9 个隐藏 API stub（`IInputManager`/`DisplayManagerHidden`/`ActivityManagerHidden`/`ITaskStackListener`/`IActivityTaskManager`/`TaskSnapshot`/`InputFilter`/`IWindowManager`/`PowerManagerHidden`）——逐一确认在 `Instances.kt`/`SplitVdLifecycle.kt`/`SplitTaskStackListener.kt`/`PhoneHidRedirect.kt` 使用
 - 全部 12 个非 values 资源（5 个初扫疑似项均被 layout/manifest/mipmap 互引证实存活）
-- `CarPlayChannel` LEGACY_PREFS 迁移、`HeadUnitNetwork.joinLegacy`（SDK<Q 分支，minSdk 33 下为死分支但属防御性 compat，删前自定夺——**本次未列入**）
+- `EgressChannel` LEGACY_PREFS 迁移、`HeadUnitNetwork.joinLegacy`（SDK<Q 分支，minSdk 33 下为死分支但属防御性 compat，删前自定夺——**本次未列入**）
 - `CarPlayAacAudioEgress` 诊断计数器（silenceSends 等，文件内有周期性读取）
 
 ## 结论

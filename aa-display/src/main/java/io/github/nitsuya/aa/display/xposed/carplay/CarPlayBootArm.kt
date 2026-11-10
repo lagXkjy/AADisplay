@@ -13,7 +13,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.os.Process
 import android.provider.Settings
-import io.github.nitsuya.aa.display.carplay.CarPlayChannel
+import io.github.nitsuya.aa.display.egress.EgressChannel
 import io.github.nitsuya.aa.display.carplay.CarPlayConsts
 import io.github.nitsuya.aa.display.xposed.util.log
 import java.io.File
@@ -46,7 +46,7 @@ object CarPlayBootArm {
     private const val TARGET_PACKAGE = "io.github.nitsuya.aa.display"
     private const val SERVICE_CLASS =
         "io.github.nitsuya.aa.display.carplay.CarPlayProjectionService"
-    private val SETTINGS_CHANNEL = CarPlayChannel.SETTINGS_CHANNEL
+    private val SETTINGS_CHANNEL = EgressChannel.SETTINGS_CHANNEL
     private const val DEBOUNCE_MS = 1_500L
     private const val RETRY_MS = 2_000L
 
@@ -177,10 +177,10 @@ object CarPlayBootArm {
                 continue
             }
             val parsed = when (text) {
-                CarPlayChannel.CHANNEL_CARPLAY.toString(), "cp", "carplay" -> CarPlayChannel.CHANNEL_CARPLAY
-                CarPlayChannel.CHANNEL_CARPLAY_USB.toString(), "cp-usb", "carplay-usb", "usb" -> CarPlayChannel.CHANNEL_CARPLAY_USB
-                CarPlayChannel.CHANNEL_AAP.toString(), "aap", "native-aa" -> CarPlayChannel.CHANNEL_AAP
-                CarPlayChannel.CHANNEL_AA.toString(), "aa" -> CarPlayChannel.CHANNEL_AA
+                EgressChannel.CHANNEL_CARPLAY.toString(), "cp", "carplay" -> EgressChannel.CHANNEL_CARPLAY
+                EgressChannel.CHANNEL_CARPLAY_USB.toString(), "cp-usb", "carplay-usb", "usb" -> EgressChannel.CHANNEL_CARPLAY_USB
+                EgressChannel.CHANNEL_AAP.toString(), "aap", "native-aa" -> EgressChannel.CHANNEL_AAP
+                EgressChannel.CHANNEL_AA.toString(), "aa" -> EgressChannel.CHANNEL_AA
                 else -> null
             }
             if (parsed != null) return parsed
@@ -192,28 +192,28 @@ object CarPlayBootArm {
         try {
             val v = Settings.Global.getInt(app.contentResolver, SETTINGS_CHANNEL, -1)
             when (v) {
-                CarPlayChannel.CHANNEL_CARPLAY -> {
+                EgressChannel.CHANNEL_CARPLAY -> {
                     // The app-side mirror write needs WRITE_SETTINGS and usually fails, so
                     // this copy can be stale after the user switched to AAP. When the app
                     // file is readable it is the fresh source of truth — a stale mirror must
                     // not re-arm CarPlay over a live AAP session. Unreadable (CE locked /
                     // missing) → keep trusting the mirror (early-boot arm predates unlock).
-                    if (readChannelFile(app) == CarPlayChannel.CHANNEL_AAP) return false
+                    if (readChannelFile(app) == EgressChannel.CHANNEL_AAP) return false
                     return true
                 }
-                CarPlayChannel.CHANNEL_CARPLAY_USB -> {
+                EgressChannel.CHANNEL_CARPLAY_USB -> {
                     // Retired wired selection — migrate to default.
-                    val fallback = CarPlayChannel.defaultChannel(app)
+                    val fallback = EgressChannel.defaultChannel(app)
                     mirrorSettings(app, fallback)
-                    return fallback == CarPlayChannel.CHANNEL_CARPLAY
+                    return fallback == EgressChannel.CHANNEL_CARPLAY
                 }
-                CarPlayChannel.CHANNEL_AA -> {
+                EgressChannel.CHANNEL_AA -> {
                     // Retired Google gearhead path — migrate to default (AAP or CarPlay).
-                    val fallback = CarPlayChannel.defaultChannel(app)
+                    val fallback = EgressChannel.defaultChannel(app)
                     mirrorSettings(app, fallback)
-                    return fallback == CarPlayChannel.CHANNEL_CARPLAY
+                    return fallback == EgressChannel.CHANNEL_CARPLAY
                 }
-                CarPlayChannel.CHANNEL_AAP -> return false
+                EgressChannel.CHANNEL_AAP -> return false
             }
         } catch (_: Throwable) {
         }
@@ -231,38 +231,38 @@ object CarPlayBootArm {
                 continue
             }
             when (text) {
-                CarPlayChannel.CHANNEL_CARPLAY.toString(), "cp", "carplay" -> {
-                    mirrorSettings(app, CarPlayChannel.CHANNEL_CARPLAY)
+                EgressChannel.CHANNEL_CARPLAY.toString(), "cp", "carplay" -> {
+                    mirrorSettings(app, EgressChannel.CHANNEL_CARPLAY)
                     return true
                 }
-                CarPlayChannel.CHANNEL_CARPLAY_USB.toString(), "cp-usb", "carplay-usb", "usb" -> {
+                EgressChannel.CHANNEL_CARPLAY_USB.toString(), "cp-usb", "carplay-usb", "usb" -> {
                     // Retired wired selection — migrate to default.
-                    val fallback = CarPlayChannel.defaultChannel(app)
+                    val fallback = EgressChannel.defaultChannel(app)
                     mirrorSettings(app, fallback)
-                    return fallback == CarPlayChannel.CHANNEL_CARPLAY ||
-                        fallback == CarPlayChannel.CHANNEL_AAP
+                    return fallback == EgressChannel.CHANNEL_CARPLAY ||
+                        fallback == EgressChannel.CHANNEL_AAP
                 }
-                CarPlayChannel.CHANNEL_AAP.toString(), "aap", "native-aa" -> {
+                EgressChannel.CHANNEL_AAP.toString(), "aap", "native-aa" -> {
                     // AAP is armed from the app process (AapProjectionService),
                     // not system_server cafe RFCOMM — BootArm only mirrors settings.
-                    mirrorSettings(app, CarPlayChannel.CHANNEL_AAP)
+                    mirrorSettings(app, EgressChannel.CHANNEL_AAP)
                     return false
                 }
-                CarPlayChannel.CHANNEL_AA.toString(), "aa" -> {
-                    val fallback = CarPlayChannel.defaultChannel(app)
+                EgressChannel.CHANNEL_AA.toString(), "aa" -> {
+                    val fallback = EgressChannel.defaultChannel(app)
                     mirrorSettings(app, fallback)
-                    return fallback == CarPlayChannel.CHANNEL_CARPLAY
+                    return fallback == EgressChannel.CHANNEL_CARPLAY
                 }
             }
         }
         // No persisted choice yet: AA installed → AAP; else CarPlay.
-        val def = CarPlayChannel.defaultChannel(app)
-        if (def == CarPlayChannel.CHANNEL_CARPLAY) {
-            mirrorSettings(app, CarPlayChannel.CHANNEL_CARPLAY)
+        val def = EgressChannel.defaultChannel(app)
+        if (def == EgressChannel.CHANNEL_CARPLAY) {
+            mirrorSettings(app, EgressChannel.CHANNEL_CARPLAY)
             return true
         }
-        if (def == CarPlayChannel.CHANNEL_AAP) {
-            mirrorSettings(app, CarPlayChannel.CHANNEL_AAP)
+        if (def == EgressChannel.CHANNEL_AAP) {
+            mirrorSettings(app, EgressChannel.CHANNEL_AAP)
         }
         return false
     }

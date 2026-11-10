@@ -17,7 +17,7 @@
 | 面 | 原因 |
 |----|------|
 | `aap/cert/*`、证书 Receiver / UI | 从 gearhead **APK** 提 CarService 证 |
-| `CarPlayChannel.GEARHEAD_PACKAGE` | 证书与默认通道检测 |
+| `EgressChannel.GEARHEAD_PACKAGE` | 证书与默认通道检测 |
 | `CoreApi` / 双 VD / `DisplaySessionPolicy` | 出画核心 |
 | `ClusterLyricMirror` / Store | AAP / CarPlay 歌词源 |
 | Host GL / Input / AudioCapture | AAP 与 CarPlay 共用 |

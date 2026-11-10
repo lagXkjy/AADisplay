@@ -1,4 +1,4 @@
-package io.github.nitsuya.aa.display.carplay
+package io.github.nitsuya.aa.display.egress
 
 import android.content.Context
 import android.content.pm.PackageManager
@@ -9,19 +9,28 @@ import java.io.File
 /**
  * User-selected video egress channel, persisted app-side.
  *
+ * Neutral egress layer shared by all projection stacks (CarPlay / AAP /
+ * future protocols) — lives in `egress/` on purpose: protocol packages
+ * (carplay/, aap/) import this, never the other way around.
+ *
  * Channels are **mutually exclusive** — one paints at a time:
- *  - [CHANNEL_CARPLAY]: wireless CarPlay Source + [CarPlayHostActivity] GL panes.
- *  - [CHANNEL_AAP]: Android Auto over AAP (custom protocol) — replaces stock gearhead.
+ *  - [CHANNEL_CARPLAY]: wireless CarPlay Source + Host GL panes.
+ *  - [CHANNEL_AAP]: Android Auto over AAP (custom protocol).
  *  - [CHANNEL_AA]: retired Google gearhead path; read only as a migrate sentinel → [defaultChannel].
  *  - [CHANNEL_CARPLAY_USB]: retired wired fake-iPhone path (WIP abandoned);
  *    read only as a migrate sentinel → [defaultChannel].
  *
- * Persistence uses [Context.getFilesDir] (not SharedPreferences).
+ * **Frozen persistence contract** (devices already out in the wild): file
+ * [FILE_NAME] in filesDir, Settings.Global key [SETTINGS_CHANNEL] (mirrored
+ * for system_server [io.github.nitsuya.aa.display.xposed.carplay.CarPlayBootArm]),
+ * legacy prefs name/key, numeric ids and text aliases. Do not rename.
  *
  * Default when nothing is persisted: [CHANNEL_AAP] if Android Auto (gearhead) is installed
  * (cert can be auto-extracted); otherwise [CHANNEL_CARPLAY].
  */
-object CarPlayChannel {
+object EgressChannel {
+    private const val TAG = "AADisplay_Egress"
+
     /** Retired stock Google AA (gearhead). Never active; migrates to [defaultChannel]. */
     const val CHANNEL_AA = 0
     const val CHANNEL_CARPLAY = 1
@@ -62,7 +71,7 @@ object CarPlayChannel {
         }
         val def = defaultChannel(app)
         writeFile(app, def)
-        Log.i(CarPlayConsts.TAG, "CarPlayChannel default applied channel=$def aaInstalled=${isAndroidAutoInstalled(app)}")
+        Log.i(TAG, "EgressChannel default applied channel=$def aaInstalled=${isAndroidAutoInstalled(app)}")
         return def
     }
 
@@ -70,7 +79,7 @@ object CarPlayChannel {
         val value = normalizeForWrite(context.applicationContext, channel)
         val app = context.applicationContext
         if (!writeFile(app, value)) {
-            Log.e(CarPlayConsts.TAG, "CarPlayChannel set failed channel=$value")
+            Log.e(TAG, "EgressChannel set failed channel=$value")
         }
         try {
             app.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
@@ -95,8 +104,8 @@ object CarPlayChannel {
             if (clearDirty) {
                 writeFile(app, fallback)
                 Log.i(
-                    CarPlayConsts.TAG,
-                    "CarPlayChannel retired channel=$channel — cleared leftover → $fallback",
+                    TAG,
+                    "EgressChannel retired channel=$channel — cleared leftover → $fallback",
                 )
             }
             return fallback
@@ -145,7 +154,7 @@ object CarPlayChannel {
                 else -> null
             }
         } catch (e: Throwable) {
-            Log.w(CarPlayConsts.TAG, "CarPlayChannel read failed", e)
+            Log.w(TAG, "EgressChannel read failed", e)
             null
         }
     }
@@ -154,7 +163,7 @@ object CarPlayChannel {
         return try {
             val dir = app.filesDir
             if (!dir.exists() && !dir.mkdirs()) {
-                Log.e(CarPlayConsts.TAG, "CarPlayChannel filesDir missing")
+                Log.e(TAG, "EgressChannel filesDir missing")
                 return false
             }
             val f = channelFile(app)
@@ -164,11 +173,11 @@ object CarPlayChannel {
                 f.writeText(channel.toString())
                 tmp.delete()
             }
-            Log.i(CarPlayConsts.TAG, "CarPlayChannel persisted channel=$channel path=${f.absolutePath}")
+            Log.i(TAG, "EgressChannel persisted channel=$channel path=${f.absolutePath}")
             mirrorSettings(app, channel)
             true
         } catch (e: Throwable) {
-            Log.e(CarPlayConsts.TAG, "CarPlayChannel write failed", e)
+            Log.e(TAG, "EgressChannel write failed", e)
             false
         }
     }
@@ -178,8 +187,8 @@ object CarPlayChannel {
             Settings.Global.putInt(app.contentResolver, SETTINGS_CHANNEL, channel)
         } catch (e: Throwable) {
             Log.w(
-                CarPlayConsts.TAG,
-                "CarPlayChannel Settings.Global mirror skipped: ${e.message}",
+                TAG,
+                "EgressChannel Settings.Global mirror skipped: ${e.message}",
             )
         }
     }

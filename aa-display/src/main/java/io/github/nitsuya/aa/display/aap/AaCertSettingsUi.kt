@@ -8,7 +8,7 @@ import android.view.View
 import android.widget.Toast
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.aap.cert.PhoneCertStore
-import io.github.nitsuya.aa.display.carplay.CarPlayChannel
+import io.github.nitsuya.aa.display.egress.EgressChannel
 import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
 import java.util.concurrent.Executors
 
@@ -30,7 +30,7 @@ object AaCertSettingsUi {
         }
         refresh(activity, binding)
         // Warm extract only for AAP; CarPlay 通道不显示连车准备卡。
-        if (CarPlayChannel.useAapEgress(activity)) {
+        if (EgressChannel.useAapEgress(activity)) {
             runExtract(activity, binding, force = false)
         }
     }
@@ -78,7 +78,7 @@ object AaCertSettingsUi {
         binding: ActivityMainBinding,
         st: PhoneCertStore.Status,
     ) {
-        val aap = CarPlayChannel.useAapEgress(activity)
+        val aap = EgressChannel.useAapEgress(activity)
         binding.panelAapCert.visibility = if (aap) View.VISIBLE else View.GONE
         if (!aap) return
         binding.tvAapCertState.text = st.summary

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3 — 出画通道模块化（行为不变的结构重构）
+
+versionCode **10102** / versionName **1.3**。
+
+- **通道选择移入中性层：** `carplay/CarPlayChannel` → `egress/EgressChannel`（通道选择本与协议无关，原先却被 aap / ui / egress / xposed 反向 import 协议包）。持久化契约逐字不动：files `aadisplay_carplay_channel`、Settings.Global 镜像 key、legacy prefs、通道数值 id 与文本别名；system_server `CarPlayBootArm` 读同模块类，仅改 import。
+- **协议后端注册制：** 新增 `egress/ProjectionEgress`（`channelId` / `isArmed` / `arm` / `stopAndAwait` / `finishHost`）+ `ProjectionEgressRegistry`；`CarPlayProjectionService` / `AapProjectionService` companion 注册为后端；`ChannelOrchestrator` 改注册表驱动，不再 import 任何 aap / carplay 类。**新接入出画协议 = 新协议包 + 1 条注册 + 1 个通道常量 + 1 个 gate owner key**（步骤见 AGENTS.md「新增出画协议」）。
+- 行为不变：AAP 预 arm（证书提取 → FGS → USB probe）与 CarPlay trampoline 收尾仅调用位置移入各自 `arm()` / `finishHost()`，顺序与 4s 等待语义同旧；日志 tag 仅通道选择由 `AADisplay_CarPlay` 改为 `AADisplay_Egress`。
+
 ## 1.2 — 开机 FGS 崩溃环修复（后台 arm 收敛到 system_server）
 
 versionCode **10101** / versionName **1.2**。

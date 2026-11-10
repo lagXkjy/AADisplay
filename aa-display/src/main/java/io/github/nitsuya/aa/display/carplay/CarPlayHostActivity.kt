@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import io.github.nitsuya.aa.display.egress.EgressChannel
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -57,7 +58,7 @@ class CarPlayHostActivity : Activity() {
         // Channel gate: a system-recreated trampoline must not re-arm CarPlay (FGS + host GL)
         // while the user is on AAP — the re-arm rebinds the shared split VDs and leaves AAP
         // with audio up / video black.
-        if (!CarPlayChannel.useCarPlayEgress(applicationContext)) {
+        if (!EgressChannel.useCarPlayEgress(applicationContext)) {
             Log.i(CarPlayConsts.TAG, "CarPlayHostActivity on non-CarPlay channel — skip re-arm")
             launchGate.set(false)
             finish()

@@ -443,7 +443,7 @@ Car SDK / Coolwalk / gearhead 总线已删。现行仅：
 ```mermaid
 flowchart TB
   subgraph bringup [会话就绪]
-    CH[CarPlayChannel 选 CP] --> FGS[CarPlayProjectionService]
+    CH[EgressChannel 选 CP] --> FGS[CarPlayProjectionService]
     FGS --> SS[CarPlaySourceSession]
     SS --> BT[BT RFCOMM iAP2]
     BT --> WIFI[WiFi handoff / StartSession]
@@ -467,7 +467,7 @@ CarPlay Host（唯一 CP 出画路径，GPU 零拷贝）:
 
 - SETUP `type=110` 后连 `dataPort`；密钥 = HKDF(pairVerify.shared, `DataStream-Salt{id}`, …)。
 - 帧率状态机在 `CarPlaySourceSession`（60↔30）；**不重发 SETUP**。DiPlay 解码帧率自持，车机需设 60fps。
-- **出画互斥**：`CarPlayChannel` AA XOR CarPlay；无 AA 壳双通道 tee。GL/VD 由 `CarPlayHostRuntime`（FGS 拥有）在 `prepareMediaPipeline` 时武装（非开机空转）；`CarPlayHostActivity` 仅可选 trampoline。日志 `feed=gl-compositor`（正常）/ `feed=tee-canvas`（仅 Runtime 未挂上时）；`CarPlayGlCompositor rate ~XXfps`（仅 encoder attach 后）。
+- **出画互斥**：`EgressChannel` AA XOR CarPlay；无 AA 壳双通道 tee。GL/VD 由 `CarPlayHostRuntime`（FGS 拥有）在 `prepareMediaPipeline` 时武装（非开机空转）；`CarPlayHostActivity` 仅可选 trampoline。日志 `feed=gl-compositor`（正常）/ `feed=tee-canvas`（仅 Runtime 未挂上时）；`CarPlayGlCompositor rate ~XXfps`（仅 encoder attach 后）。
 
 **音频（media ⊕ speech，互斥内容）**
 
@@ -508,7 +508,7 @@ ClusterLyricMirror（system_server）
 | 组件 | 路径 |
 |------|------|
 | FGS / 启停 | `carplay/CarPlayProjectionService.kt`（Intent `CONNECT` / `STOP`；系统重启仅在选择 CarPlay 通道时重武装） |
-| 通道选择 | `carplay/CarPlayChannel.kt`（files 持久化；已装 AA 默认 AAP，未装默认 CarPlay；`CHANNEL_AA` 已退役） |
+| 通道选择 | `egress/EgressChannel.kt`（files 持久化；已装 AA 默认 AAP，未装默认 CarPlay；`CHANNEL_AA` 已退役；中性层，协议包单向 import） |
 | 会话编排 | `carplay/CarPlaySourceSession.kt` |
 | 发现 / 链路 | `CarPlayBonjour`、`CarPlayBluetoothLink`（RFCOMM dial+listen）、`CarPlayRtspSession` |
 | iAP2 | `protocol/Iap2Framing` + `Iap2Csm` + `Iap2Session`：detect → Link Sync → Ident → Auth(`AA00…05`) → WiFi/`4300`→`4301`；`CarPlayWifiHandoff` 尝试加热点 |
@@ -528,19 +528,21 @@ ClusterLyricMirror（system_server）
 
 ### 14.2 包边界（AAP 与 CarPlay）
 
-目标：协议 / 编码 / Host 留在 `carplay/`（AAP 出画复用）；`ui/aa/split` 不 import 协议细节；共享 `egress/ProjectionSessionGate` 与 `CoreApi`。
+目标：协议 / 编码 / Host 留在各自协议包（`carplay/` / `aap/`）；`ui/aa/split` 不 import 协议细节；共享 `egress/` 中性层（`EgressChannel` 通道选择 / `ProjectionSessionGate` 会话门控 / `ProjectionEgress` 后端注册表 + `ChannelOrchestrator` 切换）与 `CoreApi`。
 
 ```
 ui/aa/split/     → CoreApi                              （分屏真源）
 aap/             → CoreApi + carplay Host GL（出画/触控复用）
 carplay/         → CoreApi + egress/ + Cluster*（读）
+egress/          → 协议包仅经 ProjectionEgressRegistry（中性层，不 import 协议细节）
 xposed/carplay/  → 仅 system_server 能力，经 ICoreManager 门控
 ```
 
 | 允许共享 | 禁止 |
 |----------|------|
 | `CoreApi` / 双 VD / `SplitPane` / `LastSplitStore` / `ClusterLyricStore`（读） | 把 iAP2/RTSP/加密搬进 system_server |
-| `egress/ProjectionSessionGate` | 恢复 gearhead DexKit / Car SDK 壳 |
+| `egress/ProjectionSessionGate` / `egress/EgressChannel` / `egress/ProjectionEgress` | 恢复 gearhead DexKit / Car SDK 壳 |
+| `egress/` 中性层不 import 协议包（`ChannelOrchestrator` 仅经 `ProjectionEgress` 注册表） | 协议包之间互相 import 通道/编排细节 |
 | AIDL `reportCarPlaySessionLive` 等（名称冻结，ordinal 稳定） | 新增 gearhead 进程钩子 |
 
 **不变式补充**

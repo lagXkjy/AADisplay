@@ -17,7 +17,7 @@ import io.github.nitsuya.aa.display.BuildConfig
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.aap.AaCertSettingsUi
-import io.github.nitsuya.aa.display.carplay.CarPlayChannel
+import io.github.nitsuya.aa.display.egress.EgressChannel
 import io.github.nitsuya.aa.display.carplay.CarPlayConsts
 import io.github.nitsuya.aa.display.carplay.CarPlayHostRuntime
 import io.github.nitsuya.aa.display.carplay.CarPlayStatusUi
@@ -130,14 +130,14 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
     private fun refreshVdDensityUi() {
         val configured = CoreApi.vdDensityDpi
-        val carPlay = CarPlayChannel.useCarPlayEgress(this)
+        val carPlay = EgressChannel.useCarPlayEgress(this)
         updateVdDensityLabels(carPlay)
         updateVdDensityInput(configured, carPlay)
         updateVdDensityStatus(configured, carPlay)
     }
 
     private fun updateVdDensityLabels(carPlay: Boolean) {
-        val aap = CarPlayChannel.useAapEgress(this)
+        val aap = EgressChannel.useAapEgress(this)
         when {
             carPlay || aap -> {
                 baseBinding.tvVdDensityTitle.text = "画面清晰度"
@@ -166,24 +166,24 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     private fun updateVdDensityStatus(configured: Int, carPlay: Boolean) {
         baseBinding.tvVdDensitySaved.text = when {
             configured > 0 -> "已保存：$configured"
-            carPlay || CarPlayChannel.useAapEgress(this) ->
+            carPlay || EgressChannel.useAapEgress(this) ->
                 "已保存：默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI}"
             else -> "已保存：自动"
         }
         baseBinding.tvVdDensityHu.visibility = View.GONE
         val effective = CoreApi.effectiveVdDensityDpi
-        val defaultHint = if (carPlay || CarPlayChannel.useAapEgress(this)) {
+        val defaultHint = if (carPlay || EgressChannel.useAapEgress(this)) {
             CarPlayConsts.ENCODE_UI_DENSITY_DPI
         } else {
             0
         }
         baseBinding.tvVdDensitySession.text = when {
             effective <= 0 && !CarPlayHostRuntime.isRunning() &&
-                !CarPlayChannel.useAapEgress(this) -> "当前：未连接"
+                !EgressChannel.useAapEgress(this) -> "当前：未连接"
             configured > 0 && effective > 0 && effective != configured ->
                 "当前：$effective（已保存 $configured，重连后生效）"
             effective > 0 -> "当前：$effective"
-            carPlay || CarPlayChannel.useAapEgress(this) ->
+            carPlay || EgressChannel.useAapEgress(this) ->
                 "当前：默认 $defaultHint（未连接时）"
             else -> "当前：未连接"
         }
@@ -226,7 +226,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     private fun persistVdDensityDpi(dpi: Int) {
         CoreApi.setVdDensityDpi(dpi)
         val saved = CoreApi.vdDensityDpi
-        val carPlay = CarPlayChannel.useCarPlayEgress(this)
+        val carPlay = EgressChannel.useCarPlayEgress(this)
         if (dpi > 0 && saved != dpi) {
             toast("保存失败，请确认模块已激活后重试")
             refreshVdDensityUi()
@@ -248,7 +248,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             toast("已设为 $dpi")
         } else {
             toast(
-                if (carPlay || CarPlayChannel.useAapEgress(this)) {
+                if (carPlay || EgressChannel.useAapEgress(this)) {
                     "已恢复默认 ${CarPlayConsts.ENCODE_UI_DENSITY_DPI}"
                 } else {
                     "已恢复自动"
