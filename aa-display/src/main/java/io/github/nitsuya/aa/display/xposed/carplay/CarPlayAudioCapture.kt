@@ -134,9 +134,6 @@ object CarPlayAudioCapture {
 
     fun isEnabled(): Boolean = armed.get()
 
-    /** True while FGS/AIDL last requested capture (may be briefly disarmed during rearm). */
-    fun isDesired(): Boolean = desired.get()
-
     fun setEnabled(enabled: Boolean) {
         var reassertMute = false
         // Tap already down (rearm gap / enable failed) but stream mute still held.

@@ -104,10 +104,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             val width: Int,
             val height: Int,
             val densityDpi: Int
-        ) {
-            val isLandscape: Boolean
-                get() = width >= height
-        }
+        )
 
         private var mLockedDisplayProfile: DisplayProfile? = null
         private val mMainHandler = Handler(Looper.getMainLooper())

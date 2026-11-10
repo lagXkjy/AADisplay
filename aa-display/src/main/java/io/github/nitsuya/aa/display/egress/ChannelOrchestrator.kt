@@ -32,8 +32,6 @@ object ChannelOrchestrator {
     @Volatile
     private var switchInProgress = false
 
-    fun isSwitchInProgress(): Boolean = switchInProgress
-
     /**
      * Persist [channel] immediately, then on the orchestrator thread:
      * settle the other backends (await), arm the selected one.

@@ -120,9 +120,6 @@ class AapDisplayBridge(
 
     private val syncBridgeLayoutRunnable = Runnable { syncBridgeLayoutFromCore() }
 
-    val videoWidth: Int get() = width
-    val videoHeight: Int get() = height
-
     fun startFor(
         channel: VideoChannel,
         cfgWidth: Int,

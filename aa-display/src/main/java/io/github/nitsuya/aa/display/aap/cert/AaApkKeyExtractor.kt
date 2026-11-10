@@ -143,7 +143,7 @@ object AaApkKeyExtractor {
                 for ((_, _, cdata) in ciphers) {
                     if (cdata.size < 512 || cdata.size % 16 != 0) continue
                     if (!tried.add(sdata to cdata.size)) continue
-                    val guess = Candidate(lbl, 0, 0, sdata, cdata)
+                    val guess = Candidate(lbl, sdata, cdata)
                     for (car in cars) {
                         val der = tryExtract(guess, car.pem.toByteArray(Charsets.UTF_8), galPemBytes)
                             ?: continue
@@ -296,8 +296,6 @@ object AaApkKeyExtractor {
 
     private data class Candidate(
         val dex: String,
-        val saltOff: Int,
-        val certOff: Int,
         val salt: ByteArray,
         val enc: ByteArray,
     )
@@ -314,7 +312,7 @@ object AaApkKeyExtractor {
             for (delta in listOf(8 + a.size, 8 + a.size + 2)) {
                 val nxt = byOff[a.off + delta] ?: continue
                 if (nxt.size >= 512 && nxt.size % 16 == 0) {
-                    pairs += Candidate(dexLabel, a.off, nxt.off, a.data, nxt.data)
+                    pairs += Candidate(dexLabel, a.data, nxt.data)
                 }
             }
         }
