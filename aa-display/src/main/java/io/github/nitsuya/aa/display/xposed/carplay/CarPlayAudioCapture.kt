@@ -1,11 +1,10 @@
 package io.github.nitsuya.aa.display.xposed.carplay
 
+import android.annotation.SuppressLint
 import android.content.Context
-import android.hardware.display.VirtualDisplay
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
-import android.media.ImageReader
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.os.Binder
@@ -81,8 +80,6 @@ object CarPlayAudioCapture {
     @Volatile private var audioPolicyRenderUnavailable = false
     /** Reason of the in-flight [rearmIfDesired] (null on first cold [enableLocked]). */
     @Volatile private var lastRearmReason: String? = null
-    /** Suppress MediaProjection.onStop → rearm while we intentionally stop() the projection. */
-    @Volatile private var ignoringProjectionStop = false
 
     private val mediaRing = CarPlayPcmRing(
         CarPlayAudioFormats.MEDIA_RING_BYTES,
@@ -100,13 +97,6 @@ object CarPlayAudioCapture {
     /** Phone sink mute engine (stream / device index / enforce thread / volume receiver). */
     private var mute: CarPlayPhoneMute? = null
     private var mediaProjection: MediaProjection? = null
-    /**
-     * Tiny VirtualDisplay held for the lifetime of [mediaProjection].
-     * Some OEMs (Samsung) reject playback-capture AudioPolicy registration unless the
-     * projection is backing an active display — same requirement scrcpy/sndcpy hit.
-     */
-    private var projectionVirtualDisplay: VirtualDisplay? = null
-    private var projectionImageReader: ImageReader? = null
     private var mediaRecord: AudioRecord? = null
     private var speechRecord: AudioRecord? = null
     private var audioPolicy: Any? = null
@@ -259,13 +249,10 @@ object CarPlayAudioCapture {
             policy = speechResult.second
             sMode = speechResult.third
 
-            // playback-capture needs projection + VirtualDisplay; RENDER may also hold
-            // a projection used only for AudioPolicy.register (no VirtualDisplay).
+            // A projection left over from an earlier arm that this arm does not use
+            // (dormant — the current remotesubmix arm creates none); drop it before rebinding.
             if (mMode != "playback-capture" && mMode != "audio-policy-render" && proj != null) {
-                releaseProjectionVirtualDisplay()
-                ignoringProjectionStop = true
                 runCatching { proj.stop() }
-                ignoringProjectionStop = false
                 proj = null
             }
             mediaProjection = proj
@@ -296,10 +283,7 @@ object CarPlayAudioCapture {
             runCatching { mediaRec?.release() }
             runCatching { speechRec?.release() }
             CarPlayAudioPolicy.unregisterAudioPolicy(am, policy)
-            releaseProjectionVirtualDisplay()
-            ignoringProjectionStop = true
             runCatching { proj?.stop() }
-            ignoringProjectionStop = false
             threads.quitSafely()
             mediaProjection = null
             mediaRecord = null
@@ -370,10 +354,7 @@ object CarPlayAudioCapture {
                 log(TAG, "playback-capture startRecording failed — fallback remote-submix")
                 runCatching { rec.stop() }
                 runCatching { rec.release() }
-                releaseProjectionVirtualDisplay()
-                ignoringProjectionStop = true
                 runCatching { proj?.stop() }
-                ignoringProjectionStop = false
                 val fallback = openRemoteSubmixRecord(
                     CarPlayAudioFormats.MEDIA_SAMPLE_RATE,
                     CarPlayAudioFormats.MEDIA_CHANNEL_MASK,
@@ -491,14 +472,10 @@ object CarPlayAudioCapture {
         speechRecord = null
         CarPlayAudioPolicy.unregisterAudioPolicy(audioManager, audioPolicy)
         audioPolicy = null
-        releaseProjectionVirtualDisplay()
-        ignoringProjectionStop = true
         try {
             mediaProjection?.stop()
         } catch (e: Throwable) {
             logDebug(TAG, "MediaProjection.stop failed: ${e.message}")
-        } finally {
-            ignoringProjectionStop = false
         }
         mediaProjection = null
         captureHandler?.removeCallbacksAndMessages(null)
@@ -679,13 +656,6 @@ object CarPlayAudioCapture {
         armed.get() && speechMode == "audio-policy-mix" && speechRecord != null
     }
 
-    private fun releaseProjectionVirtualDisplay() {
-        runCatching { projectionVirtualDisplay?.release() }
-        projectionVirtualDisplay = null
-        runCatching { projectionImageReader?.close() }
-        projectionImageReader = null
-    }
-
     // ------------------------------------------------------------------
     // Tap open
     // ------------------------------------------------------------------
@@ -725,10 +695,7 @@ object CarPlayAudioCapture {
         speechRecord = null
         audioPolicy = null
         if (oldProjection != null) {
-            releaseProjectionVirtualDisplay()
-            ignoringProjectionStop = true
             runCatching { oldProjection.stop() }
-            ignoringProjectionStop = false
             mediaProjection = null
         }
 
@@ -755,6 +722,11 @@ object CarPlayAudioCapture {
             runCatching { renderArm.mediaRecord.release() }
             runCatching { renderArm.speechRecord?.release() }
             CarPlayAudioPolicy.unregisterAudioPolicy(audioManager, renderArm.policy)
+            // Symmetric rollback: the register-only projection was assigned to the field
+            // above; without stop() it would be overwritten by enableLocked() below and
+            // linger until binder death (system side keeps the canProjectAudio entry).
+            runCatching { renderArm.projection?.stop() }
+            mediaProjection = null
             mediaRecord = null
             speechRecord = null
             audioPolicy = null
@@ -787,6 +759,9 @@ object CarPlayAudioCapture {
         return true
     }
 
+    // Runs in system_server only (Xposed hook); system_server holds RECORD_AUDIO,
+    // so the module manifest / checkPermission is not applicable.
+    @SuppressLint("MissingPermission")
     private fun openRemoteSubmixRecord(sampleRate: Int, channelMask: Int): AudioRecord? {
         return try {
             val minBuf = AudioRecord.getMinBufferSize(

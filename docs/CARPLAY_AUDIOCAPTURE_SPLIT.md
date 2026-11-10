@@ -8,7 +8,7 @@ watchdog、AudioPolicy 反射、mute 机制混在一个 object 里，方法过�
 
 | 文件 | 行数 | 内容 | 状态归属 |
 |------|------|------|---------|
-| `CarPlayAudioCapture.kt` | 977 | 门面：install / setEnabled / enable·disable / rearm / readers / watchdog / pull；会话状态 | 保留会话状态（armed/desired/records/policy/mode/rings） |
+| `CarPlayAudioCapture.kt` | 948 | 门面：install / setEnabled / enable·disable / rearm / readers / watchdog / pull；会话状态 | 保留会话状态（armed/desired/records/policy/mode/rings） |
 | `CarPlayPhoneMute.kt` | 619 | stream + OEM fine + 设备索引 mute、CSM 250ms enforce 线程、VOLUME_CHANGED receiver、`AudioSystem.setStreamVolumeIndex` 反射 | **状态迁入**：phoneMuted / speakerDeviceMuted / savedVolumes / mutedStreamTypes / savedFineVolumes / savedSpeakerVolumes / savedSpeakerStreamTypes / volumeIndexFns / muteEnforceActive / muteMonitorThread / volumeReceiver |
 | `CarPlayAudioPolicy.kt` | 719 | `AudioMix` / `AudioPolicy` 反射：buildAudioMix / bindMixRenderDevice / register·unregister / createAudioRecordSource(ForMixManual) / `openRenderArm` / `openSpeechMix` / `AudioPolicyRenderArm` | 无状态 object（`AudioManager` 走参数；projection 经 Acquire） |
 | `CarPlayMediaProjectionAcquire.kt` | 285 | MediaProjection 获取阶梯：direct ctor / createProjectionInternal / binder / OEM `sem*` / 解包 / IMediaProjection 包装 | 无状态 object |
@@ -43,21 +43,43 @@ watchdog、AudioPolicy 反射、mute 机制混在一个 object 里，方法过�
 - 其余（readers / rearm 节奏 / watchdog 判定顺序 / ring 水位 / projection 释放 /
   Binder identity 切换）逐段照搬，仅调用目标改为新类型。
 
-## 3. 审计发现（拆分暴露的问题，本次**不修**，仅记录）
+## 3. 审计发现与处置
 
-1. **`RENDER_UPGRADE_DELAY_MS` 死常量**：仅声明、零引用（deferred RENDER upgrade
-   已按「Never deferred-upgrade away」决策移除后的残留）→ 已随拆分删除。
-2. **playback-capture 整机 dormant**：`enableLocked` 固定 `remote-submix` 且 arm 时
+### 已修复
+
+1. **`RENDER_UPGRADE_DELAY_MS` 死常量**：仅声明、零引用（deferred RENDER upgrade 已按
+   「Never deferred-upgrade away」决策移除后的残留）→ 拆分时删除。
+2. **RENDER 升级失败路径 projection 泄漏**（既有，潜伏，非拆分引入）：
+   `tryUpgradeToAudioPolicyRenderLocked` 在 `startRecording()` 前把
+   `renderArm.projection`（仅为 AudioPolicy.register 创建）赋入 `mediaProjection`
+   字段；start 失败回滚只释放了 mediaRecord / speechRecord / policy，projection 未
+   `stop()`，随后 `enableLocked()` 用局部 `proj`（null）覆盖字段 → 该 projection
+   在 system 侧（MediaProjectionManagerService 的 canProjectAudio 表项）滞留至
+   binder 死亡。**修复**：失败分支回滚补 `renderArm.projection?.stop()` +
+   `mediaProjection = null`，arm 拥有的 4 个资源对称回滚。该分支当前不可达（arm 时无条件 `audioPolicyRenderUnavailable=true`，
+   watchdog 升级门恒关），属潜伏风险修复，对现活路径零影响；若未来恢复 in-place
+   升级，回滚不再留泄漏。
+
+### 有意 dormant（非 bug，按原注释保留）
+
+3. **playback-capture 整机 dormant**：`enableLocked` 固定 `remote-submix` 且 arm 时
    `audioPolicyRenderUnavailable=true` ⇒ 手机 mute 机制（stream/fine/device/enforce
    线程）、`enableLocked` 的 playback-capture fallback、watchdog 的 in-place RENDER
    upgrade 分支当前全部不可达。头注释早已声明「dormant helpers, do not re-arm」，
    故全部保留搬入 `CarPlayPhoneMute` / 门面，未删。
-3. **`isEnabled()` / `isDesired()` 无外部调用方**（全仓 grep 仅定义）。保留。
-4. **既有潜在泄漏（非本次引入）**：in-place RENDER upgrade 失败路径里
-   `mediaProjection` 字段仍持 `renderArm.projection` 且未 `stop()`，随后
-   `enableLocked` 用局部 `proj`（null）覆盖字段 → 该 projection 未被显式释放
-   （靠 GC）。原文件同样行为，按「不顺手即改」原则仅记录。
-5. **锁/竞争画像不变**：引擎内 `phoneMuted` 等仍为普通字段（写于 opLock 路径、
+
+### 已清理（2026-11 确认删除，零行为影响）
+
+4. **`ignoringProjectionStop` 只写不读 flag**（声明 + 5 对 true/false 写 = 11 行；其守护的
+   MediaProjection onStop 回调链早已不存在）→ 已删（AUDIT E2）。
+5. **`projectionVirtualDisplay` / `projectionImageReader` 永不被赋值**、
+   `releaseProjectionVirtualDisplay()` 5 处调用点全 no-op（A 批 A3 删除后的二期）→
+   2 字段 + no-op 函数 + 5 调用点 + 2 import 已删，净 -29 行（AUDIT E3）。
+
+### 仅记录、保留
+
+6. **`isEnabled()` / `isDesired()` 全仓无调用方**（公开 API，保留）。
+7. **锁/竞争画像不变**：引擎内 `phoneMuted` 等仍为普通字段（写于 opLock 路径、
    读于 receiver/enforce 线程），与拆分前完全一致；未借机加锁，避免改变时序。
 
 ## 4. 验证

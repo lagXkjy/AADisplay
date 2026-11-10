@@ -48,3 +48,10 @@ manifest 已补 `xposedinit` meta-data（修复 LSPosed 显示 Legacy）。资�
 ## 结论
 
 代码库整体很紧：**133 个源码文件零整文件死代码**，可安全删减集中在 CarPlay 音频捕获的一次重构残留（~130 行）。无结构性冗余可合并；后续按 AGENTS.md §5.4 维持"新增前找既有实现"即可。
+## E. 2026-11 轮新发现（CarPlayAudioCapture 拆分 + 泄漏修复，详见 [CARPLAY_AUDIOCAPTURE_SPLIT.md](CARPLAY_AUDIOCAPTURE_SPLIT.md)）
+
+| # | 位置 | 内容 | 状态 |
+|---|------|------|------|
+| E1 | `CarPlayAudioCapture.tryUpgradeToAudioPolicyRenderLocked` 失败分支 | **Bug，已修**：`renderArm.projection`（register-only）已赋入字段，失败回滚只释放 record×2/policy，projection 未 `stop()`；`enableLocked` 用局部 null 覆盖字段 → system 侧滞留至 binder 死亡。回滚补 `stop()`+置空。该分支当前不可达（arm 无条件置 `audioPolicyRenderUnavailable=true`），属潜伏风险修复，现活路径零影响 | ✅ 已修复（assembleDebug/Release 通过） |
+| E2 | `CarPlayAudioCapture.ignoringProjectionStop` | 只写不读 flag（声明 + 5 对 true/false 写 = 11 行；其守护的 MediaProjection onStop 回调链早已不存在） | ✅ 2026-11 已删（只写无消费者，零行为影响） |
+| E3 | `CarPlayAudioCapture` `projectionVirtualDisplay`/`projectionImageReader` 字段 + `releaseProjectionVirtualDisplay()` | A3（`attachProjectionVirtualDisplay`）删除后字段永不被赋值；现存 5 处调用点（enableLocked×2 / startMediaRecordLocked / disableLocked / tryUpgrade）全 no-op | ✅ 2026-11 已删（2 字段 + no-op 函数 + 5 调用点 + 2 import，净 -29 行；调用点全 no-op 故零影响，下一轮真机可顺带过 CP 断连） |
