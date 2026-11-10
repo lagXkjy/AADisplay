@@ -86,7 +86,10 @@ object ChannelOrchestrator {
                 return@execute
             }
             try {
-                val current = ProjectionEgressRegistry.byChannel(EgressChannel.get(app))
+                val channel = EgressChannel.get(app)
+                // Re-sync /data/system mirror after reboot / upgrade.
+                EgressChannel.mirrorToSystem(channel)
+                val current = ProjectionEgressRegistry.byChannel(channel)
                     ?: ProjectionEgressRegistry.byChannel(EgressChannel.defaultChannel(app))
                     ?: return@execute
                 settleOthers(app, current)

@@ -41,6 +41,10 @@
 - `EgressChannel` LEGACY_PREFS 迁移、`HeadUnitNetwork.joinLegacy`（SDK<Q 分支，minSdk 33 下为死分支但属防御性 compat，删前自定夺——**本次未列入**）
 - `CarPlayAacAudioEgress` 诊断计数器（silenceSends 等，文件内有周期性读取）
 
+## D. 备注：`assets/xposed_init`
+
+manifest 已补 `xposedinit` meta-data（修复 LSPosed 显示 Legacy）。资产文件 `src/main/assets/xposed_init` 此后 LSPosed 不再读取，仅对原版 Xposed 有意义；类名双写一处，属标准兼容写法，保留不动。
+
 ## 结论
 
 代码库整体很紧：**133 个源码文件零整文件死代码**，可安全删减集中在 CarPlay 音频捕获的一次重构残留（~130 行）。无结构性冗余可合并；后续按 AGENTS.md §5.4 维持"新增前找既有实现"即可。

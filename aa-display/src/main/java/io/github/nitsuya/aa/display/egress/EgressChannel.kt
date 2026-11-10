@@ -2,7 +2,6 @@ package io.github.nitsuya.aa.display.egress
 
 import android.content.Context
 import android.content.pm.PackageManager
-import android.provider.Settings
 import android.util.Log
 import java.io.File
 
@@ -21,9 +20,10 @@ import java.io.File
  *    read only as a migrate sentinel → [defaultChannel].
  *
  * **Frozen persistence contract** (devices already out in the wild): file
- * [FILE_NAME] in filesDir, Settings.Global key [SETTINGS_CHANNEL] (mirrored
- * for system_server [io.github.nitsuya.aa.display.xposed.carplay.CarPlayBootArm]),
- * legacy prefs name/key, numeric ids and text aliases. Do not rename.
+ * [FILE_NAME] in filesDir, legacy prefs name/key, numeric ids and text aliases.
+ * Do not rename. BootArm mirror is `/data/system/aadisplay_egress_channel`
+ * ([io.github.nitsuya.aa.display.util.EgressChannelMirror]), synced over Binder —
+ * not Settings.Global (OEM often blocks unknown keys).
  *
  * Default when nothing is persisted: [CHANNEL_AAP] if Android Auto (gearhead) is installed
  * (cert can be auto-extracted); otherwise [CHANNEL_CARPLAY].
@@ -43,8 +43,6 @@ object EgressChannel {
     const val GEARHEAD_PACKAGE = "com.google.android.projection.gearhead"
 
     private const val FILE_NAME = "aadisplay_carplay_channel"
-    /** Mirrored for system_server [io.github.nitsuya.aa.display.xposed.carplay.CarPlayBootArm]. */
-    const val SETTINGS_CHANNEL = "aadisplay_carplay_channel"
     private const val LEGACY_PREFS = "aadisplay_carplay"
     private const val LEGACY_KEY = "channel"
 
@@ -174,7 +172,7 @@ object EgressChannel {
                 tmp.delete()
             }
             Log.i(TAG, "EgressChannel persisted channel=$channel path=${f.absolutePath}")
-            mirrorSettings(app, channel)
+            mirrorToSystem(channel)
             true
         } catch (e: Throwable) {
             Log.e(TAG, "EgressChannel write failed", e)
@@ -182,14 +180,15 @@ object EgressChannel {
         }
     }
 
-    private fun mirrorSettings(app: Context, channel: Int) {
+    /**
+     * Push the persisted choice into system_server's `/data/system` mirror so
+     * [io.github.nitsuya.aa.display.xposed.carplay.CarPlayBootArm] survives reboot.
+     */
+    fun mirrorToSystem(channel: Int) {
         try {
-            Settings.Global.putInt(app.contentResolver, SETTINGS_CHANNEL, channel)
+            io.github.nitsuya.aa.display.CoreApi.reportEgressChannel(channel)
         } catch (e: Throwable) {
-            Log.w(
-                TAG,
-                "EgressChannel Settings.Global mirror skipped: ${e.message}",
-            )
+            Log.w(TAG, "EgressChannel system mirror skipped: ${e.message}")
         }
     }
 }

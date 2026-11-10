@@ -78,6 +78,7 @@ class CarPlayProjectionService : Service() {
         override fun isArmed(): Boolean = isSessionArmed()
 
         override fun arm(context: Context) {
+            EgressChannel.mirrorToSystem(EgressChannel.CHANNEL_CARPLAY)
             start(context, launchHostTrampoline = false)
         }
 
@@ -130,8 +131,9 @@ class CarPlayProjectionService : Service() {
                 // rewrite the user's choice back to CarPlay — that re-arms CP over a live
                 // AAP session and rebinds the shared split VDs (audio up / video black).
                 if (!EgressChannel.useCarPlayEgress(this)) {
-                    tearDown("channel-not-carplay")
-                    stopSelf()
+                    // Must startForeground before stopSelf — BootArm uses startForegroundService;
+                    // exiting without it → ForegroundServiceDidNotStartInTimeException crash loop.
+                    rejectWrongChannel("channel-not-carplay")
                     return START_NOT_STICKY
                 }
                 ensureForeground()
@@ -144,8 +146,7 @@ class CarPlayProjectionService : Service() {
                     ensureForeground()
                     safeEnsureSession(launchHostTrampoline = true)
                 } else {
-                    tearDown("channel-aa")
-                    stopSelf()
+                    rejectWrongChannel("channel-aa")
                     return START_NOT_STICKY
                 }
             }
@@ -198,6 +199,18 @@ class CarPlayProjectionService : Service() {
         } else {
             startForeground(CarPlayConsts.NOTIFICATION_ID, notification)
         }
+    }
+
+    /** Heal BootArm's system mirror to the real channel, then exit the FGS safely. */
+    private fun rejectWrongChannel(reason: String) {
+        runCatching {
+            ensureForeground()
+            EgressChannel.mirrorToSystem(EgressChannel.get(this))
+        }.onFailure {
+            Log.w(CarPlayConsts.TAG, "rejectWrongChannel foreground/mirror failed", it)
+        }
+        tearDown(reason)
+        stopSelf()
     }
 
     private fun ensureSession(launchHostTrampoline: Boolean = true) {

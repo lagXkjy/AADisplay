@@ -23,6 +23,7 @@ import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import io.github.nitsuya.aa.display.ui.window.DisplaySessionPolicy
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.DisplayDpiStore
+import io.github.nitsuya.aa.display.util.EgressChannelMirror
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterArtStore
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
 import android.graphics.Point
@@ -1025,6 +1026,17 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     override fun drainHidShellTouches(): FloatArray = drainHidShellTouchesLocked()
+
+    override fun reportEgressChannel(channel: Int) {
+        val token = android.os.Binder.clearCallingIdentity()
+        try {
+            EgressChannelMirror.write(channel)
+        } catch (e: Throwable) {
+            log(TAG, "reportEgressChannel failed channel=$channel", e)
+        } finally {
+            android.os.Binder.restoreCallingIdentity(token)
+        }
+    }
 
     @SuppressLint("MissingPermission")
     private fun invokeSetScanMode(adapter: BluetoothAdapter, mode: Int): Boolean {

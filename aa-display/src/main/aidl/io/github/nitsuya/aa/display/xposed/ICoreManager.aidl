@@ -195,4 +195,11 @@ interface ICoreManager {
      * Appended at end for Stub ordinals; requires system_server reload (reboot).
      */
     float[] drainHidShellTouches();
+
+    /**
+     * App reports the persisted egress channel so system_server can mirror it to
+     * `/data/system/aadisplay_egress_channel` for CarPlayBootArm (no Settings.Global).
+     * Appended at end for Stub ordinals; requires system_server reload (reboot).
+     */
+    oneway void reportEgressChannel(int channel);
 }

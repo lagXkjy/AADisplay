@@ -57,6 +57,10 @@
         <meta-data
             android:name="xposedminversion"
             android:value="93" />
+        <!-- 显式声明 init 类，LSPosed 按 normal 模块处理（否则走 legacy 资产路径显示 Legacy） -->
+        <meta-data
+            android:name="xposedinit"
+            android:value="io.github.nitsuya.aa.display.xposed.XposedInit" />
         <meta-data
             android:name="xposedscope"
             android:resource="@array/xposed_scope" />

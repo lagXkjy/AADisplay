@@ -322,6 +322,14 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
+    override fun reportEgressChannel(channel: Int) {
+        try {
+            getService()?.reportEgressChannel(channel)
+        } catch (e: Throwable) {
+            Log.e(TAG, "reportEgressChannel failed channel=$channel", e)
+        }
+    }
+
     override fun scrollPane(pane: Int, x: Int, y: Int, vScroll: Int, hScroll: Int) {
         try {
             getService()?.scrollPane(pane, x, y, vScroll, hScroll)

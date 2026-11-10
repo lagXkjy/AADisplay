@@ -97,7 +97,7 @@ App 进程**不申请 Magisk `su`**（已移除 libsu）；VirtualDisplay 等能
 
 ### LSPosed scope
 
-见 `aa-display/src/main/res/values/arrays.xml`：仅 `android` + 本模块包。Google gearhead 投屏已硬下线（见 [docs/GEARHEAD_LEGACY.md](docs/GEARHEAD_LEGACY.md)）。`EgressChannel`：已装 AA 默认 `CHANNEL_AAP`，未装默认 `CHANNEL_CARPLAY`；`CHANNEL_AA` 仅迁移哨兵（契约：files `aadisplay_carplay_channel` / Settings.Global 同名 key / 通道数值 id 冻结）。
+见 `aa-display/src/main/res/values/arrays.xml`：仅 `android` + 本模块包。Google gearhead 投屏已硬下线（见 [docs/GEARHEAD_LEGACY.md](docs/GEARHEAD_LEGACY.md)）。`EgressChannel`：已装 AA 默认 `CHANNEL_AAP`，未装默认 `CHANNEL_CARPLAY`；`CHANNEL_AA` 仅迁移哨兵（契约：files `aadisplay_carplay_channel` / 通道数值 id 冻结；BootArm 读 `/data/system/aadisplay_egress_channel`，经 Binder 同步，不用 Settings.Global）。
 仪表歌词：QQ 音乐车载（`com.tencent.qqmusiccar`）+ QQ 音乐 HD（`com.tencent.qqmusicpad`）+ 汽水（`com.luna.music`）——三源同时只能一个播放。音视频互斥：`AvMediaArbiter`；`ClusterLyricMirror` → `ClusterLyricStore` → AAP `AapNowPlaying` / CarPlay NP（见 `docs/CLUSTER_LYRIC_CLOCK.md`）。
 
 ## 4. 构建与验证
@@ -204,7 +204,7 @@ Debug 联调可 `adb install -r aa-display/build/outputs/apk/debug/aa-display-*.
 ### 新增出画协议（扩展入口）
 
 1. 新协议包（参考 `carplay/` / `aap/` 拆分：协议 / 编码 / FGS / 状态 UI）；协议栈只跑在 App 进程，不进 system_server
-2. `egress/EgressChannel.kt` 加通道常量（不复用退役 id；**不动** files 文件名 / Settings.Global key / 既有数值 id）；`xposed/carplay/CarPlayBootArm` 若需后台 arm 再补镜像读取
+2. `egress/EgressChannel.kt` 加通道常量（不复用退役 id；**不动** files 文件名 / 既有数值 id）；经 `reportEgressChannel` 同步 `/data/system/aadisplay_egress_channel`；`xposed/carplay/CarPlayBootArm` 若需后台 arm 再补镜像读取
 3. FGS companion 实现 `egress/ProjectionEgress`（`channelId` / `isArmed` / `arm` / `stopAndAwait` / `finishHost`）并注册进 `ProjectionEgressRegistry` —— `ChannelOrchestrator` 切换/互斥编排自动生效，无需改 `when`
 4. `egress/ProjectionSessionGate` 加 owner key（参 `OWNER_AAP`）；AIDL `reportCarPlaySessionLive` 名称冻结复用
 5. 状态页加卡片（`ui/main/MainActivity` + `CarPlayStatusUi` 模式）；仅当需要 LSPosed 钩子时动 `arrays.xml` scope

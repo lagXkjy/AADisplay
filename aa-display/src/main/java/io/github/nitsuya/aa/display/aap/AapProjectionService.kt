@@ -123,6 +123,8 @@ class AapProjectionService : Service() {
         /** Pre-arm: cert extract → FGS → USB probe (same steps as the pre-refactor orchestrator path). */
         override fun arm(context: Context) {
             PhoneCertStore.ensureExtracted(context, force = false)
+            // Heal BootArm /data/system mirror (Settings.Global often stale/blocked).
+            EgressChannel.mirrorToSystem(EgressChannel.CHANNEL_AAP)
             start(context)
             AapUsbProbe.tryAttachExisting(context)
         }
