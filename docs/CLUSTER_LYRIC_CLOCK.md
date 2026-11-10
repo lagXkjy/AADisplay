@@ -211,40 +211,34 @@ LRC 换句 → Mirror.publish → 壳 lyricOnly setMetadata
 
 ---
 
-## 8. 代码地图
+## 8. 代码地图（现行）
 
 | 文件 | 职责 |
 |------|------|
-| `xposed/cluster/ClusterLyricMirror.kt` | 绑 session，写 Store；快句 pending flush |
-| `xposed/cluster/ClusterLyricStore.kt` | 歌词 + 进度；`extrapolatePosition` |
-| `service/ClusterLyricMediaService.kt` | 壳 session；lyricOnly **只** setMetadata |
-| `xposed/hook/aa/AaClusterLyricEgressHook.kt` | meta_p / play_q / play_l / getter；`buildAaPlaybackStateForPush`（整秒 +1s） |
+| `xposed/cluster/ClusterLyricMirror.kt` | system_server：绑 MediaSession，写 Store；快句 pending flush |
+| `xposed/cluster/ClusterLyricStore.kt` | 歌词 + 进度；`extrapolatePosition`（Settings.Global `aadisplay_cluster_np_*`，契约冻结） |
+| `xposed/cluster/ClusterArtStore.kt` | 封面 JPEG 缓存（`CoreApi.getClusterArtJpeg` 供 CarPlay NP） |
+| `xposed/cluster/LyricLineExtractor.kt` | LRC 取句 |
+| `aap/AapNowPlaying.kt` | AAP 出站（MediaPlaybackChannel；整卡替换，换句后补 playback_seconds，整秒 +1s） |
+| `carplay/CarPlayNowPlaying.kt` | CarPlay 出站（观察 Store → iAP2 `0x5001` 增量 + 封面文件传输会话 12） |
+| `util/AvMediaArbiter.kt` / `util/MusicAppClassifier.kt` | 三源（QQ 车载 / QQ HD / 汽水）同时只跟正在播的一个 |
 
-**Egress 关键符号：**
+**已删（§1–§7 历史备忘中的 gearhead 链路）：** `service/ClusterLyricMediaService`、`xposed/hook/aa/AaClusterLyricEgressHook`、Title 壳 session、GAL hook。
 
-- `LYRIC_ONLY_PLAYBACK_SUPPRESS_MS` — 500ms playback 窗
-- `pendingLyricOnlyUntilElapsedMs` / `lyricOnlyPlaybackSent`
-- `buildAaPlaybackStateForPush` / `pushPlaybackNow` — Store 整秒 **+1s** 手补
-- DexKit：`meta_p`、`play_q`（`Error updating playback status.`）、`play_l`（`playbackstate cannot be null`）
-- **无** `gal_h` / `gal_k` / GAL skip
-
-**日志标签：** `AAD_AaClusterLyricEgressHook`
-
-- `HU metadata lyric-only window`
-- `pushPlaybackNow pushSec=N` / `fallback=true` / `drop duplicate HU playback`
+**日志标签：** `AAD_ClusterLyricMirror` / `AAD_ClusterLyricStore`；AAP 侧 `AapConsts.TAG`（`AapNowPlaying`）；CarPlay 侧 `AADisplay_CarPlay`。
 
 ---
 
-## 9. 真机验证清单
+## 9. 真机验证清单（AAP / CarPlay 现行出口）
 
 1. **同曲换句**：歌词变；**不**闪 0:00；**不**出现 `0:29→0:30→0:29→0:32` 式反复
 2. **真切歌**：时钟归零；duration / 封面正常
 3. **快句 LRC**：不丢句
-4. **QQ ↔ 汽水**：源切换正常
+4. **QQ ↔ 汽水**：源切换正常（`AvMediaArbiter` 单源）
 
-若 **仍闪 0:00** → 查 log `playQ`/`playL` 是否 hook 成功；DexKit 缓存是否 stale（`SCHEMA` bump 后 force-stop gearhead）。
+若 **仍闪 0:00** → 查 `AapNowPlaying` / `CarPlayNowPlaying` observer 是否 arm、换句后是否立刻补 progress（AAP）/ `0x5001` 增量（CarPlay）。
 
-若 **时间反复** 仍出现 → 见 §6.3 T2-B；log 是否 **窗外 play_q 后再 push**。
+若 **时间反复** 仍出现 → 查换句时是否双源同时 push（三源互斥被破坏）。
 
 ---
 
@@ -255,9 +249,7 @@ adb shell settings get global aadisplay_cluster_np_title
 adb shell settings get global aadisplay_cluster_np_position_ms
 adb shell settings get global aadisplay_cluster_np_duration_ms
 
-adb logcat -s AAD_AaClusterLyricEgressHook AAD_ClusterLyricMedia
-
-adb shell am force-stop com.google.android.projection.gearhead
+adb logcat -s AAD_ClusterLyricMirror AAD_ClusterLyricStore AADisplay_CarPlay
 ```
 
 ```bash
@@ -266,7 +258,7 @@ export GRADLE_USER_HOME="$HOME/.gradle"
 adb install -r aa-display/build/outputs/apk/debug/aa-display-*.apk
 ```
 
-改 `ClusterLyricMirror` / 壳 → **重启手机**；改 Egress → `force-stop gearhead`。
+改 `xposed/cluster/*`（system_server）→ **重启手机**；改 `AapNowPlaying` / `CarPlayNowPlaying`（App 进程）→ 重装 APK 即可。
 
 ---
 

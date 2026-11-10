@@ -4,7 +4,9 @@
 > 约束：**只调研 / 写报告，不改代码**  
 > 问题：苹果从 iOS 26.4 起开放的 CarPlay 视频能力是怎么做的？能不能改善本仓库无线/有线 CarPlay Source 的**投屏卡顿**？
 
-相关运行时链路：[EXECUTION.md §14](EXECUTION.md)；协议对照：[CARPLAY_REFS.md](CARPLAY_REFS.md)。
+相关运行时链路：[EXECUTION.md §14](../EXECUTION.md)；协议对照：[CARPLAY_REFS.md](../CARPLAY_REFS.md)。
+
+> **已归档**：一次性调研（2026-10-16），结论：苹果 video-in-car 与 AADisplay 实时 screen 流机制不同，不可照搬；仅作历史参考。
 
 ---
 
@@ -216,7 +218,7 @@ VD(双窗应用) → SurfaceTexture(OES) → CarPlayGlCompositor @供给 fps
 | MacRumors — iOS 27 车机支持现状 | https://www.macrumors.com/2026/09/17/which-ios-27-carplay-features-actually-work/ |
 | tarplay — videoPlayback / 非镜像 / 缓冲控制面形状 | https://www.tarplay.com/blog/video-on-the-dash.html |
 | APTV（第三方 DLNA 壳，对照用） | https://aptv.app/carplay |
-| 本仓库出画与卡顿相关 | [EXECUTION.md §14](EXECUTION.md)、[OPEN_CLOSE_LAG.md](OPEN_CLOSE_LAG.md)（AA UI 开闭卡顿，非 CP 编码） |
+| 本仓库出画与卡顿相关 | [EXECUTION.md §14](../EXECUTION.md)、[OPEN_CLOSE_LAG.md](../OPEN_CLOSE_LAG.md)（AA UI 开闭卡顿，非 CP 编码） |
 
 ---
 

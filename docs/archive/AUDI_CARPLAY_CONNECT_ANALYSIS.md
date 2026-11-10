@@ -5,6 +5,8 @@
 > 对照：DiPlay（Receiver）可通；社区「CarPlay 投屏」/CarWith（Source）**别的车机好用，Audi 不太好用**  
 > 约束：本轮**只监测 / 记录 / 分析 / 计划，不动代码**  
 > 原始抓取：`docs/capture/audi_carplay_20261016_101309/`
+>
+> **已归档**：一次性监测记录（2026-10-16）；结论已落入 `CarPlayHuProfile` MIB3 路径 / `prepareCarPlayHeadUnit` / `armBluetoothDiscoverable` 等现行实现，仅作历史参考。
 
 ---
 
@@ -63,7 +65,7 @@ DiPlay 通，说明协议栈对“宽松 Receiver”可用；Audi 仍停在普�
 ## 3. 期望链路 vs 实测断点
 
 ```
-期望（无线 Source，见 [CARPLAY_CONNECT.md](CARPLAY_CONNECT.md) / EXECUTION §14 / CARPLAY_REFS）：
+期望（无线 Source，见 [CARPLAY_CONNECT.md](../CARPLAY_CONNECT.md) / EXECUTION §14 / CARPLAY_REFS）：
   BT 配对 → RFCOMM(…caff dial 或 …cafe accept)
        → Detect → Link Sync → Ident → Auth
        → 0x4E0E / 0x4E0D / 0x5702 / 0x4300

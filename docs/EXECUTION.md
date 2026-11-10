@@ -98,7 +98,7 @@ AMS.systemReady → Instances.init + PanePresentationGuard + VdImeDisplayPin + V
 - magic **`AADD`**、descriptor `android.content.pm.IPackageManager` 禁止改名。
 - 只放行 **本模块 uid**（gearhead uid 白名单已删）。
 - AIDL **只能在接口末尾追加** 方法，否则旧 system_server Stub 序数错位（需重装模块并重启）。
-- 若干 Coolwalk / Car SDK 触控方法保留为 **no-op**（ordinal 稳定），见 [GEARHEAD_LEGACY.md](GEARHEAD_LEGACY.md)。
+- 旧 Coolwalk / Car SDK 孤儿 AIDL 方法已全部删除（不再有 no-op 桩），见 [GEARHEAD_LEGACY.md](GEARHEAD_LEGACY.md)；勿再引入。
 
 ---
 
@@ -106,7 +106,7 @@ AMS.systemReady → Instances.init + PanePresentationGuard + VdImeDisplayPin + V
 
 运行时 **不再** 注入 `com.google.android.projection.gearhead`。原 `AndroidAutoHook` / `Aa*Hook` / Coolwalk / DexKit / Car SDK 壳全部删除。
 
-清单与仍保留项（证书提取、AIDL no-op）：[GEARHEAD_LEGACY.md](GEARHEAD_LEGACY.md)。  
+清单与仍保留项（证书提取等）：[GEARHEAD_LEGACY.md](GEARHEAD_LEGACY.md)。  
 历史 FacetBar 架构：[archive/COOLWALK_FACETBAR.md](archive/COOLWALK_FACETBAR.md)。
 
 ---
@@ -208,28 +208,38 @@ Keep-awake 硬规则：
 
 ## 7. IPC 地图
 
-契约：`aa-display/src/main/aidl/.../ICoreManager.aidl`  
-实现：`CoreManagerService`（system_server）+ `CoreManager`（客户端代理）
+契约：`aa-display/src/main/aidl/io/github/nitsuya/aa/display/xposed/ICoreManager.aidl`  
+实现：`CoreManagerService`（system_server）+ `CoreManager`（客户端代理）；门面 `CoreApi`（根包 `CoreApi.kt`）。
 
-| 方法 | 调用方典型场景 | 落到 |
-|------|----------------|------|
-| `onCreateSplitDisplay` | AAP / CarPlay Host 武装 | 创建或软重连 |
-| `setPaneSurface` | Host pane SurfaceTexture | `VirtualDisplay.surface =` |
-| `setSplitRatio` / `getSplitRatio` | 分隔条松手 | resize VD；全屏中只改 `mRatioBeforeFullscreen` |
-| `setSplitFullscreen` / `getSplitFullscreenPane` | 拖过边缘 / peel | 两 VD 满幅或按比例 |
-| `getPanePackage` / `setFocusedPane` / `getFocusedPane` | 空窗 / Recent 焦点 | 栈顶包名；焦点窗记录 |
-| `swapSplitPanes` | 点分隔条 / 方控长按下一曲 | 整栈 `moveRootTask` 对调，**VD 身份不变** |
-| `startActivity` / `startActivityOnPane` | Picker / Recent 点选 | `PaneAppStack.pushToTop` + 启动或置顶 |
-| `moveTaskId` / `moveTaskIdToPane` / `moveTaskToFront` | Recent 拖拽 | 跨 display 搬任务 |
-| `removeTask` | Recent Close | 关任务；栈顶空则下一档 |
-| `pressKey` | 方控短按 | 注入到焦点窗 |
-| `hideIme` **oneway** | Host「收起键盘」 | WMS/IMM hide |
-| `getImePane` | IME chip 同步 | -1 隐藏；0/1 为正在显示 IME 的窗 |
-| `touchPane` **oneway** | Host / AAP 触控 → 窗 | 注入对应 VD |
-| `getRecentTask` | `CarPlayRecentsOverlay` | 左=PRIMARY 栈，中=SECONDARY，右=手机 |
-| `reportCarPlaySessionLive` | AAP / CarPlay 会话 | 二次出口 live → Delay Destroy 门控 |
+| 组 | 方法 | 调用方典型场景 / 落到 |
+|----|------|------------------------|
+| 激活探测 | `getVersionName` / `getBuildTime` | 状态页判 module 已注入 system_server |
+| 显示 | `onCreateSplitDisplay` / `setPaneSurface` | AAP / CarPlay Host 武装 → 创建或软重连；pane Surface 绑定 |
+| 分屏 | `setSplitRatio` / `getSplitRatio` | 分隔条松手 → resize VD；全屏中只改 `mRatioBeforeFullscreen` |
+| | `setSplitFullscreen` / `getSplitFullscreenPane` | 拖过边缘 / peel → 两 VD 满幅或按比例 |
+| | `getPanePackage` / `getFocusedPane` | 空窗 / 焦点窗；栈顶包名 + 焦点窗记录（DOWN 时内部 `setFocusedPane`，非 AIDL） |
+| | `swapSplitPanes` | 点分隔条 / 方控长按下一曲 → 整栈 `moveRootTask` 对调，**VD 身份不变** |
+| | `onDestroyDisplay` | Host / FGS 拆会话 → 180s Delay Destroy |
+| 应用 | `startActivity` / `startActivityOnPane` | Picker / Recents → `PaneAppStack.pushToTop` + 启动或置顶（异步） |
+| | `startActivityOnPaneForUser` | Picker / Recents 点行 → **同步** handler 前插，返回 bool（打开链路见 [OPEN_CLOSE_LAG.md](OPEN_CLOSE_LAG.md)） |
+| | `moveTaskToFront` / `removeTask` | Recents 点选（含手机列既有任务）/ × 关闭 |
+| 输入 | `pressKey` | 方控短按 → 焦点窗 |
+| | `touchPane` **oneway** | Host / AAP 触控 → 注入对应 VD |
+| | `scrollPane` **oneway** | 方控滚轮 / touchpad → 窗内滚动 |
+| Recents | `getRecentTask` | `CarPlayRecentsOverlay`：左=PRIMARY 栈，中=SECONDARY，右=手机 |
+| IME | `hideIme` **oneway** / `getImePane` | Host「收起键盘」chip；-1 隐藏 / 0·1 正在显示 IME 的窗 |
+| HUD | `getHidCursorOverlay` / `reportHidShellOverlay` **oneway** / `drainHidShellTouches` | Host 每帧拉 BT 鼠标光标；Recents/Picker 打开时触控走 shell 队列 |
+| 仪表 | `getClusterArtJpeg` | 封面（system 内存/盘缓存；SELinux 不开放 `/data/system`） |
+| DPI | `setVdDensityDpi` / `getVdDensityDpi` / `getEffectiveVdDensityDpi` | 状态页设置 + Host 上报（`DisplayDpiStore`） |
+| CarPlay 会话 | `reportCarPlaySessionLive` **oneway** / `isCarPlaySessionLive` | AAP / CarPlay live 位 → Delay Destroy 挂起 + ProcessBoost + 音频 arm |
+| CarPlay 音频 | `setCarPlayAudioEgressEnabled` / `pullCarPlayAudio` / `pullCarPlaySpeechAudio` / `isCarPlaySpeechCaptureReady` | 采集启停 / PCM 拉取（`AudioPullRing`） |
+| 联网 | `setWifiEnabled` / `localWifiMac` / `localBluetoothMac` / `prepareCarPlayHeadUnit` / `armBluetoothDiscoverable` / `preferCellularOverUnvalidatedWifi` | 无线 CarPlay 建连所需 system 权限（见 [CARPLAY_WIFI_CELLULAR.md](CARPLAY_WIFI_CELLULAR.md)） |
+| 出口 | `reportEgressChannel` **oneway** | 镜像 `/data/system/aadisplay_egress_channel` 供 `CarPlayBootArm` |
+| 其它 | `setThreadRealtimeBoost` **oneway** | AAP USB drain/reader/writer CFS −19 |
 
-`touchPane` 是 oneway：返回只表示 parcel 已入队。`CoreManager.tryTouchPane` 失败时 **不要吞掉 HU 事件**。
+> 旧 `moveTaskId` / `moveTaskIdToPane` / `setFocusedPane` / Coolwalk · Car SDK 孤儿方法**已全部删除**（见 [AUDIT_MINIMAL_CODE.md](AUDIT_MINIMAL_CODE.md) §B）。「手机 → 车机窗」搬任务统一走 `startActivityOnPaneForUser`（有 live 任务时内部 `moveRootTaskToDisplay`）。
+
+oneway 语义（`touchPane` / `scrollPane` / `hideIme` / `report*`）：返回只表示 parcel 已入队。`CoreManager.tryTouchPane` 失败时 **不要吞掉 HU 事件**。
 
 ---
 
@@ -388,8 +398,7 @@ flowchart TB
 - 中 = SECONDARY
 - 右 = 手机 DEFAULT_DISPLAY
 
-点卡片 → `startActivityOnPane` / `moveTaskToFront`；Close → `removeTask`。  
-左/中底栏「添加应用」→ `CarPlayAppPickerOverlay`。
+点卡片 → 既有任务 `moveTaskToFront`，冷启 `startActivityOnPaneForUser`；Close → `removeTask`。手机列无拖拽（`moveTaskIdToPane` 已删），搬进车机窗用左/中底栏「添加应用」→ `CarPlayAppPickerOverlay`（选中后按 live task 搬迁/冷启）。
 
 ---
 
@@ -607,7 +616,7 @@ xposed/carplay/  → 仅 system_server 能力，经 ICoreManager 门控
 4. Profile lock：软重连只允许同方向变大；尺寸取客户端上报（非 Coolwalk rail）。
 5. Delay Destroy = **180s**；keep-awake 覆盖 Delay Destroy 全程。
 6. `userActivity` 禁止无 displayId 的全局调用。
-7. AIDL 只追加；`touch*` 保持 oneway；Coolwalk / presentation 孤儿方法保持 no-op。
+7. AIDL ordinal 稳定：两端同一 APK，追加随意；删/改须重装模块并重启（先过全局链路评估，见 [AUDIT_MINIMAL_CODE.md](AUDIT_MINIMAL_CODE.md) §B）。`touch*` / `scroll*` / `report*` 保持 oneway；**勿**恢复 Coolwalk / Car SDK 孤儿方法。
 8. `LastSplitStore` / Binder magic `AADD` / `xposed_scope` 禁止改名。
 9. ATMS 列表先规范成底→顶；front = visible / last after normalize。
 10. 分隔条拖动不要 live `setSplitRatio`；退出全屏先 stash ratio 再一次 resize。

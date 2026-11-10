@@ -22,11 +22,8 @@
 | `ClusterLyricMirror` / Store | AAP / CarPlay 歌词源 |
 | Host GL / Input / AudioCapture | AAP 与 CarPlay 共用 |
 
-## AIDL 孤儿方法（保留 ordinal，实现 no-op）
+## AIDL 孤儿方法（已全部删除）
 
-| 方法 | 说明 |
-|------|------|
-| `touchAaDisplay` / `reportAaUiDisplayId` / `touchPrimaryPane` | 原 Car SDK presentation / Coolwalk 偷触控 |
-| `reportCoolwalkRailSnapshot` / `getCoolwalkRailSnapshot` / `getCoolwalkReconnectEpochMs` / `notifyCoolwalkFullBleed` | 原 FacetBar / content-slot settle |
+原 Car SDK presentation / Coolwalk 孤儿方法（`touchAaDisplay` / `reportAaUiDisplayId` / `touchPrimaryPane`、`reportCoolwalkRailSnapshot` / `getCoolwalkRailSnapshot` / `getCoolwalkReconnectEpochMs` / `notifyCoolwalkFullBleed` 等）**已在最小代码面清理轮删除**，现行 `ICoreManager` 无 no-op 桩（清单见 [AUDIT_MINIMAL_CODE.md](AUDIT_MINIMAL_CODE.md) §B）。**勿**为兼容再加回。
 
 历史文档：[`docs/archive/COOLWALK_FACETBAR.md`](archive/COOLWALK_FACETBAR.md)。

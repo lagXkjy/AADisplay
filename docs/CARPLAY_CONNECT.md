@@ -2,7 +2,7 @@
 
 > 角色：本模块 = **Source（假 iPhone）**；车机 / DiPlay = **Receiver（配件）**。  
 > 范围：从「选 CarPlay 通道」到「AirPlay 控制 TCP 建链 + screen/audio SETUP」的**建连时序**。  
-> 出画 / 编码 / 触控 / NowPlaying 见 [EXECUTION.md §14](EXECUTION.md)；协议字节对照见 [CARPLAY_REFS.md](CARPLAY_REFS.md)；奥迪个案见 [AUDI_CARPLAY_CONNECT_ANALYSIS.md](AUDI_CARPLAY_CONNECT_ANALYSIS.md)。
+> 出画 / 编码 / 触控 / NowPlaying 见 [EXECUTION.md §14](EXECUTION.md)；协议字节对照见 [CARPLAY_REFS.md](CARPLAY_REFS.md)；奥迪 MIB3 历史监测见 [archive/AUDI_CARPLAY_CONNECT_ANALYSIS.md](archive/AUDI_CARPLAY_CONNECT_ANALYSIS.md)。
 
 ---
 
@@ -233,5 +233,5 @@ sequenceDiagram
 | [EXECUTION.md §14](EXECUTION.md) | 运行时出画 / 音频 / 触控 / 包边界 |
 | [CARPLAY_REFS.md](CARPLAY_REFS.md) | 外部协议参考与字节序 |
 | [CARPLAY_MAC_TEST.md](CARPLAY_MAC_TEST.md) | Mac Simulator 联调 |
-| [AUDI_CARPLAY_CONNECT_ANALYSIS.md](AUDI_CARPLAY_CONNECT_ANALYSIS.md) | 奥迪 MMI 连不上的监测与计划 |
+| [archive/AUDI_CARPLAY_CONNECT_ANALYSIS.md](archive/AUDI_CARPLAY_CONNECT_ANALYSIS.md) | 奥迪 MMI 连不上的一次性监测记录（已归档） |
 | [archive/usb-carplay/](../archive/usb-carplay/) | **有线** USB fake-iPhone（WIP，默认关闭 / UI 隐藏） |

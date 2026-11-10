@@ -3,7 +3,7 @@
 # COOLWALK_FACETBAR.md — FacetBar / 左轨回收与重连分辨率
 
 Coolwalk 左侧 **FacetBar**（`GhFacetBar` VirtualDisplay + launcher/dashboard 图标列）与 **重连分辨率结算** 的架构说明。  
-运行时总链路见 [EXECUTION.md](EXECUTION.md)；仓库地图见 [AGENTS.md](../AGENTS.md)。
+运行时总链路见 [EXECUTION.md](../EXECUTION.md)；仓库地图见 [AGENTS.md](../../AGENTS.md)。
 
 ---
 
