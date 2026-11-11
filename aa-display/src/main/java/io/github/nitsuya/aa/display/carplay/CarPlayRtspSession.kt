@@ -61,8 +61,26 @@ class CarPlayRtspSession(
     private val streaming = AtomicBoolean(false)
     /** True while [connectAsAirPlaySource] owns the live control/media session. */
     private val airplaySourceActive = AtomicBoolean(false)
+    /**
+     * Bumped per [connectAsAirPlaySource]. A newer dial supersedes an in-flight
+     * one: the old thread self-aborts on the epoch bump, and its [finally] must
+     * not release the shared media streams the new dial owns (the pre-fix
+     * finally killed the *winner* — the connect→flash→reconnect loop).
+     */
+    private val dialEpoch = AtomicInteger(0)
+    /**
+     * Bumped on every [attachPeer] session attach. [handlePeer] teardown only
+     * releases shared state while it is still the current peer — a superseded
+     * (or lab loopback) socket closing later must not null the live output /
+     * release the media (mirrors Iap2Session's transportUsers guard; the RFCOMM
+     * layer already had it, the TCP path did not).
+     */
+    private val peerGeneration = AtomicInteger(0)
+    @Volatile
     private var serverSocket: ServerSocket? = null
+    @Volatile
     private var peer: Socket? = null
+    @Volatile
     private var output: BufferedOutputStream? = null
     private val writeLock = Any()
     private val packetizer = RtpH264Packetizer()
@@ -181,13 +199,37 @@ class CarPlayRtspSession(
         phoneMac: String? = null,
         wifiMac: String? = null,
     ) {
+        if (streaming.get()) {
+            // A live control session is serving the HU — a duplicate 0x4301 /
+            // mDNS dial must not tear it.
+            Log.i(CarPlayConsts.TAG, "AirPlay source dial skipped — session live")
+            return
+        }
+        // Supersede any previous dial before it can race this one on
+        // peer/output/pump: bump the epoch first, then close the stale socket
+        // so the old thread unwinds fast. The old thread's finally detects the
+        // epoch bump and skips the shared release.
+        val dialGen = dialEpoch.incrementAndGet()
+        // Bump the peer generation before closing the stale socket: its
+        // handlePeer finally (ownsSession) only releases shared media while its
+        // captured generation is still current. Without the bump, a stale
+        // *inbound* peer (attached, not streaming) closing just after our dial
+        // entry would pass the generation check and releaseMediaStreams —
+        // arming the 4s phone-audio release that tears the Host mid-handshake.
+        synchronized(writeLock) { peerGeneration.incrementAndGet() }
+        val stale = peer
+        if (stale != null) {
+            runCatching { stale.close() }
+        }
+        airplaySourceActive.set(true)
         thread(name = "carplay-airplay-source", isDaemon = true) {
             if (!running.get()) running.set(true)
-            airplaySourceActive.set(true)
+            var currentSocket: Socket? = null
             try {
                 val mib3 = huProfile.usesMib3WirelessPath
                 val loopback = host.isLoopbackAddress
                 var socket = CarPlayAccessoryNet.openTcp(allowUnbound = loopback)
+                currentSocket = socket
                 socket.connect(InetSocketAddress(host, port), 15_000)
                 socket.soTimeout = 15_000
                 Log.i(
@@ -195,10 +237,18 @@ class CarPlayRtspSession(
                     "AirPlay source dial $host:$port deviceId=$deviceId hu=${huProfile.id}" +
                         if (loopback) " loopback" else "",
                 )
+                // Superseded while our connect was in flight — the newer dial
+                // owns the session; do not claim peer/output.
+                if (dialGen != dialEpoch.get()) {
+                    socket.closeQuietly()
+                    return@thread
+                }
                 peer = socket
                 var input = BufferedInputStream(socket.getInputStream())
                 var out = BufferedOutputStream(socket.getOutputStream())
-                output = out
+                if (dialGen == dialEpoch.get()) {
+                    output = out
+                }
                 var cseq = 1
                 fun exchange(req: RtspMessage): RtspMessage? {
                     synchronized(writeLock) {
@@ -208,6 +258,12 @@ class CarPlayRtspSession(
                     Log.i(CarPlayConsts.TAG, "AirPlay → ${req.firstLine} body=${req.body.size}B")
                     val headerBuf = ByteArrayOutputLimited(64 * 1024)
                     while (true) {
+                        // Superseded by a newer dial — abort the exchange so the
+                        // body unwinds (its finally skips the shared release).
+                        if (dialGen != dialEpoch.get()) {
+                            socket.closeQuietly()
+                            return null
+                        }
                         val b = input.read()
                         if (b < 0) return null
                         headerBuf.write(b)
@@ -238,12 +294,19 @@ class CarPlayRtspSession(
                     } catch (_: Throwable) {
                     }
                     socket = CarPlayAccessoryNet.openTcp(allowUnbound = loopback)
+                    currentSocket = socket
                     socket.connect(InetSocketAddress(host, port), 15_000)
                     socket.soTimeout = 15_000
+                    if (dialGen != dialEpoch.get()) {
+                        socket.closeQuietly()
+                        return
+                    }
                     peer = socket
                     input = BufferedInputStream(socket.getInputStream())
                     out = BufferedOutputStream(socket.getOutputStream())
-                    output = out
+                    if (dialGen == dialEpoch.get()) {
+                        output = out
+                    }
                     cseq = 1
                     Log.i(CarPlayConsts.TAG, "AirPlay reconnected for pair-verify fast path")
                 }
@@ -405,6 +468,7 @@ class CarPlayRtspSession(
                     sourceIdentity = sourceIdentity,
                     phoneMac = phoneMac,
                     wifiMac = wifiMac,
+                    dialGen = dialGen,
                 )
                 if (!ok) {
                     Log.e(CarPlayConsts.TAG, "encrypted SETUP/RECORD / screen open failed")
@@ -415,20 +479,30 @@ class CarPlayRtspSession(
                 socket.soTimeout = 250
                 controlPumpThread.set(Thread.currentThread())
                 controlPumpLive.set(true)
-                pumpEncryptedControl(crypto, input, out)
+                pumpEncryptedControl(crypto, input, out, dialGen)
             } catch (e: Throwable) {
                 Log.e(CarPlayConsts.TAG, "AirPlay source dial failed", e)
             } finally {
-                controlPumpLive.set(false)
-                controlPumpThread.set(null)
-                controlOnMessage.set(null)
-                controlPending.clear()
-                controlIapFlush.set(null)
-                synchronized(iapTxLock) { iapTx.clear() }
-                airplaySourceActive.set(false)
-                // DiPlay resets control → must stop UDP audio / screen TCP or reconnect
-                // Auth dies under zombie streams ("连接中断" loop).
-                releaseMediaStreams("airplay-control-ended")
+                if (dialGen != dialEpoch.get()) {
+                    // Superseded by a newer dial — that one owns the control
+                    // session / media now. The pre-fix finally cleared every
+                    // shared reference and released the media, killing the
+                    // *winner* (connect→flash→reconnect loop). Only make sure
+                    // our socket is gone; leave the shared state alone.
+                    runCatching { currentSocket?.close() }
+                    Log.i(CarPlayConsts.TAG, "AirPlay source dial superseded — exiting without release")
+                } else {
+                    controlPumpLive.set(false)
+                    controlPumpThread.set(null)
+                    controlOnMessage.set(null)
+                    controlPending.clear()
+                    controlIapFlush.set(null)
+                    synchronized(iapTxLock) { iapTx.clear() }
+                    airplaySourceActive.set(false)
+                    // DiPlay resets control → must stop UDP audio / screen TCP or reconnect
+                    // Auth dies under zombie streams ("连接中断" loop).
+                    releaseMediaStreams("airplay-control-ended")
+                }
             }
         }
     }
@@ -538,6 +612,8 @@ class CarPlayRtspSession(
         sourceIdentity: CarPlaySourceIdentity = CarPlayProfileRegistry.defaultSource(),
         phoneMac: String? = null,
         wifiMac: String? = null,
+        /** [dialEpoch] at entry — the dial self-aborts once superseded. */
+        dialGen: Int = dialEpoch.get(),
     ): Boolean {
         val mib3 = huProfile.usesMib3WirelessPath
         var cseq = cseqStart
@@ -626,6 +702,7 @@ class CarPlayRtspSession(
         fun readControlUntilResponse(timeoutMs: Long): RtspMessage? {
             val deadline = System.currentTimeMillis() + timeoutMs
             while (running.get() && System.currentTimeMillis() < deadline) {
+                if (dialGen != dialEpoch.get()) return null
                 val raw = try {
                     crypto.readMessage(input)
                 } catch (_: java.net.SocketTimeoutException) {
@@ -713,6 +790,7 @@ class CarPlayRtspSession(
             socket.soTimeout = 100
             try {
                 while (running.get() && System.currentTimeMillis() < deadline) {
+                    if (dialGen != dialEpoch.get()) return
                     flushControlIap()
                     if (link.hasSyn()) {
                         flushControlIap()
@@ -1437,10 +1515,16 @@ class CarPlayRtspSession(
         crypto: ControlChannelCrypto,
         input: BufferedInputStream,
         out: BufferedOutputStream,
+        /** [dialEpoch] at entry — exit without touching shared state when superseded. */
+        dialGen: Int,
     ) {
         Log.i(CarPlayConsts.TAG, "encrypted control pump (video on dataPort)")
         var lastFeedbackAt = 0L
         while (running.get()) {
+            if (dialGen != dialEpoch.get()) {
+                Log.i(CarPlayConsts.TAG, "control pump superseded — exiting")
+                break
+            }
             controlIapFlush.get()?.invoke()
             val now = System.currentTimeMillis()
             // AirPlay source keep-alive: POST /feedback ~2s. Write-only on the
@@ -1523,24 +1607,63 @@ class CarPlayRtspSession(
             return
         }
         if (!isLoopback) {
-            // Prefer real HU / simulator: drop loopback session if any.
-            val old = peer
-            if (old != null && old.inetAddress?.isLoopbackAddress == true) {
-                old.closeQuietly()
+            // A live session is being served — a duplicate inbound control
+            // (HU redial / double mDNS resolve) must not replace it. The RFCOMM
+            // layer already ignores peers on a live session; the TCP path had
+            // no guard, and the late socket's close used to null the live output
+            // and release the media.
+            var stale: Socket? = null
+            val gen = synchronized(writeLock) {
+                if (streaming.get()) {
+                    null
+                } else {
+                    stale = peer
+                    peer = socket
+                    streaming.set(false)
+                    peerGeneration.incrementAndGet()
+                }
             }
-            peer = socket
-            streaming.set(false)
-        } else if (peer == null) {
-            peer = socket
+            if (gen == null) {
+                Log.i(
+                    CarPlayConsts.TAG,
+                    "RTSP attach ignored — session live on ${socket.inetAddress?.hostAddress}",
+                )
+                socket.closeQuietly()
+                return
+            }
+            // Prefer the fresh peer: close any stale (zombie / loopback) one.
+            if (stale != null && stale !== socket) stale.closeQuietly()
+            handlePeer(socket, ownsSession = true, gen = gen)
+            return
         }
-        handlePeer(socket, ownsSession = true)
+        val gen = synchronized(writeLock) {
+            if (peer != null) {
+                // A real peer is already attached — a loopback probe cannot own it.
+                null
+            } else {
+                peer = socket
+                peerGeneration.incrementAndGet()
+            }
+        }
+        if (gen == null) {
+            socket.closeQuietly()
+            return
+        }
+        handlePeer(socket, ownsSession = true, gen = gen)
     }
 
-    private fun handlePeer(socket: Socket, ownsSession: Boolean) {
+    private fun handlePeer(socket: Socket, ownsSession: Boolean, gen: Int = 0) {
         val input = BufferedInputStream(socket.getInputStream())
         val out = BufferedOutputStream(socket.getOutputStream())
         if (ownsSession) {
-            output = out
+            // Only bind the shared output if still the current peer — a
+            // superseded owner assigning its closing stream last would point
+            // interleaved RTP at a dead socket.
+            synchronized(writeLock) {
+                if (peer === socket && peerGeneration.get() == gen) {
+                    output = out
+                }
+            }
         }
         val headerBuf = ByteArrayOutputLimited(64 * 1024)
         while (running.get() && !socket.isClosed) {
@@ -1586,12 +1709,21 @@ class CarPlayRtspSession(
             }
         }
         if (ownsSession) {
-            output = null
-            releaseMediaStreams("rtsp-peer-closed")
-            Log.i(
-                CarPlayConsts.TAG,
-                "RTSP peer closed rtpSent=${rtpSent.get()} rtpBytes=${rtpBytes.get()}",
-            )
+            if (peer === socket && peerGeneration.get() == gen) {
+                synchronized(writeLock) { output = null }
+                releaseMediaStreams("rtsp-peer-closed")
+                Log.i(
+                    CarPlayConsts.TAG,
+                    "RTSP peer closed rtpSent=${rtpSent.get()} rtpBytes=${rtpBytes.get()}",
+                )
+            } else {
+                // Superseded by a newer peer (or the session stopped) — the live
+                // session keeps its output / media; do not release on a stale close.
+                Log.i(
+                    CarPlayConsts.TAG,
+                    "RTSP peer ${socket.inetAddress?.hostAddress} superseded — session kept",
+                )
+            }
         } else {
             Log.i(CarPlayConsts.TAG, "RTSP probe peer closed (AirPlay source kept)")
         }

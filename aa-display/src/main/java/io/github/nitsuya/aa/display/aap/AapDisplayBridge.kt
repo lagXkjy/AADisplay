@@ -187,8 +187,18 @@ class AapDisplayBridge(
         onStatus("正在打开车机画面…")
         // Drop Delay-Destroy VDs from CarPlay / prior AAP so pane apps reload at the
         // encode dpi. Reusing a 213-dpi layout after switching to 160 looks "magnified".
-        runCatching { CoreApi.onDestroyDisplay() }
-            .onFailure { Log.w(AapConsts.TAG, "pre-boot onDestroyDisplay failed", it) }
+        //
+        // Skip the pre-destroy while another egress (CarPlay) still owns the shared
+        // displays — CarPlayHostRuntime gates the same way. A live CP session makes
+        // onDestroyDisplay only arm the 180s Delay-Destroy countdown (it waits on the
+        // live bit), and the immediate soft-reconnect create below cancels it again:
+        // pure churn that briefly resets presentation state under a running session.
+        if (ProjectionSessionGate.isOwnedByOther(ProjectionSessionGate.OWNER_AAP)) {
+            Log.i(AapConsts.TAG, "pre-boot destroy skipped — other egress owns displays")
+        } else {
+            runCatching { CoreApi.onDestroyDisplay() }
+                .onFailure { Log.w(AapConsts.TAG, "pre-boot onDestroyDisplay failed", it) }
+        }
         // Canvas picker loads launchables via PackageManager — same bind as CarPlay Host.
         CarPlayAppPickerOverlay.bindContext(context)
         CarPlayAppPickerOverlay.prefetch()

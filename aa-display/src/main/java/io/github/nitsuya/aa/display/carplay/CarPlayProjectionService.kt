@@ -120,7 +120,14 @@ class CarPlayProjectionService : Service() {
                 // XOR egress: user stopped while still on CarPlay → fall back to default
                 // (AAP if AA installed). Skip rewrite when ChannelOrchestrator already
                 // persisted AAP / another channel — otherwise STOP flaps the file mid-switch.
-                if (EgressChannel.useCarPlayEgress(this) &&
+                //
+                // Also only rewrite when we were actually armed: a stale queued STOP
+                // (the orchestrator's settle from an *older* switch) arriving after a
+                // newer switch flipped the file back to CarPlay used to clobber the
+                // user's fresh choice — then the queued CP CONNECT self-rejected and
+                // no FGS was left running.
+                if (session != null &&
+                    EgressChannel.useCarPlayEgress(this) &&
                     EgressChannel.isAndroidAutoInstalled(this)
                 ) {
                     EgressChannel.set(this, EgressChannel.defaultChannel(this))
@@ -250,6 +257,13 @@ class CarPlayProjectionService : Service() {
             s.attachGlCompositor(it)
         }
         s.start(forceOutbound = forceOutbound)
+        // Heal system_server's live bit after a process death (crash / force-stop /
+        // install -r): the previous incarnation may have left carPlaySessionLive
+        // stale-true (mic capture + phone mute + Delay-Destroy freeze + boost —
+        // there is no liveness on that bit). A fresh FGS starts with an empty
+        // in-process gate, so the aggregate is the truth; report it unconditionally
+        // on create (same-process re-arms above skip this — nothing went stale).
+        reportAggregateLive()
         // Optional trampoline only when an explicit UI path asked for it — AutoArm /
         // BootArm pass false so we never bring up HostActivity on reboot.
         if (launchHostTrampoline) {

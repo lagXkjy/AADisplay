@@ -138,7 +138,10 @@ class DisplaySessionPolicy(
     /** Last destroy callback, kept so a secondary-egress stop can re-arm the countdown. */
     @Volatile
     private var mPendingDestroySucceed: (() -> Unit)? = null
-    /** AA UI currently attached (set on resume, cleared on destroy). */
+    /**
+     * AA UI currently attached (set on resume, cleared on destroy — and when the last
+     * secondary egress dies, since in this fork only egress soft-reconnects set it).
+     */
     @Volatile
     private var mAaUiAttached = false
 
@@ -168,12 +171,17 @@ class DisplaySessionPolicy(
             runCatching { PhoneHidRedirect.onSessionLiveChanged(true) }
                 .onFailure { log(TAG, "PhoneHidRedirect egress-live failed", it) }
         } else {
-            if (!mAaUiAttached) {
-                runCatching { PhoneHidRedirect.onSessionLiveChanged(false) }
-                    .onFailure { log(TAG, "PhoneHidRedirect egress-end failed", it) }
-            }
+            // A soft reconnect ([onResume]) leaves the flag true for the reconnecting
+            // egress, and its cancelAndJoin drops the running countdown. When the last
+            // egress dies nothing else consumes the split VDs in this fork — clear the
+            // flag, or a stale true suppresses Delay Destroy below and the VDs +
+            // keep-awake leak (double-egress switch window, or process death before
+            // the app-side tearDown can call onDestroyDisplay).
+            mAaUiAttached = false
+            runCatching { PhoneHidRedirect.onSessionLiveChanged(false) }
+                .onFailure { log(TAG, "PhoneHidRedirect egress-end failed", it) }
             val cb = mPendingDestroySucceed
-            if (!mAaUiAttached && mDestroyJob?.isActive != true && cb != null) {
+            if (mDestroyJob?.isActive != true && cb != null) {
                 startDelayDestroy(cb)
             }
         }

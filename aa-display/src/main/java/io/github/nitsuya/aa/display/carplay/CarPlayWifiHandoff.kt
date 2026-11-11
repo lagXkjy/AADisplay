@@ -52,6 +52,14 @@ class CarPlayWifiHandoff(context: Context) {
     private val callbackRef = AtomicReference<ConnectivityManager.NetworkCallback?>(null)
     private val cellularCallbackRef = AtomicReference<ConnectivityManager.NetworkCallback?>(null)
     private val pendingReady = CopyOnWriteArrayList<() -> Unit>()
+    /**
+     * Serializes [pendingReady] add/clear against [fireReady]'s toList/clear drain.
+     * The CopyOnWriteArrayList makes each op atomic but not the drain compound: a
+     * concurrent add landing between toList() and clear() would be dropped without
+     * ever firing (a lost 0x4301 dial callback costs the 8s mDNS fallback — or the
+     * whole session on a HU that never advertises `_airplay`).
+     */
+    private val readyLock = Any()
     private val pendingSsid = AtomicReference<String?>(null)
     private val boundSsid = AtomicReference<String?>(null)
     private val boundNetwork = AtomicReference<Network?>(null)
@@ -116,7 +124,7 @@ class CarPlayWifiHandoff(context: Context) {
         val liveCb = callbackRef.get()
         if (liveCb != null && existing?.equals(ssid, ignoreCase = true) == true) {
             Log.i(CarPlayConsts.TAG, "WiFi handoff already pending ssid=$ssid — queue dial")
-            pendingReady.add(onReady)
+            synchronized(readyLock) { pendingReady.add(onReady) }
             // Specifier callback can outlive a usable Network handle (OEM).
             // Re-adopt from allNetworks before giving up to the watch loop.
             if (rebindForDial(ssid) || adoptIfAssociated(ssid, reason = "pending-flush")) {
@@ -142,7 +150,7 @@ class CarPlayWifiHandoff(context: Context) {
 
         if (liveCb != null && boundSsid.get()?.equals(ssid, ignoreCase = true) == true) {
             Log.i(CarPlayConsts.TAG, "WiFi handoff coalesce ssid=$ssid — keep callback")
-            pendingReady.add(onReady)
+            synchronized(readyLock) { pendingReady.add(onReady) }
             if (readyFired.get()) {
                 fireReady()
             }
@@ -225,11 +233,11 @@ class CarPlayWifiHandoff(context: Context) {
             boundNetwork.set(null)
             CarPlayAccessoryNet.clear()
             readyFired.set(false)
-            pendingReady.clear()
+            synchronized(readyLock) { pendingReady.clear() }
         } else if (callbackRef.get() != null) {
             // Already have a live callback — do not unregister (that drops Wi‑Fi).
             if (onReady != null) {
-                pendingReady.add(onReady)
+                synchronized(readyLock) { pendingReady.add(onReady) }
                 if (readyFired.get()) fireReady()
             }
             return
@@ -237,7 +245,7 @@ class CarPlayWifiHandoff(context: Context) {
 
         pendingSsid.set(ssid)
         if (onReady != null) {
-            pendingReady.add(onReady)
+            synchronized(readyLock) { pendingReady.add(onReady) }
         }
         if (!preserveBind) {
             holding.set(false)
@@ -527,20 +535,19 @@ class CarPlayWifiHandoff(context: Context) {
     }
 
     private fun fireReady() {
-        if (!readyFired.compareAndSet(false, true)) {
-            val extra = pendingReady.toList()
+        // Drain under [readyLock] so a concurrent add cannot fall into the
+        // toList/clear window (see [readyLock]). readyFired is set inside the lock:
+        // an add that lands after the drain then observes readyFired==true from its
+        // own follow-up check and re-fires, so no waiter is lost. Both the
+        // first-fire and re-fire paths drained identically — one block.
+        val waiters = synchronized(readyLock) {
+            readyFired.set(true)
+            val w = pendingReady.toList()
             pendingReady.clear()
-            for (w in extra) {
-                try {
-                    w()
-                } catch (e: Throwable) {
-                    Log.e(CarPlayConsts.TAG, "WiFi ready callback failed", e)
-                }
-            }
-            return
+            w
         }
-        val waiters = pendingReady.toList()
-        pendingReady.clear()
+        // Invoke outside the lock: waiters run the AirPlay handshake (seconds) and
+        // must not hold it while CM callback threads queue.
         for (w in waiters) {
             try {
                 w()
@@ -951,7 +958,7 @@ class CarPlayWifiHandoff(context: Context) {
         mainHandler.removeCallbacksAndMessages(null)
         releaseCallbacksOnly()
         releaseCellularHold()
-        pendingReady.clear()
+        synchronized(readyLock) { pendingReady.clear() }
         pendingSsid.set(null)
         boundSsid.set(null)
         boundNetwork.set(null)
