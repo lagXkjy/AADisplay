@@ -58,6 +58,14 @@ class CarPlayRtspSession(
     private val onHuMediaEnded: (reason: String) -> Unit = {},
 ) {
     private val running = AtomicBoolean(false)
+    /**
+     * Last non-null [linkSyncBytes] — our own LSP (fixed content once iAP link sync
+     * completed). The live lambda returns null after an iAP2 reset, but the LSP is
+     * ours; a mid-session BT reset must not blind a later screen SETUP of the Wi‑Fi
+     * iAP2 detect/SYN echo (DiPlay then stalls in screen SETUP and the session dies).
+     */
+    @Volatile
+    private var linkSyncSnapshot: ByteArray? = null
     private val streaming = AtomicBoolean(false)
     /** True while [connectAsAirPlaySource] owns the live control/media session. */
     private val airplaySourceActive = AtomicBoolean(false)
@@ -562,6 +570,16 @@ class CarPlayRtspSession(
         }
     }
 
+    /** [linkSyncBytes] with the last-known snapshot — see [linkSyncSnapshot]. */
+    private fun currentLinkSyncBytes(): ByteArray? {
+        val live = linkSyncBytes()
+        if (live != null && live.isNotEmpty()) {
+            linkSyncSnapshot = live
+            return live
+        }
+        return linkSyncSnapshot
+    }
+
     /** MIB3 Wi‑Fi iAP2 NowPlaying transport, or null when DiPlay / not yet armed. */
     fun mib3NowPlayingEgress(): WifiIap2Link? =
         wifiIap.get()?.takeIf { it.isMib3NowPlayingEgress }
@@ -962,7 +980,7 @@ class CarPlayRtspSession(
         modesRestored.set(null)
         if (eventPort != null && eventPort > 0) {
             // DiPlay acceptEvent arms Events-* cipher on connect — open before RECORD/screen.
-            val lsp = linkSyncBytes()
+            val lsp = currentLinkSyncBytes()
             val evHolder = AtomicReference<CarPlayEventChannel?>(null)
             val wifi = if (mib3 || lsp != null) {
                 WifiIap2Link(
@@ -1667,6 +1685,10 @@ class CarPlayRtspSession(
         }
         val headerBuf = ByteArrayOutputLimited(64 * 1024)
         while (running.get() && !socket.isClosed) {
+            // Superseded by a newer peer — stop processing. A zombie negotiating
+            // socket (replaced while SETUP-in-flight) must not run a second
+            // SETUP/RECORD against the shared session state.
+            if (ownsSession && (peer !== socket || peerGeneration.get() != gen)) break
             val b = try {
                 input.read()
             } catch (_: Throwable) {

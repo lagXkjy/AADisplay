@@ -264,6 +264,10 @@ class CarPlayProjectionService : Service() {
         // in-process gate, so the aggregate is the truth; report it unconditionally
         // on create (same-process re-arms above skip this — nothing went stale).
         reportAggregateLive()
+        // The AADD binder bridge may still be cold right after a restart — a
+        // one-shot report can be silently dropped. Re-report once after it settles;
+        // the call re-reads the gate, so it stays correct under any ordering.
+        mainHandler.postDelayed({ reportAggregateLive() }, 2_000)
         // Optional trampoline only when an explicit UI path asked for it — AutoArm /
         // BootArm pass false so we never bring up HostActivity on reboot.
         if (launchHostTrampoline) {

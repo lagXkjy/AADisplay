@@ -60,6 +60,12 @@ class CarPlayWifiHandoff(context: Context) {
      * whole session on a HU that never advertises `_airplay`).
      */
     private val readyLock = Any()
+    /**
+     * Serializes [startSpecifierRequest] — a double requestNetwork for the same AP
+     * (dial-thread ensure racing the main rejoin/holding retry) leaves one
+     * NetworkCallback registered but unreferenced until [release].
+     */
+    private val requestLock = Any()
     private val pendingSsid = AtomicReference<String?>(null)
     private val boundSsid = AtomicReference<String?>(null)
     private val boundNetwork = AtomicReference<Network?>(null)
@@ -225,6 +231,37 @@ class CarPlayWifiHandoff(context: Context) {
         onReady: (() -> Unit)?,
         preserveBind: Boolean,
     ) {
+        synchronized(requestLock) {
+            startSpecifierRequestLocked(ssid, passphrase, channel, onReady, preserveBind)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startSpecifierRequestLocked(
+        ssid: String,
+        passphrase: String?,
+        channel: Int?,
+        onReady: (() -> Unit)?,
+        preserveBind: Boolean,
+    ) {
+        // Re-check under [requestLock]: a concurrent call may have registered a
+        // callback for this same AP while we were queued. Coalesce a *fresh*
+        // callback — a second requestNetwork for the same AP leaks the earlier
+        // NetworkCallback. Do NOT coalesce a zombie (shouldRerequestSpecifier): a
+        // callback whose agent died (OEM drops it within seconds) never fires
+        // onAvailable again and must be replaced — that is the rejoin path.
+        if (!preserveBind && callbackRef.get() != null && callbackIsSpecifier.get() &&
+            (pendingSsid.get()?.equals(ssid, ignoreCase = true) == true ||
+                boundSsid.get()?.equals(ssid, ignoreCase = true) == true) &&
+            !shouldRerequestSpecifier(ssid)
+        ) {
+            Log.i(CarPlayConsts.TAG, "WiFi handoff coalesce request ssid=$ssid — in flight")
+            if (onReady != null) {
+                synchronized(readyLock) { pendingReady.add(onReady) }
+                if (readyFired.get()) fireReady()
+            }
+            return
+        }
         // Only tear the previous callback when replacing; preserveBind keeps the
         // current L2 association while we try to obtain a holding request.
         if (!preserveBind) {
