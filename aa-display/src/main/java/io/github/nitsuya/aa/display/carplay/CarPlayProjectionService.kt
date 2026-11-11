@@ -17,6 +17,7 @@ import android.util.Log
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.egress.EgressChannel
+import io.github.nitsuya.aa.display.egress.EgressMigrationHints
 import io.github.nitsuya.aa.display.egress.ProjectionEgress
 import io.github.nitsuya.aa.display.ui.main.MainActivity
 import java.util.concurrent.atomic.AtomicReference
@@ -40,13 +41,16 @@ class CarPlayProjectionService : Service() {
         }
 
         fun start(context: Context, launchHostTrampoline: Boolean = true) {
+            val forceOutbound = EgressMigrationHints.consumePostAapCarPlayArm()
             val i = Intent(context, CarPlayProjectionService::class.java)
                 .setAction(CarPlayConsts.ACTION_CONNECT)
                 .putExtra(EXTRA_LAUNCH_HOST_TRAMPOLINE, launchHostTrampoline)
+                .putExtra(EXTRA_FORCE_OUTBOUND, forceOutbound)
             context.startForegroundService(i)
         }
 
         private const val EXTRA_LAUNCH_HOST_TRAMPOLINE = "launchHostTrampoline"
+        private const val EXTRA_FORCE_OUTBOUND = "forceOutbound"
 
         /** True once [ensureSession] created a live [CarPlaySourceSession] (RFCOMM listening). */
         fun isSessionArmed(): Boolean = sessionRef.get() != null
@@ -138,13 +142,17 @@ class CarPlayProjectionService : Service() {
                 }
                 ensureForeground()
                 val launchHost = intent.getBooleanExtra(EXTRA_LAUNCH_HOST_TRAMPOLINE, true)
-                safeEnsureSession(launchHostTrampoline = launchHost)
+                val forceOutbound = intent.getBooleanExtra(EXTRA_FORCE_OUTBOUND, false)
+                safeEnsureSession(
+                    launchHostTrampoline = launchHost,
+                    forceOutbound = forceOutbound,
+                )
             }
             // System restart / sticky re-delivery: only re-arm when the user chose CarPlay.
             else -> {
                 if (EgressChannel.useCarPlayEgress(this)) {
                     ensureForeground()
-                    safeEnsureSession(launchHostTrampoline = true)
+                    safeEnsureSession(launchHostTrampoline = true, forceOutbound = false)
                 } else {
                     rejectWrongChannel("channel-aa")
                     return START_NOT_STICKY
@@ -158,9 +166,12 @@ class CarPlayProjectionService : Service() {
      * Missing BT runtime perms used to throw out of [onStartCommand] → process death →
      * sticky restart crash loop. Keep the FGS up; RFCOMM soft-fails until perms are granted.
      */
-    private fun safeEnsureSession(launchHostTrampoline: Boolean) {
+    private fun safeEnsureSession(launchHostTrampoline: Boolean, forceOutbound: Boolean) {
         try {
-            ensureSession(launchHostTrampoline = launchHostTrampoline)
+            ensureSession(
+                launchHostTrampoline = launchHostTrampoline,
+                forceOutbound = forceOutbound,
+            )
         } catch (e: SecurityException) {
             Log.e(CarPlayConsts.TAG, "ensureSession SecurityException — grant BT perms", e)
         } catch (e: Throwable) {
@@ -213,7 +224,7 @@ class CarPlayProjectionService : Service() {
         stopSelf()
     }
 
-    private fun ensureSession(launchHostTrampoline: Boolean = true) {
+    private fun ensureSession(launchHostTrampoline: Boolean = true, forceOutbound: Boolean = false) {
         if (session != null) {
             // Soft re-arm (AutoArm ladder / sticky restart): keep the existing
             // SourceSession + RFCOMM / RTSP listen. Do not re-report live or boot Host —
@@ -221,7 +232,10 @@ class CarPlayProjectionService : Service() {
             Log.d(CarPlayConsts.TAG, "CarPlayProjectionService already armed — keep listen")
             return
         }
-        Log.i(CarPlayConsts.TAG, "CarPlayProjectionService CONNECT (listen-only)")
+        Log.i(
+            CarPlayConsts.TAG,
+            "CarPlayProjectionService CONNECT (listen-only) forceOutbound=$forceOutbound",
+        )
         // Lightweight arm: BT cafe + RTSP listen only. Host GL / dual VD / MediaCodec /
         // audio capture arm later in CarPlaySourceSession.prepareMediaPipeline when the
         // HU actually dials (or screen SETUP arrives).
@@ -235,7 +249,7 @@ class CarPlayProjectionService : Service() {
             glCompositorRef.set(it)
             s.attachGlCompositor(it)
         }
-        s.start()
+        s.start(forceOutbound = forceOutbound)
         // Optional trampoline only when an explicit UI path asked for it — AutoArm /
         // BootArm pass false so we never bring up HostActivity on reboot.
         if (launchHostTrampoline) {

@@ -45,6 +45,7 @@ flowchart LR
 
 ```
 iAP 0x5703 AccessoryWiFi
+  → CoreApi.armCarAccessoryWifi(ssid, psk)            // 先把热点持久保存（autojoin on）
   → CoreApi.preferCellularOverUnvalidatedWifi()   // 入网前先清 ACCEPT / autojoin
   → CarPlayWifiHandoff.ensureAccessoryWifi(...)
        → WifiNetworkSpecifier（local-only，无 INTERNET capability）
@@ -58,7 +59,7 @@ iAP 0x5703 AccessoryWiFi
 
 入口代码：
 
-- 入网前：`CarPlaySourceSession` 的 `onWifiConfig`
+- 入网前：`CarPlaySourceSession` 的 `onWifiConfig` → `CarPlayWifiHandoff.ensureAccessoryWifi`（内部先 `armCarAccessoryWifi` 再 specifier）
 - 绑定后重试：`CarPlayWifiHandoff.bindNetwork` → `preferCellularNow`
 
 ---
@@ -107,17 +108,18 @@ preferCellular…（含延迟重试）
 
 ## 5. system_server 侧（`CoreApi.preferCellularOverUnvalidatedWifi`）
 
-经 PMS 桥进 `CoreManagerService`（需已注入 system_server）。在 **cleared calling identity** 下做三件事：
+经 PMS 桥进 `CoreManagerService`（需已注入 system_server）。在 **cleared calling identity** 下：
 
 | 步骤 | 做什么 | 为什么 |
 |------|--------|--------|
-| 1 | `Settings.Global.network_avoid_bad_wifi = 1` | 系统倾向避开未验证 Wi‑Fi 作默认 |
+| 0 | **`armCarAccessoryWifi(ssid, psk)`**：把配件热点**持久保存**（`addNetwork`/`updateNetwork` + `noInternetAccessExpected` + `allowAutojoin(true)` + `saveConfiguration`；不在该网且 radio on 时显式 `connect`） | CarPlay 建连是最高优先级：从未保存过的无外网热点会被 OEM factory 当 unwanted 秒拆，保存后入网才稳（免人工点 Wi‑Fi） |
+| 1 | `Settings.Global.network_avoid_bad_wifi = 1` | 系统倾向避开未验证 Wi‑Fi 作默认（同时阻止未验证网被 opportunistic auto-join，所以步骤 0 的 autojoin 不会抢默认路由） |
 | 2 | 对车机类 SSID 的 `WifiConfiguration`：`noInternetAccessExpected = true` + `updateNetwork` | 告诉框架「这网本来就不该当外网」 |
-| 3 | 同配置 `allowAutojoin(netId, false)` | 阻止 WifiNetworkFactory **自动重连已存 STA** 再盖 `ACCEPT_UNVALIDATED`；Specifier 入网仍可用 |
+| 3 | 同配置 `allowAutojoin(netId, false)`（**跳过本会话已 arm 的配件 SSID**） | 阻止 WifiNetworkFactory **自动重连其它已存 STA** 再盖 `ACCEPT_UNVALIDATED`；Specifier 入网仍可用 |
 
 **不做** `setAcceptUnvalidated(false)` / `reportNetworkConnectivity(false)`。这两步会拆掉 WIFI NetworkAgent：wlan0 仍关联、Specifier 回调仍 pending，但 `getAllNetworks()` 里没有 Wi‑Fi，AirPlay 无法 `bindSocket`。默认路由靠步骤 1，不靠拆 Agent。
 
-车机 SSID 启发式（`isCarHotspotSsid`）：含 `audi` / `mmi` / `carplay` / `diplay`，或以 `carplay` 开头。
+车机 SSID 启发式（`isCarHotspotSsid`）：含 `audi` / `mmi` / `carplay` / `diplay`，或以 `carplay` 开头（仅约束步骤 2/3 的遍历范围；步骤 0 对任意非空 SSID 生效）。
 
 **刻意不做的事：**
 
@@ -130,12 +132,13 @@ preferCellular…（含延迟重试）
 
 | 组件 | 职责 |
 |------|------|
-| `CarPlayWifiHandoff` | Specifier 入网 / hold / rejoin；触发 cellular hold + preferCellular |
+| `CarPlayWifiHandoff` | 先 `armCarAccessoryWifi` 保存热点；Specifier 入网 / hold / rejoin；触发 cellular hold + preferCellular |
 | `CarPlayAccessoryNet` | 配件 Network 上的 TCP/UDP 工厂（会话级单例） |
-| `CoreManagerService.preferCellularOverUnvalidatedWifi` | 系统默认路由与 saved STA 策略（需 Xposed system_server） |
+| `CoreManagerService.armCarAccessoryWifi` | 配件热点持久保存（PSK + noInternetAccessExpected + autojoin on + connect）（需 Xposed system_server） |
+| `CoreManagerService.preferCellularOverUnvalidatedWifi` | 系统默认路由与其它 saved STA 策略（跳过本会话配件 SSID 的 autojoin）（需 Xposed system_server） |
 | `CarPlaySourceSession` / `CarPlayRtspSession` / audio·event egress | 只经 `CarPlayAccessoryNet` dial/送流 |
 
-AIDL：`ICoreManager.preferCellularOverUnvalidatedWifi()`；客户端 `CoreApi` → `CoreManager` → 桥。
+AIDL：`ICoreManager.armCarAccessoryWifi(ssid, passphrase)` + `preferCellularOverUnvalidatedWifi()`；客户端 `CoreApi` → `CoreManager` → 桥。
 
 ---
 
@@ -162,5 +165,5 @@ AIDL：`ICoreManager.preferCellularOverUnvalidatedWifi()`；客户端 `CoreApi` 
 1. **双路径不可合并成进程级 bind**——回退会重新「连热点就没流量」。
 2. **Hold Specifier 优先于「干净 unregister」**——踢线比回调泄漏更致命。
 3. **preferCellular 要延迟重试**——Samsung 重建 NetworkAgent 会再盖 ACCEPT。
-4. **autojoin off 只针对车机 SSID**——不要全局关 Wi‑Fi 自动加入。
+4. **autojoin 开关只针对车机类 SSID**——本会话 arm 的配件 SSID 保持 `autojoin(true)`（CarPlay 建连 > avoid-bad-wifi 启发式，设置里的「自动重新连接」开关开/关都不影响；会话中 rejoin 会重新 arm）；其余车热点仍 `autojoin(false)`；不要全局动 Wi‑Fi 自动加入。
 5. 本逻辑依赖 Root + LSPosed system_server；纯 App 权限做不到 `allowAutojoin`。

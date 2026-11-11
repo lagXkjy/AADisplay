@@ -297,6 +297,14 @@ object CoreManager : ICoreManager, DeathRecipient {
         }
     }
 
+    override fun armCarAccessoryWifi(ssid: String?, passphrase: String?) {
+        try {
+            getService()?.armCarAccessoryWifi(ssid, passphrase)
+        } catch (e: Throwable) {
+            Log.e(TAG, "armCarAccessoryWifi failed", e)
+        }
+    }
+
     override fun armBluetoothDiscoverable() {
         try {
             getService()?.armBluetoothDiscoverable()

@@ -209,4 +209,14 @@ interface ICoreManager {
      * Appended at end for Stub ordinals; requires system_server reload (reboot).
      */
     oneway void setThreadRealtimeBoost(int tid, boolean enable);
+
+    /**
+     * Persist the CarPlay accessory hotspot as a saved network: known PSK,
+     * noInternetAccessExpected, allowAutojoin(true), saved, and explicitly
+     * connected when the radio is up. CarPlay handoff outranks the system
+     * "auto-join / avoid bad wifi" heuristics — an SSID the user never saved
+     * manually must still join. Appended at end for Stub ordinals; requires
+     * system_server reload (reboot).
+     */
+    void armCarAccessoryWifi(String ssid, String passphrase);
 }

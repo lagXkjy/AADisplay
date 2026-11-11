@@ -309,6 +309,16 @@ class AapSourceSession(
 
     fun isUsbReplugRequired(): Boolean = usbReplugRequired.get()
 
+    /**
+     * Short cooldown after a stall/teardown kill: the killed transport's drain thread is still
+     * being joined and the kernel endpoint may still be re-binding, so a fresh
+     * [UsbManager.openAccessory] on the same port races it and tears the stream apart. Probes
+     * wait it out; the soft re-attach (8 s) is deliberately outside the window.
+     */
+    @Volatile private var usbKillCooldownUntilMs = 0L
+
+    fun isInUsbKillCooldown(): Boolean = SystemClock.elapsedRealtime() < usbKillCooldownUntilMs
+
     /** Call from USB_ACCESSORY_ATTACHED / DETACHED before a new soft or hard attach. */
     fun clearUsbReplugRequired() {
         if (usbReplugRequired.compareAndSet(true, false)) {
@@ -361,6 +371,9 @@ class AapSourceSession(
         transport = t
         val identity = PhoneCertStore.pick(app, certAttempt.get())
         onStatus("正在和车机握手…")
+        // USB only: the head unit may still believe the previous session is alive and keep
+        // flushing its encrypted tail into the pipe — drain it instead of dying on it.
+        val drainStale = peerKey.startsWith("usb:")
         val session = AapSession(
             t,
             identity,
@@ -376,6 +389,16 @@ class AapSourceSession(
                 pins = null,
                 peerKey = peerKey,
                 trustOnFirstUse = trustOnFirstUse,
+                drainStale = drainStale,
+                versionTimeoutDefer = if (drainStale) {
+                    {
+                        // Host-side USB suspend: the head unit cannot talk at all (all URBs
+                        // parked); roll the deadline until the host resumes. Queried live — the
+                        // stall monitor that tracks this only runs once the session is RUNNING.
+                        if ((transport as? UsbAccessoryTransport)?.isLinkSuspended() == true)
+                            USB_VERSION_TIMEOUT_DEFER_MS else 0L
+                    }
+                } else null,
             ),
         )
         aap = session
@@ -515,7 +538,7 @@ class AapSourceSession(
                     val dx = usb.rxBytes - lastHealthRxBits.first
                     val dt = ((now - lastHealthRxBits.second) / 1000).coerceAtLeast(1)
                     lastHealthRxBits = usb.rxBytes to now
-                    " usb[rx=${dx / 1024}KB/s ring=${usb.ringUsed()} fault=${usb.readFault?.message ?: "none"}]"
+                    " usb[rx=${dx / 1024}KB/s ring=${usb.ringUsed()} link=${usb.linkState()} fault=${usb.readFault?.message ?: "none"}]"
                 } else { lastHealthRxBits = 0L to SystemClock.uptimeMillis(); "" }
                 Log.i(
                     AapConsts.TAG,
@@ -540,6 +563,11 @@ class AapSourceSession(
     /** True while the most recent close was our own stall-kill (status + re-probe). */
     @Volatile private var closedByStall = false
     /**
+     * elapsedRealtime the USB link entered a host-side SUSPEND (0 = active);
+     * the stall monitor's grace key.
+     */
+    @Volatile private var usbSuspendSinceMs = 0L
+    /**
      * elapsedRealtime of the previous USB transport-gap crypto death (NONCE-GAP / TLS record /
      * TLS closed). Second hit inside [USB_STALL_REKILL_WINDOW_MS] gates soft attach to unplug.
      */
@@ -557,6 +585,11 @@ class AapSourceSession(
      * error fires and the session never fails or recovers. A blocked USB write cannot be
      * interrupted; the only escape is closing the fd, so once the stall is confirmed this
      * closes the transport: the session fails, and the USB probe re-attaches a fresh one.
+     *
+     * Exception: a host-side USB SUSPEND parks every URB (writes block, no error) and ends on
+     * the host's resume. While the link is suspended the session is intact — killing it turns a
+     * power-management nap into a full disconnect, so the watchdog only waits (bounded, so a
+     * permanently dark port still gets recycled).
      */
     private fun startStallMonitor() {
         if (stallWorker?.isAlive == true) return
@@ -576,10 +609,33 @@ class AapSourceSession(
                 val bad = inflightMs > USB_WRITE_BLOCK_KILL_MS ||
                     queueWaitMs > USB_QUEUE_WAIT_BAD_MS
                 if (!bad) {
+                    if (usbSuspendSinceMs > 0L && !usb.isLinkSuspended()) {
+                        usbSuspendSinceMs = 0L
+                        Log.i(AapConsts.TAG, "usb link resumed")
+                    }
                     stallSinceMs = 0L
                     continue
                 }
                 val now = SystemClock.elapsedRealtime()
+                val suspended = usb.isLinkSuspended()
+                if (suspended) {
+                    // Host parked the link: the session survives the nap. Log the entry once and
+                    // wait out the hard cap; the host's resume (or a real unplug's I/O error)
+                    // is what unblocks the write. Nothing is killed while suspended.
+                    if (usbSuspendSinceMs == 0L) {
+                        usbSuspendSinceMs = now
+                        Log.w(
+                            AapConsts.TAG,
+                            "usb link SUSPENDED by the host — waiting for resume " +
+                                "(inflight=${inflightMs}ms queueWait=${queueWaitMs}ms)",
+                        )
+                    }
+                    if (now - usbSuspendSinceMs < USB_SUSPEND_GRACE_MS) continue
+                    Log.w(
+                        AapConsts.TAG,
+                        "usb link suspended ${now - usbSuspendSinceMs}ms without resume — killing session",
+                    )
+                }
                 if (stallSinceMs == 0L) stallSinceMs = now
                 // A write blocked in the kernel kills immediately (nothing drains behind it);
                 // a slow endpoint must stay slow first, so a single USB blip doesn't cycle.
@@ -587,6 +643,7 @@ class AapSourceSession(
                 stallSinceMs = 0L
                 val prevKillMs = lastStallKillMs
                 lastStallKillMs = now
+                usbKillCooldownUntilMs = now + USB_KILL_COOLDOWN_MS
                 closedByStall = true
                 // Same endpoint stalling again soon: soft reopen can't fix it, require replug.
                 if (prevKillMs > 0 && now - prevKillMs < USB_STALL_REKILL_WINDOW_MS) {
@@ -595,7 +652,7 @@ class AapSourceSession(
                 Log.w(
                     AapConsts.TAG,
                     "USB write stall — killing session (inflight=${inflightMs}ms " +
-                        "queueWait=${queueWaitMs}ms replugGate=${usbReplugRequired.get()})",
+                        "queueWait=${queueWaitMs}ms link=${usb.linkState()} replugGate=${usbReplugRequired.get()})",
                 )
                 runCatching { usb.close() }
             }
@@ -1120,16 +1177,30 @@ class AapSourceSession(
             val errMsg = error?.message.orEmpty()
             // Mid-handshake desync: soft reopen of the same AOA cannot reset HU TLS.
             val hardUsbCrypto = errMsg.contains("encrypted frame before TLS")
-            // Live-session transport loss (UI spike starved drain → one record dropped). First
-            // hit soft-reattaches like a write-stall; a second within the rekill window needs unplug.
+            // Live-session transport loss (UI spike starved drain → one record dropped), a
+            // kernel I/O error on the pipe (host-side USB suspend ends in exactly this), or a
+            // keep-alive silence: the link is what died, so a soft re-attach is the right
+            // recovery. A genuine unplug only makes the re-attach a no-op (no accessory).
             val transportGapCrypto = errMsg.contains("NONCE-GAP") ||
                 errMsg.contains("TLS record failed") ||
-                errMsg.contains("TLS closed")
+                errMsg.contains("TLS closed") ||
+                errMsg == "read failed" ||
+                errMsg.startsWith("head unit silent")
+            // Stale-drain handshake: the version deadline expired in drain mode. Deferral ran
+            // out (or the link is active and the head unit never started a fresh session) —
+            // only a physical unplug resets the head unit's own session state.
+            val drainTimeout = transport?.name?.startsWith("usb ") == true &&
+                session.closedDuring == AapSession.State.VERSION &&
+                errMsg == "no version request from head unit"
             val wasUsb = transport?.name?.startsWith("usb ") == true
             closedByTransportGap = false
             if (session.certificateRejected) {
                 certAttempt.incrementAndGet()
                 onStatus("车机未接受连车信息，将自动换一种方式重试")
+            } else if (drainTimeout) {
+                usbReplugRequired.set(true)
+                onStatus("请拔掉数据线再插上")
+                Log.w(AapConsts.TAG, "USB stale-drain: no version request after deferrals — unplug/replug required")
             } else if (wasUsb && hardUsbCrypto) {
                 usbReplugRequired.set(true)
                 onStatus("请拔掉数据线再插上")
@@ -1265,6 +1336,21 @@ class AapSourceSession(
         private const val USB_STALL_SUSTAIN_MS = 10_000L
         /** Two stall-kills within this window → soft reopen is hopeless, require replug. */
         private const val USB_STALL_REKILL_WINDOW_MS = 10 * 60_000L
+        /**
+         * Host-side USB suspend grace: writes blocked by a link nap are waited out, then the
+         * session is recycled (a permanently dark port must still end the wait).
+         */
+        private const val USB_SUSPEND_GRACE_MS = 90_000L
+        /**
+         * Stale-drain version-request deferral step: while the link is suspended the head unit
+         * cannot talk at all, so the 15 s deadline keeps rolling this many seconds.
+         */
+        private const val USB_VERSION_TIMEOUT_DEFER_MS = 30_000L
+        /**
+         * Post-kill cooldown for the USB probe: the killed transport's drain thread join (500 ms)
+         * plus endpoint re-settle; a second openAccessory in that window races the teardown.
+         */
+        private const val USB_KILL_COOLDOWN_MS = 8_000L
         /** Delay before re-arming the USB probe after a stall-kill (HU keep-alive reset). */
         private const val USB_STALL_REATTACH_DELAY_MS = 8_000L
         /** Sustained ack latency (send→HU ack) beyond this counts as congestion. */

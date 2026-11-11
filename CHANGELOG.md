@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5 — 无线 CarPlay 热点保存自动连接（免人工连 Wi‑Fi）
+
+versionCode **10104** / versionName **1.5**。
+
+- **问题：Wi‑Fi 没记住车机热点时 CarPlay 会中断。** 0x5703 后 App 侧仅靠临时 `WifiNetworkSpecifier` 入网，OEM 的 WifiNetworkFactory 对「从未保存 + 无外网」的热点当不信任 / unwanted 秒拆，必须人工点一次连上（= 保存）才稳。现在收 0x5703 先经 system_server `armCarAccessoryWifi`：把热点**持久保存**进系统 Wi‑Fi 配置（PSK + `noInternetAccessExpected` + `allowAutojoin(true)` + `saveConfiguration`），且当前不在该网时显式 `connect` —— 等效「记住自动连接」，CarPlay 建连是最高优先级网络动作（`CarPlayWifiHandoff.ensureAccessoryWifi` 入口统一触发，0x4301 同路径覆盖）。
+- **蜂窝不受影响**：`preferCellularOverUnvalidatedWifi` 维持 `network_avoid_bad_wifi=1` + `noInternetAccessExpected`，未验证热点抢不到默认路由，INTERNET 仍走蜂窝；仅对本会话正在 arm 的配件 SSID 跳过 `allowAutojoin(false)`，其它车热点策略不变（`docs/CARPLAY_WIFI_CELLULAR.md`）。
+- 新增 AIDL `ICoreManager.armCarAccessoryWifi(ssid, passphrase)`（尾部追加，Stub ordinals 兼容）；system_server 侧需重启设备生效。
+
 ## 1.4 — AAP 音频焦点无应答重试（对齐 AARE v1.4.0）
 
 versionCode **10103** / versionName **1.4**。

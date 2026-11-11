@@ -154,6 +154,7 @@ sequenceDiagram
 
 ### 4.3 Wi‑Fi handoff（`CarPlayWifiHandoff`）
 
+- 入网前先经 `CoreApi.armCarAccessoryWifi` 把热点**持久保存**（PSK + `noInternetAccessExpected` + `allowAutojoin(true)` + 必要时显式 `connect`）：未保存过的无外网热点会被 OEM 当 unwanted 秒拆，保存后等价「记住自动连接」，是稳定入网的前提。
 - `WifiNetworkSpecifier` 加入配件 AP；**勿 unregister 活着的 Specifier**（One UI 会立刻掉 L2）。
 - 用本地回调 **hold** 住无 INTERNET 的 AP，避免三星 `CMD_UNWANTED_NETWORK` 2–3s 踢线。
 - 入网前 `CoreApi.preferCellularOverUnvalidatedWifi`，避免未验证 STA 抢默认路由掐蜂窝。
@@ -197,6 +198,7 @@ sequenceDiagram
 | 现象 | 优先查 |
 |------|--------|
 | 车机只有普通蓝牙电话，无 CarPlay | RFCOMM 是否真正连上（`…cafe` accept / `…caff` dial）；通道是否 CarPlay；看 `AAD_CpBootArm start FGS` 是否早于 Audi SDP |
+| 有线 AA 切 CP 后连不上 | 查 `post-AAP settle` / `forceOutbound=true` / `…caff fallback … aggressive=true`；车机须 ASI 选无线 CarPlay，勿只点蓝牙/AA 重连 |
 | 开机第一连不上、第二才能连 | BT ON 时 app `STATE_CHANGED` 被拒；需 system_server BootArm + 重启换模块 |
 | DiPlay 有声无屏 / SDP `scn=0` | 本机是否在 listen `…cafe`（BT 未 ON 就放弃过） |
 | Auth 后无热点 / 无 StartSession | 是否 MIB3 路径；是否已发 `0x5702`；是否收到 `0x5703`/`0x4301` |

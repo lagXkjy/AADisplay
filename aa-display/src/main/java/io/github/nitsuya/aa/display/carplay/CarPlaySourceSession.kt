@@ -117,9 +117,12 @@ class CarPlaySourceSession(
         lastDropCount = 0L
     }
 
-    fun start() {
+    fun start(forceOutbound: Boolean = false) {
         if (!running.compareAndSet(false, true)) return
-        Log.i(CarPlayConsts.TAG, "CarPlaySourceSession start (listen-only)")
+        Log.i(
+            CarPlayConsts.TAG,
+            "CarPlaySourceSession start (listen-only) forceOutbound=$forceOutbound",
+        )
         // Do not set ProjectionSessionGate / reportLive / encoder here — idle AutoArm
         // used to burn ~40% CPU on 720p60 encode + dual VDs with streaming=false.
         airplayDialed.set(false)
@@ -165,7 +168,7 @@ class CarPlaySourceSession(
         )
         rtsp = rtspSession
         rtspSession.startServer()
-        startWirelessTransport(rtspSession)
+        startWirelessTransport(rtspSession, forceOutbound = forceOutbound)
     }
 
     /**
@@ -195,7 +198,10 @@ class CarPlaySourceSession(
         }
     }
 
-    private fun startWirelessTransport(rtspSession: CarPlayRtspSession) {
+    private fun startWirelessTransport(
+        rtspSession: CarPlayRtspSession,
+        forceOutbound: Boolean = false,
+    ) {
         wifiHandoff = CarPlayWifiHandoff(appContext).also { handoff ->
             handoff.onBound = { mac ->
                 iap2?.noteAccessoryWifiBound(mac)
@@ -230,6 +236,7 @@ class CarPlaySourceSession(
             // Detect/SYN/auth all count as live — mid-negotiate must not be replaced.
             sessionLive = { iap2?.isNegotiatingOrLive() == true },
             onPeer = { name, address -> iap2?.notePeer(name, address) },
+            forceOutbound = forceOutbound,
         )
         bluetooth = link
         iap2 = Iap2Session(

@@ -43,6 +43,14 @@ object AapUsbProbe {
             Log.i(AapConsts.TAG, "USB probe: blocked until unplug/replug (TLS fault)")
             return
         }
+        // A stall/teardown kill just closed the previous transport: its drain thread is still
+        // joining and the endpoint re-binding — a second openAccessory on the same port would
+        // read the pipe in parallel and tear the stream apart. The 8 s soft re-attach owns the
+        // recovery; this window only keeps the probe from racing it.
+        if (AapProjectionService.isUsbKillCooling()) {
+            Log.i(AapConsts.TAG, "USB probe: cooling down after kill — skip")
+            return
+        }
         if (!busy.compareAndSet(false, true)) {
             Log.i(AapConsts.TAG, "USB probe: already in progress")
             return

@@ -97,6 +97,14 @@ class CarPlayWifiHandoff(context: Context) {
         }
         wantJoin.set(true)
 
+        // CarPlay handoff is the top priority: persist the hotspot as a saved,
+        // autojoin-able network (system_server) before joining. OEM factories tear
+        // down specifier-only joins of never-saved no-internet APs within seconds
+        // — without this the session dies unless the user once joined manually.
+        // Same call re-arms the settings "auto-reconnect" switch if the user
+        // flipped it off mid-session (framework then kills the STA on toggle-off).
+        armAccessoryWifiConfig(ssid)
+
         if (isBoundTo(ssid) || adoptIfAssociated(ssid, reason = "ensure")) {
             onReady()
             // Saved-network adopt alone is killed by OEM UNWANTED within seconds.
@@ -405,6 +413,14 @@ class CarPlayWifiHandoff(context: Context) {
         Log.i(CarPlayConsts.TAG, "WiFi enable via system requested=$viaSystem")
     }
 
+    private fun armAccessoryWifiConfig(ssid: String) {
+        runCatching {
+            CoreApi.armCarAccessoryWifi(ssid, cachedPassphrase.get())
+        }.onFailure {
+            Log.w(CarPlayConsts.TAG, "armCarAccessoryWifi failed: ${it.message}")
+        }
+    }
+
     private fun scheduleRejoin(ssid: String, generation: Int) {
         if (!wantJoin.get()) return
         mainHandler.postDelayed({
@@ -416,6 +432,7 @@ class CarPlayWifiHandoff(context: Context) {
                 return@postDelayed
             }
             Log.i(CarPlayConsts.TAG, "WiFi handoff rejoin ssid=$ssid after onLost")
+            armAccessoryWifiConfig(ssid)
             startSpecifierRequest(
                 ssid = ssid,
                 passphrase = cachedPassphrase.get(),

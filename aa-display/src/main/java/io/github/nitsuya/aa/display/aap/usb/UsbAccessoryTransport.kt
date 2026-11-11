@@ -5,6 +5,7 @@ import android.hardware.usb.UsbManager
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.os.SystemClock
+import android.os.SystemProperties
 import android.util.Log
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.aap.AapConsts
@@ -92,6 +93,21 @@ class UsbAccessoryTransport(usb: UsbManager, val accessory: UsbAccessory) : Tran
         if (t == 0L) return 0
         return (System.nanoTime() - t) / 1_000_000
     }
+
+    /**
+     * USB link state as the device controller sees it (dwc3 `lpm` sysfs): "active", "suspend" or
+     * "unknown" when the path cannot be read. A host that autosuspends the link parks all URBs —
+     * a write then "blocks" with no I/O error, and the stall watchdog must not read that as a
+     * dead endpoint.
+     */
+    fun linkState(): String {
+        val path = LINK_STATE_PATHS.firstOrNull {
+            runCatching { java.io.File(it).readText().trim() }.getOrNull()?.takeIf { s -> s.isNotEmpty() } != null
+        } ?: return "unknown"
+        return runCatching { java.io.File(path).readText().trim() }.getOrNull() ?: "unknown"
+    }
+
+    fun isLinkSuspended(): Boolean = linkState().equals("suspend", true)
 
     private val closed = AtomicBoolean(false)
 
@@ -188,6 +204,21 @@ class UsbAccessoryTransport(usb: UsbManager, val accessory: UsbAccessory) : Tran
         private const val RING_HIGH_WATER = RING_CAPACITY * 3 / 4
 
         /**
+         * dwc3 link-state sysfs; the controller node comes from the `sys.usb.controller` property
+         * (e.g. a600000.dwc3), with the common paths as fallbacks. Read-only; never fails the session.
+         */
+        private val LINK_STATE_PATHS: List<String> by lazy {
+            val ctrl = SystemProperties.get("sys.usb.controller", "")
+            val paths = ArrayList<String>()
+            if (ctrl.isNotEmpty()) {
+                paths += "/sys/bus/platform/devices/$ctrl/lpm"
+            }
+            paths += "/sys/bus/platform/devices/a600000.dwc3/lpm"
+            paths += "/sys/bus/platform/devices/38800000.dwc3/lpm"
+            paths
+        }
+
+        /**
          * Factory HUs advertise model `Android Auto`; Google DHU (`--usb`) uses
          * `Android Open Automotive Protocol`.
          */
@@ -274,7 +305,13 @@ private class UsbRxRing(private val capacity: Int) : InputStream() {
                 return if (size > 0) readSome(b, off, len) else -1
             }
         }
-        if (size == 0) return -1
+        if (size == 0) {
+            // Writer closed (transport teardown / kill): latch EOF so every later read returns -1.
+            // The reader may have consumed a buffered partial frame header before noticing, and an
+            // un-latched ring would make its next read block forever instead of failing cleanly.
+            if (writerClosed) readerClosed = true
+            return -1
+        }
         return readSome(b, off, len)
     }
 

@@ -55,6 +55,20 @@ class SessionOptions(
     val peerKey: String? = null,
     /** Trust the first certificate of a head unit with nothing trusted yet (Bluetooth-bonded ones). */
     val trustOnFirstUse: Boolean = false,
+    /**
+     * Discard (instead of failing on) frames the reader cannot decrypt because TLS is not up
+     * yet, until the first plaintext version request arrives. USB re-attach of a port the head
+     * unit still believes is alive delivers the previous session's encrypted tail; dropping it
+     * and waiting for the fresh version request resyncs instead of requiring an unplug.
+     */
+    val drainStale: Boolean = false,
+    /**
+     * Extra milliseconds to defer the version-request deadline by when it expires without a
+     * request (repeatable). Lets the phone side wait out conditions where the head unit simply
+     * cannot talk yet — e.g. a host-side USB suspend — instead of failing the handshake.
+     * `null` fails immediately, as always.
+     */
+    val versionTimeoutDefer: (() -> Long)? = null,
 ) {
     init {
         require(pins == null || peerKey != null) { "peerKey is required with pins" }
@@ -145,7 +159,11 @@ class AapSession(
     val pinRefusal: PinRefusal? get() = cryptor.pinRefusal
 
     @Volatile private var tlsUp = false
-    private val reader = FrameReader(transport.input) { if (tlsUp) cryptor else null }
+    private val reader = FrameReader(transport.input, { if (tlsUp) cryptor else null },
+        drainStale = options.drainStale)
+    /** True from the first version request on: the stale-frame discard window of [SessionOptions.drainStale] is over. */
+    @Volatile var reachedHandshake = false
+        private set
     private val writer = FrameWriter(transport.output) { if (tlsUp) cryptor else null }
 
     private val queue = PriorityBlockingQueue<Outgoing>()
@@ -199,13 +217,32 @@ class AapSession(
     }
 
     fun start() {
+        reader.bindReachedProbe { reachedHandshake }
         Thread(::readLoop, "aap-reader").apply { isDaemon = true; priority = Thread.MAX_PRIORITY - 1 }.start()
         Thread(::writeLoop, "aap-writer").apply { isDaemon = true; priority = Thread.MAX_PRIORITY - 1 }.start()
         // The head unit opens with a version request; if nothing comes at all, give up.
-        schedule({
-            if (state == State.VERSION) fail("no version request from head unit", null)
-        }, 15, TimeUnit.SECONDS)
+        scheduleVersionCheck(15_000)
         log.i("session started on ${transport.name}")
+    }
+
+    /**
+     * Version-request deadline. [State.VERSION] doubles as the stale-drain window of
+     * [SessionOptions.drainStale]: the reader spends it discarding the previous session's tail, and a
+     * head unit whose own session is still resetting cannot start a fresh one — so a deadline hit
+     * with no request yet defers [drainDeferMs] instead of failing (only in drain mode; the stale
+     * tail bounds what the deferral can be).
+     */
+    internal fun scheduleVersionCheck(delayMs: Long) {
+        schedule({
+            if (state != State.VERSION) return@schedule
+            val deferMs = if (options.drainStale) options.versionTimeoutDefer?.invoke() ?: 0L else 0L
+            if (deferMs > 0) {
+                log.w("no version request after ${delayMs} s (stale drain / head unit resetting) — deferring ${deferMs} s")
+                scheduleVersionCheck(deferMs)
+            } else {
+                fail("no version request from head unit", null)
+            }
+        }, delayMs, TimeUnit.MILLISECONDS)
     }
 
     /**
@@ -441,6 +478,7 @@ class AapSession(
     }
 
     private fun onVersionRequest(msg: AapMessage) {
+        reachedHandshake = true
         if (state != State.VERSION) {
             fail("version request in state $state", null)
             return

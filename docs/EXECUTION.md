@@ -233,7 +233,7 @@ Keep-awake 硬规则：
 | DPI | `setVdDensityDpi` / `getVdDensityDpi` / `getEffectiveVdDensityDpi` | 状态页设置 + Host 上报（`DisplayDpiStore`） |
 | CarPlay 会话 | `reportCarPlaySessionLive` **oneway** / `isCarPlaySessionLive` | AAP / CarPlay live 位 → Delay Destroy 挂起 + ProcessBoost + 音频 arm |
 | CarPlay 音频 | `setCarPlayAudioEgressEnabled` / `pullCarPlayAudio` / `pullCarPlaySpeechAudio` / `isCarPlaySpeechCaptureReady` | 采集启停 / PCM 拉取（`AudioPullRing`） |
-| 联网 | `setWifiEnabled` / `localWifiMac` / `localBluetoothMac` / `prepareCarPlayHeadUnit` / `armBluetoothDiscoverable` / `preferCellularOverUnvalidatedWifi` | 无线 CarPlay 建连所需 system 权限（见 [CARPLAY_WIFI_CELLULAR.md](CARPLAY_WIFI_CELLULAR.md)） |
+| 联网 | `setWifiEnabled` / `localWifiMac` / `localBluetoothMac` / `prepareCarPlayHeadUnit` / `armBluetoothDiscoverable` / `armCarAccessoryWifi` / `preferCellularOverUnvalidatedWifi` | 无线 CarPlay 建连所需 system 权限（见 [CARPLAY_WIFI_CELLULAR.md](CARPLAY_WIFI_CELLULAR.md)） |
 | 出口 | `reportEgressChannel` **oneway** | 镜像 `/data/system/aadisplay_egress_channel` 供 `CarPlayBootArm` |
 | 其它 | `setThreadRealtimeBoost` **oneway** | AAP USB drain/reader/writer CFS −19 |
 

@@ -22,6 +22,8 @@ object ChannelOrchestrator {
     private const val TAG = "AADisplay_ChannelOrch"
     private const val STOP_AWAIT_MS = 4_000L
     private const val POLL_MS = 40L
+    /** After settling live AAP, wait before arming CarPlay so the HU leaves AA mode. */
+    private const val POST_AAP_SETTLE_MS = 1_500L
 
     private val executor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "aad-channel-orch").apply { isDaemon = true }
@@ -112,8 +114,20 @@ object ChannelOrchestrator {
             }
             return
         }
+        val aapWasArmed = target.channelId == EgressChannel.CHANNEL_CARPLAY &&
+            ProjectionEgressRegistry.byChannel(EgressChannel.CHANNEL_AAP)?.isArmed() == true
         settleOthers(app, target)
         if (gen != generation.get()) return
+        if (aapWasArmed) {
+            EgressMigrationHints.markPostAapCarPlayArm()
+            Log.i(TAG, "post-AAP settle pause ${POST_AAP_SETTLE_MS}ms before CarPlay arm")
+            try {
+                Thread.sleep(POST_AAP_SETTLE_MS)
+            } catch (_: InterruptedException) {
+                return
+            }
+            if (gen != generation.get()) return
+        }
         target.arm(app)
         Log.i(TAG, "armed channel=${target.channelId}")
     }

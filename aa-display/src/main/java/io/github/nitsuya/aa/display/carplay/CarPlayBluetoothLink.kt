@@ -19,6 +19,8 @@ import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.carplay.profile.CarPlayDialPolicy
 import io.github.nitsuya.aa.display.carplay.profile.CarPlayProfileResolver
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -30,8 +32,9 @@ import kotlin.concurrent.thread
  * - Listen on **accessory** UUID (`…caff`, "CarPlay Accessory"). Some HUs dial `…cafe` and reject outbound.
  * - Listen on the wireless-CarPlay capability UUID so classic EIR/SDP advertises it
  *   (VAG btstack will not offer CarPlay without that UUID).
- * - Dial bonded peers on `…caff`. Inbound-preferred HUs get one delayed fallback after bond
- *   (cafe first); never dial during BOND_BONDING or while a peer is already up.
+ * - Dial bonded peers on `…caff`. Inbound-preferred HUs get delayed fallback after bond/ACL
+ *   (cafe first, SDP refresh + secure/insecure, limited retries); never dial during
+ *   BOND_BONDING or while a peer is already up.
  *
  * HU dial policy comes from [CarPlayProfileResolver] — not hardcoded vendor substrings.
  * Adapter name is left alone; RFCOMM UUIDs / iAP identity matter, not EIR rename.
@@ -48,6 +51,12 @@ class CarPlayBluetoothLink(
     /** True once iAP2 link sync has completed on the current socket. */
     private val sessionLive: () -> Boolean = { false },
     private val onPeer: (name: String?, address: String?) -> Unit = { _, _ -> },
+    /**
+     * After wired AAP → CarPlay, the HU will not dial …cafe. Shorten the cafe wait
+     * and allow HFP soft-bounce between …caff retries. Also engaged when the peer
+     * ACL is already up at arm time.
+     */
+    private val forceOutbound: Boolean = false,
 ) {
     private val appContext = context.applicationContext
     private val adapter: BluetoothAdapter? =
@@ -391,10 +400,16 @@ class CarPlayBluetoothLink(
                         }
                         BluetoothDevice.ACTION_ACL_CONNECTED -> {
                             if (isInboundPreferredPeer(device)) {
-                                // Cafe first. Do not arm …caff from ACL — pairing ACL
-                                // fires before BOND_BONDED and the 2.5s fallback window
-                                // would already have started. Bond-complete arms it.
                                 prepareHeadUnit(device.address)
+                                // Fresh pairing ACL arrives before BOND_BONDED — bond
+                                // handler arms the first cafe-wait dial. Re-arm only for
+                                // a later ACL (HU CarPlay retry) once the bond is settled.
+                                if (device.bondState == BluetoothDevice.BOND_BONDED &&
+                                    SystemClock.elapsedRealtime() - headUnitBondedAtMs >
+                                    INBOUND_DIAL_FALLBACK_MS
+                                ) {
+                                    scheduleHeadUnitDial(device)
+                                }
                             }
                             Log.i(
                                 CarPlayConsts.TAG,
@@ -532,14 +547,20 @@ class CarPlayBluetoothLink(
     }
 
     @SuppressLint("MissingPermission")
-    private fun scheduleHeadUnitDial(device: BluetoothDevice) {
+    private fun scheduleHeadUnitDial(device: BluetoothDevice, attempt: Int = 0) {
         if (!isInboundPreferredPeer(device)) return
         if (device.bondState == BluetoothDevice.BOND_BONDING) return
+        val aggressive = forceOutbound || isDeviceConnected(device)
         val gen = headUnitDialGeneration.incrementAndGet()
         thread(name = "carplay-hu-dial", isDaemon = true) {
+            val waitMs = when {
+                attempt == 0 && aggressive -> FORCE_OUTBOUND_FIRST_WAIT_MS
+                attempt == 0 -> INBOUND_DIAL_FALLBACK_MS
+                else -> INBOUND_DIAL_RETRY_MS
+            }
             try {
-                // Give the HU time to dial …cafe first (Audi inbound-preferred).
-                Thread.sleep(INBOUND_DIAL_FALLBACK_MS)
+                // Cafe-first for cold inbound; post-AAP / ACL-live uses a short wait.
+                Thread.sleep(waitMs)
             } catch (_: InterruptedException) {
                 return@thread
             }
@@ -552,19 +573,82 @@ class CarPlayBluetoothLink(
                 return@thread
             }
             if (device.bondState != BluetoothDevice.BOND_BONDED) return@thread
+            if (attempt >= 1 && aggressive) {
+                softBounceHeadset(device)
+                if (gen != headUnitDialGeneration.get() || !running.get()) return@thread
+                if (clientSocket?.isConnected == true || sessionLive()) return@thread
+            }
             // Arm pending only now so the 4s dialBonded loop cannot fire during the wait.
             headUnitDialPending = true
+            var dialed = false
             try {
                 if (!shouldOutboundDial(device)) return@thread
                 Log.i(
                     CarPlayConsts.TAG,
-                    "RFCOMM …caff fallback dial ${device.address} name=${device.name}",
+                    "RFCOMM …caff fallback dial ${device.address} name=${device.name} " +
+                        "attempt=${attempt + 1}/${INBOUND_DIAL_MAX_ATTEMPTS} " +
+                        "aggressive=$aggressive",
                 )
                 dialDevice(device)
+                dialed = clientSocket?.isConnected == true
             } finally {
-                // One-shot only — do not leave pending for the 4s dialBonded loop.
+                // Do not leave pending for the 4s dialBonded loop.
                 headUnitDialPending = false
             }
+            if (dialed || !running.get()) return@thread
+            if (clientSocket?.isConnected == true || sessionLive()) return@thread
+            if (attempt + 1 >= INBOUND_DIAL_MAX_ATTEMPTS) {
+                Log.w(
+                    CarPlayConsts.TAG,
+                    "RFCOMM …caff fallback exhausted for ${device.address} — wait for …cafe",
+                )
+                return@thread
+            }
+            // Stale SDP / wrong SCN (seen as uuid=0x1101) often clears on a later query.
+            scheduleHeadUnitDial(device, attempt + 1)
+        }
+    }
+
+    /**
+     * Disconnect→reconnect HFP only (no bond delete). Nudges the HU to refresh
+     * SDP / CarPlay discovery after wired AA without racing cafe accept on attempt 0.
+     */
+    @SuppressLint("MissingPermission")
+    private fun softBounceHeadset(device: BluetoothDevice) {
+        val bt = adapter ?: return
+        if (device.bondState != BluetoothDevice.BOND_BONDED) return
+        Log.i(CarPlayConsts.TAG, "HFP soft-bounce ${device.address} name=${device.name}")
+        val done = CountDownLatch(1)
+        val listener = object : BluetoothProfile.ServiceListener {
+            override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+                try {
+                    val off = disconnectProfile(proxy, device)
+                    Log.i(CarPlayConsts.TAG, "HFP soft-bounce disconnect ok=$off")
+                    try {
+                        Thread.sleep(HFP_BOUNCE_GAP_MS)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                    }
+                    val on = connectProfile(proxy, device)
+                    Log.i(CarPlayConsts.TAG, "HFP soft-bounce reconnect ok=$on")
+                } finally {
+                    bt.closeProfileProxy(profile, proxy)
+                    done.countDown()
+                }
+            }
+
+            override fun onServiceDisconnected(profile: Int) {}
+        }
+        if (!bt.getProfileProxy(appContext, listener, BluetoothProfile.HEADSET)) {
+            Log.w(CarPlayConsts.TAG, "HFP soft-bounce getProfileProxy failed")
+            return
+        }
+        try {
+            if (!done.await(HFP_BOUNCE_AWAIT_MS, TimeUnit.MILLISECONDS)) {
+                Log.w(CarPlayConsts.TAG, "HFP soft-bounce timed out")
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
         }
     }
 
@@ -798,6 +882,16 @@ class CarPlayBluetoothLink(
         }
     }
 
+    private fun disconnectProfile(proxy: BluetoothProfile, device: BluetoothDevice): Boolean {
+        return try {
+            val method = proxy.javaClass.getMethod("disconnect", BluetoothDevice::class.java)
+            method.invoke(proxy, device) as? Boolean ?: false
+        } catch (e: Throwable) {
+            Log.w(CarPlayConsts.TAG, "BT profile disconnect failed", e)
+            false
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun dialScore(device: BluetoothDevice): Int {
         var score = 0
@@ -829,6 +923,10 @@ class CarPlayBluetoothLink(
     /**
      * Connect a dial socket. Caller holds [dialLock]. Does not pump; the caller attaches.
      * An iAP-live session is left alone. An idle socket is closed so Audi can take the link.
+     *
+     * Audi MIB3 has been observed with a corrupt accessory SDP record
+     * (`Bad Service Class ID list` → stack falls through to SPP `0x1101` / SCN4).
+     * Refresh remote SDP, cancel inquiry, then try secure and insecure UUID dials.
      */
     @SuppressLint("MissingPermission")
     private fun openDialSocket(device: BluetoothDevice): BluetoothSocket? {
@@ -860,35 +958,112 @@ class CarPlayBluetoothLink(
                 }
             }
         }
-        var socket: BluetoothSocket? = null
+        refreshRemoteSdp(device)
         try {
-            Log.i(
-                CarPlayConsts.TAG,
-                "RFCOMM connecting to ${device.address} name=${device.name} " +
-                    "uuid=${CarPlayConsts.IAP2_ACCESSORY_RFCOMM_UUID}",
-            )
-            socket = device.createRfcommSocketToServiceRecord(accessoryUuid)
-            socket.connect()
-            if (!running.get()) {
-                socket.closeQuietly()
-                return null
-            }
-            if (clientSocket?.isConnected == true && sessionLive()) {
+            adapter?.cancelDiscovery()
+        } catch (e: Throwable) {
+            Log.w(CarPlayConsts.TAG, "BT cancelDiscovery failed: ${e.message}")
+        }
+        val factories = listOf(
+            "secure" to {
+                device.createRfcommSocketToServiceRecord(accessoryUuid)
+            },
+            "insecure" to {
+                device.createInsecureRfcommSocketToServiceRecord(accessoryUuid)
+            },
+        )
+        for ((label, factory) in factories) {
+            if (!running.get()) return null
+            var socket: BluetoothSocket? = null
+            try {
                 Log.i(
                     CarPlayConsts.TAG,
-                    "RFCOMM dial ${device.address} ignored; live session already active",
+                    "RFCOMM connecting to ${device.address} name=${device.name} " +
+                        "uuid=${CarPlayConsts.IAP2_ACCESSORY_RFCOMM_UUID} via=$label",
                 )
-                socket.closeQuietly()
-                return null
+                socket = factory()
+                socket.connect()
+                if (!running.get()) {
+                    socket.closeQuietly()
+                    return null
+                }
+                if (clientSocket?.isConnected == true && sessionLive()) {
+                    Log.i(
+                        CarPlayConsts.TAG,
+                        "RFCOMM dial ${device.address} ignored; live session already active",
+                    )
+                    socket.closeQuietly()
+                    return null
+                }
+                return socket
+            } catch (e: Throwable) {
+                Log.i(
+                    CarPlayConsts.TAG,
+                    "RFCOMM dial ${device.address} failed via=$label: ${e.message}",
+                )
+                socket?.closeQuietly()
             }
-            return socket
+        }
+        return null
+    }
+
+    /**
+     * Force a fresh remote SDP browse before …caff dial. Stale / corrupt cached
+     * records on Samsung+Audi have been seen to resolve the accessory UUID to
+     * SPP SCN4 (`0x1101`) instead of the CarPlay RFCOMM channel.
+     */
+    @SuppressLint("MissingPermission")
+    private fun refreshRemoteSdp(device: BluetoothDevice) {
+        val latch = CountDownLatch(1)
+        val rx = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent?) {
+                if (intent?.action != BluetoothDevice.ACTION_UUID) return
+                val extra = deviceExtra(intent) ?: return
+                if (extra.address.equals(device.address, ignoreCase = true)) {
+                    latch.countDown()
+                }
+            }
+        }
+        try {
+            appContext.registerReceiver(
+                rx,
+                IntentFilter(BluetoothDevice.ACTION_UUID),
+                Context.RECEIVER_EXPORTED,
+            )
         } catch (e: Throwable) {
+            Log.w(CarPlayConsts.TAG, "SDP UUID watch register failed: ${e.message}")
+            return
+        }
+        try {
+            val started = try {
+                device.fetchUuidsWithSdp()
+            } catch (e: Throwable) {
+                Log.w(CarPlayConsts.TAG, "fetchUuidsWithSdp failed: ${e.message}")
+                false
+            }
+            if (!started) {
+                Log.w(CarPlayConsts.TAG, "fetchUuidsWithSdp returned false for ${device.address}")
+                return
+            }
+            val ok = latch.await(SDP_REFRESH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            val hasCaff = try {
+                device.uuids?.any { it.uuid == accessoryUuid } == true
+            } catch (_: Throwable) {
+                false
+            }
             Log.i(
                 CarPlayConsts.TAG,
-                "RFCOMM dial ${device.address} failed: ${e.message}",
+                "RFCOMM SDP refresh ${device.address} ok=$ok hasCaff=$hasCaff",
             )
-            socket?.closeQuietly()
-            return null
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (e: Throwable) {
+            Log.w(CarPlayConsts.TAG, "SDP refresh wait failed: ${e.message}")
+        } finally {
+            try {
+                appContext.unregisterReceiver(rx)
+            } catch (_: Throwable) {
+            }
         }
     }
 
@@ -1046,8 +1221,17 @@ class CarPlayBluetoothLink(
 
     companion object {
         private const val DIAL_RETRY_MS = 4_000L
-        /** Wait for inbound …cafe before one …caff attempt (inbound-preferred HUs). */
+        /** Wait for inbound …cafe before the first …caff attempt (inbound-preferred HUs). */
         private const val INBOUND_DIAL_FALLBACK_MS = 2_500L
+        /** Post-AAP / ACL-live: HU almost never dials cafe — shorten the wait. */
+        private const val FORCE_OUTBOUND_FIRST_WAIT_MS = 800L
+        /** Spacing between …caff fallback retries after a failed SDP/connect. */
+        private const val INBOUND_DIAL_RETRY_MS = 5_000L
+        /** Cafe-wait + outbound attempts before giving up to listen-only. */
+        private const val INBOUND_DIAL_MAX_ATTEMPTS = 3
+        private const val SDP_REFRESH_TIMEOUT_MS = 2_000L
+        private const val HFP_BOUNCE_GAP_MS = 400L
+        private const val HFP_BOUNCE_AWAIT_MS = 2_500L
 
         /** Status page when FGS is not yet armed — same 300s system dialog. */
         fun launchDiscoverableDialog(context: Context) {

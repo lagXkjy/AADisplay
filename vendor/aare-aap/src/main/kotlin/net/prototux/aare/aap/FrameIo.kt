@@ -4,14 +4,22 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.lang.System
 
 /**
  * Reads frames and reassembles them into [AapMessage]s.
  *
  * Fragments of different channels may interleave on the wire, so partial messages are kept per
  * channel. Encrypted payloads are decrypted frame by frame, in arrival order, as TLS requires.
+ *
+ * [drainStale] (USB re-attach recovery): a port the head unit still believes is alive keeps
+ * flushing the previous session's tail into the pipe after the phone reopens it — encrypted
+ * frames this reader cannot decrypt, plus continuation fragments whose first frame was lost to
+ * the reopen. Until the fresh (plaintext) version request arrives they are discarded, not fatal;
+ * after it, orphan encrypted continuations are still tolerated. Without [drainStale] every one
+ * of those is a session error, as before.
  */
-class FrameReader(input: InputStream, private val cryptor: () -> Cryptor?) {
+class FrameReader(input: InputStream, private val cryptor: () -> Cryptor?, private val drainStale: Boolean = false) {
     private val input = DataInputStream(input.buffered(64 * 1024))
     private class Partial(val declaredTotal: Int, val buf: ByteArrayOutputStream)
 
@@ -24,6 +32,19 @@ class FrameReader(input: InputStream, private val cryptor: () -> Cryptor?) {
     private var header = ByteArray(Frame.EXTENDED_SIZE)
     private var payload = ByteArray(Frame.MAX_PAYLOAD + 1024)
 
+    // Whether the session has seen the version request yet (the end of the stale-drain window).
+    // Bound from [AapSession]; unbound = window already closed.
+    private var reachedRef: (() -> Boolean)? = null
+
+    fun bindReachedProbe(probe: () -> Boolean) {
+        reachedRef = probe
+    }
+
+    // Stale-tail discard accounting (drainStale): throttled progress line + a summary when the window closes.
+    @Volatile private var staleDroppedFrames = 0L
+    @Volatile private var staleDroppedBytes = 0L
+    @Volatile private var lastStaleLogMs = 0L
+
     /** Blocks until a complete message is available. Throws on end of stream or a framing error. */
     fun read(): AapMessage {
         while (true) {
@@ -34,9 +55,28 @@ class FrameReader(input: InputStream, private val cryptor: () -> Cryptor?) {
             if (payload.size < size) payload = ByteArray(size)
             input.readFully(payload, 0, size)
 
+            val first = Frame.isFirst(flags)
+            val last = Frame.isLast(flags)
+            val encrypted = Frame.isEncrypted(flags)
+
+            if (drainStale) {
+                val draining = !reached()
+                val orphan = !first && partial[channel] == null
+                if ((draining && encrypted) || (orphan && encrypted)) {
+                    staleDrop(channel, size, first, last)
+                    continue
+                }
+                if (draining && orphan) {
+                    // A stale plaintext continuation cannot happen (the phone side never sent
+                    // plaintext mid-session), but a lost boundary must not kill the handshake either.
+                    staleDrop(channel, size, first, last)
+                    continue
+                }
+            }
+
             val plain: ByteArray
             val plainLen: Int
-            if (Frame.isEncrypted(flags)) {
+            if (encrypted) {
                 val c = cryptor() ?: throw AapException("encrypted frame before TLS is up (ch=$channel)")
                 plain = c.decrypt(payload, 0, size)
                 plainLen = plain.size
@@ -45,10 +85,9 @@ class FrameReader(input: InputStream, private val cryptor: () -> Cryptor?) {
                 plainLen = size
             }
 
-            val first = Frame.isFirst(flags)
-            val last = Frame.isLast(flags)
             if (first && last) {
-                return toMessage(channel, flags, Frame.isEncrypted(flags), plain.copyOf(plainLen), plainLen)
+                staleWindowClosed()
+                return toMessage(channel, flags, encrypted, plain.copyOf(plainLen), plainLen)
             }
             if (first) {
                 partial.remove(channel)?.let { buffered -= it.buf.size() }
@@ -61,19 +100,42 @@ class FrameReader(input: InputStream, private val cryptor: () -> Cryptor?) {
                 val state = Partial(declaredTotal, buf)
                 appendFragment(channel, state, plain, plainLen)
                 partial[channel] = state
-                if (Frame.isEncrypted(flags)) partialPlain.remove(channel) else partialPlain.add(channel)
+                if (encrypted) partialPlain.remove(channel) else partialPlain.add(channel)
                 continue
             }
             val state = partial[channel] ?: throw AapException("continuation frame without a first frame (ch=$channel)")
             appendFragment(channel, state, plain, plainLen)
-            if (!Frame.isEncrypted(flags)) partialPlain.add(channel)
+            if (!encrypted) partialPlain.add(channel)
             if (last) {
                 partial.remove(channel)
                 buffered -= state.buf.size()
-                val encrypted = !partialPlain.remove(channel)
+                val wasEncrypted = !partialPlain.remove(channel)
                 val all = state.buf.toByteArray()
-                return toMessage(channel, flags, encrypted, all, all.size)
+                staleWindowClosed()
+                return toMessage(channel, flags, wasEncrypted, all, all.size)
             }
+        }
+    }
+
+    /** Fresh data arrived: the stale-drain window is over — one summary line if anything was dropped. */
+    private fun staleWindowClosed() {
+        if (!drainStale) return
+        val n = staleDroppedFrames
+        if (n == 0L) return
+        staleDroppedFrames = 0L
+        println("I/aap: stale drain window closed — discarded $n frames / $staleDroppedBytes bytes of the previous session")
+    }
+
+    private fun staleDrop(channel: Int, size: Int, first: Boolean, last: Boolean) {
+        staleDroppedFrames += 1
+        staleDroppedBytes += size
+        val now = System.currentTimeMillis()
+        if (now - lastStaleLogMs > 2_000L) {
+            lastStaleLogMs = now
+            println(
+                "W/aap: discarding stale frame from the previous session " +
+                    "(ch=$channel size=$size first=$first last=$last; waiting for the fresh version request)",
+            )
         }
     }
 
@@ -105,11 +167,13 @@ class FrameReader(input: InputStream, private val cryptor: () -> Cryptor?) {
         return AapMessage(channel, Frame.isControl(flags), encrypted, id, data, 2, len - 2)
     }
 
+    private fun reached(): Boolean = reachedRef?.invoke() ?: true
+
     private companion object {
-        /** Upper bound on a reassembled message; a larger declared total is a protocol violation. */
+        /** Upper bound of a reassembled message; a larger declared total is a protocol violation. */
         const val MAX_MESSAGE_SIZE = 8 * 1024 * 1024
 
-        /** Upper bound on the bytes received for all partial messages open at once, across channels. */
+        /** Upper bound of the bytes received for all partial messages open at once, across channels. */
         const val MAX_BUFFERED = 2L * MAX_MESSAGE_SIZE
     }
 }

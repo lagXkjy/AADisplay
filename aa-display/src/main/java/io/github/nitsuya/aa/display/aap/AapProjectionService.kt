@@ -72,6 +72,9 @@ class AapProjectionService : Service() {
         /** Soft USB probe must wait for unplug after TLS desync / crypto fault. */
         fun isUsbReplugRequired(): Boolean = sessionRef.get()?.isUsbReplugRequired() == true
 
+        /** Soft USB probe must wait out the killed transport's teardown (drain join + endpoint re-settle). */
+        fun isUsbKillCooling(): Boolean = sessionRef.get()?.isInUsbKillCooldown() == true
+
         /**
          * Clear the USB replug gate (DETACH or a fresh ATTACHED entry).
          * Soft [AapUsbProbe] stays blocked until this runs.

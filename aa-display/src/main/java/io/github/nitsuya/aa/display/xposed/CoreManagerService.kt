@@ -1083,7 +1083,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             val configs = wm?.configuredNetworks as? List<android.net.wifi.WifiConfiguration>
             configs?.forEach { cfg ->
                 val bare = cfg.SSID?.trim('"').orEmpty()
-                if (!isCarHotspotSsid(bare)) return@forEach
+                val armedCp = bare.equals(armedCarAccessorySsid, ignoreCase = true)
+                if (!isCarHotspotSsid(bare) && !armedCp) return@forEach
                 try {
                     val f = cfg.javaClass.getField("noInternetAccessExpected")
                     f.setBoolean(cfg, true)
@@ -1091,6 +1092,21 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                     log(TAG, "noInternetAccessExpected=true ssid=$bare")
                 } catch (e: Throwable) {
                     log(TAG, "noInternetAccessExpected failed ssid=$bare", e)
+                }
+                if (armedCp) {
+                    // CarPlay handoff outranks the avoid-bad-wifi heuristic: the active
+                    // accessory must stay autojoin-able. network_avoid_bad_wifi=1 +
+                    // noInternetAccessExpected keep it off the default route, so
+                    // cellular stays the INTERNET path.
+                    try {
+                        android.net.wifi.WifiManager::class.java
+                            .getMethod("allowAutojoin", Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+                            .invoke(wm, cfg.networkId, true)
+                        log(TAG, "allowAutojoin(true) armed CP ssid=$bare id=${cfg.networkId}")
+                    } catch (e: Throwable) {
+                        log(TAG, "allowAutojoin failed ssid=$bare", e)
+                    }
+                    return@forEach
                 }
                 // Stop WifiNetworkFactory from auto-joining the saved STA (that path
                 // stamps ACCEPT_UNVALIDATED and steals the default route). Specifier
@@ -1118,6 +1134,106 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             s.contains("carplay") ||
             s.contains("diplay") ||
             s.startsWith("carplay")
+    }
+
+    /** SSID armed by [armCarAccessoryWifi]; preferCellular keeps its autojoin on. */
+    @Volatile
+    private var armedCarAccessorySsid: String? = null
+
+    /**
+     * CarPlay handoff is the top-priority network action: persist the accessory
+     * hotspot as a saved network (known PSK, noInternetAccessExpected,
+     * allowAutojoin(true), saved) and connect it explicitly. An SSID the user
+     * never saved manually is treated by OEM WifiNetworkFactory as untrusted /
+     * unwanted and specifier-only joins get torn down within seconds — the
+     * "works only after I joined the Wi-Fi manually" failure.
+     */
+    @SuppressLint("MissingPermission")
+    @Suppress("DEPRECATION", "UNCHECKED_CAST")
+    override fun armCarAccessoryWifi(ssidRaw: String?, passphraseRaw: String?) {
+        if (!hasSystemContext) return
+        val ssid = ssidRaw?.trim().orEmpty()
+        if (ssid.isEmpty()) return
+        val token = android.os.Binder.clearCallingIdentity()
+        try {
+            armCarAccessoryWifiCleared(ssid, passphraseRaw?.trim().orEmpty())
+        } finally {
+            android.os.Binder.restoreCallingIdentity(token)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    @Suppress("DEPRECATION", "UNCHECKED_CAST")
+    private fun armCarAccessoryWifiCleared(ssid: String, passphrase: String) {
+        val wm = systemContext.getSystemService(android.net.wifi.WifiManager::class.java)
+            ?: return
+        val configs = runCatching { wm.configuredNetworks }
+            .getOrNull() as? List<android.net.wifi.WifiConfiguration> ?: return
+        val existing = configs.firstOrNull {
+            it.SSID?.trim('"').equals(ssid, ignoreCase = true) == true
+        }
+        val cfg = existing ?: android.net.wifi.WifiConfiguration()
+        cfg.SSID = "\"$ssid\""
+        val wepHex = (passphrase.length == 10 || passphrase.length == 26) &&
+            passphrase.all { c -> c.toString().matches(Regex("[0-9A-Fa-f]")) }
+        // WifiKeyMgmt bits: WEP = 4, WPA2 = 8; open network = empty set.
+        // WPA2 PSK must be 8..63 chars — treat anything else as an open AP.
+        val wpa2 = passphrase.length in 8..63 && !wepHex
+        val bits = java.util.BitSet(16)
+        if (wpa2) {
+            bits.set(8)
+            cfg.preSharedKey = "\"$passphrase\""
+        } else if (wepHex) {
+            bits.set(4)
+            cfg.preSharedKey = "\"$passphrase\""
+        } else {
+            cfg.preSharedKey = ""
+        }
+        cfg.allowedKeyManagement = bits
+        runCatching {
+            cfg.javaClass.getField("noInternetAccessExpected").setBoolean(cfg, true)
+        }
+        val id = if (existing != null) wm.updateNetwork(cfg) else wm.addNetwork(cfg)
+        if (id < 0) {
+            log(TAG, "armCarAccessoryWifi addNetwork rejected ssid=$ssid")
+            return
+        }
+        try {
+            android.net.wifi.WifiManager::class.java
+                .getMethod("allowAutojoin", Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+                .invoke(wm, id, true)
+        } catch (e: Throwable) {
+            log(TAG, "armCarAccessoryWifi allowAutojoin failed ${e.message}")
+        }
+        runCatching { wm.saveConfiguration() }
+        armedCarAccessorySsid = ssid
+        log(
+            TAG,
+            "armCarAccessoryWifi saved ssid=$ssid id=$id new=${existing == null} wpa2=$wpa2 wep=$wepHex",
+        )
+        if (!wm.isWifiEnabled) {
+            log(TAG, "armCarAccessoryWifi radio off — saved only")
+            return
+        }
+        val current = runCatching { wm.connectionInfo?.ssid }.getOrNull()?.trim('"').orEmpty()
+        if (current.isEmpty() || current == "<unknown ssid>" ||
+            !current.equals(ssid, ignoreCase = true)
+        ) {
+            // connect(int) is hidden/removed on API 31+ — invoke by name.
+            val ok = runCatching {
+                for (name in listOf("connect", "connectNetwork")) {
+                    val m = wm.javaClass.methods.firstOrNull { it.name == name &&
+                        it.parameterTypes.size == 1 &&
+                        it.parameterTypes[0] == Int::class.javaPrimitiveType
+                    } ?: continue
+                    if (m.invoke(wm, id) == true) return@runCatching true
+                }
+                false
+            }.getOrDefault(false)
+            log(TAG, "armCarAccessoryWifi connect id=$id ok=$ok")
+        } else {
+            log(TAG, "armCarAccessoryWifi already on ssid=$ssid")
+        }
     }
 
     @SuppressLint("MissingPermission")

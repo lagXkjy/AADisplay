@@ -10,6 +10,7 @@ import io.github.nitsuya.aa.display.aap.AapProjectionService
 import io.github.nitsuya.aa.display.databinding.ActivityMainBinding
 import io.github.nitsuya.aa.display.egress.ChannelOrchestrator
 import io.github.nitsuya.aa.display.egress.EgressChannel
+import io.github.nitsuya.aa.display.egress.EgressMigrationHints
 import io.github.nitsuya.aa.display.egress.ProjectionSessionGate
 
 /**
@@ -108,7 +109,14 @@ object CarPlayStatusUi {
                 EgressChannel.useAapEgress(activity) -> toast(activity, "已切到 Android Auto")
                 EgressChannel.useCarPlayEgress(activity) -> {
                     CarPlayProjectionService.requestDiscoverable(activity)
-                    toast(activity, "已切到无线 CarPlay，请到车机上连接")
+                    if (EgressMigrationHints.consumePostAapCarPlayToast()) {
+                        toast(
+                            activity,
+                            "已从 AA 切到 CarPlay：请在车机 ASI 选无线 CarPlay，勿只点蓝牙/AA 重连",
+                        )
+                    } else {
+                        toast(activity, "已切到无线 CarPlay，请到车机上连接")
+                    }
                 }
             }
             refresh(activity, binding)
