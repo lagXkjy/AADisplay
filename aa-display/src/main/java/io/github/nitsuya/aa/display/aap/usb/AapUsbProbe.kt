@@ -112,6 +112,12 @@ object AapUsbProbe {
                 Thread.sleep(200)
             }
         }
+        // [A5] if nobody ended up holding the opened AOA fd (FGS never armed / channel
+        // switched away), release it — the drain thread must not outlive the attempt.
+        if (!AapProjectionService.hasActiveTransport()) {
+            runCatching { transport.close() }
+            Log.i(AapConsts.TAG, "USB probe: closing unbound transport")
+        }
         Log.i(
             AapConsts.TAG,
             "USB probe: done live=${AapProjectionService.isProtocolLive()} " +

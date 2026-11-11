@@ -1,7 +1,9 @@
 package io.github.nitsuya.aa.display.carplay
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
+import android.view.MotionEvent
 import io.github.nitsuya.aa.display.CoreApi
 import io.github.nitsuya.aa.display.carplay.profile.CarPlayHuProfile
 import io.github.nitsuya.aa.display.carplay.profile.CarPlayProfileRegistry
@@ -47,7 +49,7 @@ class CarPlayRtspSession(
     private val appContext: Context,
     private val onVideoSetup: (width: Int, height: Int) -> Unit,
     private val onSessionReady: () -> Unit,
-    private val onTouchEvent: (x: Float, y: Float, action: Int) -> Unit,
+    private val onTouchEvent: (MotionEvent) -> Unit,
     private val onForceKeyFrame: () -> Unit = {},
     /** Bluetooth-negotiated LSP. Null until iAP link sync has finished. */
     private val linkSyncBytes: () -> ByteArray? = { null },
@@ -1880,8 +1882,9 @@ class CarPlayRtspSession(
             "SET_PARAMETER" -> {
                 reply(out, RtspMessage.ok(cSeq))
                 if (msg.body.isNotEmpty()) {
-                    onTouchEvent(0.5f, 0.5f, android.view.MotionEvent.ACTION_DOWN)
-                    onTouchEvent(0.5f, 0.5f, android.view.MotionEvent.ACTION_UP)
+                    val now = SystemClock.uptimeMillis()
+                    onTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, 0.5f, 0.5f, 0))
+                    onTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_UP, 0.5f, 0.5f, 0))
                 }
             }
             else -> reply(out, RtspMessage.ok(cSeq))

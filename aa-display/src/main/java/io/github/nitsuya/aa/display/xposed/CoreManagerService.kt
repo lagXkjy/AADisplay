@@ -839,7 +839,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     }
 
     override fun touchPane(pane: Int, event: MotionEvent) {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+        val a = event.actionMasked
+        // POINTER_DOWN = a further finger joined: same user interaction / focus refresh.
+        if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_POINTER_DOWN) {
             noteUserInteractionAsync()
             mSplitController?.setFocusedPane(pane)
         }

@@ -36,6 +36,7 @@ import io.github.nitsuya.aa.display.carplay.CarPlayAppPickerOverlay
 import io.github.nitsuya.aa.display.carplay.CarPlayConsts
 import io.github.nitsuya.aa.display.carplay.CarPlayInputBridge
 import io.github.nitsuya.aa.display.carplay.CarPlayRecentsOverlay
+import io.github.nitsuya.aa.display.carplay.buildMultiPointerEvent
 import io.github.nitsuya.aa.display.egress.ProjectionSessionGate
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 import aap_protobuf.service.inputsource.message.TouchEventOuterClass.TouchEvent
@@ -123,9 +124,27 @@ class AapSourceSession(
         cpuWakeLock = null
         runCatching { if (lock.isHeld) lock.release() }
     }
-    private var transport: Transport? = null
-    private var aap: AapSession? = null
+    @Volatile private var transport: Transport? = null
+    @Volatile private var aap: AapSession? = null
     private var display: AapDisplayBridge? = null
+    /**
+     * Set by the owning FGS on teardown. An in-flight / late bind on a stale instance
+     * reference must not resurrect an orphaned session that would still claim the shared
+     * split VDs after the service is gone.
+     */
+    @Volatile var detached = false
+        internal set
+    /** Serializes wireless dials: a BT ACL flap must not open two competing RFCOMM/Wi-Fi joins. */
+    private val wirelessConnectGate = AtomicBoolean(false)
+    /** Redials scheduled for the current dead-link episode (capped; reset on live / stop). */
+    private val wirelessRedials = AtomicInteger(0)
+    /** Last BT device dialed; the post-death redial reuses it. */
+    @Volatile private var lastWirelessDevice: BluetoothDevice? = null
+
+    /** Same reflection probe WirelessConnector uses: is the BT ACL still up? */
+    private fun btStillConnected(device: BluetoothDevice): Boolean = runCatching {
+        BluetoothDevice::class.java.getMethod("isConnected").invoke(device) as Boolean
+    }.getOrDefault(false)
     private val audioEgress = AapAudioEgress()
     /**
      * Re-asking a car that never answers our media audio-focus request (AARE v1.4.0 #143: a
@@ -152,6 +171,8 @@ class AapSourceSession(
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
+        detached = false
+        wirelessRedials.set(0)
         onStatus("正在准备…")
         armUsbStateMonitor()
         thread(name = "aap-boot", isDaemon = true) {
@@ -174,11 +195,17 @@ class AapSourceSession(
 
     fun stop() {
         running.set(false)
+        detached = true
+        wirelessRedials.set(0)
         releaseCpuWakeLock()
         stopHealthTicker()
         removeWifiStateMonitor()
         removeUsbStateMonitor()
-        tearDownSession("stop")
+        // Same lock as startAap: an in-flight bind must see either the live session or a
+        // stopped+detached one, never a half-torn-down state it could rebind on.
+        synchronized(this) {
+            tearDownSession("stop")
+        }
         try {
             autoStarter?.unregister()
         } catch (_: Throwable) {
@@ -202,10 +229,7 @@ class AapSourceSession(
         val connector = WirelessConnector(app, log)
         wireless = connector
         val starter = WirelessAutoStarter(app, log) { device ->
-            if (!running.get()) return@WirelessAutoStarter
-            thread(name = "aap-wireless-connect", isDaemon = true) {
-                connectDevice(device)
-            }
+            dialDevice(device)
         }
         autoStarter = starter
         try {
@@ -213,6 +237,9 @@ class AapSourceSession(
         } catch (e: WirelessPermissionException) {
             onStatus("需要蓝牙权限，请到系统设置里允许")
             Log.w(AapConsts.TAG, "wireless perms missing: ${e.missing}")
+            // Do not keep a never-registered starter: armWireless() would short-circuit
+            // forever and a later permission grant (reconnect) would never re-listen.
+            autoStarter = null
         } catch (e: Throwable) {
             Log.e(AapConsts.TAG, "WirelessAutoStarter register failed", e)
             onStatus("无法等待车机连接，请重试")
@@ -221,11 +248,37 @@ class AapSourceSession(
             try {
                 for (d in connector.findConnectedHeadUnits()) {
                     if (!running.get()) return@thread
-                    connectDevice(d)
+                    dialDevice(d)
                     return@thread
                 }
             } catch (e: Throwable) {
                 Log.w(AapConsts.TAG, "findConnectedHeadUnits: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * One serialized wireless dial: the ACL listener, the initial scan and the redial series
+     * all go through here — a BT flap must never open two competing RFCOMM/Wi-Fi joins (a
+     * second join steals the single-radio link out from under the first and kills both).
+     */
+    private fun dialDevice(device: BluetoothDevice) {
+        if (!running.get() || detached) return
+        if (!wirelessConnectGate.compareAndSet(false, true)) {
+            Log.i(AapConsts.TAG, "wireless dial busy — deferring ${device.address} (ACL flap)")
+            return
+        }
+        lastWirelessDevice = device
+        thread(name = "aap-wireless-connect", isDaemon = true) {
+            try {
+                connectDevice(device)
+            } finally {
+                wirelessConnectGate.set(false)
+            }
+            // The attempt ended without a live session and the BT link is still up
+            // (car's AP not back yet, HU rebooting): one capped redial series.
+            if (running.get() && !detached && aap == null && btStillConnected(device)) {
+                scheduleWirelessRedial(device)
             }
         }
     }
@@ -245,7 +298,7 @@ class AapSourceSession(
         // Do not hold @Synchronized across sleep — USB attach must still be able to bind.
         var attempt = 0
         while (true) {
-            if (!running.get() || aap != null) return
+            if (!running.get() || detached || aap != null) return
             val t = try {
                 connector.connectBlocking(device)
             } catch (e: WirelessPermissionException) {
@@ -278,13 +331,25 @@ class AapSourceSession(
                 }
                 return
             }
-            // USB may have bound while we blocked in RFCOMM/Wi‑Fi.
-            if (aap != null) {
-                Log.i(AapConsts.TAG, "drop wireless transport; session already live")
-                runCatching { t.close() }
-                return
+            // stop() may have run, or another link (USB / an earlier wireless dial) may
+            // have bound, while we blocked in RFCOMM/Wi-Fi/TCP. Re-check + bind inside one
+            // critical section so nothing can land between the check and the bind.
+            val accepted = synchronized(this) {
+                when {
+                    !running.get() || detached -> {
+                        Log.i(AapConsts.TAG, "drop wireless transport — session stopped")
+                        runCatching { t.close() }
+                        false
+                    }
+                    aap != null -> {
+                        Log.i(AapConsts.TAG, "drop wireless transport — session already live")
+                        runCatching { t.close() }
+                        false
+                    }
+                    else -> startAap(t, peerKey = device.address, trustOnFirstUse = true, sendPings = true)
+                }
             }
-            startAap(t, peerKey = device.address, trustOnFirstUse = true, sendPings = true)
+            if (!accepted) return
             return
         }
     }
@@ -332,18 +397,13 @@ class AapSourceSession(
      * Must finish cert extract before TLS — factory HUs reject the generated self-signed leaf.
      * Wired links use [SessionOptions.sendPings]=false (stock phone only answers HU pings on USB).
      */
-    fun startOnTransport(t: Transport, peerKey: String, trustOnFirstUse: Boolean = true) {
-        synchronized(this) {
-            if (transport === t && aap != null) return
-        }
-        if (peerKey.startsWith("usb:") && usbReplugRequired.get()) {
-            Log.w(AapConsts.TAG, "USB attach blocked — unplug/replug required")
-            onStatus("请拔掉数据线再插上")
+    fun startOnTransport(t: Transport, peerKey: String, trustOnFirstUse: Boolean = true): Boolean {
+        if (detached) {
+            // The owning FGS is gone — a late ATTACHED must not resurrect an orphaned session.
             runCatching { t.close() }
-            return
+            return false
         }
-        if (!running.get()) running.set(true)
-        onStatus("数据线已连接，正在准备…")
+        // Cert extract can scan APKs — never hold the bind lock across it.
         try {
             PhoneCertStore.ensureExtracted(app, force = false)
         } catch (e: Throwable) {
@@ -355,8 +415,15 @@ class AapSourceSession(
             onStatus("还没准备好，请先在状态页完成「连车准备」")
         }
         synchronized(this) {
-            if (transport === t && aap != null) return
-            startAap(t, peerKey, trustOnFirstUse, sendPings = false)
+            if (peerKey.startsWith("usb:") && usbReplugRequired.get()) {
+                Log.w(AapConsts.TAG, "USB attach blocked — unplug/replug required")
+                onStatus("请拔掉数据线再插上")
+                runCatching { t.close() }
+                return false
+            }
+            if (!running.get()) running.set(true)
+            onStatus("数据线已连接，正在准备…")
+            return startAap(t, peerKey, trustOnFirstUse, sendPings = false)
         }
     }
 
@@ -366,10 +433,30 @@ class AapSourceSession(
         peerKey: String,
         trustOnFirstUse: Boolean,
         sendPings: Boolean,
-    ) {
+    ): Boolean {
+        // Idempotent: the same transport handed in again (repeat ATTACHED / probe polls).
+        if (transport === t) return true
+        // A different, still-open transport owns the session: closing a live link for a
+        // late binder would just tear a working connection. Drop the newcomer — probes and
+        // attachers self-heal through their retry windows once the session settles.
+        val cur = aap
+        if (cur != null && !cur.isClosed && transport != null && transport !== t) {
+            Log.w(AapConsts.TAG, "startAap reject ${t.name} — session already on ${transport?.name}")
+            runCatching { t.close() }
+            return false
+        }
+        if (!running.get() || detached) {
+            // stop() / FGS teardown won the race: never resurrect a zombie that would
+            // steal the shared split VDs from the freshly armed other channel.
+            Log.i(AapConsts.TAG, "startAap skip ${t.name} — session stopped")
+            runCatching { t.close() }
+            return false
+        }
         tearDownSession("rebind")
-        transport = t
+        // Resolve the TLS identity before claiming the transport: a throw here (cert files
+        // mid-rewrite during an AA update) must not leave a bound-but-sessionless transport.
         val identity = PhoneCertStore.pick(app, certAttempt.get())
+        transport = t
         onStatus("正在和车机握手…")
         // USB only: the head unit may still believe the previous session is alive and keep
         // flushing its encrypted tail into the pipe — drain it instead of dying on it.
@@ -406,6 +493,7 @@ class AapSourceSession(
         session.start()
         // aap-usb-drain self-reports from UsbAccessoryTransport; boost TLS I/O here.
         boostAapIoRealtimeThreads()
+        return true
     }
 
     /**
@@ -468,6 +556,18 @@ class AapSourceSession(
                     AapConsts.TAG,
                     "usb state changed: $state accessories=$accessories (session=${aap?.state ?: "none"})",
                 )
+                // A10: the FGS receiver is OEM-dependent; a missed ATTACHED must still
+                // re-arm the probe window and clear the replug gate.
+                when (intent.action) {
+                    UsbManager.ACTION_USB_ACCESSORY_ATTACHED -> {
+                        AapProjectionService.clearUsbReplugRequired()
+                        AapProjectionService.onUsbAccessoryAttached()
+                    }
+                    UsbManager.ACTION_USB_ACCESSORY_DETACHED -> {
+                        AapProjectionService.clearUsbReplugRequired()
+                    }
+                    else -> {}
+                }
             }
         }
         val filter = IntentFilter().apply {
@@ -722,20 +822,29 @@ class AapSourceSession(
                     "content=${contentW}x$contentH touch=${touchW}x$touchH ui=${config.hasUiConfig()}",
             )
             val sessionDpi = resolveSessionDpi(config)
-            syncTouchBridgeLayout(sessionDpi)
+            // Reader thread: the layout sync does synchronous Binders — keep it off the
+            // TLS reader (a stalled Binder here is a NONCE-GAP source on USB).
+            inputHandler.post { syncTouchBridgeLayout(sessionDpi) }
             val videoCh = activeVideo ?: return
-            val bridge = display ?: AapDisplayBridge(app, onStatus).also { display = it }
-            bridge.startFor(
-                videoCh,
-                videoW,
-                videoH,
-                fps,
-                sessionDpi,
-                widthMargin,
-                heightMargin,
-            )
+            // Bridge creation + start on the main looper only: same thread as the
+            // onClosed cleanup — a reader-thread lazy create could orphan a live
+            // GL/encoder/VD pipeline racing the cleanup's `display = null`.
+            main.post {
+                if (!running.get() || detached || videoCh !== activeVideo) return@post
+                val bridge = display ?: AapDisplayBridge(app, onStatus).also { display = it }
+                bridge.startFor(
+                    videoCh,
+                    videoW,
+                    videoH,
+                    fps,
+                    sessionDpi,
+                    widthMargin,
+                    heightMargin,
+                )
+            }
             main.postDelayed({
-                if (!running.get() || videoCh !== activeVideo || bridge !== display) return@postDelayed
+                if (!running.get() || detached || videoCh !== activeVideo) return@postDelayed
+                val bridge = display ?: return@postDelayed
                 val base = runCatching { bridge.baseVideoBitrate() }.getOrDefault(0)
                 videoBitrateCtrl.reset(base, bridge.negotiatedFps())
                 startVideoBitrateCtrl()
@@ -983,12 +1092,18 @@ class AapSourceSession(
             }
         }
 
+        /**
+         * Pressed pointers keyed by HU pointer_id, insertion order = MotionEvent index.
+         * Id-diffing makes both full-state and delta HU reports reconstruct correctly.
+         * inputHandler thread only.
+         */
+        private val aapTouchPointers = LinkedHashMap<Int, FloatArray>()
+
         private fun dispatchTouch(te: TouchEvent, source: String) {
             if (te.pointerDataCount <= 0) {
                 Log.w(AapConsts.TAG, "AAP $source empty pointers action=${te.action}")
                 return
             }
-            val p = te.getPointerData(0)
             // HUIG content rect the stream is cropped to. Audi MIB3 reports a wider
             // touchscreen (e.g. 1540×720) than content (1412×654); raw coords still
             // span the content pixels (samples peak ≪ touchW). Dividing by touchW
@@ -1003,30 +1118,108 @@ class AapSourceSession(
                 touchH > contentH + 8 -> contentH
                 else -> touchH.coerceAtLeast(1)
             }
-            val xNorm = (p.x.toFloat() / normW).coerceIn(0f, 1f)
-            val yNorm = (p.y.toFloat() / normH).coerceIn(0f, 1f)
             val action = when (te.action) {
                 PointerAction.ACTION_DOWN -> MotionEvent.ACTION_DOWN
                 PointerAction.ACTION_UP -> MotionEvent.ACTION_UP
                 PointerAction.ACTION_MOVED -> MotionEvent.ACTION_MOVE
-                PointerAction.ACTION_POINTER_DOWN, PointerAction.ACTION_POINTER_UP ->
-                    MotionEvent.ACTION_MOVE
+                PointerAction.ACTION_POINTER_DOWN -> MotionEvent.ACTION_POINTER_DOWN
+                PointerAction.ACTION_POINTER_UP -> MotionEvent.ACTION_POINTER_UP
                 else -> {
                     Log.w(
                         AapConsts.TAG,
-                        "AAP $source unknown action=${te.action} raw=${p.x},${p.y} " +
-                            "normBase=${normW}x$normH → $xNorm,$yNorm",
+                        "AAP $source unknown action=${te.action} pointers=${te.pointerDataCount}",
                     )
                     return
                 }
             }
+            val prev = LinkedHashMap(aapTouchPointers)
+            val reported = LinkedHashMap<Int, FloatArray>()
+            for (p in te.pointerDataList) {
+                reported[p.pointerId] = floatArrayOf(
+                    (p.x.toFloat() / normW).coerceIn(0f, 1f),
+                    (p.y.toFloat() / normH).coerceIn(0f, 1f),
+                )
+            }
+            // Event pointer table per Android semantics: POINTER_* events include the
+            // affected pointer. Removed ids: absent from the report (full-state HU)
+            // or the reported pointer itself (delta HU).
+            val removedIds = if (action == MotionEvent.ACTION_POINTER_UP) {
+                val missing = prev.keys - reported.keys
+                if (missing.isEmpty()) reported.keys.toSet() else missing
+            } else {
+                emptySet()
+            }
+            val table = when (action) {
+                MotionEvent.ACTION_DOWN -> {
+                    aapTouchPointers.clear()
+                    aapTouchPointers.putAll(reported)
+                    aapTouchPointers
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    val t = LinkedHashMap(prev)
+                    t.putAll(reported) // upsert: adds the new pointer(s)
+                    aapTouchPointers.clear()
+                    aapTouchPointers.putAll(t)
+                    aapTouchPointers
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    for ((id, xy) in reported) {
+                        if (aapTouchPointers.containsKey(id)) aapTouchPointers[id] = xy
+                    }
+                    aapTouchPointers
+                }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    val t = LinkedHashMap(prev)
+                    t.putAll(reported)
+                    // Event includes the released pointer (last known position).
+                    val evTable = LinkedHashMap(t)
+                    for (id in removedIds) t.remove(id)
+                    aapTouchPointers.clear()
+                    aapTouchPointers.putAll(t)
+                    evTable
+                }
+                MotionEvent.ACTION_UP -> {
+                    for ((id, xy) in reported) {
+                        if (aapTouchPointers.containsKey(id)) aapTouchPointers[id] = xy
+                    }
+                    val t = aapTouchPointers
+                    aapTouchPointers.clear()
+                    t
+                }
+                else -> null
+            }
+                ?: return
+            val ids = table.keys.toList()
+            if (ids.isEmpty()) return
+            val first = table[ids[0]]!!
+            val now = SystemClock.uptimeMillis()
+            val actionIndex = when (action) {
+                MotionEvent.ACTION_POINTER_DOWN ->
+                    ids.indexOfFirst { it !in prev.keys }.coerceAtLeast(0)
+
+                MotionEvent.ACTION_POINTER_UP ->
+                    ids.indexOfFirst { it in removedIds }.coerceAtLeast(0)
+
+                else -> 0
+            }
+            // Released the last pointer: emit a plain UP (POINTER_UP with one pointer
+            // left is not what apps expect).
+            val evAction = if (action == MotionEvent.ACTION_POINTER_UP &&
+                aapTouchPointers.isEmpty()
+            ) {
+                MotionEvent.ACTION_UP
+            } else {
+                action
+            }
+            val event = buildMultiPointerEvent(
+                now, now, evAction, actionIndex, ids.map { it to table[it]!! },
+            )
             // Throttle MOVE spam; always log DOWN/UP so we can see if HU sends touch at all.
             if (action != MotionEvent.ACTION_MOVE || shouldLogTouchMove()) {
                 Log.i(
                     AapConsts.TAG,
-                    "AAP $source action=$action raw=${p.x},${p.y} touch=${touchW}x$touchH " +
-                        "normBase=${normW}x$normH " +
-                        "norm=${"%.3f".format(xNorm)},${"%.3f".format(yNorm)} " +
+                    "AAP $source action=$action n=${event.pointerCount} first=${first[0]},${first[1]} " +
+                        "touch=${touchW}x$touchH normBase=${normW}x$normH " +
                         "video=${videoW}x$videoH content=${contentW}x$contentH",
                 )
             }
@@ -1035,11 +1228,8 @@ class AapSourceSession(
             if (!CarPlayInputBridge.isChromeGestureActive()) {
                 syncTouchBridgeLayout()
             }
-            try {
-                CarPlayInputBridge.injectNormalized(xNorm, yNorm, action)
-            } catch (e: Throwable) {
-                Log.w(AapConsts.TAG, "AAP touch inject failed", e)
-            }
+            // injectEvent recycles (and swallows) internally.
+            CarPlayInputBridge.injectEvent(event)
         }
 
         private fun handleRelative(rel: aap_protobuf.service.inputsource.message.RelativeEventOuterClass.RelativeEvent) {
@@ -1099,7 +1289,7 @@ class AapSourceSession(
                                 "AAP touchscreen advertised=${ts.width}x${ts.height} " +
                                     "using=${touchW}x$touchH type=${ts.type} secondary=${ts.isSecondary}",
                             )
-                            syncTouchBridgeLayout()
+                            inputHandler.post { syncTouchBridgeLayout() }
                         } ?: Log.w(AapConsts.TAG, "AAP input has no touchscreen; keep default ${touchW}x$touchH")
                         input.touchPad?.let { tp ->
                             Log.i(AapConsts.TAG, "AAP touchpad ${tp.width}x${tp.height} abs=${tp.uiAbsolute}")
@@ -1132,6 +1322,7 @@ class AapSourceSession(
 
         override fun onRunning(session: AapSession) {
             reportLive(true)
+            wirelessRedials.set(0)
             acquireCpuWakeLock()
             nowPlaying.start(app)
             batteryReporter.start(session)
@@ -1227,7 +1418,22 @@ class AapSourceSession(
             }
             val softReattach = wasUsb && !usbReplugRequired.get() &&
                 (closedByStall || closedByTransportGap)
+            // Reset the kill flags only after the chain above read them: a superseded
+            // cleanup must not leak them into the next session's status decision.
+            closedByStall = false
+            closedByTransportGap = false
+            // The session is dead: drop the live bit now (reader thread, idempotent). The
+            // deferred main cleanup below is identity-gated and may be superseded by a newer
+            // bind — the live bit must not depend on it. A rebind's onRunning re-asserts.
+            reportLive(false)
             main.post {
+                // Identity gate: a newer session may have bound while this cleanup was
+                // queued — killing its fields / shared objects here would take down a live
+                // link. The newer bind's own tearDownSession already reset those objects.
+                if (aap !== session) {
+                    Log.i(AapConsts.TAG, "onClosed cleanup skipped — superseded by a newer session")
+                    return@post
+                }
                 runCatching {
                     session.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_RELEASE)
                 }
@@ -1248,18 +1454,21 @@ class AapSourceSession(
                 runCatching { transport?.close() }
                 transport = null
                 activeVideo = null
-                reportLive(false)
                 if (softReattach) {
                     // Give the head unit time to time out its own keep-alive / half-open TLS, then
                     // re-arm the probe window to re-attach the (still plugged) accessory.
                     main.postDelayed({
-                        if (running.get() && transport == null && aap == null) {
+                        if (running.get() && !detached && transport == null && aap == null) {
                             AapProjectionService.start(app)
                         }
                     }, USB_STALL_REATTACH_DELAY_MS)
                 }
-                closedByStall = false
-                closedByTransportGap = false
+                // A wireless death with the BT link still up (car napping, AP dropped, HU
+                // rebooting) gets one capped redial series — no new ACL event arrives then.
+                val dev = lastWirelessDevice
+                if (!wasUsb && dev != null && running.get() && !detached) {
+                    scheduleWirelessRedial(dev)
+                }
             }
         }
     }
@@ -1299,6 +1508,36 @@ class AapSourceSession(
         }
     }
 
+    /**
+     * Capped wireless redial after a dead attempt / dead session: wait a beat for the car's
+     * AP, then dial again if the BT link is still up. [WIRELESS_REDIAL_MAX] per episode —
+     * a car that keeps BT up but offers no AA must not be dialed every few seconds forever.
+     */
+    private fun scheduleWirelessRedial(device: BluetoothDevice) {
+        if (wirelessRedials.get() >= WIRELESS_REDIAL_MAX) {
+            Log.i(AapConsts.TAG, "wireless redials exhausted (${WIRELESS_REDIAL_MAX}) — waiting for BT flap / user")
+            return
+        }
+        wirelessRedials.incrementAndGet()
+        main.postDelayed({
+            if (!running.get() || detached || aap != null) return@postDelayed
+            if (!btStillConnected(device)) return@postDelayed
+            if (!wirelessConnectGate.compareAndSet(false, true)) return@postDelayed
+            lastWirelessDevice = device
+            Log.i(AapConsts.TAG, "wireless redial ${wirelessRedials.get()}/$WIRELESS_REDIAL_MAX → ${device.address}")
+            thread(name = "aap-wireless-retry", isDaemon = true) {
+                try {
+                    connectDevice(device)
+                } finally {
+                    wirelessConnectGate.set(false)
+                }
+                if (running.get() && !detached && aap == null && btStillConnected(device)) {
+                    scheduleWirelessRedial(device)
+                }
+            }
+        }, WIRELESS_REDIAL_DELAY_MS)
+    }
+
     private fun instanceId(): String {
         val f = java.io.File(app.filesDir, "aap_instance_id")
         if (f.isFile) return f.readText().trim()
@@ -1322,6 +1561,11 @@ class AapSourceSession(
 
         /** Delay base for wireless "car not ready yet" retries (× attempt number). */
         private const val WIRELESS_RETRY_DELAY_MS = 10_000L
+
+        /** Redial spacing after a wireless death with the BT link still up. */
+        private const val WIRELESS_REDIAL_DELAY_MS = 3_000L
+        /** Max redials per dead-link episode. */
+        private const val WIRELESS_REDIAL_MAX = 3
 
         /** Health telemetry cadence (disconnection forensics). */
         private const val HEALTH_INTERVAL_MS = 15_000L

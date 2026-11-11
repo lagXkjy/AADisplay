@@ -33,6 +33,8 @@ class AapProjectionService : Service() {
     companion object : ProjectionEgress {
         private val sessionRef = AtomicReference<AapSourceSession?>(null)
         private val pendingTransport = AtomicReference<PendingTransport?>(null)
+        /** Live FGS instance for receiver-driven re-arms; nulled on destroy. */
+        private val serviceRef = AtomicReference<AapProjectionService?>(null)
         private val attachLock = Any()
         @Volatile private var lastStatus: String = "未启动"
 
@@ -84,12 +86,23 @@ class AapProjectionService : Service() {
         }
 
         /**
+         * [A10] Session-side USB ATTACHED hook: the FGS receiver is OEM-dependent, the
+         * source session's app-context receiver is the second listener — re-arm the probe
+         * window when the FGS is alive, the channel is AAP, and nothing is bound yet.
+         */
+        fun onUsbAccessoryAttached() {
+            val s = serviceRef.get() ?: return
+            s.onUsbAccessoryAttached()
+        }
+
+        /**
          * Hand an already-open transport (USB AOA / lab TCP) to the live session.
          *
          * @param fromAccessoryAttached true when coming from [USB_ACCESSORY_ATTACHED]
          *        (clears the replug gate before bind).
          * @return true if the session accepted / already owns [transport]; false if queued
-         *         until [ensureSession] drains (caller may wait on [isProtocolLive]).
+         *         until [ensureSession] drains, or rejected (another live link owns the
+         *         session / the session is stopped — the transport is then closed).
          */
         fun attachTransport(
             transport: Transport,
@@ -104,8 +117,13 @@ class AapProjectionService : Service() {
                 val s = sessionRef.get()
                 if (s != null) {
                     if (s.isBoundTo(transport)) return true
-                    pendingTransport.getAndSet(null)
-                    // Run outside lock? extract can be slow — release before bind.
+                    val dropped = pendingTransport.getAndSet(null)
+                    // [A11] a queued transport for another (dead) moment must not leak its
+                    // fd + drain thread — unless it IS the transport we are about to bind.
+                    if (dropped != null && dropped.transport !== transport) {
+                        runCatching { dropped.transport.close() }
+                    }
+                    // The bind itself runs outside this lock (cert extract can be slow).
                 } else {
                     pendingTransport.set(PendingTransport(transport, peerKey, trustOnFirstUse))
                     return false
@@ -113,8 +131,7 @@ class AapProjectionService : Service() {
             }
             val s = sessionRef.get() ?: return false
             if (s.isBoundTo(transport)) return true
-            s.startOnTransport(transport, peerKey, trustOnFirstUse)
-            return true
+            return s.startOnTransport(transport, peerKey, trustOnFirstUse)
         }
 
         // --- ProjectionEgress backend (neutral egress layer; ChannelOrchestrator only sees this) ---
@@ -170,6 +187,18 @@ class AapProjectionService : Service() {
     private var usbDetachRegistered = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private var usbProbeUntilElapsed = 0L
+    /**
+     * [A10] Second listener for AOA ATTACHED: the FGS receiver below is OEM-dependent;
+     * the source session's app-context receiver forwards here. Re-arms the probe window
+     * so a replug is answered even when the FGS copy of the broadcast is swallowed.
+     */
+    fun onUsbAccessoryAttached() {
+        if (!EgressChannel.useAapEgress(this)) return
+        if (sessionRef.get() == null) return
+        if (isProtocolLive() || hasActiveTransport()) return
+        Log.i(AapConsts.TAG, "USB attached (session rx) — re-arm probe window")
+        scheduleUsbProbeWindow("attached-session-rx")
+    }
     private val usbProbeTick = object : Runnable {
         override fun run() {
             if (!EgressChannel.useAapEgress(this@AapProjectionService)) return
@@ -260,6 +289,7 @@ class AapProjectionService : Service() {
         }
         session = s
         sessionRef.set(s)
+        serviceRef.set(this)
         s.start()
         lastStatus = "已启动"
         updateNotification(lastStatus)
@@ -310,7 +340,11 @@ class AapProjectionService : Service() {
         usbProbeUntilElapsed = 0L
         unregisterUsbDetachReceiver()
         pendingTransport.getAndSet(null)?.let { runCatching { it.transport.close() } }
+        // [A15] Detach the instance *before* stop: an in-flight attachTransport on a stale
+        // reference must see the flag in its bind critical section and refuse to rebind.
+        sessionRef.get()?.detached = true
         sessionRef.getAndSet(null)?.stop()
+        serviceRef.set(null)
         session = null
         lastStatus = "已停止"
     }

@@ -29,7 +29,10 @@ class AapDisplayBridge(
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val running = AtomicBoolean(false)
+    @Volatile
     private var compositor: CarPlayGlCompositor? = null
+
+    @Volatile
     private var video: VideoChannel? = null
     private var width = AapConsts.DEFAULT_VIDEO_WIDTH
     private var height = AapConsts.DEFAULT_VIDEO_HEIGHT
@@ -38,8 +41,10 @@ class AapDisplayBridge(
     /** Total L+R / T+B margins from VideoConfiguration (HUIG crop). */
     private var widthMargin = 0
     private var heightMargin = 0
+    @Volatile
     private var displayId = Display.INVALID_DISPLAY
 
+    @Volatile
     private var vdCreateRetries = 0
 
     private val vdCreateRetryRunnable = Runnable { retryCreateSplitDisplayIfNeeded() }
@@ -175,7 +180,13 @@ class AapDisplayBridge(
     fun negotiatedFps(): Int = fps
 
     fun stop() {
-        main.post { tearDown("stop") }
+        // Same looper as boot()/cleanup callers: run the teardown synchronously so a
+        // queued stop cannot overtake a newer session's start posted behind it.
+        if (Looper.myLooper() == main.looper) {
+            tearDown("stop")
+        } else {
+            main.post { tearDown("stop") }
+        }
     }
 
     private fun boot() {

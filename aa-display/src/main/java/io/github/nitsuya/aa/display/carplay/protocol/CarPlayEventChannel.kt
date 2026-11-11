@@ -1,9 +1,11 @@
 package io.github.nitsuya.aa.display.carplay.protocol
 
+import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
 import io.github.nitsuya.aa.display.carplay.CarPlayConsts
 import io.github.nitsuya.aa.display.carplay.CarPlayWheelController
+import io.github.nitsuya.aa.display.carplay.buildMultiPointerEvent
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.net.InetAddress
@@ -30,7 +32,7 @@ class CarPlayEventChannel private constructor(
     private val socket: Socket,
     private val crypto: ControlChannelCrypto,
     private val onForceKeyFrame: () -> Unit,
-    private val onTouch: (xNorm: Float, yNorm: Float, action: Int) -> Unit,
+    private val onTouch: (MotionEvent) -> Unit,
     private val touchMaxX: Int,
     private val touchMaxY: Int,
     private val onHidKey: (device: Int, code: Int, pressed: Boolean, extra: Int) -> Unit,
@@ -363,6 +365,10 @@ class CarPlayEventChannel private constructor(
 
     private fun parseTouchReport(report: ByteArray) {
         if (report.size < 4) return
+        if (chosenTouchLayout == TouchLayout.DIPLAY_SLOT6 && report.size >= 6) {
+            parseDiPlaySlots(report)
+            return
+        }
         val decoded = decodeTouchPoint(report) ?: return
         val maxX = touchMaxX.coerceAtLeast(1).toFloat()
         val maxY = touchMaxY.coerceAtLeast(1).toFloat()
@@ -376,7 +382,9 @@ class CarPlayEventChannel private constructor(
             else -> return
         }
         fingerDown = down
-        onTouch(xNorm, yNorm, action)
+        val now = SystemClock.uptimeMillis()
+        val event = MotionEvent.obtain(now, now, action, xNorm, yNorm, 0)
+        onTouch(event)
         if (action != MotionEvent.ACTION_MOVE || touchLogCount < 8) {
             touchLogCount++
             Log.i(
@@ -386,6 +394,71 @@ class CarPlayEventChannel private constructor(
                     "rawMax=${touchMaxX}x$touchMaxY",
             )
         }
+    }
+
+    /**
+     * DiPlay [TouchCodec] 6B×N slots `[id|down|x16le|y16le]` — one slot per finger,
+     * so a report can carry several pointers. Table keyed by slot id (slot index
+     * fallback when id==0); tip-up or absent slots release the pointer.
+     */
+    private val diplayFingers = LinkedHashMap<Int, IntArray>()
+
+    private fun parseDiPlaySlots(report: ByteArray) {
+        val slots = report.size / 6
+        if (slots == 0) return
+        fun u16le(o: Int) =
+            (report[o].toInt() and 0xff) or ((report[o + 1].toInt() and 0xff) shl 8)
+        val slotPts = LinkedHashMap<Int, IntArray>() // down slots only
+        for (k in 0 until slots) {
+            val id = report[k * 6].toInt() and 0xff
+            if (report[k * 6 + 1].toInt() and 0xff == 0) continue
+            val key = if (id != 0) id else k
+            slotPts[key] = intArrayOf(u16le(k * 6 + 2), u16le(k * 6 + 4))
+        }
+        val before = diplayFingers.keys.toList()
+        val added = slotPts.keys.filter { it !in before }
+        val removed = before.filter { it !in slotPts }
+        if (before.isEmpty() && added.isEmpty()) return
+        val action = when {
+            added.isNotEmpty() ->
+                if (before.isEmpty()) MotionEvent.ACTION_DOWN else MotionEvent.ACTION_POINTER_DOWN
+            removed.isNotEmpty() ->
+                if (before.size - removed.size == 0) MotionEvent.ACTION_UP
+                else MotionEvent.ACTION_POINTER_UP
+
+            else -> MotionEvent.ACTION_MOVE
+        }
+        val table = LinkedHashMap(diplayFingers)
+        table.putAll(slotPts) // adds new pointers, refreshes positions
+        val ids = table.keys.toList()
+        val now = SystemClock.uptimeMillis()
+        val maxX = touchMaxX.coerceAtLeast(1).toFloat()
+        val maxY = touchMaxY.coerceAtLeast(1).toFloat()
+        // Event keeps released pointers (Android semantics); the table does not.
+        val pts = ids.map { id ->
+            val xy = table[id]!!
+            id to floatArrayOf(
+                (xy[0].toFloat() / maxX).coerceIn(0f, 1f),
+                (xy[1].toFloat() / maxY).coerceIn(0f, 1f),
+            )
+        }
+        for (id in removed) table.remove(id)
+        diplayFingers.clear()
+        diplayFingers.putAll(table)
+        val actionIndex = when (action) {
+            MotionEvent.ACTION_POINTER_DOWN -> ids.indexOf(added.first()).coerceAtLeast(0)
+            MotionEvent.ACTION_POINTER_UP -> ids.indexOfFirst { it in removed }.coerceAtLeast(0)
+            else -> 0
+        }
+        val event = buildMultiPointerEvent(now, now, action, actionIndex, pts)
+        if (action != MotionEvent.ACTION_MOVE) {
+            Log.i(
+                CarPlayConsts.TAG,
+                "event touch multi action=$action n=${pts.size} " +
+                    "rawMax=${touchMaxX}x$touchMaxY",
+            )
+        }
+        onTouch(event)
     }
 
     private var touchLogCount = 0
@@ -434,6 +507,13 @@ class CarPlayEventChannel private constructor(
                 }
             }
             chosenTouchLayout = best ?: TouchLayout.LE_FLAG_XY16
+            // Probe ends mid-press: seed the multi-pointer table so the first slot
+            // report after the switch does not fire a phantom DOWN.
+            if (chosenTouchLayout == TouchLayout.DIPLAY_SLOT6 && fingerDown) {
+                decodeLayout(report, TouchLayout.DIPLAY_SLOT6)?.let {
+                    diplayFingers[0] = intArrayOf(it.x, it.y)
+                }
+            }
             Log.i(
                 CarPlayConsts.TAG,
                 "event touch layout=${chosenTouchLayout} fit=" +
@@ -584,7 +664,7 @@ class CarPlayEventChannel private constructor(
             touchMaxX: Int,
             touchMaxY: Int,
             onForceKeyFrame: () -> Unit,
-            onTouch: (Float, Float, Int) -> Unit,
+            onTouch: (MotionEvent) -> Unit,
             onHidKey: (Int, Int, Boolean, Int) -> Unit,
             onIapMessage: (ByteArray) -> Unit = {},
             onModesRestoredToPhone: () -> Unit = {},

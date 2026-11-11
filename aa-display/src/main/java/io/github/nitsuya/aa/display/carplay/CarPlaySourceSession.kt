@@ -161,7 +161,7 @@ class CarPlaySourceSession(
                     iap2?.let { CarPlayNowPlaying.attachEgress(it) }
                 }
             },
-            onTouchEvent = { x, y, action -> CarPlayInputBridge.injectNormalized(x, y, action) },
+            onTouchEvent = { ev -> CarPlayInputBridge.injectEvent(ev) },
             onForceKeyFrame = { encoder.requestKeyFrame() },
             linkSyncBytes = { iap2?.acceptedLinkSync() },
             onHuMediaEnded = { reason -> schedulePhoneAudioRelease(reason) },

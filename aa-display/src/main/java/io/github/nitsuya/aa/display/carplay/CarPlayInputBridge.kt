@@ -108,34 +108,57 @@ object CarPlayInputBridge {
     /** True while divider / peel gesture owns the pointer (skip layout sync that resets ratio). */
     fun isChromeGestureActive(): Boolean = chromeArmed || chromeDragging
 
+    /**
+     * Single-pointer convenience entry (BT mouse / HID shell drains): wraps one
+     * (x, y, action) as a one-pointer event and delegates to [injectEvent], which
+     * owns (recycles) the event.
+     */
     fun injectNormalized(xNorm: Float, yNorm: Float, action: Int) {
-        val x = xNorm.coerceIn(0f, 1f)
-        val y = yNorm.coerceIn(0f, 1f)
+        val now = SystemClock.uptimeMillis()
+        val event = MotionEvent.obtain(
+            now, now, action, xNorm.coerceIn(0f, 1f), yNorm.coerceIn(0f, 1f), 0,
+        )
+        injectEvent(event)
+    }
 
-        // Canvas picker (Host has no Window — View snapshot touch is broken).
-        if (CarPlayAppPickerOverlay.isVisible()) {
-            CarPlayAppPickerOverlay.onTouch(x, y, action)
-            return
-        }
-        if (CarPlayRecentsOverlay.isVisible()) {
-            CarPlayRecentsOverlay.onTouch(x, y, action)
-            return
-        }
+    /**
+     * Multi-pointer entry: [event] carries normalized canvas coords (0..1) with full
+     * pointer data (AAP / CarPlay decode). Pointer 0 drives the single-finger chrome
+     * state machines (overlays / IME chip / divider / peel); the whole event goes to
+     * the pane owning pointer 0 — pointers whose own x falls in the other pane are
+     * dropped (cross-pane gestures unsupported). Recycles [event].
+     */
+    fun injectEvent(event: MotionEvent) {
+        try {
+            val x = event.getX(0).coerceIn(0f, 1f)
+            val y = event.getY(0).coerceIn(0f, 1f)
+            // Chrome / overlay state machines are single-finger: POINTER_* moves pointer 0.
+            val action = when (event.actionMasked) {
+                MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP ->
+                    MotionEvent.ACTION_MOVE
 
-        // Host chrome (hide-IME chip / divider / peel / overlays).
-        if (handleImeChip(x, y, action)) return
-        if (handleChrome(x, y, action)) return
+                else -> event.actionMasked
+            }
 
-        val w = shellWidthPx.coerceAtLeast(1)
-        val h = shellHeightPx.coerceAtLeast(1)
-        val ok = try {
-            routeToPane(x, y, action, w, h)
+            // Canvas picker (Host has no Window — View snapshot touch is broken).
+            if (CarPlayAppPickerOverlay.isVisible()) {
+                CarPlayAppPickerOverlay.onTouch(x, y, action)
+                return
+            }
+            if (CarPlayRecentsOverlay.isVisible()) {
+                CarPlayRecentsOverlay.onTouch(x, y, action)
+                return
+            }
+
+            // Host chrome (hide-IME chip / divider / peel / overlays).
+            if (handleImeChip(x, y, action)) return
+            if (handleChrome(x, y, action)) return
+
+            routeEventToPane(event)
         } catch (e: Throwable) {
             Log.e(CarPlayConsts.TAG, "CarPlay touch inject failed", e)
-            false
-        }
-        if (!ok) {
-            Log.w(CarPlayConsts.TAG, "CarPlay touch dropped action=$action x=$x y=$y")
+        } finally {
+            event.recycle()
         }
     }
 
@@ -464,14 +487,19 @@ object CarPlayInputBridge {
         if (cancelPane) cancelPanePointer()
     }
 
-    /** Cancel the in-flight pane gesture at the last DOWN point. */
+    /**
+     * Cancel the in-flight pane gesture at the last DOWN point. A single ACTION_CANCEL
+     * ends all active pointers on the injected device.
+     */
     private fun cancelPanePointer() {
-        val w = shellWidthPx.coerceAtLeast(1)
-        val h = shellHeightPx.coerceAtLeast(1)
+        val now = SystemClock.uptimeMillis()
+        val event = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, paneDownX, paneDownY, 0)
         try {
-            routeToPane(paneDownX, paneDownY, MotionEvent.ACTION_CANCEL, w, h)
+            routeEventToPane(event)
         } catch (e: Throwable) {
             Log.w(CarPlayConsts.TAG, "cancel pane after seam steal failed", e)
+        } finally {
+            event.recycle()
         }
     }
 
@@ -632,35 +660,46 @@ object CarPlayInputBridge {
         }
     }
 
+    /** Pane owning normalized canvas x (fullscreen-aware). */
+    private fun paneFor(xNorm: Float): Int {
+        val fs = fullscreenPane
+        if (SplitPane.isFullscreenPane(fs)) return fs
+        val ratio = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+        return if (xNorm < ratio) SplitPane.PRIMARY else SplitPane.SECONDARY
+    }
+
+    /** Normalized canvas x → (x within [pane] 0..1, pane width in encode px). */
+    private fun mapToPane(xNorm: Float, pane: Int, w: Int): Pair<Float, Int> {
+        val fs = fullscreenPane
+        if (SplitPane.isFullscreenPane(fs)) return 1f to w
+        val ratio = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+        return if (pane == SplitPane.PRIMARY) {
+            (xNorm / ratio) to (w * ratio).toInt().coerceAtLeast(1)
+        } else {
+            val share = (1f - ratio).coerceAtLeast(0.01f)
+            ((xNorm - ratio) / share) to (w - w * ratio).toInt().coerceAtLeast(1)
+        }
+    }
+
     /**
-     * Splits the full CarPlay image at [primaryRatio]: left half → PRIMARY pane VD,
-     * right half → SECONDARY pane VD, each in its own display pixel space.
-     * Short tap on an empty pane opens the app picker (AA empty-pane parity).
+     * Routes the whole event to the pane owning pointer 0: each pointer is re-mapped
+     * into that pane's pixel space, pointers in the other pane dropped (cross-pane
+     * gestures unsupported). Does NOT recycle [event] — the caller owns it.
+     * Short tap on an empty pane opens the app picker (single-finger only).
      * HU digitizers often omit MOVE and only jump DOWN→UP — displacement is
      * checked on UP so a drag is not mistaken for a tap.
      */
-    private fun routeToPane(xNorm: Float, yNorm: Float, action: Int, w: Int, h: Int): Boolean {
-        val fs = fullscreenPane
-        val (pane, xPane, paneWidth) = if (SplitPane.isFullscreenPane(fs)) {
-            Triple(fs, xNorm.coerceIn(0f, 1f), w)
-        } else {
-            val ratio = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
-            val x = xNorm.coerceIn(0f, 1f)
-            if (x < ratio) {
-                Triple(SplitPane.PRIMARY, x / ratio, (w * ratio).toInt().coerceAtLeast(1))
-            } else {
-                val share = (1f - ratio).coerceAtLeast(0.01f)
-                Triple(
-                    SplitPane.SECONDARY,
-                    (x - ratio) / share,
-                    (w - w * ratio).toInt().coerceAtLeast(1),
-                )
-            }
-        }
-        when (action) {
+    private fun routeEventToPane(event: MotionEvent) {
+        val w = shellWidthPx.coerceAtLeast(1)
+        val h = shellHeightPx.coerceAtLeast(1)
+        val x0 = event.getX(0).coerceIn(0f, 1f)
+        val y0 = event.getY(0).coerceIn(0f, 1f)
+        val pane = paneFor(x0)
+
+        when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                paneDownX = xNorm
-                paneDownY = yNorm
+                paneDownX = x0
+                paneDownY = y0
                 paneDownAt = SystemClock.uptimeMillis()
                 paneDownPane = pane
                 paneMoved = false
@@ -668,28 +707,31 @@ object CarPlayInputBridge {
                 paneEmptyPickerSuppressed = seamPending
             }
             MotionEvent.ACTION_MOVE -> {
-                if (abs(xNorm - paneDownX) > DRAG_SLOP || abs(yNorm - paneDownY) > DRAG_SLOP) {
+                if (abs(x0 - paneDownX) > DRAG_SLOP || abs(y0 - paneDownY) > DRAG_SLOP) {
                     paneMoved = true
                 }
             }
             MotionEvent.ACTION_UP -> {
                 // Cars often skip MOVE; treat DOWN→UP jump as a drag.
-                if (abs(xNorm - paneDownX) > DRAG_SLOP || abs(yNorm - paneDownY) > DRAG_SLOP) {
+                if (abs(x0 - paneDownX) > DRAG_SLOP || abs(y0 - paneDownY) > DRAG_SLOP) {
                     paneMoved = true
                 }
-                val heldMs = SystemClock.uptimeMillis() - paneDownAt
-                if (!paneMoved &&
-                    !paneEmptyPickerSuppressed &&
-                    heldMs <= SplitPane.DIVIDER_TAP_SWAP_MAX_MS
-                ) {
-                    val empty = try {
-                        CoreApi.getPanePackage(paneDownPane).isNullOrEmpty()
-                    } catch (_: Throwable) {
-                        false
-                    }
-                    if (empty) {
-                        CarPlayAppPickerOverlay.show(paneDownPane)
-                        return true
+                // Empty-pane picker is a single-finger tap; skip it for multi gestures.
+                if (event.pointerCount == 1) {
+                    val heldMs = SystemClock.uptimeMillis() - paneDownAt
+                    if (!paneMoved &&
+                        !paneEmptyPickerSuppressed &&
+                        heldMs <= SplitPane.DIVIDER_TAP_SWAP_MAX_MS
+                    ) {
+                        val empty = try {
+                            CoreApi.getPanePackage(paneDownPane).isNullOrEmpty()
+                        } catch (_: Throwable) {
+                            false
+                        }
+                        if (empty) {
+                            CarPlayAppPickerOverlay.show(paneDownPane)
+                            return
+                        }
                     }
                 }
             }
@@ -699,24 +741,88 @@ object CarPlayInputBridge {
             }
             else -> Unit
         }
-        val px = (xPane * (paneWidth - 1)).toFloat()
-        val py = (yNorm.coerceIn(0f, 1f) * (h - 1)).toFloat()
-        val now = SystemClock.uptimeMillis()
-        val event = MotionEvent.obtain(now, now, action, px, py, 0)
+
+        // SDK 36 dropped incremental MotionEvent construction: build the pane-local
+        // event in one obtain() with the filtered pointer table.
+        val pts = ArrayList<Pair<Int, FloatArray>>(event.pointerCount)
+        for (i in 0 until event.pointerCount) {
+            val nx = event.getX(i).coerceIn(0f, 1f)
+            if (paneFor(nx) != pane) continue // Cross-pane unsupported → pointer dropped
+            val (xPane, paneWidth) = mapToPane(nx, pane, w)
+            val px = xPane * (paneWidth - 1).toFloat()
+            val py = event.getY(i).coerceIn(0f, 1f) * (h - 1).toFloat()
+            pts.add(event.getPointerId(i) to floatArrayOf(px, py))
+        }
+        if (pts.isEmpty()) return
+        val out = buildMultiPointerEvent(
+            event.downTime, event.eventTime, event.actionMasked, event.actionIndex, pts,
+        )
         try {
             val ok = try {
-                CoreApi.touchPane(pane, event)
+                CoreApi.touchPane(pane, out)
                 true
             } catch (e: Throwable) {
                 Log.e(CarPlayConsts.TAG, "touchPane($pane) from CarPlay failed", e)
                 false
             }
-            if (action != MotionEvent.ACTION_MOVE && !ok) {
-                Log.w(CarPlayConsts.TAG, "CarPlay pane touch dropped pane=$pane action=$action x=$px y=$py")
+            if (event.actionMasked != MotionEvent.ACTION_MOVE && !ok) {
+                Log.w(
+                    CarPlayConsts.TAG,
+                    "CarPlay pane touch dropped pane=$pane action=${event.actionMasked} n=${out.pointerCount}",
+                )
             }
-            return ok
         } finally {
-            event.recycle()
+            out.recycle()
         }
     }
+}
+
+/**
+ * Builds a multi-pointer [MotionEvent] from (pointerId, [x, y]) pairs in table order
+ * (x/y in the producer's space — normalized canvas or pane-px). Pointer ids stay
+ * stable across the gesture so releasing a finger does not re-identify the others.
+ * SDK 36 removed the incremental constructors, so the whole pointer table goes into
+ * one [MotionEvent.obtain]; the POINTER_* index is packed into the action bits per
+ * the classic input protocol.
+ */
+internal fun buildMultiPointerEvent(
+    downTime: Long,
+    eventTime: Long,
+    maskedAction: Int,
+    actionIndex: Int,
+    pointers: List<Pair<Int, FloatArray>>,
+): MotionEvent {
+    val n = pointers.size
+    val action = when (maskedAction) {
+        MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP ->
+            maskedAction or ((actionIndex and MotionEvent.ACTION_POINTER_INDEX_MASK shr
+                MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+                shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+
+        else -> maskedAction
+    }
+    val props = arrayOfNulls<MotionEvent.PointerProperties>(n)
+    val coords = arrayOfNulls<MotionEvent.PointerCoords>(n)
+    for (i in 0 until n) {
+        val (id, xy) = pointers[i]
+        props[i] = MotionEvent.PointerProperties().apply {
+            this.id = id
+            toolType = MotionEvent.TOOL_TYPE_FINGER
+        }
+        coords[i] = MotionEvent.PointerCoords().apply {
+            x = xy[0]
+            y = xy[1]
+        }
+    }
+    return MotionEvent.obtain(
+        downTime, eventTime, action, n,
+        props, coords,
+        0, // metaState
+        0, // buttonState
+        0f, 0f, // xPrecision, yPrecision
+        0, // deviceId
+        0, // edgeFlags
+        android.view.InputDevice.SOURCE_TOUCHSCREEN,
+        0, // flags
+    )
 }
