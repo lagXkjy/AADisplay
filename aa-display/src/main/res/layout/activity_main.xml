@@ -44,7 +44,7 @@
                     android:fontFamily="sans-serif-medium"
                     android:textColor="@color/color_on_primary"
                     android:textSize="16sp"
-                    tools:text="已激活" />
+                    tools:text="运行中" />
 
                 <TextView
                     android:id="@+id/tv_version"
@@ -70,6 +70,21 @@
                     android:textColor="@color/color_on_primary"
                     android:textSize="12sp"
                     tools:text="14 (API 34)" />
+
+                <TextView
+                    android:id="@+id/tv_status_hint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_below="@id/system_version"
+                    android:layout_marginStart="24dp"
+                    android:layout_marginTop="6dp"
+                    android:layout_toEndOf="@id/iv_icon"
+                    android:alpha="0.9"
+                    android:textColor="@color/color_on_primary"
+                    android:textSize="12sp"
+                    android:visibility="gone"
+                    tools:text="请在 LSPosed 里勾选 AADisplay，然后重启手机"
+                    tools:visibility="visible" />
 
             </RelativeLayout>
         </FrameLayout>

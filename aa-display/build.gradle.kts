@@ -102,6 +102,9 @@ android {
     lint {
         checkReleaseBuilds = false
         abortOnError = false
+        // Sideload-only (Magisk/LSPosed) distribution — never on Play Store, so the
+        // Play FGS declaration-policy check doesn't apply.
+        disable += "ForegroundServicesPolicy"
     }
 
     androidResources.additionalParameters += mutableListOf("--allow-reserved-package-id", "--package-id", "0x64")

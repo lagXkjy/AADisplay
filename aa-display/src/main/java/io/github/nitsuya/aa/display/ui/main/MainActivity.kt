@@ -33,27 +33,35 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         when (buildTime) {
             0L -> {
                 baseBinding.ivIcon.setImageResource(R.drawable.ic_error_outline_24)
-                baseBinding.tvActive.text = "未激活"
+                baseBinding.tvActive.text = "未运行"
                 baseBinding.tvVersion.text = "本包 ${BuildConfig.VERSION_NAME}"
+                baseBinding.tvStatusHint.visibility = View.VISIBLE
+                baseBinding.tvStatusHint.text =
+                    "手机里没检测到模块：请在 LSPosed 里打开 AADisplay 开关，并在「作用域」里勾选「系统框架」，然后重启手机"
                 setStatusCardColor(getColor(R.color.color_error))
                 val onError = getColor(R.color.color_on_error)
                 baseBinding.tvActive.setTextColor(onError)
                 baseBinding.tvVersion.setTextColor(onError)
                 baseBinding.systemVersion.setTextColor(onError)
+                baseBinding.tvStatusHint.setTextColor(onError)
             }
 
             BuildConfig.BUILD_TIME -> {
                 baseBinding.ivIcon.setImageResource(R.drawable.ic_round_check_circle_24)
-                baseBinding.tvActive.text = "已激活"
+                baseBinding.tvActive.text = "运行中"
+                baseBinding.tvStatusHint.visibility = View.GONE
                 baseBinding.tvVersion.text = BuildConfig.VERSION_NAME
             }
 
             else -> {
                 baseBinding.ivIcon.setImageResource(R.drawable.ic_warning_amber_24)
-                baseBinding.tvActive.text = "需要重启"
+                baseBinding.tvActive.text = "需要重启手机"
                 val framework = CoreApi.versionName ?: "—"
                 baseBinding.tvVersion.text =
                     "框架 $framework\n本包 ${BuildConfig.VERSION_NAME}"
+                baseBinding.tvStatusHint.visibility = View.VISIBLE
+                baseBinding.tvStatusHint.text =
+                    "系统里还在跑旧版模块，重启手机后生效"
                 setStatusCardColor(getColor(R.color.color_warning))
             }
         }
@@ -189,7 +197,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
     private fun applyVdDensityDpi() {
         if (CoreApi.buildTime == 0L) {
-            toast("模块未激活，请先在 LSPosed 里打开并重启手机")
+            toast("模块未运行：请在 LSPosed 打开 AADisplay、作用域勾「系统框架」，再重启手机")
             return
         }
         val raw = baseBinding.etVdDensityDpi.text?.toString()?.trim().orEmpty()
@@ -215,7 +223,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
     private fun resetVdDensityDpi() {
         if (CoreApi.buildTime == 0L) {
-            toast("模块未激活，请先在 LSPosed 里打开并重启手机")
+            toast("模块未运行：请在 LSPosed 打开 AADisplay、作用域勾「系统框架」，再重启手机")
             return
         }
         persistVdDensityDpi(0)
@@ -226,7 +234,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         val saved = CoreApi.vdDensityDpi
         val carPlay = EgressChannel.useCarPlayEgress(this)
         if (dpi > 0 && saved != dpi) {
-            toast("保存失败，请确认模块已激活后重试")
+            toast("保存失败，请确认 LSPosed 里模块已勾选并重启手机后重试")
             refreshVdDensityUi()
             return
         }
