@@ -147,12 +147,7 @@ class AapUsbAccessoryActivity : Activity() {
         }
         permissionReceiver = receiver
         val filter = IntentFilter(ACTION_USB_PERMISSION)
-        if (Build.VERSION.SDK_INT >= 33) {
-            app.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            app.registerReceiver(receiver, filter)
-        }
+        app.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         val pi = PendingIntent.getBroadcast(
             app,
             0,

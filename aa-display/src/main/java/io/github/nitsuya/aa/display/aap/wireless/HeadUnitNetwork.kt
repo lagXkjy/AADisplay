@@ -92,7 +92,6 @@ internal class HeadUnitNetwork(
         }
         ssid = credentials.ssid
         findExisting(credentials)?.let { return it }
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return joinLegacy(credentials)
 
         val specifier = try {
             specifier(credentials)
@@ -236,7 +235,6 @@ internal class HeadUnitNetwork(
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.Q)
     private fun specifier(c: WifiCredentials): WifiNetworkSpecifier {
         val builder = WifiNetworkSpecifier.Builder().setSsid(c.ssid)
         val bssid = c.bssid
@@ -267,7 +265,7 @@ internal class HeadUnitNetwork(
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
-        val cb = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val cb =
             // Since Android 12 the SSID is only in the capabilities' WifiInfo, and only with this flag.
             object : ConnectivityManager.NetworkCallback(ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO) {
                 override fun onCapabilitiesChanged(n: Network, caps: NetworkCapabilities) {
@@ -280,16 +278,6 @@ internal class HeadUnitNetwork(
                 }
                 override fun onLost(n: Network) = onExistingLost(n, found)
             }
-        } else {
-            object : ConnectivityManager.NetworkCallback() {
-                @Suppress("DEPRECATION") // the only way to read the SSID on Android 10/11
-                override fun onAvailable(n: Network) {
-                    val info = wifi?.connectionInfo
-                    if (unquote(info?.ssid) == ssid && bssidMatches(info?.bssid, wantBssid)) found.complete(n)
-                }
-                override fun onLost(n: Network) = onExistingLost(n, found)
-            }
-        }
         connectivity.registerNetworkCallback(listen, cb)
         // Callbacks for networks that are already up arrive right after registration.
         val n = runCatching { found.get(EXISTING_LOOKUP_MS, TimeUnit.MILLISECONDS) }.getOrNull()
@@ -313,7 +301,7 @@ internal class HeadUnitNetwork(
 
     private fun joined(lp: LinkProperties): JoinResult.Joined {
         val gateway = lp.routes.firstOrNull { it.isDefaultRoute && it.gateway is Inet4Address }?.gateway
-            ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) lp.dhcpServerAddress else null
+            ?: lp.dhcpServerAddress
         return JoinResult.Joined(localAddress = ipv4(lp)?.hostAddress, gateway = gateway?.hostAddress)
     }
 

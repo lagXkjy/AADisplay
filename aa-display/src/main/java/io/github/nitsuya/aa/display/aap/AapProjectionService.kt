@@ -319,12 +319,7 @@ class AapProjectionService : Service() {
             addAction(UsbManager.ACTION_USB_ACCESSORY_ATTACHED)
             addAction(ACTION_USB_ACCESSORY_HANDSHAKE)
         }
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(usbDetachReceiver, filter, RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(usbDetachReceiver, filter)
-        }
+        registerReceiver(usbDetachReceiver, filter, RECEIVER_NOT_EXPORTED)
         usbDetachRegistered = true
     }
 

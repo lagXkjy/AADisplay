@@ -238,10 +238,7 @@ class WirelessConnector(context: Context, private val log: AapLog, private val o
         private fun connectTcp(network: Network, ip: String, port: Int): Socket {
             // Literal addresses need no DNS; resolve anything else on the head unit's network.
             val address = runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) InetAddresses.parseNumericAddress(ip)
-                // Older: only literal addresses here, which InetAddress parses without DNS.
-                else if (ip.all { it.isDigit() || it == '.' || it == ':' || it in 'a'..'f' || it in 'A'..'F' }) InetAddress.getByName(ip)
-                else throw IllegalArgumentException(ip)
+                InetAddresses.parseNumericAddress(ip)
             }.getOrElse { network.getByName(ip) }
             var last: IOException? = null
             for (attempt in 1..options.tcpAttempts) {
@@ -285,13 +282,12 @@ class WirelessConnector(context: Context, private val log: AapLog, private val o
 
     private fun bluetoothPermissions(): List<String> =
         // Before Android 12 the Bluetooth permissions are install-time ones.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) listOf(Manifest.permission.BLUETOOTH_CONNECT) else emptyList()
+        listOf(Manifest.permission.BLUETOOTH_CONNECT)
 
     private fun wifiPermissions(): List<String> = buildList {
         add(Manifest.permission.CHANGE_NETWORK_STATE)
         // Wi-Fi network requests involve scans: location before Android 13, "nearby devices" since.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.NEARBY_WIFI_DEVICES)
-        else add(Manifest.permission.ACCESS_FINE_LOCATION)
+        add(Manifest.permission.NEARBY_WIFI_DEVICES)
         // Android 17 drops traffic to local addresses (the head unit's AAP server) without it.
         // Android 16+ local-network permission (string may be absent on older compile SDKs).
         if (Build.VERSION.SDK_INT >= 36) add("android.permission.ACCESS_LOCAL_NETWORK")

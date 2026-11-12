@@ -263,8 +263,8 @@ object BinaryPlist {
             return when {
                 a === b -> true
                 a is ByteArray && b is ByteArray -> a.contentEquals(b)
-                a is Map<*, *> && b is Map<*, *> -> a === b
-                a is List<*> && b is List<*> -> a === b
+                a is Map<*, *> && b is Map<*, *> -> false
+                a is List<*> && b is List<*> -> false
                 else -> a == b
             }
         }

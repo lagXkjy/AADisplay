@@ -1063,8 +1063,7 @@ class AapSourceSession(
                 s.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_RELEASE, Priority.AUDIO)
                 s.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_GAIN, Priority.AUDIO)
             }
-            is FocusRetry.Action.GiveUp ->
-                Log.w(AapConsts.TAG, "audio focus: the car never answered (asked ${action.asked} times); media stays silent")
+
             FocusRetry.Action.None -> {}
         }
     }

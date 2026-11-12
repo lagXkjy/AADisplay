@@ -143,12 +143,7 @@ object AapUsbProbe {
             }
         }
         val filter = IntentFilter(ACTION_PERM)
-        if (Build.VERSION.SDK_INT >= 33) {
-            app.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            app.registerReceiver(receiver, filter)
-        }
+        app.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         try {
             val pi = PendingIntent.getBroadcast(
                 app,

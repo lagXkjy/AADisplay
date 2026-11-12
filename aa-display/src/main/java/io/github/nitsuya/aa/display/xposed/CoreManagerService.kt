@@ -1291,12 +1291,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         val rx = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent?) {
                 val action = intent?.action ?: return
-                val device = if (Build.VERSION.SDK_INT >= 33) {
+                val device =
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                } ?: return
+                        ?: return
                 val mac = device.address?.trim()?.uppercase().orEmpty()
                 if (mac !in headUnitAddresses) return
                 when (action) {
@@ -1344,12 +1341,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             priority = IntentFilter.SYSTEM_HIGH_PRIORITY
         }
         try {
-            if (Build.VERSION.SDK_INT >= 33) {
-                systemContext.registerReceiver(rx, filter, Context.RECEIVER_EXPORTED)
-            } else {
-                @Suppress("DEPRECATION")
-                systemContext.registerReceiver(rx, filter)
-            }
+            systemContext.registerReceiver(rx, filter, Context.RECEIVER_EXPORTED)
         } catch (e: Throwable) {
             headUnitAccessReceiver = null
             log(TAG, "HU access watch failed ${e.message}")

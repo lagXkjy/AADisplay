@@ -406,12 +406,7 @@ internal class CarPlayPhoneMute(
         }
         val filter = IntentFilter(VOLUME_CHANGED_ACTION)
         runCatching {
-            if (Build.VERSION.SDK_INT >= 33) {
-                this.context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("DEPRECATION")
-                this.context.registerReceiver(receiver, filter)
-            }
+            this.context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
             volumeReceiver = receiver
         }.onFailure {
             logDebug(TAG, "volume receiver register failed: ${it.message}")

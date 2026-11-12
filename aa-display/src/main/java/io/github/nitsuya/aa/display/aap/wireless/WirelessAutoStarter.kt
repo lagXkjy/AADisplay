@@ -59,8 +59,7 @@ class WirelessAutoStarter(
     /** Starts listening. Throws [WirelessPermissionException] without BLUETOOTH_CONNECT. */
     fun register() {
         if (registered) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
         ) throw WirelessPermissionException(listOf(Manifest.permission.BLUETOOTH_CONNECT))
         val filter = IntentFilter().apply { ACTIONS.forEach(::addAction) }
         // Protected system broadcasts sent by the Bluetooth stack, which is not our uid: exported.
