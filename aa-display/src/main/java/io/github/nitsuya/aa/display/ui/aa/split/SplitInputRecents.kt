@@ -27,6 +27,7 @@ import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.Instances
 import java.lang.reflect.Method
+import androidx.core.graphics.scale
 
 internal class SplitInputRecents(private val c: SplitDisplayController) {
 
@@ -347,7 +348,7 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
         val topActivity = taskInfo.topActivity ?: return null
         if (SplitChromePackages.BOUNCE_EXCLUDED.contains(topActivity.packageName)) return null
         val cacheKey = topActivity.flattenToString()
-        var taskDescription = taskInfo.taskDescription
+        val taskDescription = taskInfo.taskDescription
             ?: Instances.iActivityTaskManager.getTaskDescription(taskInfo.taskId)
             ?: return null
         var icon = runCatching { taskDescription.icon }.getOrNull()
@@ -406,7 +407,7 @@ internal class SplitInputRecents(private val c: SplitDisplayController) {
             val scale = maxEdgePx.toFloat() / maxDim
             val w = (src.width * scale).toInt().coerceAtLeast(1)
             val h = (src.height * scale).toInt().coerceAtLeast(1)
-            val scaled = Bitmap.createScaledBitmap(soft, w, h, true)
+            val scaled = soft.scale(w, h)
             if (soft !== src && soft !== scaled) soft.recycle()
             return scaled
         }

@@ -1,7 +1,7 @@
 package io.github.nitsuya.aa.display.xposed.cluster
 
+import android.annotation.SuppressLint
 import android.content.ContentResolver
-import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
@@ -17,6 +17,7 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import androidx.core.net.toUri
 
 /**
  * Album-art bridge: system_server encodes JPEG under `/data/system` and keeps an
@@ -45,7 +46,6 @@ object ClusterArtStore {
 
     private const val METADATA_KEY_ALBUM_ART = "android.media.metadata.ALBUM_ART"
     private const val METADATA_KEY_ART = "android.media.metadata.ART"
-    private const val METADATA_KEY_DISPLAY_ICON = "android.media.metadata.DISPLAY_ICON"
     private const val METADATA_KEY_ALBUM_ART_URI = "android.media.metadata.ALBUM_ART_URI"
     private const val METADATA_KEY_ART_URI = "android.media.metadata.ART_URI"
     private const val METADATA_KEY_DISPLAY_ICON_URI = "android.media.metadata.DISPLAY_ICON_URI"
@@ -62,13 +62,6 @@ object ClusterArtStore {
     private var pendingClearMediaId: String? = null
 
     private var pendingClearRunnable: Runnable? = null
-
-    /** gearhead-side decode cache; invalidated when [SETTINGS_ART_REVISION] changes. */
-    @Volatile
-    private var cachedBitmap: Bitmap? = null
-
-    @Volatile
-    private var cachedRevision: Long = 0L
 
     /**
      * system_server in-memory JPEG for Binder fetch. Gearhead / `:cluster` cannot
@@ -102,9 +95,9 @@ object ClusterArtStore {
     private var artMissMediaId: String = ""
     private var artMissCount: Int = 0
 
-    fun artFile(): File = File(ART_PATH)
+    private fun artFile(): File = File(ART_PATH)
 
-    fun readRevision(resolver: ContentResolver): Long =
+    private fun readRevision(resolver: ContentResolver): Long =
         Settings.Global.getString(resolver, SETTINGS_ART_REVISION)?.toLongOrNull() ?: 0L
 
     /** True when [mediaId] has no on-disk JPEG yet (or cache key still points elsewhere). */
@@ -286,46 +279,9 @@ object ClusterArtStore {
         return bytes.copyOf()
     }
 
-    fun loadBitmap(resolver: ContentResolver? = null): Bitmap? {
-        val revision = resolver?.let { readRevision(it) } ?: 0L
-        if (revision > 0L) {
-            cachedBitmap?.takeIf { !it.isRecycled && cachedRevision == revision }?.let { return it }
-        }
-        // Prefer in-memory JPEG (system_server) — avoids SELinux open of [ART_PATH].
-        val fromMem = cachedJpegBytes?.takeIf { it.isNotEmpty() }?.let { bytes ->
-            runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
-        }?.takeIf { !it.isRecycled }
-        if (fromMem != null) {
-            evictBitmapCache()
-            cachedBitmap = fromMem
-            cachedRevision = if (revision > 0L) revision else System.currentTimeMillis()
-            return fromMem
-        }
-        val file = artFile()
-        if (!file.exists() || file.length() <= 0L) {
-            evictBitmapCache()
-            return null
-        }
-        if (revision <= 0L) {
-            val mtime = file.lastModified()
-            cachedBitmap?.takeIf { !it.isRecycled && cachedRevision == mtime }?.let { return it }
-        }
-        evictBitmapCache()
-        val decoded = runCatching { BitmapFactory.decodeFile(file.absolutePath) }
-            .getOrNull()
-            ?.takeIf { !it.isRecycled }
-            ?: return null
-        cachedBitmap = decoded
-        cachedRevision = if (revision > 0L) revision else file.lastModified()
-        return decoded
-    }
-
-    fun loadBitmap(context: Context): Bitmap? = loadBitmap(context.contentResolver)
-
     fun clear(resolver: ContentResolver) {
         cancelPendingClear()
         val gen = ++publishGen
-        evictBitmapCache()
         cachedJpegBytes = null
         cachedJpegMediaId = ""
         lastArtPackage = ""
@@ -385,6 +341,7 @@ object ClusterArtStore {
         return jpegBytes
     }
 
+    @SuppressLint("SetWorldReadable")
     private fun atomicWriteJpeg(jpegBytes: ByteArray): Boolean {
         val tmp = File(ART_TMP_PATH)
         val file = artFile()
@@ -455,12 +412,6 @@ object ClusterArtStore {
         pendingClearMediaId = null
     }
 
-    private fun evictBitmapCache() {
-        // Never recycle — gearhead / SystemUI may still parcel or draw the previous Bitmap.
-        cachedBitmap = null
-        cachedRevision = 0L
-    }
-
     private fun extractSessionBitmaps(metadata: MediaMetadata?): Bitmap? {
         if (metadata == null) return null
         // Prefer album keys — DISPLAY_ICON is often QQ's grey note placeholder.
@@ -516,7 +467,7 @@ object ClusterArtStore {
             ?.takeIf { it.isNotEmpty() }
             ?.let { loadUri(resolver, it) }
             ?.let { return it }
-        metadata.description?.iconUri?.toString()
+        metadata.description.iconUri?.toString()
             ?.takeIf { it.isNotEmpty() }
             ?.let { loadUri(resolver, it) }
             ?.let { return it }
@@ -535,7 +486,7 @@ object ClusterArtStore {
     }
 
     private fun loadUri(resolver: ContentResolver, uriString: String): Bitmap? {
-        val uri = Uri.parse(uriString)
+        val uri = uriString.toUri()
         return decodeSampled(resolver, uri)
             ?: runCatching {
                 resolver.openFileDescriptor(uri, "r").use { pfd ->

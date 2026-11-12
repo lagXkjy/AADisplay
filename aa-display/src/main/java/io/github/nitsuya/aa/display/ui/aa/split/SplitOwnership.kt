@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
+import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.ActivityTaskManager
 import android.content.ComponentName
@@ -122,6 +123,8 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         packageName?.let { c.mVdPackages.remove(it) }
     }
 
+    // Best-effort: module does not hold REORDER_TASKS (not in manifest); failures are caught.
+    @SuppressLint("MissingPermission")
     fun reclaimOwnedPackages(reason: String) {
         if (c.mIsDestroying) return
         if (SystemClock.uptimeMillis() < c.mSuppressReclaimUntil) return
@@ -291,6 +294,8 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         return base?.packageName == packageName
     }
 
+    // Best-effort: module does not hold REORDER_TASKS (not in manifest); failures are caught.
+    @SuppressLint("MissingPermission")
     fun vacateOtherPanesHolding(packageName: String, keepPane: Int) {
         val toPromote = mutableListOf<Int>()
         for (p in intArrayOf(SplitPane.PRIMARY, SplitPane.SECONDARY)) {
@@ -380,8 +385,8 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         info.topActivity?.packageName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
         info.baseActivity?.packageName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
         info.origActivity?.packageName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
-        info.baseIntent?.component?.packageName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
-        return info.baseIntent?.`package`?.trim()?.takeIf { it.isNotEmpty() }
+        info.baseIntent.component?.packageName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        return info.baseIntent.`package`?.trim()?.takeIf { it.isNotEmpty() }
     }
 
     private fun isEmptyRecentShell(info: ActivityManager.RecentTaskInfo): Boolean {
@@ -412,6 +417,8 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
         return false
     }
 
+    // Best-effort: module does not hold REORDER_TASKS (not in manifest); failures are caught.
+    @SuppressLint("MissingPermission")
     fun bringTaskToFront(
         taskId: Int,
         /**
@@ -611,6 +618,8 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
      * Bring the current stack-front task to the foreground for each pane.
      * @param settleAv when false, skip cross-pane MediaSession arbitration (close / swap fast path).
      */
+    // Best-effort: module does not hold REORDER_TASKS (not in manifest); failures are caught.
+    @SuppressLint("MissingPermission")
     fun promoteStackFronts(panes: Collection<Int>, settleAv: Boolean = true) {
         val rootsCache = HashMap<Int, List<ActivityTaskManager.RootTaskInfo>>(2)
         val fronts = ArrayList<String>(2)

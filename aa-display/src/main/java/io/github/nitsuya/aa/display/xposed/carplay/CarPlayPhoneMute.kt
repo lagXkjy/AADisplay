@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.xposed.carplay
 
+import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -443,6 +444,7 @@ internal class CarPlayPhoneMute(
      * remotesubmix capture still hears the mix. Includes A2DP — a phone still bonded to
      * the car over BT music while CarPlay WiFi audio runs is a common 「重音」 source.
      */
+    @SuppressLint("PrivateApi")
     private fun muteLocalPlaybackDevices(): Boolean {
         return try {
             val audioSystem = Class.forName("android.media.AudioSystem")
@@ -492,6 +494,7 @@ internal class CarPlayPhoneMute(
         }
     }
 
+    @SuppressLint("PrivateApi")
     private fun restoreLocalPlaybackDevices() {
         val saved = savedSpeakerVolumes ?: return
         val streams = savedSpeakerStreamTypes?.toList()

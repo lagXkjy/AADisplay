@@ -132,12 +132,7 @@ object CarPlayBootArm {
                 .setAction(CarPlayConsts.ACTION_CONNECT)
                 // Boot: HostRuntime is started inside FGS; trampoline Activity often hits BAL.
                 .putExtra("launchHostTrampoline", false)
-            if (Build.VERSION.SDK_INT >= 26) {
-                app.startForegroundService(intent)
-            } else {
-                @Suppress("DEPRECATION")
-                app.startService(intent)
-            }
+            app.startForegroundService(intent)
             log(TAG, "start FGS reason=$reason")
         } catch (e: Throwable) {
             lastArmElapsed.set(0L)
@@ -160,7 +155,8 @@ object CarPlayBootArm {
      * Best-effort read of the app's channel file (often unreadable from
      * system_server — 0700 CE). Null when missing or denied.
      */
-    private fun readChannelFile(app: Context): Int? {
+    @SuppressLint("SdCardPath")
+    private fun readChannelFile(): Int? {
         val userId = Process.myUid() / 100_000
         val paths = listOf(
             "/data/user/$userId/$TARGET_PACKAGE/files/aadisplay_carplay_channel",
@@ -193,7 +189,7 @@ object CarPlayBootArm {
             EgressChannel.CHANNEL_AAP -> return false
         }
         // First boot / pre-mirror: best-effort app file (often unreadable from uid 1000).
-        when (readChannelFile(app)) {
+        when (readChannelFile()) {
             EgressChannel.CHANNEL_CARPLAY -> {
                 EgressChannelMirror.write(EgressChannel.CHANNEL_CARPLAY)
                 return true

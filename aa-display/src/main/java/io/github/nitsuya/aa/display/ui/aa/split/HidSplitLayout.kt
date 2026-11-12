@@ -140,12 +140,6 @@ data class HidSplitLayout(
         else -> null
     }
 
-    fun displayIdOf(pane: Int): Int = when (pane) {
-        SplitPane.PRIMARY -> primaryDisplayId
-        SplitPane.SECONDARY -> secondaryDisplayId
-        else -> android.view.Display.INVALID_DISPLAY
-    }
-
     fun otherPane(pane: Int): Int =
         if (pane == SplitPane.PRIMARY) SplitPane.SECONDARY else SplitPane.PRIMARY
 

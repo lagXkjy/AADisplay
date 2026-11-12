@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.xposed.carplay
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -83,6 +84,7 @@ internal object CarPlayMediaProjectionAcquire {
      * One UI: `(service, type, uid, packageName, targetSdk, isPrivileged)`.
      * AOSP: `(service, uid, packageName, type, isPermanentGrant)` or similar.
      */
+    @SuppressLint("PrivateApi")
     private fun createProjectionDirect(ctx: Context): MediaProjection? {
         val service = resolveMediaProjectionManagerService() ?: run {
             log(TAG, "MediaProjectionManagerService not found for direct construct")
@@ -178,6 +180,7 @@ internal object CarPlayMediaProjectionAcquire {
         return wrapIMediaProjection(ctx, iProj)
     }
 
+    @SuppressLint("PrivateApi")
     private fun resolveMediaProjectionManagerService(): Any? {
         runCatching {
             val localServices = Class.forName("com.android.server.LocalServices")
@@ -224,6 +227,7 @@ internal object CarPlayMediaProjectionAcquire {
         return null
     }
 
+    @SuppressLint("PrivateApi")
     private fun wrapIMediaProjection(ctx: Context, iProj: Any): MediaProjection? {
         val iProjClass = Class.forName("android.media.projection.IMediaProjection")
         val impl = when {

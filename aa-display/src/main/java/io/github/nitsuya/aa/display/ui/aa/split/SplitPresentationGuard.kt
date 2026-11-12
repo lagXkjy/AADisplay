@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
+import android.annotation.SuppressLint
 import android.view.Display
 import android.view.WindowManager
 import io.github.nitsuya.aa.display.xposed.util.tryOrNull
@@ -52,6 +53,7 @@ internal object SplitPresentationGuard {
         }
     }
 
+    @SuppressLint("DiscouragedPrivateApi", "PrivateApi")
     private fun evictOnDisplay(
         c: SplitDisplayController,
         displayId: Int,

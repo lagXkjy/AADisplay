@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.ui.main
 
+import android.annotation.SuppressLint
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -28,6 +29,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     override fun bind(inflater: LayoutInflater): ActivityMainBinding =
         ActivityMainBinding.inflate(inflater)
 
+    @SuppressLint("SetTextI18n")
     override fun initData() {
         val buildTime = CoreApi.buildTime
         when (buildTime) {
@@ -142,6 +144,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         updateVdDensityStatus(configured, carPlay)
     }
 
+    @SuppressLint("SetTextI18n")
     private fun updateVdDensityLabels(carPlay: Boolean) {
         val aap = EgressChannel.useAapEgress(this)
         when {

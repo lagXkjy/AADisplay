@@ -170,7 +170,10 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
                 secondaryOk = c.startActivityOnPane(secondaryFront, 0, SplitPane.SECONDARY) || secondaryOk
                 finishRestoreLastSplit(snap, primaryStack, secondaryStack, primaryOk, secondaryOk)
             }
-            else -> finishRestoreLastSplit(snap, primaryStack, secondaryStack, false, false)
+            else -> finishRestoreLastSplit(snap, primaryStack, secondaryStack,
+                primaryOk = false,
+                secondaryOk = false
+            )
         }
     }
 

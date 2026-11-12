@@ -26,11 +26,6 @@ object SplitPane {
      */
     const val FULLSCREEN_EXIT_RATIO = 0.15f
 
-    /**
-     * Peel inset from the outer screen edge. 0 = flush adsorb to the frame
-     * (an 80dp inset left the short tab floating in content).
-     */
-    const val FULLSCREEN_PEEL_INSET_DP = 0
 
     /**
      * Minimum peel hit strip along the short axis when flush to the edge, so rail-band
@@ -164,7 +159,7 @@ object SplitPane {
         if (!wasDragging) return true
         if (absRatio <= DIVIDER_TAP_RATIO_SLOP) return true
         if (dist > touchSlop * 3f) return false
-        return absRatio <= DIVIDER_TAP_RATIO_SLOP
+        return false
     }
 
     /**

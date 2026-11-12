@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.util.Log
 import java.io.File
+import androidx.core.content.edit
 
 /**
  * User-selected video egress channel, persisted app-side.
@@ -81,9 +82,9 @@ object EgressChannel {
         }
         try {
             app.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
-                .edit()
-                .putInt(LEGACY_KEY, value)
-                .commit()
+                .edit(commit = true) {
+                    putInt(LEGACY_KEY, value)
+                }
         } catch (_: Throwable) {
         }
     }

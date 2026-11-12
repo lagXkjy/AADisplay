@@ -46,6 +46,7 @@ import io.github.nitsuya.aa.display.xposed.util.logDebug
 import io.github.nitsuya.aa.display.xposed.util.CommonContextWrapper
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
@@ -1422,10 +1423,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
 }
 
 /** Main-thread coroutine shorthand (singleton service, process-lifetime scope). */
+@OptIn(DelicateCoroutinesApi::class)
 private fun runMain(block: suspend CoroutineScope.() -> Unit) =
     GlobalScope.launch(Dispatchers.Main, block = block)
 
 /** IO-thread coroutine shorthand (singleton service, process-lifetime scope). */
+@OptIn(DelicateCoroutinesApi::class)
 private fun runIO(block: suspend CoroutineScope.() -> Unit) =
     GlobalScope.launch(Dispatchers.IO, block = block)
 

@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.xposed.carplay
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
@@ -57,6 +58,7 @@ internal object CarPlayAudioPolicy {
      * players leave the phone speaker; capture via [createAudioRecordSource].
      * Soft-fails → caller falls back to playback-capture / remotesubmix.
      */
+    @SuppressLint("PrivateApi")
     fun openRenderArm(ctx: Context, am: AudioManager?): AudioPolicyRenderArm? {
         return try {
             val mixClass = Class.forName("android.media.audiopolicy.AudioMix")
@@ -203,6 +205,7 @@ internal object CarPlayAudioPolicy {
      * [sharedProjection] must be the media tap's live projection when APC is arming —
      * never create a second MediaProjection (stops the current one → silent APC).
      */
+    @SuppressLint("PrivateApi")
     fun openSpeechMix(
         ctx: Context,
         am: AudioManager?,
@@ -270,7 +273,7 @@ internal object CarPlayAudioPolicy {
             }
             // Speech policy does not retain projection; if we created one solely for
             // register, stop it only when media is not using projection capture.
-            if (createdProj != null && sharedProjection == null) {
+            if (createdProj != null) {
                 runCatching { createdProj.stop() }
             }
             val record = createAudioRecordSource(policy, mix)
@@ -291,6 +294,7 @@ internal object CarPlayAudioPolicy {
      * Reflect [AudioMix] for matching [usages]. When [deviceSystemType] is set (RENDER),
      * binds that sink via [AudioMix.Builder.setDevice]; LOOP_BACK-only mixes omit device.
      */
+    @SuppressLint("PrivateApi")
     fun buildAudioMix(
         am: AudioManager?,
         usages: IntArray,
@@ -382,6 +386,7 @@ internal object CarPlayAudioPolicy {
      * So poke Builder fields `mDeviceSystemType` / `mDeviceAddress` first (same state
      * setDevice would write), then fall through to sink Info / Attributes / int,String.
      */
+    @SuppressLint("PrivateApi")
     private fun bindMixRenderDevice(
         am: AudioManager?,
         mixBuilderClass: Class<*>,
@@ -475,18 +480,19 @@ internal object CarPlayAudioPolicy {
         }
         if (remotes.isNotEmpty()) {
             return remotes.firstOrNull {
-                it.address.isNullOrEmpty() || it.address == preferredAddress
+                it.address.isEmpty() || it.address == preferredAddress
             } ?: remotes.first()
         }
         return seen.firstOrNull { d ->
             if (!d.isSink) return@firstOrNull false
             val name = d.productName?.toString().orEmpty()
-            (d.address == preferredAddress || d.address == "0" || d.address.isNullOrEmpty()) &&
+            (d.address == preferredAddress || d.address == "0" || d.address.isEmpty()) &&
                 (name.contains("Remote Submix", ignoreCase = true) ||
                     name.contains("remote_submix", ignoreCase = true))
         }
     }
 
+    @SuppressLint("PrivateApi")
     fun registerAudioPolicy(
         am: AudioManager?,
         ctx: Context,

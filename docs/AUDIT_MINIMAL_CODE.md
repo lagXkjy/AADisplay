@@ -71,3 +71,68 @@ manifest 已补 `xposedinit` meta-data（修复 LSPosed 显示 Legacy）。资�
 | F5 | `aap/cert/AaApkKeyExtractor.kt` | `Candidate.saltOff`/`certOff` 两字段 + 2 处构造参数 | ✅ 已删（从未被读；`cand.dex/salt/enc` 活） |
 
 合计净 **-12 行**，不触及 Binder 契约 / ordinal / 反射 / 持久化 key，零行为影响。
+
+## G. 2026-12 轮：`ClusterArtStore` Bitmap 缓存死链（✅ 已删，assembleDebug 通过）
+
+历史遗留：早期消费方曾直接取 Bitmap，后统一为 JPEG 字节跨进程（`loadJpegBytes` / `CoreApi.getClusterArtJpeg`），Bitmap 解码缓存整链成孤儿。
+
+| # | 位置 | 内容 | 状态 |
+|---|------|------|------|
+| G1 | `ClusterArtStore.loadBitmap(resolver)` + `loadBitmap(context)` | 全仓 0 调用 | ✅ 已删 |
+| G2 | `cachedBitmap` / `cachedRevision` 字段 + `evictBitmapCache()`（+ `clear()` 内调用） | 仅 G1 读写 | ✅ 已删 |
+| G3 | `readRevision` / `artFile` 可见性 `fun` → `private fun` | 0 外部引用（消费方自读 Settings key / 常量） | ✅ 已降 |
+| G4 | `METADATA_KEY_DISPLAY_ICON` 常量 | 0 引用（仅 `_URI` 变体存活；顺带清理） | ✅ 已删 |
+
+净 **-52 行**。消费链不变：`CoreManagerService` → `loadJpegBytes`；`AapNowPlaying` / `CarPlayNowPlaying` 自读 `SETTINGS_ART_MEDIA_ID` / `SETTINGS_ART_REVISION`；Settings.Global key 与 `/data/system/aadisplay_cluster_art.jpg` 文件契约均未动。
+
+## H. 2026-12 轮：CarPlayAudioCapture 过期链路清理（✅ 已删，assembleDebug 通过）
+
+
+
+背景：`01a9e88`（音频通道恢复 REMOTE_SUBMIX）arm 时**无条件**置
+
+`audioPolicyRenderUnavailable=true`，但 watchdog 的 ring 溢出分支仍走 in-place RENDER
+
+升级（`88533d6` 把 `11ac603` 引入的 force rearm 恢复替换掉了）⇒ 升级门恒关、整条
+
+RENDER 升级链路不可达；同时 11ac603 的溢出恢复（force rearm）随之静默丢失。
+
+
+
+| # | 内容 | 状态 |
+
+|---|------|------|
+
+| H1 | `tryUpgradeToAudioPolicyRenderLocked`（~90 行；唯一调用方即恒死的溢出升级分支） | ✅ 已删 |
+
+| H2 | `audioPolicyRenderUnavailable` 字段 + arm 置 true / disarm 置 false / 升级置 false 三写点 | ✅ 已删 |
+
+| H3 | watchdog 溢出分支：恒死 in-place 升级 → **恢复 11ac603 原行为** force rearm（teardown + 重建 tap + 清 ring；REARM_MIN_GAP_MS 限速、清环后 dropDelta 归零，自愈限频） | ✅ **本轮唯一行为变化**（旧行为为 no-op） |
+
+| H4 | `mediaProjection` 字段（现行 arm 恒 null）+ `openSpeechRecord` 读字段 | ✅ 已删（改传 null ⇔ 现值，等价；Acquire 仍经 `CarPlayAudioPolicy.openSpeechMix` 活用） |
+
+| H5 | `startMediaRecordLocked` 休眠 playback-capture fallback + Pair 第二值（恒≡入参） | ✅ 已删（签名改直返 record） |
+
+| H6 | 不可达 "audio-policy-render" 分支：watchdog render 静音日志、`dropStandaloneSpeechPolicy` 的 render 共享判据、applyArmMute render 分支 | ✅ 已删 |
+
+| H7 | 过期注释/KDoc：`Never deferred-upgrade away`、`Next session may retry RENDER`、`to retry audio-policy-render`、`A projection left over`、类头 RENDER/APC deferred-upgrade 段等 | ✅ 改写 |
+
+
+
+保留（有意 dormant，未动）：`CarPlayPhoneMute` 整机 + 类内 `playback-capture` mute 分支
+
+（split 文档明确保留的 dormant 策略，另见 [CARPLAY_AUDIOCAPTURE_SPLIT.md](CARPLAY_AUDIOCAPTURE_SPLIT.md) §3.3）。
+
+
+
+| # | 遗留记录 | 说明 |
+
+|---|---------|------|
+
+| H8 | `CarPlayAudioPolicy.openRenderArm` + `AudioPolicyRenderArm` | H1 删除后全仓**零引用** helper。是否删除待与 split 文档 unused-helpers 保留决策一并自定夺，本轮未动（跨文件） |
+
+
+
+⚠️ 回归重点（H3 行为变化）：无线 CarPlay 音乐播放 + system_server 负载尖峰（ring 溢出
+
+≥50KB/30s）→ 应见 `force rearm` 日志 + ≤1 次短重建，**不得**循环 rearm。

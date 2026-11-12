@@ -86,7 +86,7 @@ object CarPlayProcessBoost {
     private fun applyNow() {
         val am = activityManager ?: return
         val pid = try {
-            am.getRunningAppProcesses()
+            am.runningAppProcesses
                 ?.firstOrNull { it.processName == TARGET_PACKAGE }?.pid ?: -1
         } catch (e: Throwable) {
             -1

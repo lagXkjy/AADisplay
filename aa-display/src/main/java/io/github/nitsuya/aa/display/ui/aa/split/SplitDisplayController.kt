@@ -1304,14 +1304,6 @@ class SplitDisplayController(
         }
     }
 
-    /**
-     * Swap user root-task stacks between PRIMARY and SECONDARY VirtualDisplays.
-     * Surfaces / VD identities stay fixed; packages, ownership, focus, and ratio follow the apps.
-     */
-    fun swapPanes(): Boolean {
-        return ownership.runOnHandlerBlocking(false) { swapPanesOnHandler() }
-    }
-
     /** Divider / steering tap — jump ahead of ratio settle / reclaim on the handler. */
     fun swapPanesFromUser() {
         postUserAction {

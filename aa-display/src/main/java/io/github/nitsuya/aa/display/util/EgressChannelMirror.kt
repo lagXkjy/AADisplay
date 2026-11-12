@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.util
 
+import android.annotation.SuppressLint
 import android.util.Log
 import io.github.nitsuya.aa.display.egress.EgressChannel
 import java.io.File
@@ -56,6 +57,7 @@ object EgressChannelMirror {
         }
     }
 
+    @SuppressLint("SetWorldReadable")
     private fun writeFile(channel: Int): Boolean {
         return try {
             val f = File(PATH)

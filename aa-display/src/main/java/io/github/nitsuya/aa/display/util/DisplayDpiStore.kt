@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.util
 
+import android.annotation.SuppressLint
 import android.content.ContentResolver
 import android.provider.Settings
 import android.util.Log
@@ -129,6 +130,7 @@ object DisplayDpiStore {
 
     private fun updateFile(mutate: (Properties) -> Unit): Boolean {
         val file = File(PATH)
+        @SuppressLint("SetWorldReadable")
         fun writeOnce(): Boolean {
             val props = readProps()
             mutate(props)
@@ -182,6 +184,7 @@ object DisplayDpiStore {
         }
     }
 
+    @SuppressLint("SetWorldReadable")
     private fun clearFile(): Boolean {
         return try {
             val props = readProps()

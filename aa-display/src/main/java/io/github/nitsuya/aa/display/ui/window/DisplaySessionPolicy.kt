@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.ui.window
 
+import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -30,6 +31,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * AA display session policy: Delay Destroy (180s) and keep-awake for split pane VDs plus the
@@ -186,11 +188,6 @@ class DisplaySessionPolicy(
             }
         }
     }
-
-    /** @see onSecondaryEgressLiveChanged */
-    fun onCarPlaySessionLiveChanged(live: Boolean) = onSecondaryEgressLiveChanged(live)
-
-    fun isCarPlaySessionLive(): Boolean = carPlaySessionLive
 
     private var mKeepAwakeJob: Job? = null
     private var mPseudoOffJob: Job? = null
@@ -358,7 +355,7 @@ class DisplaySessionPolicy(
                             )
                         }
                         if (!lock.isHeld) {
-                            lock.acquire()
+                            lock.acquire(10*60*1000L /*10 minutes*/)
                         }
                     } catch (e: Throwable) {
                         log(TAG, "VD Monitor acquire failed display=$displayId:", e)
@@ -464,7 +461,7 @@ class DisplaySessionPolicy(
         if (mKeepAwakeJob?.isActive == true) return
         mKeepAwakeJob = mPolicyScope.launch {
             while (isActive) {
-                delay(keepAwakeIntervalMs())
+                delay(keepAwakeIntervalMs().milliseconds)
                 val phonePanelOff = !isDefaultDisplayOn()
                 val anyPaneOff = anyPanePoweredOff()
                 keepVirtualDisplayAwake("heartbeat", forceWake = phonePanelOff || anyPaneOff)
@@ -485,7 +482,7 @@ class DisplaySessionPolicy(
         if (mPseudoOffJob?.isActive == true) return
         mPseudoOffJob = mPolicyScope.launch {
             while (isActive) {
-                delay(PSEUDO_OFF_POLL_MS)
+                delay(PSEUDO_OFF_POLL_MS.milliseconds)
                 maybeForcePhonePanelOff()
             }
         }
@@ -663,6 +660,7 @@ class DisplaySessionPolicy(
      * Force the phone panel off while AA pane VDs stay powered.
      * Uses [IPowerManager.goToSleep] (displayId overload when available).
      */
+    @SuppressLint("DiscouragedPrivateApi")
     private fun forcePhonePanelOff(reason: String): Boolean {
         if (!isPhoneInteractive()) return false
         val identity = Binder.clearCallingIdentity()
@@ -734,7 +732,7 @@ class DisplaySessionPolicy(
         mScreenOffReassertJob = mPolicyScope.launch {
             // First assert already ran from onReceive; reinforce while DreamManager settles.
             repeat(SCREEN_OFF_REASSERT_COUNT) {
-                delay(SCREEN_OFF_REASSERT_INTERVAL_MS)
+                delay(SCREEN_OFF_REASSERT_INTERVAL_MS.milliseconds)
                 if (!isActive) return@launch
                 keepVirtualDisplayAwake("phone-SCREEN_OFF-burst", forceWake = true)
             }
@@ -813,6 +811,7 @@ class DisplaySessionPolicy(
      * a fresh OWN_DISPLAY_GROUP VD (or after teardown). That is a soft race — already
      * caught here; never let it spam or abort keep-awake. Retry briefly after create.
      */
+    @SuppressLint("DiscouragedPrivateApi")
     private fun userActivityOnDisplay(displayId: Int, event: Int): Boolean {
         if (displayId == Display.INVALID_DISPLAY) return false
         try {
@@ -867,7 +866,7 @@ class DisplaySessionPolicy(
         if (mPowerGroupRetryJob?.isActive == true) return
         mPowerGroupRetryJob = mPolicyScope.launch {
             repeat(POWER_GROUP_RETRY_MAX) {
-                delay(POWER_GROUP_RETRY_DELAY_MS)
+                delay(POWER_GROUP_RETRY_DELAY_MS.milliseconds)
                 if (!isActive) return@launch
                 val ids = aaPaneDisplayIds()
                 if (ids.isEmpty()) return@launch
@@ -966,7 +965,7 @@ class DisplaySessionPolicy(
         mDestroyJob = mMainScope.launch {
             delay(DELAY_DESTROY_SEC * 1000L)
             while (carPlaySessionLive) {
-                delay(CP_LIVE_RECHECK_MS)
+                delay(CP_LIVE_RECHECK_MS.milliseconds)
             }
             mPendingDestroySucceed = null
             resetPresentationRecoveryState()

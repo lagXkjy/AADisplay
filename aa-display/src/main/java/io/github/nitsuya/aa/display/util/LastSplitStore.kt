@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.util
 
+import android.annotation.SuppressLint
 import android.content.ContentResolver
 import android.provider.Settings
 import android.util.Log
@@ -261,6 +262,7 @@ object LastSplitStore {
         )
     }
 
+    @SuppressLint("SetWorldReadable")
     private fun updateRatioInFile(ratio: Float): Boolean {
         val file = File(PATH)
         if (!file.isFile) return false
@@ -294,6 +296,7 @@ object LastSplitStore {
         props.setProperty(FILE_LEFT_STACK, pStack)
         props.setProperty(FILE_RIGHT_STACK, sStack)
         val file = File(PATH)
+        @SuppressLint("SetWorldReadable")
         fun writeOnce(): Boolean {
             file.parentFile?.mkdirs()
             FileOutputStream(file).use { out ->
