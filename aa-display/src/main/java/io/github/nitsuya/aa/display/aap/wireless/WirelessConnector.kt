@@ -8,10 +8,14 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
 import android.net.InetAddresses
 import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.ParcelUuid
+import io.github.nitsuya.aa.display.CoreApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import net.prototux.aare.aap.AapLog
@@ -123,6 +127,8 @@ class WirelessConnector(context: Context, private val log: AapLog, private val o
         @Volatile private var network: HeadUnitNetwork? = null
         @Volatile private var tcp: Socket? = null
         @Volatile private var transport: Transport? = null
+        @Volatile private var cellularCb: ConnectivityManager.NetworkCallback? = null
+        @Volatile private var cellularSweep: Thread? = null
 
         fun run(): Transport {
             requirePermissions(requiredPermissions())
@@ -138,6 +144,8 @@ class WirelessConnector(context: Context, private val log: AapLog, private val o
                 val net = HeadUnitNetwork(context, log, options.joinTimeoutMs, options.matchBssid).also { network = it }
                 val (ip, port) = bootstrap(socket, net)
                 val headUnitNetwork = net.network ?: throw WirelessException("lost the head unit's network")
+                holdCellularForInternet()
+                startCellularSweep()
                 val tcpSocket = connectTcp(headUnitNetwork, ip, port)
                 val name = "wifi \"${net.ssid}\" $ip:$port (${runCatching { device.name }.getOrNull() ?: device.address})"
                 val t = WirelessTransport(SocketTransport(tcpSocket, name), ::abort)
@@ -164,15 +172,83 @@ class WirelessConnector(context: Context, private val log: AapLog, private val o
         }
 
         /**
-         * Releases TCP, RFCOMM and the network request (last, so a blocked join() wakes up). Safe to call
-         * more than once: every close is idempotent.
+         * Releases TCP, RFCOMM and the network request (last, so a blocked join() wakes up).
+         * Safe to call more than once: every close is idempotent.
          */
         private fun releaseAll() {
             transport?.let { runCatching { it.close() } }
             tcp?.let { runCatching { it.close() } }
             bootstrap?.close()
             rfcomm?.let { runCatching { it.close() } }
+            releaseCellularForInternet()
             network?.release()
+        }
+
+        /**
+         * Keep a cellular NetworkAgent held while the phone rides the head unit's no-internet
+         * hotspot, so the system default route for INTERNET stays on mobile data (maps / WeChat
+         * / updates in the split panes) — the same posture the CarPlay handoff takes
+         * (docs/CARPLAY_WIFI_CELLULAR.md). Released with the link.
+         */
+        private fun holdCellularForInternet() {
+            if (cellularCb != null) return
+            val cm = context.getSystemService(ConnectivityManager::class.java) ?: return
+            val request = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    log.i("wireless: cellular held for internet while on the head unit's Wi-Fi")
+                }
+
+                override fun onLost(network: Network) {
+                    log.w("wireless: cellular hold lost")
+                }
+            }
+            try {
+                cm.requestNetwork(request, cb)
+                cellularCb = cb
+            } catch (e: Throwable) {
+                log.w("wireless: cellular hold failed: ${e.message}")
+            }
+        }
+
+        private fun releaseCellularForInternet() {
+            cellularSweep?.interrupt()
+            cellularSweep = null
+            cellularCb?.let { cb ->
+                runCatching {
+                    context.getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb)
+                }
+            }
+            cellularCb = null
+        }
+
+        /**
+         * Re-assert the system_server prefer-cellular policy (needs the Xposed module in
+         * system_server): OEMs may re-stamp ACCEPT_UNVALIDATED on NetworkAgent recreation,
+         * so the CarPlay handoff sweeps it at 0 / 1.5 s / 4 s. Same here.
+         */
+        private fun startCellularSweep() {
+            if (cellularSweep != null) return
+            val t = thread(name = "aa-wireless-cellular", isDaemon = true) {
+                for (delayMs in longArrayOf(0L, 1_500L, 4_000L)) {
+                    if (aborted.get()) return@thread
+                    try {
+                        Thread.sleep(delayMs)
+                    } catch (_: InterruptedException) {
+                        return@thread
+                    }
+                    if (aborted.get()) return@thread
+                    try {
+                        CoreApi.preferCellularOverUnvalidatedWifi()
+                    } catch (e: Throwable) {
+                        log.w("wireless: preferCellularOverUnvalidatedWifi failed: ${e.message}")
+                    }
+                }
+            }
+            cellularSweep = t
         }
 
         private fun openRfcomm(adapter: BluetoothAdapter): BluetoothSocket {
@@ -208,7 +284,15 @@ class WirelessConnector(context: Context, private val log: AapLog, private val o
         private fun bootstrap(socket: BluetoothSocket, net: HeadUnitNetwork): Pair<String, Int> {
             val ready = CompletableFuture<Pair<String, Int>>()
             val b = WirelessBootstrap(socket.inputStream, socket.outputStream, object : WirelessBootstrap.Listener {
-                override fun connectWifi(credentials: WifiCredentials): JoinResult = net.join(credentials)
+                override fun connectWifi(credentials: WifiCredentials): JoinResult {
+                    // Persist the head unit's AP before joining (CarPlay handoff posture):
+                    // noInternetAccessExpected + autojoin, so the saved network is never the
+                    // phone's default internet route — cellular keeps the INTERNET traffic.
+                    runCatching {
+                        CoreApi.armCarAccessoryWifi(credentials.ssid, credentials.password)
+                    }.onFailure { log.w("wireless: armCarAccessoryWifi failed: ${it.message}") }
+                    return net.join(credentials)
+                }
                 override fun onReady(ip: String, port: Int) {
                     ready.complete(ip to port)
                 }

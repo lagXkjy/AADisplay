@@ -44,6 +44,13 @@ class CarPlayEventChannel private constructor(
      * on BORROW/TAKE — reclaiming mid-borrow made Audi silent with RTP still flowing.
      */
     private val onModesRestoredToPhone: () -> Unit,
+    /**
+     * MainAudio specifically left the HU and came back to the phone (FM / call →
+     * CarPlay source). The HU's CarPlay audio engine was reset while the other source
+     * was live, so the existing audio stream (old dataPort + key + RTP sequence) is
+     * silently ignored again — the session re-SETUPs the audio streams from here.
+     */
+    private val onMainAudioRestored: () -> Unit,
 ) {
     private val closed = AtomicBoolean(false)
     private val writeLock = Any()
@@ -62,8 +69,12 @@ class CarPlayEventChannel private constructor(
     @Volatile private var audioEntity = ENTITY_PHONE
     @Volatile private var audioPermanent = ENTITY_PHONE
 
-    /** False while HU BORROW/TAKE holds MainAudio — skip phone-owns modesChanged reclaim. */
+    /** True while HU BORROW/TAKE holds MainAudio — skip phone-owns modesChanged reclaim. */
     fun isPhoneOwningMainAudio(): Boolean = audioEntity == ENTITY_PHONE
+
+    /** One-shot flag for the next [handle] after [applyChangeModes] restored MainAudio. */
+    @Volatile
+    private var mainAudioRestoredPending = false
 
     /**
      * iPhone answers accessory `POST /command` (modesChanged, iAPSendMessage)
@@ -267,6 +278,14 @@ class CarPlayEventChannel private constructor(
                         Log.w(CarPlayConsts.TAG, "onModesRestoredToPhone failed", e)
                     }
                 }
+                if (mainAudioRestoredPending) {
+                    mainAudioRestoredPending = false
+                    try {
+                        onMainAudioRestored()
+                    } catch (e: Throwable) {
+                        Log.w(CarPlayConsts.TAG, "onMainAudioRestored failed", e)
+                    }
+                }
                 return encoded
             }
             "requestUI" -> {
@@ -336,7 +355,10 @@ class CarPlayEventChannel private constructor(
                 }
             }
             if (screenBefore != ENTITY_PHONE && screenEntity == ENTITY_PHONE) restored = true
-            if (audioBefore != ENTITY_PHONE && audioEntity == ENTITY_PHONE) restored = true
+            if (audioBefore != ENTITY_PHONE && audioEntity == ENTITY_PHONE) {
+                restored = true
+                mainAudioRestoredPending = true
+            }
         }
         return restored
     }
@@ -703,6 +725,7 @@ class CarPlayEventChannel private constructor(
             onHidKey: (Int, Int, Boolean, Int) -> Unit,
             onIapMessage: (ByteArray) -> Unit = {},
             onModesRestoredToPhone: () -> Unit = {},
+            onMainAudioRestored: () -> Unit = {},
         ): CarPlayEventChannel? {
             if (eventPort <= 0 || eventPort > 65535) {
                 Log.w(CarPlayConsts.TAG, "eventPort invalid=$eventPort")
@@ -735,6 +758,7 @@ class CarPlayEventChannel private constructor(
                     onHidKey = onHidKey,
                     onIapMessage = onIapMessage,
                     onModesRestoredToPhone = onModesRestoredToPhone,
+                    onMainAudioRestored = onMainAudioRestored,
                 )
                 Log.i(
                     CarPlayConsts.TAG,

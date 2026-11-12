@@ -29,6 +29,15 @@ class AapAudioEgress {
     @Volatile private var guidanceWorker: Thread? = null
     private val mediaPumping = AtomicBoolean(false)
     private val guidancePumping = AtomicBoolean(false)
+    private val mediaWatchRunning = AtomicBoolean(false)
+    @Volatile private var mediaWatcher: Thread? = null
+
+    /**
+     * Fired from the watcher thread when the phone is audible but the car hasn't granted
+     * media focus. The session re-requests AUDIO_FOCUS_GAIN at a patient cadence.
+     */
+    @Volatile
+    var onMediaAudible: (() -> Unit)? = null
 
     fun attach(channel: AudioChannel) {
         val cfg = channel.config
@@ -132,6 +141,9 @@ class AapAudioEgress {
         }
         if (mediaFocused.get()) startMediaPump()
         startGuidancePump()
+        if (mediaWatchRunning.compareAndSet(false, true)) {
+            mediaWatcher = thread(name = "aap-audio-watch", isDaemon = true) { runMediaWatch() }
+        }
         Log.i(AapConsts.TAG, "AapAudioEgress started")
     }
 
@@ -139,10 +151,54 @@ class AapAudioEgress {
         if (!running.compareAndSet(true, false)) return
         stopMediaPump()
         stopGuidancePump()
+        if (mediaWatchRunning.compareAndSet(true, false)) {
+            mediaWatcher?.interrupt()
+            mediaWatcher = null
+        }
         mediaChannel = null
         guidanceChannel = null
         mediaFocused.set(false)
         Log.i(AapConsts.TAG, "AapAudioEgress stopped")
+    }
+
+    /**
+     * The HUIG focus dance is one-shot: once the car takes the focus back (radio, a call)
+     * many head units never re-grant it when the user switches the source back to Android
+     * Auto — the MEDIA pump (and the car's sound) stays off until a full reconnect. Re-ask
+     * instead: the phone keeps rendering its music (the capture tap is the speaker mix),
+     * so audible content in the [MEDIA] system ring means we still have audio to play.
+     */
+    private fun runMediaWatch() {
+        while (mediaWatchRunning.get() && running.get()) {
+            try {
+                Thread.sleep(MEDIA_WATCH_TICK_MS)
+            } catch (_: InterruptedException) {
+                break
+            }
+            if (!mediaWatchRunning.get() || !running.get() || mediaFocused.get()) continue
+            val got = try {
+                MEDIA.pull(MEDIA_WATCH_PULL_BYTES)
+            } catch (e: InterruptedException) {
+                break
+            } catch (_: Throwable) {
+                ByteArray(0)
+            }
+            if (peakSample(got) < AUDIBLE_PEAK) continue
+            onMediaAudible?.invoke()
+        }
+    }
+
+    /** Max |s16| over a little-endian PCM buffer (interleaved channels both covered). */
+    private fun peakSample(pcm: ByteArray): Int {
+        var peak = 0
+        var i = 0
+        while (i + 1 < pcm.size) {
+            val s = pcm[i].toInt() or (pcm[i + 1].toInt() shl 8)
+            val a = if (s < 0) -s else s
+            if (a > peak) peak = a
+            i += 2
+        }
+        return peak
     }
 
     private fun startMediaPump() {
@@ -321,6 +377,12 @@ class AapAudioEgress {
         private const val MEDIA_CH = 2
         private const val GUIDANCE_RATE = 16_000
         private const val GUIDANCE_CH = 1
+        /** Watcher loop period; the re-ask cadence itself is enforced by the session. */
+        private const val MEDIA_WATCH_TICK_MS = 2_000L
+        /** The system ring is drop-to-live (≤100 ms); this cap pulls whatever it holds. */
+        private const val MEDIA_WATCH_PULL_BYTES = 64 * 1024
+        /** ≈ -40 dBFS: real playback sits far above, silence/ground noise far below. */
+        private const val AUDIBLE_PEAK = 32
 
         private val MEDIA = Profile(
             label = "media",

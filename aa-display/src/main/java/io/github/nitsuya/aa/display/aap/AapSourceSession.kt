@@ -3,6 +3,7 @@ package io.github.nitsuya.aa.display.aap
 import aap_protobuf.service.control.message.AudioFocusRequestTypeOuterClass.AudioFocusRequestType
 import aap_protobuf.service.control.message.ServiceDiscoveryResponseOuterClass.ServiceDiscoveryResponse
 import aap_protobuf.service.control.message.AudioFocusNotificationOuterClass.AudioFocusNotification
+import aap_protobuf.service.control.message.AudioFocusStateTypeOuterClass.AudioFocusStateType
 import aap_protobuf.service.inputsource.message.InputReportOuterClass.InputReport
 import aap_protobuf.service.inputsource.message.PointerActionOuterClass.PointerAction
 import aap_protobuf.service.media.shared.message.AudioConfigurationOuterClass.AudioConfiguration
@@ -157,6 +158,16 @@ class AapSourceSession(
     // Guards mediaFocusRetry: the check fires on main, answers arrive on the AAP reader thread.
     private val focusLock = Any()
     private val focusCheck = Runnable { checkMediaFocus() }
+    /** uptimeMillis of the last media-focus (re)request or focus word; 0 = ask on next tick. */
+    @Volatile
+    private var lastMediaFocusAskMs = 0L
+
+    init {
+        // The car took the focus (radio, a call) and hasn't granted it back, but the phone
+        // is still audible: ask again at a patient cadence instead of going silent until
+        // reconnect (many HUs never re-grant after a source change back to Android Auto).
+        audioEgress.onMediaAudible = { requestMediaFocusForAudibleMedia() }
+    }
     private val nowPlaying = AapNowPlaying()
     private val inputKeys = AapInputKeys(app)
     private val batteryReporter = AapBatteryReporter(app)
@@ -459,6 +470,10 @@ class AapSourceSession(
         // mid-rewrite during an AA update) must not leave a bound-but-sessionless transport.
         val identity = PhoneCertStore.pick(app, certAttempt.get())
         transport = t
+        // Fresh drain wait: the version-deadline deferral baseline resets with the transport.
+        drainRxBaseline = (t as? UsbAccessoryTransport)?.rxBytes ?: 0L
+        drainDeferStartMs = SystemClock.elapsedRealtime()
+        drainDeferCount = 0
         onStatus("正在和车机握手…")
         // USB only: the head unit may still believe the previous session is alive and keep
         // flushing its encrypted tail into the pipe — drain it instead of dying on it.
@@ -484,8 +499,29 @@ class AapSourceSession(
                         // Host-side USB suspend: the head unit cannot talk at all (all URBs
                         // parked); roll the deadline until the host resumes. Queried live — the
                         // stall monitor that tracks this only runs once the session is RUNNING.
-                        if ((transport as? UsbAccessoryTransport)?.isLinkSuspended() == true)
-                            USB_VERSION_TIMEOUT_DEFER_MS else 0L
+                        val usb = transport as? UsbAccessoryTransport
+                        val suspended = usb?.isLinkSuspended() == true
+                        // Active link, still no version request: the head unit may believe the
+                        // previous session is alive and only reset after ITS OWN ping timeout,
+                        // which outlasts the 15 s first deadline. Ride the deadline out while
+                        // the pipe still delivers (stale) traffic — the reset's fresh plaintext
+                        // request then lands in this same session and no replug is needed.
+                        // No RX at all (head unit gone) or the cap hit → fail now.
+                        val rx = usb?.rxBytes ?: 0L
+                        val capHit = drainDeferCount > 0 &&
+                            SystemClock.elapsedRealtime() - drainDeferStartMs > USB_DRAIN_DEFER_CAP_MS
+                        if (suspended || !capHit && rx > drainRxBaseline) {
+                            if (!suspended) drainDeferCount += 1
+                            Log.i(
+                                AapConsts.TAG,
+                                "USB stale-drain: deadline hit " +
+                                    (if (suspended) "(link suspended)"
+                                     else "head unit still talking " +
+                                         "(rx=${rx - drainRxBaseline}B since attach)") +
+                                    " — deferring #${drainDeferCount}",
+                            )
+                            USB_VERSION_TIMEOUT_DEFER_MS
+                        } else 0L
                     }
                 } else null,
             ),
@@ -676,6 +712,15 @@ class AapSourceSession(
     @Volatile private var lastUsbCryptoFaultMs = 0L
     /** True when onClosed scheduled a soft reattach for a transport-gap crypto fault. */
     @Volatile private var closedByTransportGap = false
+    /**
+     * Drain-loop RX counter at the current USB attach (baseline): the version-deadline
+     * deferral defers only while the pipe still delivers (stale) traffic from the head unit.
+     */
+    @Volatile private var drainRxBaseline = 0L
+    /** elapsedRealtime of the current drain wait (attach); bounds the total defer span. */
+    @Volatile private var drainDeferStartMs = 0L
+    /** Version-deadline deferrals issued since [drainDeferStartMs]. */
+    @Volatile private var drainDeferCount = 0
 
     /**
      * USB write-stall watchdog.
@@ -691,7 +736,9 @@ class AapSourceSession(
      * Exception: a host-side USB SUSPEND parks every URB (writes block, no error) and ends on
      * the host's resume. While the link is suspended the session is intact — killing it turns a
      * power-management nap into a full disconnect, so the watchdog only waits (bounded, so a
-     * permanently dark port still gets recycled).
+     * permanently dark port still gets recycled). When the link state is unreadable ("unknown" —
+     * no dwc3 `lpm` node on this kernel) the same sustain delay applies: a write blocked across
+     * a suspend blip cannot be told from a dead endpoint, so it is not killed on first sight.
      */
     private fun startStallMonitor() {
         if (stallWorker?.isAlive == true) return
@@ -741,7 +788,15 @@ class AapSourceSession(
                 if (stallSinceMs == 0L) stallSinceMs = now
                 // A write blocked in the kernel kills immediately (nothing drains behind it);
                 // a slow endpoint must stay slow first, so a single USB blip doesn't cycle.
-                if (inflightMs <= USB_WRITE_BLOCK_KILL_MS && now - stallSinceMs < USB_STALL_SUSTAIN_MS) continue
+                // Exception: when the link state is unreadable ("unknown" — the dwc3 `lpm`
+                // node does not exist on some kernels) a write parked across a host
+                // suspend/resume blip is indistinguishable from a dead endpoint, so the block
+                // must SUSTAIN like the slow case: killing on first sight turned a 200 ms
+                // power-management nap into a full session loss (11-12: 2.5 h healthy session
+                // cycled by one 5 s block).
+                val linkConfirmed = !usb.linkState().equals("unknown", true)
+                val immediateKill = inflightMs > USB_WRITE_BLOCK_KILL_MS && linkConfirmed
+                if (!immediateKill && now - stallSinceMs < USB_STALL_SUSTAIN_MS) continue
                 stallSinceMs = 0L
                 val prevKillMs = lastStallKillMs
                 lastStallKillMs = now
@@ -1066,6 +1121,32 @@ class AapSourceSession(
 
             FocusRetry.Action.None -> {}
         }
+    }
+
+    /**
+     * Watcher tick ([AapAudioEgress.onMediaAudible]): the phone is audible, the car hasn't
+     * granted media focus. Re-request GAIN at [MEDIA_FOCUS_REREQUEST_MS] cadence — patient
+     * enough that a head unit prompting on focus asks isn't spammed; fast enough that
+     * switching the car's source back to Android Auto recovers the sound within one tick.
+     */
+    private fun requestMediaFocusForAudibleMedia() {
+        if (!running.get()) return
+        val s = aap ?: return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastMediaFocusAskMs < MEDIA_FOCUS_REREQUEST_MS) return
+        lastMediaFocusAskMs = now
+        runCatching { s.requestAudioFocus(AudioFocusRequestType.AUDIO_FOCUS_GAIN, Priority.AUDIO) }
+            .onFailure { Log.w(AapConsts.TAG, "media focus re-ask failed", it) }
+    }
+
+    /** Same keep-the-pump set [AapAudioEgress.onAudioFocus] uses. */
+    private fun grantsMedia(state: AudioFocusStateType): Boolean = when (state) {
+        AudioFocusStateType.AUDIO_FOCUS_STATE_GAIN,
+        AudioFocusStateType.AUDIO_FOCUS_STATE_GAIN_MEDIA_ONLY,
+        AudioFocusStateType.AUDIO_FOCUS_STATE_GAIN_TRANSIENT,
+        AudioFocusStateType.AUDIO_FOCUS_STATE_LOSS_TRANSIENT_CAN_DUCK,
+        -> true
+        else -> false
     }
 
     private val inputListener = object : InputChannel.Listener {
@@ -1591,16 +1672,25 @@ class AapSourceSession(
             }.onFailure { Log.w(AapConsts.TAG, "requestAudioFocus failed", it) }
             synchronized(focusLock) {
                 mediaFocusRetry.onRequested(SystemClock.uptimeMillis())
+                lastMediaFocusAskMs = SystemClock.uptimeMillis()
                 scheduleFocusCheck()
             }
             onStatus("已连上车机")
         }
 
         override fun onAudioFocus(session: AapSession, notification: AudioFocusNotification) {
-            // Any word from the car (a grant or its own decision) ends the asking.
             synchronized(focusLock) {
-                val asked = mediaFocusRetry.onAnswered()
-                if (asked != null) Log.i(AapConsts.TAG, "audio focus answered after $asked asks")
+                if (grantsMedia(notification.focusState)) {
+                    val asked = mediaFocusRetry.onAnswered()
+                    if (asked != null) Log.i(AapConsts.TAG, "audio focus answered after $asked asks")
+                } else {
+                    // The car keeps the focus itself (radio, a call): stop the unanswered
+                    // ladder — the audible-media watcher re-asks patiently until the car
+                    // grants it back, instead of hammering right after a LOSS.
+                    mediaFocusRetry.onWithdrawn()
+                }
+                // Any word from the car (grant or decision) resets the re-ask patience.
+                lastMediaFocusAskMs = SystemClock.uptimeMillis()
                 scheduleFocusCheck()
             }
             audioEgress.onAudioFocus(notification.focusState)
@@ -1817,6 +1907,8 @@ class AapSourceSession(
 
         /** Delay base for wireless "car not ready yet" retries (× attempt number). */
         private const val WIRELESS_RETRY_DELAY_MS = 10_000L
+        /** Patient re-ask cadence for media focus after the car kept it (radio / a call). */
+        private const val MEDIA_FOCUS_REREQUEST_MS = 10_000L
 
         /** Redial spacing after a wireless death with the BT link still up. */
         private const val WIRELESS_REDIAL_DELAY_MS = 3_000L
@@ -1846,6 +1938,13 @@ class AapSourceSession(
          * cannot talk at all, so the 15 s deadline keeps rolling this many seconds.
          */
         private const val USB_VERSION_TIMEOUT_DEFER_MS = 30_000L
+        /**
+         * Total span (from attach) the version deadline may keep deferring while the head unit
+         * still talks: the head unit resets its own session only after ITS ping timeout, which
+         * outlasts the 15 s first deadline; beyond this the wait is over and the replug gate
+         * applies as before.
+         */
+        private const val USB_DRAIN_DEFER_CAP_MS = 300_000L
         /**
          * Post-kill cooldown for the USB probe: the killed transport's drain thread join (500 ms)
          * plus endpoint re-settle; a second openAccessory in that window races the teardown.

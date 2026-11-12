@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7 — 收音机切回后无声（AAP + CarPlay）/ AA 通道连车机 Wi‑Fi 断网
+
+versionCode **10106** / versionName **1.7**。
+
+- **车机切收音机后再切回无声音（AAP）：** 旧逻辑对车机**任何**焦点回音都 `FocusRetry.onAnswered()` 永久停问——车机切 FM 回 `LOSS` 后，用户切回 Android Auto 音源时 HU 不会重新授权（AAP 协议需手机重新 request），MEDIA 泵永不恢复。现：非授权回音改 `onWithdrawn()`（不追着车机狂问）；`AapAudioEgress` 增 2s 低频侦测，手机仍在出声（媒体环 s16 峰值 >≈-40dB）且无焦点时，`AapSourceSession` 每 10s 重发 `GAIN` 请求直至车机回授权，任何焦点回音重置计时（`docs/AAP_NATIVE.md` §音频焦点回收）。
+- **车机切收音机再切回无声音（无线 CarPlay）：** CarPlay 无显式 focus 协议，但 HU 取回 MainAudio（`changeModes`，WWDC 资源管理）期间其 CarPlay 音频引擎被复位；源切回后旧音频流（旧 dataPort + 旧派生密钥 + 旧 RTP 序号）被静默忽略，画面还在、车机无声，只能断连重连恢复。现 `CarPlayEventChannel` 在 MainAudio 归还手机时新增 `onMainAudioRestored` → `CarPlayRtspSession.restartAudioStreams`（500ms 稳定等待 + 3s 限速）：停旧 egress 后重新 SETUP 音频流（MIB3 = AAC 重 SETUP + 重 claim + arm；DiPlay = PCM media + 条件 speech），与重连同一条 fresh-stream 路径，免断连；建流时捕获 re-SETUP 上下文（持续 CSeq + control 通道），`releaseMediaStreams` 清理（`docs/EXECUTION.md` §14.1 音频）。
+- **AA 通道连车机 Wi‑Fi 无法上网（无线 CarPlay 可走蜂窝，先 CarPlay 后切 AA 必现）：** CarPlay 的「蜂窝保默认路由」机制（`armCarAccessoryWifi` + `preferCellularOverUnvalidatedWifi` + 蜂窝 hold）AAP 通道完全没有；CarPlay 已把车 AP 保存为 autojoin 网络，会话结束后手机自动挂回无网 AP，默认路由被抢走，分屏内 App 全部断网。现 `WirelessConnector` 对齐 CarPlay 姿态：WPP 入网前先 arm 车 AP（兼防未保存热点秒拆），入网后保蜂窝 NetworkAgent + 0/1.5/4s 三次 `preferCellular` 清扫，会话结束释放（`docs/AAP_NATIVE.md` §蜂窝互联网）。
+
 ## 1.6 — 无线 CarPlay Wi‑Fi「自动重新连接」未勾选 / 无法自动重连
 
 versionCode **10105** / versionName **1.6**。

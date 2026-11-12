@@ -497,6 +497,7 @@ USAGE_ASSISTANCE_NAVIGATION_GUIDANCE / ASSISTANT / SONIFICATION
 - 其它车机：type-100 media（`0x8000` 48 kHz stereo）；speech（`0x10` 16 kHz mono）仅在 `CoreApi.isCarPlaySpeechCaptureReady()` 时打开。无内容发静音。**禁止** media→speech 镜像 / 双路 remotesubmix（DiPlay 混出重音）。
 - AudioPolicy 不可用时 speech 保持静音（导航提示缺席优于重音）；MediaProjection 采不到 NAVIGATION / 通话。
 - Mute：仅 playback-capture → stream mute（含 VOICE_CALL/RING）+ local-device mute；`audio-policy-render` → **不** mute；remotesubmix 回退 → **不**静音。
+- **音源切走再切回（FM / 通话 → CarPlay）：** HU 取回 MainAudio 期间其 CarPlay 音频引擎被复位，源切回后旧音频流（旧 dataPort + 旧派生密钥 + 旧 RTP 序号）被静默忽略——画面还在、车机无声，只能重连恢复。`CarPlayEventChannel` 解析 `changeModes`（WWDC 资源管理）：MainAudio 从 HU 归还手机时 `onMainAudioRestored` → `CarPlayRtspSession.restartAudioStreams`（500ms 稳定等待 + 3s 限速，独立线程）：**停旧 egress → 重新 SETUP 音频流**（新 streamConnectionID/dataPort/密钥，MIB3 走 AAC 重 SETUP + 重 claim + arm；DiPlay 走 PCM media + 条件 speech）——与重连同一条 fresh-stream 路径，免断连。建流时捕获 re-SETUP 上下文（`AudioRestream`：持续 CSeq + control 通道 + 会话 URL）；`releaseMediaStreams` 清理。
 - 范围：手机→车机 **播放**（含通话下行）；车机麦上行 / 完整 CarPlay 电话协议不在此路径。
 - MediaProjection：system_server 内勿走 `BinderService.createProjection`（同进程 `checkCallingPermission` 恒拒）；直接构造服务内 `MediaProjection`（三星无 `createProjectionInternal`）。
 - 采集启停跟 `reportCarPlaySessionLive`：HU dial / screen SETUP 置 true；FGS tearDown，或媒体链路结束（peer close / TEARDOWN / AirPlay control 结束，约 4s 内未再 SETUP）置 false 并恢复手机音量。仅 UDP egress 停不停采集。会话仍 live 时 ignore egress disable。`setStreamMute` 由 system uid 持有，不恢复则关模块也要重启才能动音量。

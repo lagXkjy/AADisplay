@@ -116,6 +116,26 @@ class CarPlayRtspSession(
      */
     private val modesRestored = AtomicReference<(() -> Unit)?>(null)
     private val lastModesReclaimMs = AtomicLong(0L)
+    /**
+     * Re-SETUP context of the live RTSP session (continuing CSeq, control channel, URL,
+     * shared secret, AAC-vs-PCM selection) — lets the audio streams be rebuilt after the
+     * HU takes MainAudio (FM / a call) and returns it, without a full reconnect.
+     */
+    private class AudioRestream(
+        val peerHost: InetAddress,
+        val sharedSecret: ByteArray,
+        val headers: (Map<String, String>) -> LinkedHashMap<String, String>,
+        val sessionUrl: String,
+        val exchange: (RtspMessage) -> RtspMessage?,
+        val announceModes: () -> Boolean,
+        val aac: Boolean,
+    )
+
+    @Volatile private var audioRestream: AudioRestream? = null
+    private val audioRestreamLock = Any()
+    private val lastAudioRestreamMs = AtomicLong(0L)
+    /** Local UDP controlPort of the current AAC media stream (the HU's RTCP peer). */
+    @Volatile private var aacLocalControl: DatagramSocket? = null
     private val wifiIap = AtomicReference<WifiIap2Link?>(null)
 
     private companion object {
@@ -123,6 +143,10 @@ class CarPlayRtspSession(
         private const val MODES_RECLAIM_MIN_GAP_MS = 8_000L
         /** After the control pump is up, do not hold AAC RTP longer than this for the claim. */
         private const val AAC_CLAIM_FALLBACK_MS = 2_000L
+        /** Rate limit for MainAudio-restore audio re-SETUP (source flaps). */
+        private const val AUDIO_RESTREAM_MIN_GAP_MS = 3_000L
+        /** Let the HU mixer settle after the source return before re-arming audio. */
+        private const val AUDIO_RESTREAM_SETTLE_MS = 500L
     }
     /** Phone iAP frames waiting to go out on the RTSP control socket. */
     private val iapTx = ArrayDeque<ByteArray>()
@@ -563,12 +587,73 @@ class CarPlayRtspSession(
         timing.getAndSet(null)?.close()
         keepAlive.getAndSet(null)?.close()
         modesRestored.set(null)
+        audioRestream = null
+        aacLocalControl?.let { runCatching { it.close() } }
+        aacLocalControl = null
         CarPlayWheelController.setEnabled(false)
         CarPlayMediaClock.clear()
         Log.i(CarPlayConsts.TAG, "releaseMediaStreams reason=$reason")
         // rtsp-stop is FGS/session teardown, which restores volume itself.
         if (reason != "rtsp-stop") {
             onHuMediaEnded(reason)
+        }
+    }
+
+    /**
+     * MainAudio came back to the phone (the user switched the source back to CarPlay).
+     * The head unit's CarPlay audio engine was reset while another source (FM, a call)
+     * was live, so the existing audio stream — old dataPort, old derived key, stale RTP
+     * sequence — is silently ignored when the source returns: the screen stays, the car
+     * is silent until a full reconnect. Recovery = re-SETUP the audio streams, the same
+     * fresh-stream dance a reconnect would run. Worker thread only: the SETUP exchange
+     * and the AAC re-arm must never run on the control pump or the AAC pacer.
+     */
+    private fun restartAudioStreams(reason: String) {
+        if (!running.get() || !streaming.get()) return
+        val ctx = audioRestream
+        if (ctx == null) {
+            Log.w(CarPlayConsts.TAG, "audio re-SETUP skipped ($reason) — no live setup context")
+            return
+        }
+        val now = System.currentTimeMillis()
+        val prev = lastAudioRestreamMs.get()
+        if (now - prev < AUDIO_RESTREAM_MIN_GAP_MS) {
+            Log.i(CarPlayConsts.TAG, "audio re-SETUP deferred ($reason) — ${now - prev}ms since last")
+            return
+        }
+        if (!lastAudioRestreamMs.compareAndSet(prev, now)) return
+        synchronized(audioRestreamLock) {
+            if (!running.get() || !streaming.get()) return
+            Log.i(CarPlayConsts.TAG, "audio re-SETUP ($reason)")
+            mediaAudioEgress.getAndSet(null)?.stop()
+            mediaAacEgress.getAndSet(null)?.stop()
+            speechAudioEgress.getAndSet(null)?.stop()
+            if (ctx.aac) {
+                setupAacMediaStream(ctx.peerHost, ctx.sharedSecret, ctx.headers, ctx.sessionUrl, ctx.exchange)
+                val egress = mediaAacEgress.get()
+                if (egress != null) {
+                    // Re-claim MainAudio, then arm RTP — the same order as the stream start.
+                    runCatching { ctx.announceModes() }
+                        .onFailure { e -> Log.w(CarPlayConsts.TAG, "audio re-arm modesChanged failed", e) }
+                    if (running.get() && streaming.get()) startDeferredAac("MainAudio-restore")
+                }
+            } else {
+                setupAudioStream(
+                    ctx.peerHost, ctx.sharedSecret, ctx.headers, ctx.sessionUrl, ctx.exchange,
+                    CarPlayAudioEgress.MEDIA, mediaAudioEgress,
+                )
+                val speechReady = try {
+                    CoreApi.isCarPlaySpeechCaptureReady()
+                } catch (_: Throwable) {
+                    false
+                }
+                if (speechReady) {
+                    setupAudioStream(
+                        ctx.peerHost, ctx.sharedSecret, ctx.headers, ctx.sessionUrl, ctx.exchange,
+                        CarPlayAudioEgress.SPEECH, speechAudioEgress,
+                    )
+                }
+            }
         }
     }
 
@@ -1020,6 +1105,18 @@ class CarPlayRtspSession(
                         modesRestored.get()?.invoke()
                     }
                 },
+                onMainAudioRestored = {
+                    thread(name = "carplay-audio-restore", isDaemon = true) {
+                        // Let the HU mixer settle after the source return, and the
+                        // modesChanged re-claim above finish first.
+                        try {
+                            Thread.sleep(AUDIO_RESTREAM_SETTLE_MS)
+                        } catch (_: InterruptedException) {
+                            return@thread
+                        }
+                        restartAudioStreams("MainAudio restored to phone")
+                    }
+                },
             )
             if (ev != null) {
                 // MIB3 reports physical right as HID PREV (and left as NEXT); invert so
@@ -1265,6 +1362,16 @@ class CarPlayRtspSession(
 
         // Audio: Audi MIB3 needs type-102 AAC-LC (CSM path). DiPlay keeps type-100 PCM.
         // Speech only when system_server has an exclusive nav tap (else DiPlay 重音).
+        // Captured for the MainAudio-restore re-SETUP ([restartAudioStreams]).
+        audioRestream = AudioRestream(
+            peerHost,
+            sharedSecret,
+            { extra -> headers(extra) },
+            sessionUrl,
+            { req -> exchangeEncrypted(req) },
+            { announcePhoneModesChanged() },
+            aac = mib3,
+        )
         if (mib3) {
             setupAacMediaStream(
                 peerHost,
@@ -1390,6 +1497,9 @@ class CarPlayRtspSession(
             Log.w(CarPlayConsts.TAG, "AAC local controlPort bind failed", e)
             return
         }
+        // Re-SETUP (MainAudio restore): the previous stream's RTCP peer goes with its egress.
+        aacLocalControl?.let { runCatching { it.close() } }
+        aacLocalControl = localControl
         try {
             val localControlPort = localControl.localPort
             val streamConnectionId = Random.nextLong() and Long.MAX_VALUE
@@ -1432,6 +1542,7 @@ class CarPlayRtspSession(
                     "CarPlay AAC media SETUP rejected: ${resp?.firstLine}",
                 )
                 localControl.close()
+                aacLocalControl = null
                 return
             }
             val egress = CarPlayAacAudioEgress.open(
@@ -1467,6 +1578,7 @@ class CarPlayRtspSession(
                 localControl.close()
             } catch (_: Throwable) {
             }
+            if (aacLocalControl === localControl) aacLocalControl = null
             Log.w(CarPlayConsts.TAG, "CarPlay AAC media SETUP failed (screen continues)", e)
         }
     }
