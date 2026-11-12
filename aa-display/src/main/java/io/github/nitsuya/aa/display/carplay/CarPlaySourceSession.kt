@@ -253,14 +253,10 @@ class CarPlaySourceSession(
             },
             onWifiConfig = { wifi ->
                 lastWifiSsid = wifi.ssid
-                // Before join: disable saved-STA autojoin so accessory AP cannot
-                // become ACCEPT_UNVALIDATED default and kill cellular.
-                try {
-                    CoreApi.preferCellularOverUnvalidatedWifi()
-                } catch (_: Throwable) {
-                }
                 // Join only; dial waits for CarPlayStartSession + network ready,
                 // or `_airplay._tcp` fallback when MIB3 never sends 0x4301.
+                // preferCellular runs inside handoff *after* arm so the accessory
+                // SSID keeps allowAutojoin(true) (settings auto-reconnect).
                 wifiHandoff?.ensureAccessoryWifi(wifi.ssid, wifi.passphrase, wifi.channel) {}
             },
             onCarPlayStart = { start ->

@@ -112,7 +112,7 @@ preferCellular…（含延迟重试）
 
 | 步骤 | 做什么 | 为什么 |
 |------|--------|--------|
-| 0 | **`armCarAccessoryWifi(ssid, psk)`**：把配件热点**持久保存**（`addNetwork`/`updateNetwork` + `noInternetAccessExpected` + `allowAutojoin(true)` + `saveConfiguration`；不在该网且 radio on 时显式 `connect`） | CarPlay 建连是最高优先级：从未保存过的无外网热点会被 OEM factory 当 unwanted 秒拆，保存后入网才稳（免人工点 Wi‑Fi） |
+| 0 | **`armCarAccessoryWifi(ssid, psk)`**：把配件热点**持久保存**（`addNetwork`/`updateNetwork` + KeyMgmt `WPA_PSK`+`SAE` + `noInternetAccessExpected` + `enableNetwork` + `allowAutojoin(true)` + `saveConfiguration`；不在该网且 radio on 时显式 `connect`） | CarPlay 建连是最高优先级：从未保存过的无外网热点会被 OEM factory 当 unwanted 秒拆；KeyMgmt 必须是 WPA_PSK（可加 SAE），误写成仅 SAE 会认证失败并永久禁用，「自动重新连接」关不上 |
 | 1 | `Settings.Global.network_avoid_bad_wifi = 1` | 系统倾向避开未验证 Wi‑Fi 作默认（同时阻止未验证网被 opportunistic auto-join，所以步骤 0 的 autojoin 不会抢默认路由） |
 | 2 | 对车机类 SSID 的 `WifiConfiguration`：`noInternetAccessExpected = true` + `updateNetwork` | 告诉框架「这网本来就不该当外网」 |
 | 3 | 同配置 `allowAutojoin(netId, false)`（**跳过本会话已 arm 的配件 SSID**） | 阻止 WifiNetworkFactory **自动重连其它已存 STA** 再盖 `ACCEPT_UNVALIDATED`；Specifier 入网仍可用 |

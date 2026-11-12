@@ -82,6 +82,9 @@ object CarPlayInputBridge {
     private var chromeDownY = 0f
     @Volatile
     private var chromeDownAt = 0L
+    /** Last chrome MOVE x (raw 0..1); settle prefers this over UP — some HUs echo DOWN on lift. */
+    @Volatile
+    private var chromeLastX = 0f
     @Volatile
     private var ratioAtDown = SplitPane.DEFAULT_RATIO
     @Volatile
@@ -92,6 +95,9 @@ object CarPlayInputBridge {
     private var paneDownY = 0f
     @Volatile
     private var paneDownAt = 0L
+    /** HU pointer id for [paneDownX]/[paneDownY] — CANCEL must match the live id. */
+    @Volatile
+    private var paneDownPointerId = 0
     @Volatile
     private var paneDownPane = SplitPane.PRIMARY
     @Volatile
@@ -105,8 +111,12 @@ object CarPlayInputBridge {
     @Volatile
     private var imeChipArmed = false
 
-    /** True while divider / peel gesture owns the pointer (skip layout sync that resets ratio). */
-    fun isChromeGestureActive(): Boolean = chromeArmed || chromeDragging
+    /**
+     * True while divider / peel owns the pointer (skip layout sync that resets ratio).
+     * Includes [seamPending]: non-grip seam may still become a drag, and a mid-gesture
+     * CoreApi pull would snap [primaryRatio] back to the pre-drag value.
+     */
+    fun isChromeGestureActive(): Boolean = chromeArmed || chromeDragging || seamPending
 
     /**
      * Single-pointer convenience entry (BT mouse / HID shell drains): wraps one
@@ -114,6 +124,7 @@ object CarPlayInputBridge {
      * owns (recycles) the event.
      */
     fun injectNormalized(xNorm: Float, yNorm: Float, action: Int) {
+        // Own clock: HID shell drains must not reset the HU TouchGestureClock mid-gesture.
         val now = SystemClock.uptimeMillis()
         val event = MotionEvent.obtain(
             now, now, action, xNorm.coerceIn(0f, 1f), yNorm.coerceIn(0f, 1f), 0,
@@ -130,15 +141,16 @@ object CarPlayInputBridge {
      */
     fun injectEvent(event: MotionEvent) {
         try {
+            if (event.pointerCount <= 0) {
+                Log.w(CarPlayConsts.TAG, "CarPlay touch dropped: empty pointer table")
+                return
+            }
             val x = event.getX(0).coerceIn(0f, 1f)
             val y = event.getY(0).coerceIn(0f, 1f)
-            // Chrome / overlay state machines are single-finger: POINTER_* moves pointer 0.
-            val action = when (event.actionMasked) {
-                MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP ->
-                    MotionEvent.ACTION_MOVE
-
-                else -> event.actionMasked
-            }
+            // Chrome / overlay state machines are single-finger.
+            // Last-finger POINTER_UP must become UP — otherwise divider/Recents/drag
+            // stay armed forever (lift looks ignored).
+            val action = chromeAction(event)
 
             // Canvas picker (Host has no Window — View snapshot touch is broken).
             if (CarPlayAppPickerOverlay.isVisible()) {
@@ -159,6 +171,19 @@ object CarPlayInputBridge {
             Log.e(CarPlayConsts.TAG, "CarPlay touch inject failed", e)
         } finally {
             event.recycle()
+        }
+    }
+
+    /** Single-finger chrome view of a possibly multi-pointer HU event. */
+    private fun chromeAction(event: MotionEvent): Int {
+        val masked = event.actionMasked
+        val n = event.pointerCount
+        return when {
+            masked == MotionEvent.ACTION_POINTER_UP && n <= 1 -> MotionEvent.ACTION_UP
+            masked == MotionEvent.ACTION_POINTER_DOWN && n == 1 -> MotionEvent.ACTION_DOWN
+            masked == MotionEvent.ACTION_POINTER_DOWN ||
+                masked == MotionEvent.ACTION_POINTER_UP -> MotionEvent.ACTION_MOVE
+            else -> masked
         }
     }
 
@@ -296,6 +321,7 @@ object CarPlayInputBridge {
                 seamLongPressFired = false
                 chromeDownX = x
                 chromeDownY = y
+                chromeLastX = x
                 chromeDownAt = SystemClock.uptimeMillis()
                 ratioAtDown = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
 
@@ -377,16 +403,20 @@ object CarPlayInputBridge {
                     return false
                 }
                 if (!chromeArmed) return false
+                chromeLastX = x
                 val heldMs = SystemClock.uptimeMillis() - chromeDownAt
                 val dist = abs(x - chromeDownX)
                 if (!chromeDragging) {
-                    // Hold still during the long-press window so jitter does not start a drag.
-                    if (heldMs < SplitPane.DIVIDER_TAP_STACK_MIN_MS && dist <= DRAG_SLOP) {
+                    // Same 2×-slop gate as AA [SplitLockedPeelController] / seam pending —
+                    // 1× DRAG_SLOP turned HU digitizer jitter into wasDragging and killed
+                    // fullscreen peel tap-to-switch.
+                    if (!SplitPane.shouldBeginDividerDrag(
+                            dist, DRAG_SLOP, seamLongPressFired, heldMs,
+                        )
+                    ) {
                         return true
                     }
-                    if (dist > DRAG_SLOP) {
-                        chromeDragging = true
-                    }
+                    chromeDragging = true
                 }
                 if (chromeDragging) {
                     if (inFullscreen) {
@@ -425,27 +455,34 @@ object CarPlayInputBridge {
                     return false
                 }
                 if (!chromeArmed) return false
-                chromeArmed = false
                 val heldMs = SystemClock.uptimeMillis() - chromeDownAt
-                val dist = abs(x - chromeDownX)
-                val ratioDelta = abs(x - ratioAtDown)
                 val wasDragging = chromeDragging
+                // Prefer last MOVE x when dragging: some HUs echo the DOWN sample on UP,
+                // which would settle back to ratioAtDown after a successful preview drag.
+                val settleX = if (wasDragging) chromeLastX else x
+                val dist = abs(settleX - chromeDownX)
+                val ratioDelta = abs(settleX - ratioAtDown)
                 val downOnGrip = chromeDownOnGrip
                 val longPress = seamLongPressFired
-                chromeDragging = false
-                chromeDownOnGrip = false
-                seamLongPressFired = false
+                // Settle while chrome still counts as active so GL/layout sync cannot
+                // overwrite primaryRatio with the pre-drag CoreApi value mid-UP.
                 peelPreviewActive = false
-
                 if (inFullscreen) {
-                    handlePeelUp(x, heldMs, dist, wasDragging, action == MotionEvent.ACTION_CANCEL)
+                    handlePeelUp(
+                        settleX, heldMs, dist, wasDragging,
+                        action == MotionEvent.ACTION_CANCEL,
+                    )
                 } else {
                     handleDividerUp(
-                        x, heldMs, dist, ratioDelta, wasDragging, downOnGrip,
+                        settleX, heldMs, dist, ratioDelta, wasDragging, downOnGrip,
                         action == MotionEvent.ACTION_CANCEL,
                         longPressFired = longPress,
                     )
                 }
+                chromeArmed = false
+                chromeDragging = false
+                chromeDownOnGrip = false
+                seamLongPressFired = false
                 return true
             }
             else -> return chromeArmed || seamPending
@@ -475,6 +512,7 @@ object CarPlayInputBridge {
         peelPreviewActive = false
         if (startDrag) {
             chromeDragging = true
+            chromeLastX = x
             previewRatio(x)
             Log.i(CarPlayConsts.TAG, "divider seam drag steal x=$x")
         }
@@ -492,8 +530,15 @@ object CarPlayInputBridge {
      * ends all active pointers on the injected device.
      */
     private fun cancelPanePointer() {
-        val now = SystemClock.uptimeMillis()
-        val event = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, paneDownX, paneDownY, 0)
+        val (down, eventTime) = TouchGestureClock.stamp(MotionEvent.ACTION_CANCEL)
+        val event = buildMultiPointerEvent(
+            down,
+            eventTime,
+            MotionEvent.ACTION_CANCEL,
+            0,
+            listOf(paneDownPointerId to floatArrayOf(paneDownX, paneDownY)),
+            remapIds = false,
+        )
         try {
             routeEventToPane(event)
         } catch (e: Throwable) {
@@ -553,32 +598,36 @@ object CarPlayInputBridge {
             primaryRatio = ratioAtDown
             return
         }
-        // Drag first (incl. peel-out-then-back): never open Recents. Final dist can be
-        // tiny after returning to the edge while heldMs already ≥ long-press — same false
-        // trigger SplitLockedPeelController already guards against.
-        if (wasDragging) {
-            if (x > SplitPane.FULLSCREEN_EXIT_RATIO) {
-                exitFullscreen(x.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO))
-            } else {
-                // Below exit threshold — same as AA onPeelCancelled: stay FS, restore ratio.
+        val ratioDelta = x - chromeDownX
+        val longPress = SplitPane.qualifiesDividerLongPress(false, heldMs) &&
+            dist <= DRAG_SLOP * 3f
+        // Match AA [SplitLockedPeelController] UP order: drag settle → Recents → tap flip.
+        // Tap uses [shouldDividerSwapOnUp] so micro-jitter on lift still switches panes.
+        when {
+            wasDragging -> {
+                if (x > SplitPane.FULLSCREEN_EXIT_RATIO) {
+                    exitFullscreen(x.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO))
+                } else {
+                    // Below exit threshold — same as AA onPeelCancelled: stay FS, restore ratio.
+                    primaryRatio = ratioAtDown
+                }
+            }
+            longPress -> {
                 primaryRatio = ratioAtDown
+                CarPlayRecentsOverlay.open()
             }
-            return
-        }
-        if (SplitPane.qualifiesDividerLongPress(false, heldMs) && dist <= DRAG_SLOP * 3f) {
-            primaryRatio = ratioAtDown
-            CarPlayRecentsOverlay.open()
-            return
-        }
-        if (heldMs <= SplitPane.DIVIDER_TAP_SWAP_MAX_MS && dist <= DRAG_SLOP) {
-            // Tap peel → flip visible fullscreen pane (AA peel tap).
-            primaryRatio = ratioAtDown
-            val other = if (fullscreenPane == SplitPane.PRIMARY) {
-                SplitPane.SECONDARY
-            } else {
-                SplitPane.PRIMARY
+            SplitPane.shouldDividerSwapOnUp(
+                wasDragging, longPress, heldMs, dist, DRAG_SLOP, ratioDelta,
+            ) -> {
+                primaryRatio = ratioAtDown
+                val other = if (fullscreenPane == SplitPane.PRIMARY) {
+                    SplitPane.SECONDARY
+                } else {
+                    SplitPane.PRIMARY
+                }
+                enterFullscreen(other)
             }
-            enterFullscreen(other)
+            else -> primaryRatio = ratioAtDown
         }
     }
 
@@ -671,7 +720,9 @@ object CarPlayInputBridge {
     /** Normalized canvas x → (x within [pane] 0..1, pane width in encode px). */
     private fun mapToPane(xNorm: Float, pane: Int, w: Int): Pair<Float, Int> {
         val fs = fullscreenPane
-        if (SplitPane.isFullscreenPane(fs)) return 1f to w
+        // Fullscreen: canvas == pane; keep the finger's x (do not pin to 1f — that
+        // collapsed every touch to the right edge and killed scroll/drag).
+        if (SplitPane.isFullscreenPane(fs)) return xNorm.coerceIn(0f, 1f) to w
         val ratio = primaryRatio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
         return if (pane == SplitPane.PRIMARY) {
             (xNorm / ratio) to (w * ratio).toInt().coerceAtLeast(1)
@@ -695,29 +746,36 @@ object CarPlayInputBridge {
         val x0 = event.getX(0).coerceIn(0f, 1f)
         val y0 = event.getY(0).coerceIn(0f, 1f)
         val pane = paneFor(x0)
+        val maskedIn = event.actionMasked
 
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                paneDownX = x0
-                paneDownY = y0
-                paneDownAt = SystemClock.uptimeMillis()
-                paneDownPane = pane
-                paneMoved = false
-                // handleChrome may have armed seamPending just before this DOWN.
-                paneEmptyPickerSuppressed = seamPending
+        when (maskedIn) {
+            MotionEvent.ACTION_DOWN,
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (maskedIn == MotionEvent.ACTION_DOWN || event.pointerCount == 1) {
+                    paneDownX = x0
+                    paneDownY = y0
+                    paneDownPointerId = event.getPointerId(0)
+                    paneDownAt = SystemClock.uptimeMillis()
+                    paneDownPane = pane
+                    paneMoved = false
+                    // handleChrome may have armed seamPending just before this DOWN.
+                    paneEmptyPickerSuppressed = seamPending
+                }
             }
             MotionEvent.ACTION_MOVE -> {
                 if (abs(x0 - paneDownX) > DRAG_SLOP || abs(y0 - paneDownY) > DRAG_SLOP) {
                     paneMoved = true
                 }
             }
-            MotionEvent.ACTION_UP -> {
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_POINTER_UP -> {
                 // Cars often skip MOVE; treat DOWN→UP jump as a drag.
                 if (abs(x0 - paneDownX) > DRAG_SLOP || abs(y0 - paneDownY) > DRAG_SLOP) {
                     paneMoved = true
                 }
                 // Empty-pane picker is a single-finger tap; skip it for multi gestures.
-                if (event.pointerCount == 1) {
+                val lastFinger = maskedIn == MotionEvent.ACTION_UP || event.pointerCount <= 1
+                if (lastFinger && event.pointerCount == 1) {
                     val heldMs = SystemClock.uptimeMillis() - paneDownAt
                     if (!paneMoved &&
                         !paneEmptyPickerSuppressed &&
@@ -729,6 +787,9 @@ object CarPlayInputBridge {
                             false
                         }
                         if (empty) {
+                            // Finish the pane DOWN before opening the picker, otherwise
+                            // the empty VD stays pressed under the overlay.
+                            injectPaneEnd(event, paneDownPane, w, h, MotionEvent.ACTION_CANCEL)
                             CarPlayAppPickerOverlay.show(paneDownPane)
                             return
                         }
@@ -753,22 +814,107 @@ object CarPlayInputBridge {
             val py = event.getY(i).coerceIn(0f, 1f) * (h - 1).toFloat()
             pts.add(event.getPointerId(i) to floatArrayOf(px, py))
         }
-        if (pts.isEmpty()) return
+        injectFilteredPaneEvent(event, pane, w, h, maskedIn, pts)
+    }
+
+    /** Finish a pane gesture when the UP is consumed by Host chrome (empty picker). */
+    private fun injectPaneEnd(
+        event: MotionEvent,
+        pane: Int,
+        w: Int,
+        h: Int,
+        masked: Int,
+    ) {
+        val (xPane, paneWidth) = mapToPane(paneDownX, pane, w)
+        val pts = listOf(
+            paneDownPointerId to floatArrayOf(
+                xPane * (paneWidth - 1).toFloat(),
+                paneDownY.coerceIn(0f, 1f) * (h - 1).toFloat(),
+            ),
+        )
         val out = buildMultiPointerEvent(
-            event.downTime, event.eventTime, event.actionMasked, event.actionIndex, pts,
+            event.downTime, event.eventTime, masked, 0, pts, remapIds = false,
+        )
+        try {
+            CoreApi.touchPane(pane, out)
+        } catch (e: Throwable) {
+            Log.w(CarPlayConsts.TAG, "pane end inject failed pane=$pane", e)
+        } finally {
+            out.recycle()
+        }
+    }
+
+    private fun injectFilteredPaneEvent(
+        event: MotionEvent,
+        pane: Int,
+        w: Int,
+        h: Int,
+        maskedIn: Int,
+        pts: ArrayList<Pair<Int, FloatArray>>,
+    ) {
+        var injectPane = pane
+        if (pts.isEmpty()) {
+            // Filtered away every pointer on an end event — still must finish the
+            // gesture or the VD stays pressed ("拖到哪里停在哪里").
+            if (maskedIn == MotionEvent.ACTION_UP ||
+                maskedIn == MotionEvent.ACTION_CANCEL ||
+                (maskedIn == MotionEvent.ACTION_POINTER_UP && event.pointerCount <= 1)
+            ) {
+                injectPane = paneDownPane
+                val (xPane, paneWidth) = mapToPane(paneDownX, injectPane, w)
+                pts.add(
+                    paneDownPointerId to floatArrayOf(
+                        xPane * (paneWidth - 1).toFloat(),
+                        paneDownY.coerceIn(0f, 1f) * (h - 1).toFloat(),
+                    ),
+                )
+            } else {
+                return
+            }
+        }
+
+        var outMasked = maskedIn
+        var outIndex = 0
+        when (maskedIn) {
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                val srcIndex = event.actionIndex.coerceIn(0, event.pointerCount - 1)
+                val affectedId = event.getPointerId(srcIndex)
+                val mapped = pts.indexOfFirst { it.first == affectedId }
+                if (mapped < 0) {
+                    // Affected finger was cross-pane-dropped.
+                    outMasked = if (maskedIn == MotionEvent.ACTION_POINTER_UP && pts.size <= 1) {
+                        MotionEvent.ACTION_UP
+                    } else {
+                        MotionEvent.ACTION_MOVE
+                    }
+                    outIndex = 0
+                } else {
+                    outIndex = mapped
+                    if (maskedIn == MotionEvent.ACTION_POINTER_UP && pts.size <= 1) {
+                        outMasked = MotionEvent.ACTION_UP
+                        outIndex = 0
+                    }
+                }
+            }
+            else -> outIndex = 0
+        }
+
+        val out = buildMultiPointerEvent(
+            event.downTime, event.eventTime, outMasked, outIndex, pts,
+            remapIds = false,
         )
         try {
             val ok = try {
-                CoreApi.touchPane(pane, out)
+                CoreApi.touchPane(injectPane, out)
                 true
             } catch (e: Throwable) {
-                Log.e(CarPlayConsts.TAG, "touchPane($pane) from CarPlay failed", e)
+                Log.e(CarPlayConsts.TAG, "touchPane($injectPane) from CarPlay failed", e)
                 false
             }
-            if (event.actionMasked != MotionEvent.ACTION_MOVE && !ok) {
+            if (outMasked != MotionEvent.ACTION_MOVE && !ok) {
                 Log.w(
                     CarPlayConsts.TAG,
-                    "CarPlay pane touch dropped pane=$pane action=${event.actionMasked} n=${out.pointerCount}",
+                    "CarPlay pane touch dropped pane=$injectPane action=$outMasked n=${out.pointerCount}",
                 )
             }
         } finally {
@@ -785,33 +931,53 @@ object CarPlayInputBridge {
  * one [MotionEvent.obtain]; the POINTER_* index is packed into the action bits per
  * the classic input protocol.
  */
+/**
+ * @param remapIds true at the HU protocol boundary (AAP / DiPlay). false when
+ *   rebuilding an already-mapped event (pane coord transform) — remapping twice
+ *   changed pointer ids between DOWN and UP and left the VD pressed.
+ */
 internal fun buildMultiPointerEvent(
     downTime: Long,
     eventTime: Long,
     maskedAction: Int,
     actionIndex: Int,
     pointers: List<Pair<Int, FloatArray>>,
+    remapIds: Boolean = true,
 ): MotionEvent {
+    require(pointers.isNotEmpty()) { "buildMultiPointerEvent requires ≥1 pointer" }
     val n = pointers.size
+    // Kotlin `and`/`shl` precedence previously packed index as `actionIndex and 0xff00`
+    // (= always 0). POINTER_* with a non-zero index must set bits 8..15.
+    val safeIndex = actionIndex.coerceIn(0, n - 1)
     val action = when (maskedAction) {
         MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP ->
-            maskedAction or ((actionIndex and MotionEvent.ACTION_POINTER_INDEX_MASK shr
-                MotionEvent.ACTION_POINTER_INDEX_SHIFT)
-                shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+            maskedAction or (safeIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
 
         else -> maskedAction
     }
-    val props = arrayOfNulls<MotionEvent.PointerProperties>(n)
-    val coords = arrayOfNulls<MotionEvent.PointerCoords>(n)
+    val props = Array(n) { MotionEvent.PointerProperties() }
+    val coords = Array(n) { MotionEvent.PointerCoords() }
     for (i in 0 until n) {
         val (id, xy) = pointers[i]
-        props[i] = MotionEvent.PointerProperties().apply {
-            this.id = id
+        props[i].apply {
+            // InputDispatcher rejects ids outside 0..31.
+            this.id = if (remapIds) TouchPointerIds.androidId(id) else id.coerceIn(0, 31)
             toolType = MotionEvent.TOOL_TYPE_FINGER
         }
-        coords[i] = MotionEvent.PointerCoords().apply {
+        coords[i].apply {
             x = xy[0]
             y = xy[1]
+            // Single-pointer obtain(down,event,action,x,y,meta) defaults pressure/size to 1f;
+            // leaving 0 made some feed/fling detectors treat the pointer as unused.
+            pressure = 1f
+            size = 1f
+        }
+    }
+    if (remapIds) {
+        if (maskedAction == MotionEvent.ACTION_UP || maskedAction == MotionEvent.ACTION_CANCEL) {
+            TouchPointerIds.clear()
+        } else if (maskedAction == MotionEvent.ACTION_POINTER_UP && safeIndex in pointers.indices) {
+            TouchPointerIds.release(pointers[safeIndex].first)
         }
     }
     return MotionEvent.obtain(
@@ -819,10 +985,94 @@ internal fun buildMultiPointerEvent(
         props, coords,
         0, // metaState
         0, // buttonState
-        0f, 0f, // xPrecision, yPrecision
+        // Match single-pointer obtain(down,event,action,x,y,meta): 1px precision.
+        // 0f made some scroll/gesture detectors treat motion as unknown/unusable.
+        1f, 1f, // xPrecision, yPrecision
         0, // deviceId
         0, // edgeFlags
         android.view.InputDevice.SOURCE_TOUCHSCREEN,
         0, // flags
     )
+}
+
+/**
+ * Maps HU pointer ids into Android's 0..31 range for the life of a gesture.
+ * Cleared on UP/CANCEL so the next DOWN starts fresh.
+ */
+internal object TouchPointerIds {
+    private val huToAndroid = LinkedHashMap<Int, Int>()
+
+    @Synchronized
+    fun androidId(huId: Int): Int {
+        huToAndroid[huId]?.let { return it }
+        val used = huToAndroid.values.toHashSet()
+        val next = (0..31).firstOrNull { it !in used } ?: (huId and 0x1f)
+        huToAndroid[huId] = next
+        return next
+    }
+
+    @Synchronized
+    fun release(huId: Int) {
+        huToAndroid.remove(huId)
+    }
+
+    @Synchronized
+    fun clear() {
+        huToAndroid.clear()
+    }
+}
+
+/**
+ * Sticky [MotionEvent] downTime + monotonic eventTime for synthesized HU touches.
+ *
+ * Stamp with the report's **arrival** uptime (reader thread), not the Binder-inject
+ * drain time: a queued Handler burst otherwise collapses every sample onto one
+ * millisecond → VelocityTracker velocity ≈ 0 → drag follows the finger but never flings
+ * (Douyin / feed swipe).
+ */
+internal object TouchGestureClock {
+    @Volatile
+    private var downTime = 0L
+    @Volatile
+    private var lastEventTime = 0L
+
+    fun stamp(
+        maskedAction: Int,
+        arrivalUptimeMs: Long = SystemClock.uptimeMillis(),
+    ): Pair<Long, Long> {
+        when (maskedAction) {
+            MotionEvent.ACTION_DOWN -> {
+                downTime = arrivalUptimeMs
+                lastEventTime = arrivalUptimeMs
+                return arrivalUptimeMs to arrivalUptimeMs
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val eventTime = if (lastEventTime <= 0L) {
+                    arrivalUptimeMs
+                } else {
+                    arrivalUptimeMs.coerceAtLeast(lastEventTime + 1L)
+                }
+                val down = if (downTime > 0L) downTime else eventTime
+                downTime = 0L
+                lastEventTime = 0L
+                return down to eventTime
+            }
+            else -> {
+                val eventTime = if (lastEventTime <= 0L) {
+                    arrivalUptimeMs
+                } else {
+                    arrivalUptimeMs.coerceAtLeast(lastEventTime + 1L)
+                }
+                if (downTime <= 0L) downTime = eventTime
+                lastEventTime = eventTime
+                return downTime to eventTime
+            }
+        }
+    }
+
+    fun reset() {
+        downTime = 0L
+        lastEventTime = 0L
+        TouchPointerIds.clear()
+    }
 }

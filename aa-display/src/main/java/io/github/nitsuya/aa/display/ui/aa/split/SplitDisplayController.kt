@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Point
+import android.graphics.RectF
 import android.hardware.display.VirtualDisplay
 import android.os.Binder
 import android.os.Handler
@@ -16,22 +17,24 @@ import android.view.Display
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
-import io.github.nitsuya.aa.display.xposed.util.tryOrNull
 import io.github.nitsuya.aa.display.BuildConfig
+import io.github.nitsuya.aa.display.R
 import io.github.nitsuya.aa.display.model.RecentTask
 import io.github.nitsuya.aa.display.util.AvMediaArbiter
 import io.github.nitsuya.aa.display.util.MusicAppClassifier
 import io.github.nitsuya.aa.display.util.PmCaches
 import io.github.nitsuya.aa.display.xposed.CoreManagerService
 import io.github.nitsuya.aa.display.xposed.hook.VdDensityPin
+import io.github.nitsuya.aa.display.xposed.util.Instances
 import io.github.nitsuya.aa.display.xposed.util.log
 import io.github.nitsuya.aa.display.xposed.util.logDebug
-import io.github.nitsuya.aa.display.xposed.util.Instances
+import io.github.nitsuya.aa.display.xposed.util.tryOrNull
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.ceil
 
 /**
  * Vendor-independent dual-[VirtualDisplay] split controller.
@@ -900,12 +903,39 @@ class SplitDisplayController(
         val sideBySide = isSideBySide
         val totalW = mWidth.coerceAtLeast(1)
         val totalH = mHeight.coerceAtLeast(1)
+        val dpi = mDensityDpi.coerceAtLeast(160)
         val gap = if (SplitPane.isFullscreenPane(mFullscreenPane)) {
             0
         } else if (sideBySide) {
             (totalW - primaryW - secondaryW).coerceAtLeast(1)
         } else {
             (totalH - primaryH - secondaryH).coerceAtLeast(1)
+        }
+        // Phone BT mouse hit-tests the Host GL chip via these bounds (paint is App-side).
+        var imeL = 0
+        var imeT = 0
+        var imeR = 0
+        var imeB = 0
+        val imePane = ime.currentPane()
+        if (SplitPane.isValid(imePane)) {
+            val chip = RectF()
+            val label = runCatching { context.getString(R.string.hide_ime) }.getOrDefault("收起键盘")
+            if (HidSplitLayout.layoutHideImeChip(
+                    chip,
+                    totalW,
+                    totalH,
+                    dpi,
+                    imePane,
+                    SplitPane.isFullscreenPane(mFullscreenPane),
+                    mRatio,
+                    label,
+                )
+            ) {
+                imeL = chip.left.toInt()
+                imeT = chip.top.toInt()
+                imeR = ceil(chip.right.toDouble()).toInt()
+                imeB = ceil(chip.bottom.toDouble()).toInt()
+            }
         }
         return HidSplitLayout(
             sideBySide = sideBySide,
@@ -919,10 +949,14 @@ class SplitDisplayController(
             secondaryH = secondaryH,
             totalW = totalW,
             totalH = totalH,
-            densityDpi = mDensityDpi.coerceAtLeast(160),
+            densityDpi = dpi,
             shellGap = gap,
             shellTotalW = totalW,
             shellTotalH = totalH,
+            imeChipL = imeL,
+            imeChipT = imeT,
+            imeChipR = imeR,
+            imeChipB = imeB,
         )
     }
 

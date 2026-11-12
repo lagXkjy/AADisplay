@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.MotionEvent
 import io.github.nitsuya.aa.display.carplay.CarPlayConsts
 import io.github.nitsuya.aa.display.carplay.CarPlayWheelController
+import io.github.nitsuya.aa.display.carplay.TouchGestureClock
 import io.github.nitsuya.aa.display.carplay.buildMultiPointerEvent
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -365,8 +366,14 @@ class CarPlayEventChannel private constructor(
 
     private fun parseTouchReport(report: ByteArray) {
         if (report.size < 4) return
-        if (chosenTouchLayout == TouchLayout.DIPLAY_SLOT6 && report.size >= 6) {
-            parseDiPlaySlots(report)
+        if (chosenTouchLayout == TouchLayout.DIPLAY_SLOT6) {
+            if (report.size >= 6) {
+                parseDiPlaySlots(report)
+            } else if (diplayFingers.isNotEmpty()) {
+                // Short frame while fingers were down — force all-up so chrome/pane
+                // do not stay pressed after the digitizer stops sending full slots.
+                flushDiPlayFingers()
+            }
             return
         }
         val decoded = decodeTouchPoint(report) ?: return
@@ -382,8 +389,9 @@ class CarPlayEventChannel private constructor(
             else -> return
         }
         fingerDown = down
-        val now = SystemClock.uptimeMillis()
-        val event = MotionEvent.obtain(now, now, action, xNorm, yNorm, 0)
+        val arrivedAt = SystemClock.uptimeMillis()
+        val (downTime, eventTime) = TouchGestureClock.stamp(action, arrivedAt)
+        val event = MotionEvent.obtain(downTime, eventTime, action, xNorm, yNorm, 0)
         onTouch(event)
         if (action != MotionEvent.ACTION_MOVE || touchLogCount < 8) {
             touchLogCount++
@@ -405,7 +413,10 @@ class CarPlayEventChannel private constructor(
 
     private fun parseDiPlaySlots(report: ByteArray) {
         val slots = report.size / 6
-        if (slots == 0) return
+        if (slots == 0) {
+            if (diplayFingers.isNotEmpty()) flushDiPlayFingers()
+            return
+        }
         fun u16le(o: Int) =
             (report[o].toInt() and 0xff) or ((report[o + 1].toInt() and 0xff) shl 8)
         val slotPts = LinkedHashMap<Int, IntArray>() // down slots only
@@ -431,7 +442,7 @@ class CarPlayEventChannel private constructor(
         val table = LinkedHashMap(diplayFingers)
         table.putAll(slotPts) // adds new pointers, refreshes positions
         val ids = table.keys.toList()
-        val now = SystemClock.uptimeMillis()
+        val arrivedAt = SystemClock.uptimeMillis()
         val maxX = touchMaxX.coerceAtLeast(1).toFloat()
         val maxY = touchMaxY.coerceAtLeast(1).toFloat()
         // Event keeps released pointers (Android semantics); the table does not.
@@ -445,12 +456,14 @@ class CarPlayEventChannel private constructor(
         for (id in removed) table.remove(id)
         diplayFingers.clear()
         diplayFingers.putAll(table)
+        fingerDown = diplayFingers.isNotEmpty()
         val actionIndex = when (action) {
             MotionEvent.ACTION_POINTER_DOWN -> ids.indexOf(added.first()).coerceAtLeast(0)
             MotionEvent.ACTION_POINTER_UP -> ids.indexOfFirst { it in removed }.coerceAtLeast(0)
             else -> 0
         }
-        val event = buildMultiPointerEvent(now, now, action, actionIndex, pts)
+        val (downTime, eventTime) = TouchGestureClock.stamp(action, arrivedAt)
+        val event = buildMultiPointerEvent(downTime, eventTime, action, actionIndex, pts)
         if (action != MotionEvent.ACTION_MOVE) {
             Log.i(
                 CarPlayConsts.TAG,
@@ -458,6 +471,28 @@ class CarPlayEventChannel private constructor(
                     "rawMax=${touchMaxX}x$touchMaxY",
             )
         }
+        onTouch(event)
+    }
+
+    /** Emit a synthetic ACTION_UP for every tracked DiPlay finger, then clear. */
+    private fun flushDiPlayFingers() {
+        if (diplayFingers.isEmpty()) return
+        val arrivedAt = SystemClock.uptimeMillis()
+        val maxX = touchMaxX.coerceAtLeast(1).toFloat()
+        val maxY = touchMaxY.coerceAtLeast(1).toFloat()
+        val pts = diplayFingers.map { (id, xy) ->
+            id to floatArrayOf(
+                (xy[0].toFloat() / maxX).coerceIn(0f, 1f),
+                (xy[1].toFloat() / maxY).coerceIn(0f, 1f),
+            )
+        }
+        diplayFingers.clear()
+        fingerDown = false
+        val (downTime, eventTime) = TouchGestureClock.stamp(MotionEvent.ACTION_UP, arrivedAt)
+        val event = buildMultiPointerEvent(
+            downTime, eventTime, MotionEvent.ACTION_UP, 0, pts,
+        )
+        Log.i(CarPlayConsts.TAG, "event touch multi flush-up n=${pts.size}")
         onTouch(event)
     }
 

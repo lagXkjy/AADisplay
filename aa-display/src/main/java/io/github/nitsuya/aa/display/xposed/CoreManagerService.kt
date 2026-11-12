@@ -1169,26 +1169,30 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
     private fun armCarAccessoryWifiCleared(ssid: String, passphrase: String) {
         val wm = systemContext.getSystemService(android.net.wifi.WifiManager::class.java)
             ?: return
+        // Mark before any preferCellular so concurrent avoid-bad-wifi sweeps
+        // keep this SSID autojoin-able (settings "自动重新连接").
+        armedCarAccessorySsid = ssid
+        // null configuredNetworks must not abort — treat as empty and addNetwork.
         val configs = runCatching { wm.configuredNetworks }
-            .getOrNull() as? List<android.net.wifi.WifiConfiguration> ?: return
+            .getOrNull() as? List<android.net.wifi.WifiConfiguration>
+            ?: emptyList()
         val existing = configs.firstOrNull {
             it.SSID?.trim('"').equals(ssid, ignoreCase = true) == true
         }
         val cfg = existing ?: android.net.wifi.WifiConfiguration()
         cfg.SSID = "\"$ssid\""
-        val wepHex = (passphrase.length == 10 || passphrase.length == 26) &&
-            passphrase.all { c -> c.toString().matches(Regex("[0-9A-Fa-f]")) }
-        // WifiKeyMgmt bits: WEP = 4, WPA2 = 8; open network = empty set.
-        // WPA2 PSK must be 8..63 chars — treat anything else as an open AP.
-        val wpa2 = passphrase.length in 8..63 && !wepHex
+        // AOSP KeyMgmt: NONE=0, WPA_PSK=1, WPA2_PSK(deprecated)=4, SAE=8.
+        // Prior bit map (WEP=4 / WPA2=8) was wrong: SAE-only configs auth-fail on
+        // Audi WPA2/transition APs → permanently disabled → Settings shows
+        // auto-reconnect off and Specifier-only (isSaved=false) joins.
+        val psk = passphrase.length in 8..63
         val bits = java.util.BitSet(16)
-        if (wpa2) {
-            bits.set(8)
-            cfg.preSharedKey = "\"$passphrase\""
-        } else if (wepHex) {
-            bits.set(4)
+        if (psk) {
+            bits.set(android.net.wifi.WifiConfiguration.KeyMgmt.WPA_PSK)
+            bits.set(android.net.wifi.WifiConfiguration.KeyMgmt.SAE)
             cfg.preSharedKey = "\"$passphrase\""
         } else {
+            bits.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
             cfg.preSharedKey = ""
         }
         cfg.allowedKeyManagement = bits
@@ -1200,6 +1204,8 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             log(TAG, "armCarAccessoryWifi addNetwork rejected ssid=$ssid")
             return
         }
+        // Re-enable selection after a prior auth-fail / autojoin-off disable.
+        runCatching { wm.enableNetwork(id, false) }
         try {
             android.net.wifi.WifiManager::class.java
                 .getMethod("allowAutojoin", Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
@@ -1208,10 +1214,9 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
             log(TAG, "armCarAccessoryWifi allowAutojoin failed ${e.message}")
         }
         runCatching { wm.saveConfiguration() }
-        armedCarAccessorySsid = ssid
         log(
             TAG,
-            "armCarAccessoryWifi saved ssid=$ssid id=$id new=${existing == null} wpa2=$wpa2 wep=$wepHex",
+            "armCarAccessoryWifi saved ssid=$ssid id=$id new=${existing == null} psk=$psk",
         )
         if (!wm.isWifiEnabled) {
             log(TAG, "armCarAccessoryWifi radio off — saved only")

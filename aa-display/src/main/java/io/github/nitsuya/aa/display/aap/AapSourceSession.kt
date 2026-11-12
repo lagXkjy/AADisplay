@@ -36,6 +36,7 @@ import io.github.nitsuya.aa.display.carplay.CarPlayAppPickerOverlay
 import io.github.nitsuya.aa.display.carplay.CarPlayConsts
 import io.github.nitsuya.aa.display.carplay.CarPlayInputBridge
 import io.github.nitsuya.aa.display.carplay.CarPlayRecentsOverlay
+import io.github.nitsuya.aa.display.carplay.TouchGestureClock
 import io.github.nitsuya.aa.display.carplay.buildMultiPointerEvent
 import io.github.nitsuya.aa.display.egress.ProjectionSessionGate
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
@@ -214,6 +215,7 @@ class AapSourceSession(
         wireless = null
         reportLive(false)
         inputHandler.removeCallbacksAndMessages(null)
+        inputHandler.post { TouchGestureClock.reset() }
         onStatus("已停止")
     }
 
@@ -1074,11 +1076,13 @@ class AapSourceSession(
             val key = if (report.hasKeyEvent()) report.keyEvent else null
             val relative = if (report.hasRelativeEvent()) report.relativeEvent else null
             val pad = if (report.hasTouchpadEvent()) report.touchpadEvent else null
+            // Stamp on the reader thread: inputHandler drain must not collapse MOVE times.
+            val arrivedAt = SystemClock.uptimeMillis()
             inputHandler.post {
                 if (touch != null) {
                     // Full-canvas → split pane local coords (same as CarPlay Host). The old path
                     // injected video-sized coords into focusedPane only — right pane / off-focus taps felt dead.
-                    dispatchTouch(touch, source = "touch")
+                    dispatchTouch(touch, arrivedAt, source = "touch")
                 }
                 if (key != null) {
                     inputKeys.onKeyEvent(key)
@@ -1087,7 +1091,7 @@ class AapSourceSession(
                     handleRelative(relative)
                 }
                 if (pad != null) {
-                    dispatchTouch(pad, source = "pad")
+                    dispatchTouch(pad, arrivedAt, source = "pad")
                 }
             }
         }
@@ -1099,9 +1103,39 @@ class AapSourceSession(
          */
         private val aapTouchPointers = LinkedHashMap<Int, FloatArray>()
 
-        private fun dispatchTouch(te: TouchEvent, source: String) {
+        private fun dispatchTouch(te: TouchEvent, arrivedAt: Long, source: String) {
+            val action = when (te.action) {
+                PointerAction.ACTION_DOWN -> MotionEvent.ACTION_DOWN
+                PointerAction.ACTION_UP -> MotionEvent.ACTION_UP
+                PointerAction.ACTION_MOVED -> MotionEvent.ACTION_MOVE
+                PointerAction.ACTION_POINTER_DOWN -> MotionEvent.ACTION_POINTER_DOWN
+                PointerAction.ACTION_POINTER_UP -> MotionEvent.ACTION_POINTER_UP
+                else -> {
+                    Log.w(
+                        AapConsts.TAG,
+                        "AAP $source unknown action=${te.action} pointers=${te.pointerDataCount}",
+                    )
+                    return
+                }
+            }
+            // Full-state HUs often send the final lift with an empty pointer_data list.
+            // Dropping that left chrome/pane stuck in DOWN ("抬手没识别").
             if (te.pointerDataCount <= 0) {
-                Log.w(AapConsts.TAG, "AAP $source empty pointers action=${te.action}")
+                if (action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_POINTER_UP) {
+                    Log.w(AapConsts.TAG, "AAP $source empty pointers action=$action")
+                    return
+                }
+                if (aapTouchPointers.isEmpty()) return
+                val table = LinkedHashMap(aapTouchPointers)
+                aapTouchPointers.clear()
+                emitAapTouch(
+                    source = source,
+                    action = MotionEvent.ACTION_UP,
+                    actionIndex = 0,
+                    table = table,
+                    arrivedAt = arrivedAt,
+                    logAction = action,
+                )
                 return
             }
             // HUIG content rect the stream is cropped to. Audi MIB3 reports a wider
@@ -1118,20 +1152,6 @@ class AapSourceSession(
                 touchH > contentH + 8 -> contentH
                 else -> touchH.coerceAtLeast(1)
             }
-            val action = when (te.action) {
-                PointerAction.ACTION_DOWN -> MotionEvent.ACTION_DOWN
-                PointerAction.ACTION_UP -> MotionEvent.ACTION_UP
-                PointerAction.ACTION_MOVED -> MotionEvent.ACTION_MOVE
-                PointerAction.ACTION_POINTER_DOWN -> MotionEvent.ACTION_POINTER_DOWN
-                PointerAction.ACTION_POINTER_UP -> MotionEvent.ACTION_POINTER_UP
-                else -> {
-                    Log.w(
-                        AapConsts.TAG,
-                        "AAP $source unknown action=${te.action} pointers=${te.pointerDataCount}",
-                    )
-                    return
-                }
-            }
             val prev = LinkedHashMap(aapTouchPointers)
             val reported = LinkedHashMap<Int, FloatArray>()
             for (p in te.pointerDataList) {
@@ -1140,85 +1160,322 @@ class AapSourceSession(
                     (p.y.toFloat() / normH).coerceIn(0f, 1f),
                 )
             }
-            // Event pointer table per Android semantics: POINTER_* events include the
-            // affected pointer. Removed ids: absent from the report (full-state HU)
-            // or the reported pointer itself (delta HU).
+            // DHU / some HUs emit a trailing POINTER_UP after a final UP. With an empty
+            // live table that used to putAll(reported) and resurrect n=2 ghosts — every
+            // later MOVE injected two pointers and USB write-failed ("链路拥塞").
+            // Empty-table MOVE/POINTER_DOWN must still start a gesture: after a ghost
+            // POINTER_UP cut the drag short, DHU keeps streaming MOVE without a new
+            // DOWN — dropping those felt like lag + every resume DOWN/UP looked like a click.
+            when (action) {
+                MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_POINTER_DOWN,
+                MotionEvent.ACTION_MOVE,
+                -> {
+                    if (prev.isEmpty()) {
+                        if (reported.isNotEmpty() &&
+                            (action == MotionEvent.ACTION_POINTER_DOWN ||
+                                action == MotionEvent.ACTION_MOVE)
+                        ) {
+                            beginAapContactsFromReport(
+                                source = source,
+                                reported = reported,
+                                arrivedAt = arrivedAt,
+                                logAction = action,
+                                normW = normW,
+                                normH = normH,
+                                contentW = contentW,
+                                contentH = contentH,
+                            )
+                            if (action == MotionEvent.ACTION_MOVE) {
+                                emitAapTouch(
+                                    source = source,
+                                    action = MotionEvent.ACTION_MOVE,
+                                    actionIndex = 0,
+                                    table = LinkedHashMap(aapTouchPointers),
+                                    arrivedAt = arrivedAt,
+                                    logAction = action,
+                                    normW = normW,
+                                    normH = normH,
+                                    contentW = contentW,
+                                    contentH = contentH,
+                                )
+                            }
+                        }
+                        return
+                    }
+                }
+                else -> Unit
+            }
             val removedIds = if (action == MotionEvent.ACTION_POINTER_UP) {
-                val missing = prev.keys - reported.keys
-                if (missing.isEmpty()) reported.keys.toSet() else missing
+                resolveAapRemovedIds(te, prev, reported)
             } else {
                 emptySet()
             }
-            val table = when (action) {
+            when (action) {
                 MotionEvent.ACTION_DOWN -> {
-                    aapTouchPointers.clear()
-                    aapTouchPointers.putAll(reported)
-                    aapTouchPointers
+                    // Android DOWN is always one pointer; extras arrive as POINTER_DOWN.
+                    beginAapContactsFromReport(
+                        source = source,
+                        reported = reported,
+                        arrivedAt = arrivedAt,
+                        logAction = action,
+                        normW = normW,
+                        normH = normH,
+                        contentW = contentW,
+                        contentH = contentH,
+                    )
                 }
                 MotionEvent.ACTION_POINTER_DOWN -> {
-                    val t = LinkedHashMap(prev)
-                    t.putAll(reported) // upsert: adds the new pointer(s)
-                    aapTouchPointers.clear()
-                    aapTouchPointers.putAll(t)
-                    aapTouchPointers
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    for ((id, xy) in reported) {
-                        if (aapTouchPointers.containsKey(id)) aapTouchPointers[id] = xy
-                    }
-                    aapTouchPointers
-                }
-                MotionEvent.ACTION_POINTER_UP -> {
+                    val added = reported.keys.filter { it !in prev.keys }
+                    if (added.isEmpty()) return // duplicate — already tracked
                     val t = LinkedHashMap(prev)
                     t.putAll(reported)
-                    // Event includes the released pointer (last known position).
+                    aapTouchPointers.clear()
+                    aapTouchPointers.putAll(t)
+                    val actionIndex = t.keys.indexOfFirst { it in added }.coerceAtLeast(0)
+                    emitAapTouch(
+                        source = source,
+                        action = MotionEvent.ACTION_POINTER_DOWN,
+                        actionIndex = actionIndex,
+                        table = LinkedHashMap(aapTouchPointers),
+                        arrivedAt = arrivedAt,
+                        logAction = action,
+                        normW = normW,
+                        normH = normH,
+                        contentW = contentW,
+                        contentH = contentH,
+                    )
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    var matched = false
+                    for ((id, xy) in reported) {
+                        if (aapTouchPointers.containsKey(id)) {
+                            aapTouchPointers[id] = xy
+                            matched = true
+                        }
+                    }
+                    // DHU mouse sometimes rewrites pointer_id mid-drag. Updating only
+                    // matching ids left the live finger stuck at DOWN → apps saw a tap.
+                    if (!matched && reported.isNotEmpty() && aapTouchPointers.size == 1) {
+                        val liveId = aapTouchPointers.keys.first()
+                        aapTouchPointers[liveId] = reported.values.first()
+                    }
+                    if (aapTouchPointers.isEmpty()) return
+                    emitAapTouch(
+                        source = source,
+                        action = MotionEvent.ACTION_MOVE,
+                        actionIndex = 0,
+                        table = LinkedHashMap(aapTouchPointers),
+                        arrivedAt = arrivedAt,
+                        logAction = action,
+                        normW = normW,
+                        normH = normH,
+                        contentW = contentW,
+                        contentH = contentH,
+                    )
+                }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    if (removedIds.isEmpty()) return
+                    val t = LinkedHashMap(prev)
+                    // Refresh positions for still-known ids; keep released at last known.
+                    for ((id, xy) in reported) {
+                        if (t.containsKey(id)) t[id] = xy
+                    }
                     val evTable = LinkedHashMap(t)
                     for (id in removedIds) t.remove(id)
                     aapTouchPointers.clear()
                     aapTouchPointers.putAll(t)
-                    evTable
+                    val ids = evTable.keys.toList()
+                    val actionIndex = ids.indexOfFirst { it in removedIds }.coerceAtLeast(0)
+                    val evAction = if (aapTouchPointers.isEmpty()) {
+                        MotionEvent.ACTION_UP
+                    } else {
+                        MotionEvent.ACTION_POINTER_UP
+                    }
+                    // Final UP must carry only the last finger (Android semantics).
+                    val emitTable = if (evAction == MotionEvent.ACTION_UP) {
+                        val lastId = ids.getOrNull(actionIndex) ?: ids.first()
+                        linkedMapOf(lastId to evTable.getValue(lastId))
+                    } else {
+                        evTable
+                    }
+                    emitAapTouch(
+                        source = source,
+                        action = evAction,
+                        actionIndex = if (evAction == MotionEvent.ACTION_UP) 0 else actionIndex,
+                        table = emitTable,
+                        arrivedAt = arrivedAt,
+                        logAction = action,
+                        normW = normW,
+                        normH = normH,
+                        contentW = contentW,
+                        contentH = contentH,
+                    )
                 }
                 MotionEvent.ACTION_UP -> {
                     for ((id, xy) in reported) {
                         if (aapTouchPointers.containsKey(id)) aapTouchPointers[id] = xy
                     }
-                    val t = aapTouchPointers
+                    val t = if (aapTouchPointers.isNotEmpty()) {
+                        LinkedHashMap(aapTouchPointers)
+                    } else {
+                        LinkedHashMap(reported)
+                    }
                     aapTouchPointers.clear()
-                    t
+                    if (t.isEmpty()) return
+                    // Multi-finger abrupt all-up → CANCEL (clears every id). Single
+                    // finger → plain UP. Never emit UP with n>1 (DHU then sent a
+                    // trailing POINTER_UP that resurrected ghost fingers).
+                    if (t.size > 1) {
+                        emitAapTouch(
+                            source = source,
+                            action = MotionEvent.ACTION_CANCEL,
+                            actionIndex = 0,
+                            table = t,
+                            arrivedAt = arrivedAt,
+                            logAction = action,
+                            normW = normW,
+                            normH = normH,
+                            contentW = contentW,
+                            contentH = contentH,
+                        )
+                    } else {
+                        val lastId = t.keys.last()
+                        emitAapTouch(
+                            source = source,
+                            action = MotionEvent.ACTION_UP,
+                            actionIndex = 0,
+                            table = linkedMapOf(lastId to t.getValue(lastId)),
+                            arrivedAt = arrivedAt,
+                            logAction = action,
+                            normW = normW,
+                            normH = normH,
+                            contentW = contentW,
+                            contentH = contentH,
+                        )
+                    }
                 }
-                else -> null
+                else -> return
             }
-                ?: return
+        }
+
+        /**
+         * Seed [aapTouchPointers] from a first-contact report (DOWN-equivalent).
+         * Emits Android DOWN (+ POINTER_DOWN for extras). Caller may emit MOVE after.
+         */
+        private fun beginAapContactsFromReport(
+            source: String,
+            reported: Map<Int, FloatArray>,
+            arrivedAt: Long,
+            logAction: Int,
+            normW: Int,
+            normH: Int,
+            contentW: Int,
+            contentH: Int,
+        ) {
+            if (reported.isEmpty()) return
+            aapTouchPointers.clear()
+            aapTouchPointers.putAll(reported)
+            val firstId = reported.keys.first()
+            emitAapTouch(
+                source = source,
+                action = MotionEvent.ACTION_DOWN,
+                actionIndex = 0,
+                table = linkedMapOf(firstId to reported.getValue(firstId)),
+                arrivedAt = arrivedAt,
+                logAction = logAction,
+                normW = normW,
+                normH = normH,
+                contentW = contentW,
+                contentH = contentH,
+            )
+            if (reported.size > 1) {
+                emitAapTouch(
+                    source = source,
+                    action = MotionEvent.ACTION_POINTER_DOWN,
+                    actionIndex = 1,
+                    table = LinkedHashMap(aapTouchPointers),
+                    arrivedAt = arrivedAt,
+                    logAction = logAction,
+                    normW = normW,
+                    normH = normH,
+                    contentW = contentW,
+                    contentH = contentH,
+                )
+            }
+        }
+
+        /**
+         * Which HU pointer_id left on POINTER_UP.
+         * 1) protobuf action_index → pointer_data[i].pointer_id (must be live)
+         * 2) delta: report carries only the released finger(s) → use reported ids
+         *    that we were tracking (ghost ids must NOT end a live mouse drag)
+         * 3) full-state: remaining fingers still reported, missing = released
+         */
+        private fun resolveAapRemovedIds(
+            te: TouchEvent,
+            prev: Map<Int, FloatArray>,
+            reported: Map<Int, FloatArray>,
+        ): Set<Int> {
+            if (prev.isEmpty()) return emptySet()
+            if (te.hasActionIndex()) {
+                val idx = te.actionIndex
+                if (idx in 0 until te.pointerDataCount) {
+                    val id = te.getPointerData(idx).pointerId
+                    // Ghost action_index for an id we never tracked — ignore.
+                    return if (id in prev) setOf(id) else emptySet()
+                }
+            }
+            if (prev.size <= 1) {
+                // Single live finger: only end when the report names that finger
+                // (or is empty — already handled by the empty-pointer UP path).
+                // Blindly returning prev.keys made DHU ghost POINTER_UP (other id)
+                // cut mouse drags into DOWN→UP taps.
+                if (reported.isEmpty()) return prev.keys.toSet()
+                return if (reported.keys.any { it in prev }) prev.keys.toSet() else emptySet()
+            }
+            val missing = prev.keys - reported.keys
+            val reportedOnlyKnown = reported.isNotEmpty() && reported.keys.all { it in prev }
+            return when {
+                // Clean full-state lift: remaining + missing partitions prev.
+                missing.isNotEmpty() &&
+                    reportedOnlyKnown &&
+                    missing.size + reported.size == prev.size -> missing
+                // Delta lift: only ids we were actually tracking.
+                reported.isNotEmpty() -> {
+                    val known = reported.keys.filter { it in prev }.toSet()
+                    known.ifEmpty { emptySet() }
+                }
+                missing.isNotEmpty() -> missing
+                else -> emptySet()
+            }
+        }
+
+        private fun emitAapTouch(
+            source: String,
+            action: Int,
+            actionIndex: Int,
+            table: Map<Int, FloatArray>,
+            arrivedAt: Long,
+            logAction: Int = action,
+            normW: Int = touchW.coerceAtLeast(1),
+            normH: Int = touchH.coerceAtLeast(1),
+            contentW: Int = (videoW - widthMargin).coerceAtLeast(1),
+            contentH: Int = (videoH - heightMargin).coerceAtLeast(1),
+        ) {
             val ids = table.keys.toList()
             if (ids.isEmpty()) return
             val first = table[ids[0]]!!
-            val now = SystemClock.uptimeMillis()
-            val actionIndex = when (action) {
-                MotionEvent.ACTION_POINTER_DOWN ->
-                    ids.indexOfFirst { it !in prev.keys }.coerceAtLeast(0)
-
-                MotionEvent.ACTION_POINTER_UP ->
-                    ids.indexOfFirst { it in removedIds }.coerceAtLeast(0)
-
-                else -> 0
-            }
-            // Released the last pointer: emit a plain UP (POINTER_UP with one pointer
-            // left is not what apps expect).
-            val evAction = if (action == MotionEvent.ACTION_POINTER_UP &&
-                aapTouchPointers.isEmpty()
-            ) {
-                MotionEvent.ACTION_UP
-            } else {
-                action
-            }
+            // Sticky downTime + arrival eventTime — see [TouchGestureClock].
+            val (downTime, eventTime) = TouchGestureClock.stamp(action, arrivedAt)
             val event = buildMultiPointerEvent(
-                now, now, evAction, actionIndex, ids.map { it to table[it]!! },
+                downTime, eventTime, action, actionIndex, ids.map { it to table[it]!! },
             )
             // Throttle MOVE spam; always log DOWN/UP so we can see if HU sends touch at all.
-            if (action != MotionEvent.ACTION_MOVE || shouldLogTouchMove()) {
+            if (logAction != MotionEvent.ACTION_MOVE || shouldLogTouchMove()) {
                 Log.i(
                     AapConsts.TAG,
-                    "AAP $source action=$action n=${event.pointerCount} first=${first[0]},${first[1]} " +
+                    "AAP $source action=$logAction ev=$action n=${event.pointerCount} " +
+                        "first=${first[0]},${first[1]} " +
                         "touch=${touchW}x$touchH normBase=${normW}x$normH " +
                         "video=${videoW}x$videoH content=${contentW}x$contentH",
                 )

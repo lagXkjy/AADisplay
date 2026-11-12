@@ -118,6 +118,8 @@ class CarPlayWifiHandoff(context: Context) {
         // Same call re-arms the settings "auto-reconnect" switch if the user
         // flipped it off mid-session (framework then kills the STA on toggle-off).
         armAccessoryWifiConfig(ssid)
+        // After arm (armed SSID protected): stop other car STA autojoin / ACCEPT.
+        preferCellularNow()
 
         if (isBoundTo(ssid) || adoptIfAssociated(ssid, reason = "ensure")) {
             onReady()

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6 — 无线 CarPlay Wi‑Fi「自动重新连接」未勾选 / 无法自动重连
+
+versionCode **10105** / versionName **1.6**。
+
+- **根因：** `armCarAccessoryWifi` 把 `KeyMgmt` 错写成 SAE(8)（注释误标 WPA2=8），奥迪等 WPA2/过渡热点认证失败 → 配置被永久禁用；设置页显示临时「已通过 AADisplay 连接」(`isSaved=false`)，「自动重新连接」不勾。另：`preferCellular` 在 arm 之前跑，会把车机 SSID 的 `allowAutojoin` 关掉。
+- **修复：** KeyMgmt 改为 `WPA_PSK`+`SAE`（对齐 AAP / AOSP）；arm 先置 `armedCarAccessorySsid` 再 `enableNetwork` + `allowAutojoin(true)`；`configuredNetworks==null` 不再中断保存；`preferCellular` 挪到 arm 之后（handoff 内），避免冲掉自动重连。
+- system_server 侧变更，装包后需**重启**生效。
+
 ## 1.5 — 无线 CarPlay 热点保存自动连接（免人工连 Wi‑Fi）
 
 versionCode **10104** / versionName **1.5**。

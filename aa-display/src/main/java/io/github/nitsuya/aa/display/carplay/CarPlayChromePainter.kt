@@ -6,6 +6,7 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
+import io.github.nitsuya.aa.display.ui.aa.split.HidSplitLayout
 import io.github.nitsuya.aa.display.ui.aa.split.SplitPane
 
 /**
@@ -54,7 +55,6 @@ internal object CarPlayChromePainter {
         typeface = Typeface.DEFAULT
     }
     private val chipRect = RectF()
-    private val measureText = Paint(Paint.ANTI_ALIAS_FLAG)
 
     /**
      * Left pane, divider gap, right pane. Same math as
@@ -72,7 +72,8 @@ internal object CarPlayChromePainter {
     /**
      * AA [AaMainFragment] chip: centered on the IME pane, 16dp above its bottom.
      * Fullscreen uses the whole canvas. Writes [out] and returns false when [pane]
-     * is not a pane. Safe to call from the GL thread and the touch thread.
+     * is not a pane. Geometry lives in [HidSplitLayout.layoutHideImeChip] so phone
+     * BT mouse hit-test stays aligned with the painted chip.
      */
     fun layoutHideImeChip(
         out: RectF,
@@ -83,41 +84,9 @@ internal object CarPlayChromePainter {
         fullscreen: Boolean,
         ratio: Float,
         label: String,
-    ): Boolean {
-        if (!SplitPane.isValid(pane) || canvasW <= 0 || canvasH <= 0) return false
-        val d = densityDpi.coerceAtLeast(160) / 160f
-        val text = label.ifEmpty { "收起键盘" }
-        val textW: Float
-        val textH: Float
-        synchronized(measureText) {
-            measureText.textSize = 15f * d
-            textW = measureText.measureText(text)
-            val fm = measureText.fontMetrics
-            textH = fm.descent - fm.ascent
-        }
-        val cw = textW + 40f * d
-        val ch = textH + 20f * d
-        val margin = 16f * d
-        val paneLeft: Float
-        val paneWidth: Float
-        if (fullscreen) {
-            paneLeft = 0f
-            paneWidth = canvasW.toFloat()
-        } else {
-            val (left, gap, right) = splitStrip(canvasW, ratio, densityDpi)
-            if (pane == SplitPane.PRIMARY) {
-                paneLeft = 0f
-                paneWidth = left.toFloat()
-            } else {
-                paneLeft = (left + gap).toFloat()
-                paneWidth = right.toFloat()
-            }
-        }
-        val leftEdge = paneLeft + ((paneWidth - cw) / 2f).coerceAtLeast(0f)
-        val top = (canvasH - ch - margin).coerceAtLeast(margin)
-        out.set(leftEdge, top, leftEdge + cw, top + ch)
-        return true
-    }
+    ): Boolean = HidSplitLayout.layoutHideImeChip(
+        out, canvasW, canvasH, densityDpi, pane, fullscreen, ratio, label,
+    )
 
     fun drawHideImeChip(canvas: Canvas, rect: RectF, densityDpi: Int, label: String) {
         val d = densityDpi.coerceAtLeast(160) / 160f

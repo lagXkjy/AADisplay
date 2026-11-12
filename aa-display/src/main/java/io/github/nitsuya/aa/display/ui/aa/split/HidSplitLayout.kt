@@ -1,5 +1,8 @@
 package io.github.nitsuya.aa.display.ui.aa.split
 
+import android.graphics.Paint
+import android.graphics.RectF
+
 /**
  * Dual-pane geometry for phone BT mouse: one continuous canvas
  * `[primary][divider][secondary]` so the cursor can rest on the seam
@@ -37,6 +40,66 @@ data class HidSplitLayout(
     val imeChipR: Int = 0,
     val imeChipB: Int = 0,
 ) {
+    companion object {
+        private val measureText = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        /**
+         * Host GL 「收起键盘」geometry — same math for paint
+         * ([io.github.nitsuya.aa.display.carplay.CarPlayChromePainter]) and phone BT
+         * mouse hit-test ([imeChipL]..[imeChipB]). After the shell View was retired,
+         * [SplitDisplayController.hidSplitLayout] stopped filling those fields and
+         * [isImeChipHit] was always false (clicks fell through onto the keyboard).
+         */
+        fun layoutHideImeChip(
+            out: RectF,
+            canvasW: Int,
+            canvasH: Int,
+            densityDpi: Int,
+            pane: Int,
+            fullscreen: Boolean,
+            ratio: Float,
+            label: String,
+        ): Boolean {
+            if (!SplitPane.isValid(pane) || canvasW <= 0 || canvasH <= 0) return false
+            val d = densityDpi.coerceAtLeast(160) / 160f
+            val text = label.ifEmpty { "收起键盘" }
+            val textW: Float
+            val textH: Float
+            synchronized(measureText) {
+                measureText.textSize = 15f * d
+                textW = measureText.measureText(text)
+                val fm = measureText.fontMetrics
+                textH = fm.descent - fm.ascent
+            }
+            val cw = textW + 40f * d
+            val ch = textH + 20f * d
+            val margin = 16f * d
+            val paneLeft: Float
+            val paneWidth: Float
+            if (fullscreen) {
+                paneLeft = 0f
+                paneWidth = canvasW.toFloat()
+            } else {
+                val gap = SplitPane.dividerPx(densityDpi)
+                val usable = (canvasW - gap).coerceAtLeast(2)
+                val clamped = ratio.coerceIn(SplitPane.MIN_RATIO, SplitPane.MAX_RATIO)
+                val left = (usable * clamped).toInt().coerceAtLeast(1)
+                val right = (usable - left).coerceAtLeast(1)
+                if (pane == SplitPane.PRIMARY) {
+                    paneLeft = 0f
+                    paneWidth = left.toFloat()
+                } else {
+                    paneLeft = (left + gap).toFloat()
+                    paneWidth = right.toFloat()
+                }
+            }
+            val leftEdge = paneLeft + ((paneWidth - cw) / 2f).coerceAtLeast(0f)
+            val top = (canvasH - ch - margin).coerceAtLeast(margin)
+            out.set(leftEdge, top, leftEdge + cw, top + ch)
+            return true
+        }
+    }
+
     private fun seamGapPx(): Float =
         if (shellGap > 0) shellGap.toFloat() else dividerVisualPx.toFloat()
 
