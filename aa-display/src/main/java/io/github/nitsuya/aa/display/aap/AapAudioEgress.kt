@@ -178,7 +178,7 @@ class AapAudioEgress {
             if (!mediaWatchRunning.get() || !running.get() || mediaFocused.get()) continue
             val got = try {
                 MEDIA.pull(MEDIA_WATCH_PULL_BYTES)
-            } catch (e: InterruptedException) {
+            } catch (_: InterruptedException) {
                 break
             } catch (_: Throwable) {
                 ByteArray(0)

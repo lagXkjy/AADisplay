@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.xposed.hook
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Binder
 import android.os.ServiceManager
@@ -8,6 +9,7 @@ import android.view.Display
 import io.github.nitsuya.aa.display.xposed.util.log
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import androidx.core.util.size
 
 /**
  * Force AA pane LogicalDisplays out of default DisplayGroup 0.
@@ -106,13 +108,14 @@ object PaneDisplayGroupForce {
      * Prefer an existing [DisplayGroup] instance's Class (always on the right loader),
      * then [AndroidHook.loadSystemClass], then mapper's ClassLoader.
      */
+    @SuppressLint("PrivateApi")
     private fun resolveDisplayGroupClass(
         mapperObj: Any,
         groups: SparseArray<Any>,
         defaultGroup: Any?,
     ): Class<*>? {
         defaultGroup?.javaClass?.let { return it }
-        for (i in 0 until groups.size()) {
+        for (i in 0 until groups.size) {
             groups.valueAt(i)?.javaClass?.let { return it }
         }
         AndroidHook.loadSystemClass("com.android.server.display.DisplayGroup")?.let { return it }
@@ -143,7 +146,7 @@ object PaneDisplayGroupForce {
         val groups = groupsObj as SparseArray<Any>
         val defaultGroup = groups.get(DEFAULT_GROUP)
 
-        var newGroupId = 0
+        var newGroupId: Int
         val byName = findFieldValue(mapperObj, "mDisplayGroupIdsByName")
         if (byName is MutableMap<*, *>) {
             @Suppress("UNCHECKED_CAST")
@@ -154,7 +157,7 @@ object PaneDisplayGroupForce {
             } else {
                 val nextField = findField(mapperObj.javaClass, "mNextNonDefaultGroupId")
                 nextField?.isAccessible = true
-                newGroupId = nextField?.getInt(mapperObj) ?: (groups.size() + 1).coerceAtLeast(2)
+                newGroupId = nextField?.getInt(mapperObj) ?: (groups.size + 1).coerceAtLeast(2)
                 nextField?.setInt(mapperObj, newGroupId + 1)
                 map[GROUP_NAME] = newGroupId
             }
@@ -186,7 +189,7 @@ object PaneDisplayGroupForce {
                 m.parameterTypes.size == 1
             }?.invoke(defaultGroup, display)
         }
-        findMethod(newGroup!!.javaClass, "addDisplayLocked") { m ->
+        findMethod(newGroup.javaClass, "addDisplayLocked") { m ->
             m.parameterTypes.size == 1
         }?.invoke(newGroup, display)
 
@@ -316,7 +319,7 @@ object PaneDisplayGroupForce {
             }
             if (findFieldValue(sm, "mLogicalDisplayMapper") != null) return sm
             null
-        }.getOrNull()?.let { return it }
+        }.getOrNull()
 
         return null
     }
@@ -331,7 +334,7 @@ object PaneDisplayGroupForce {
     private fun findField(clazz: Class<*>, name: String): Field? {
         var c: Class<*>? = clazz
         while (c != null && c != Any::class.java) {
-            runCatching { c!!.getDeclaredField(name) }.getOrNull()?.let { return it }
+            runCatching { c.getDeclaredField(name) }.getOrNull()?.let { return it }
             c = c.superclass
         }
         return null

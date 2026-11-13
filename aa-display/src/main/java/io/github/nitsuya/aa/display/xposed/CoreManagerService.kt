@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.xposed
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -10,7 +11,6 @@ import android.content.Context
 import android.content.ContextParams
 import android.content.Intent
 import android.content.IntentFilter
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
@@ -27,8 +27,12 @@ import io.github.nitsuya.aa.display.util.EgressChannelMirror
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterArtStore
 import io.github.nitsuya.aa.display.xposed.cluster.ClusterLyricMirror
 import android.graphics.Point
+import android.net.wifi.WifiConfiguration
+import android.net.wifi.WifiManager
+import android.provider.Settings
 import android.view.Display
 import android.view.KeyEvent
+import androidx.annotation.RequiresPermission
 import io.github.nitsuya.aa.display.xposed.carplay.CarPlayAudioCapture
 import io.github.nitsuya.aa.display.xposed.carplay.CarPlayBootArm
 import io.github.nitsuya.aa.display.xposed.carplay.CarPlayProcessBoost
@@ -97,6 +101,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         // so a freshly created / torn-down controller is visible to those readers.
         @Volatile
         private var mSessionPolicy: DisplaySessionPolicy? = null
+        @SuppressLint("StaticFieldLeak")
         @Volatile
         private var mSplitController: SplitDisplayController? = null
         private var mDisplayCreateInProgress = false
@@ -578,7 +583,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         }
 
         /** Retired Car SDK presentation key inject — always false. */
-        fun injectHidAaUiKeyEvent(event: KeyEvent): Boolean = false
+        fun injectHidAaUiKeyEvent(): Boolean = false
 
         fun panePackageForDisplay(displayId: Int): String? {
             val controller = mSplitController ?: return null
@@ -1069,10 +1074,11 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         return adapter.scanMode == mode
     }
 
+    @RequiresPermission(Manifest.permission.ACCESS_FINE_LOCATION)
     @Suppress("DEPRECATION")
     private fun preferCellularOverUnvalidatedWifiUnlocked() {
         try {
-            android.provider.Settings.Global.putInt(
+            Settings.Global.putInt(
                 systemContext.contentResolver,
                 "network_avoid_bad_wifi",
                 1,
@@ -1080,10 +1086,10 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         } catch (e: Throwable) {
             log(TAG, "network_avoid_bad_wifi put failed", e)
         }
-        val wm = systemContext.getSystemService(android.net.wifi.WifiManager::class.java)
+        val wm = systemContext.getSystemService(WifiManager::class.java)
         try {
             @Suppress("UNCHECKED_CAST")
-            val configs = wm?.configuredNetworks as? List<android.net.wifi.WifiConfiguration>
+            val configs = wm?.configuredNetworks
             configs?.forEach { cfg ->
                 val bare = cfg.SSID?.trim('"').orEmpty()
                 val armedCp = bare.equals(armedCarAccessorySsid, ignoreCase = true)
@@ -1102,7 +1108,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                     // noInternetAccessExpected keep it off the default route, so
                     // cellular stays the INTERNET path.
                     try {
-                        android.net.wifi.WifiManager::class.java
+                        WifiManager::class.java
                             .getMethod("allowAutojoin", Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
                             .invoke(wm, cfg.networkId, true)
                         log(TAG, "allowAutojoin(true) armed CP ssid=$bare id=${cfg.networkId}")
@@ -1115,7 +1121,7 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
                 // stamps ACCEPT_UNVALIDATED and steals the default route). Specifier
                 // joins from CarPlayWifiHandoff still work with autojoin off.
                 try {
-                    android.net.wifi.WifiManager::class.java
+                    WifiManager::class.java
                         .getMethod("allowAutojoin", Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
                         .invoke(wm, cfg.networkId, false)
                     log(TAG, "allowAutojoin(false) ssid=$bare id=${cfg.networkId}")
@@ -1175,12 +1181,12 @@ class CoreManagerService private constructor() : ICoreManager.Stub() {
         armedCarAccessorySsid = ssid
         // null configuredNetworks must not abort — treat as empty and addNetwork.
         val configs = runCatching { wm.configuredNetworks }
-            .getOrNull() as? List<android.net.wifi.WifiConfiguration>
+            .getOrNull()
             ?: emptyList()
         val existing = configs.firstOrNull {
-            it.SSID?.trim('"').equals(ssid, ignoreCase = true) == true
+            it.SSID?.trim('"').equals(ssid, ignoreCase = true)
         }
-        val cfg = existing ?: android.net.wifi.WifiConfiguration()
+        val cfg = existing ?: WifiConfiguration()
         cfg.SSID = "\"$ssid\""
         // AOSP KeyMgmt: NONE=0, WPA_PSK=1, WPA2_PSK(deprecated)=4, SAE=8.
         // Prior bit map (WEP=4 / WPA2=8) was wrong: SAE-only configs auth-fail on

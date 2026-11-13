@@ -209,10 +209,14 @@ internal class SplitOwnership(private val c: SplitDisplayController) {
             val intent = Intent(Intent.ACTION_MAIN)
                 .addCategory(Intent.CATEGORY_LAUNCHER)
                 .setPackage(packageName)
-            val ri = c.context.packageManager.resolveActivity(intent, 0) ?: return false
-            ri.activityInfo?.let { info ->
-                info.packageName == activity.packageName && info.name == activity.className
-            } == true
+            // queryIntentActivities, not resolveActivity: a LAUNCHER tie (Douyin ships
+            // PadIconSplash + Splash) makes resolveActivity answer the system
+            // ResolverActivity, which would defeat this guard.
+            c.context.packageManager.queryIntentActivities(intent, 0).any {
+                it.activityInfo?.let { info ->
+                    info.packageName == activity.packageName && info.name == activity.className
+                } == true
+            }
         } catch (_: Throwable) {
             false
         }

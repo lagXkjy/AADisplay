@@ -175,7 +175,7 @@ object PhoneHidRedirect {
             if (!cursorInitialized && layout != null) {
                 initCursorPane(layout)
             }
-            publishHidCursorOverlay(layout, force = true)
+            publishHidCursorOverlay(layout)
         }.onFailure { logDebug(TAG, "revealCursorForKeyboardRecent: ${it.message}") }
     }
 
@@ -413,6 +413,7 @@ object PhoneHidRedirect {
         }.onFailure { log(TAG, "InputDeviceListener register failed", it) }
     }
 
+    @SuppressLint("DiscouragedPrivateApi")
     private fun resolveInputManagerApi(): android.hardware.input.InputManager? {
         runCatching {
             val at = Class.forName("android.app.ActivityThread")
@@ -591,6 +592,7 @@ object PhoneHidRedirect {
         }
     }
 
+    @SuppressLint("PrivateApi")
     private fun buildVirtualViewport(displayId: Int): Any? {
         return try {
             val size = CoreManagerService.displaySizeFor(displayId) ?: return null
@@ -691,7 +693,7 @@ object PhoneHidRedirect {
     private fun findFieldRecursive(start: Class<*>, name: String): Field? {
         var c: Class<*>? = start
         while (c != null && c != Any::class.java) {
-            runCatching { c!!.getDeclaredField(name) }.getOrNull()?.let { return it }
+            runCatching { c.getDeclaredField(name) }.getOrNull()?.let { return it }
             c = c.superclass
         }
         return null
@@ -859,7 +861,7 @@ object PhoneHidRedirect {
         overlayShellY = sy
     }
 
-    private fun publishOverlayShell(sx: Float, sy: Float, force: Boolean) {
+    private fun publishOverlayShell(sx: Float, sy: Float) {
         overlayShellX = sx
         overlayShellY = sy
         lastPointerActivityUptime = SystemClock.uptimeMillis()
@@ -904,7 +906,6 @@ object PhoneHidRedirect {
     private fun publishHidCursorOverlay(
         layout: HidSplitLayout?,
         visible: Boolean = true,
-        force: Boolean = false,
         idleHide: Boolean = false,
     ) {
         if (!visible) {
@@ -920,7 +921,7 @@ object PhoneHidRedirect {
             refreshOverlayShell(lay)
             overlayShellX to overlayShellY
         }
-        publishOverlayShell(sx, sy, force)
+        publishOverlayShell(sx, sy)
     }
 
     private fun restorePointerDisplay() {
@@ -1118,7 +1119,7 @@ object PhoneHidRedirect {
                 return true
             }
             if (CoreManagerService.aaUiShellCapture) {
-                return CoreManagerService.injectHidAaUiKeyEvent(event)
+                return CoreManagerService.injectHidAaUiKeyEvent()
             }
             CoreManagerService.injectHidKeyEvent(event)
         } catch (e: Throwable) {
@@ -1265,7 +1266,7 @@ object PhoneHidRedirect {
         }
 
         if (chromeCapture) {
-            if (hasDelta) publishHidCursorOverlay(layout, force = false)
+            if (hasDelta) publishHidCursorOverlay(layout)
             return routeShellOverlay(layout, event)
         }
 
@@ -1294,19 +1295,19 @@ object PhoneHidRedirect {
                 pointerDown = true
                 pointerDownTime = SystemClock.uptimeMillis()
                 CoreManagerService.focusHidPane(pane)
-                publishHidCursorOverlay(layout, force = false)
+                publishHidCursorOverlay(layout)
                 return CoreManagerService.injectHidTouchOnPane(
                     pane, MotionEvent.ACTION_DOWN, px, py, pointerDownTime, pointerDownTime,
                 )
             }
             MotionEvent.ACTION_HOVER_ENTER -> {
                 suppressOsPointerSprite(force = true)
-                publishHidCursorOverlay(layout, force = true)
+                publishHidCursorOverlay(layout)
                 return true
             }
             MotionEvent.ACTION_MOVE,
             MotionEvent.ACTION_HOVER_MOVE -> {
-                publishHidCursorOverlay(layout, force = false)
+                publishHidCursorOverlay(layout)
                 if (!pointerDown) return true
                 return CoreManagerService.injectHidTouchOnPane(
                     pane, MotionEvent.ACTION_MOVE, px, py, pointerDownTime, SystemClock.uptimeMillis(),
@@ -1320,7 +1321,7 @@ object PhoneHidRedirect {
                 val action =
                     if (event.actionMasked == MotionEvent.ACTION_CANCEL) MotionEvent.ACTION_CANCEL
                     else MotionEvent.ACTION_UP
-                publishHidCursorOverlay(layout, force = false)
+                publishHidCursorOverlay(layout)
                 return CoreManagerService.injectHidTouchOnPane(
                     pane, action, px, py, pointerDownTime, SystemClock.uptimeMillis(),
                 )
@@ -1336,25 +1337,25 @@ object PhoneHidRedirect {
                     pointerDown = true
                     pointerDownTime = SystemClock.uptimeMillis()
                     CoreManagerService.focusHidPane(pane)
-                    publishHidCursorOverlay(layout, force = false)
+                    publishHidCursorOverlay(layout)
                     return CoreManagerService.injectHidTouchOnPane(
                         pane, MotionEvent.ACTION_DOWN, px, py, pointerDownTime, pointerDownTime,
                     )
                 }
                 if (!pressed && pointerDown) {
                     pointerDown = false
-                    publishHidCursorOverlay(layout, force = false)
+                    publishHidCursorOverlay(layout)
                     return CoreManagerService.injectHidTouchOnPane(
                         pane, MotionEvent.ACTION_UP, px, py, pointerDownTime, SystemClock.uptimeMillis(),
                     )
                 }
                 if (pointerDown) {
-                    publishHidCursorOverlay(layout, force = false)
+                    publishHidCursorOverlay(layout)
                     return CoreManagerService.injectHidTouchOnPane(
                         pane, MotionEvent.ACTION_MOVE, px, py, pointerDownTime, SystemClock.uptimeMillis(),
                     )
                 }
-                if (hasDelta) publishHidCursorOverlay(layout, force = false)
+                if (hasDelta) publishHidCursorOverlay(layout)
                 return true
             }
         }
@@ -1376,7 +1377,7 @@ object PhoneHidRedirect {
         cursorInitialized = true
         pointerDown = false
         suppressOsPointerSprite(force = true)
-        publishHidCursorOverlay(layout, force = true)
+        publishHidCursorOverlay(layout)
     }
 
     /**
@@ -1425,7 +1426,7 @@ object PhoneHidRedirect {
                     )
                     CoreManagerService.focusHidPane(cursorPane)
                     if (!dividerGestureActive) {
-                        publishHidCursorOverlay(layout, force = true)
+                        publishHidCursorOverlay(layout)
                     }
                 }
             }
@@ -1515,7 +1516,7 @@ object PhoneHidRedirect {
         CoreManagerService.injectHidAaUiTouch(
             MotionEvent.ACTION_DOWN, sx, sy, dividerDownTime, dividerDownTime,
         )
-        publishOverlayShell(sx, sy, force = true)
+        publishOverlayShell(sx, sy)
         return true
     }
 
@@ -1539,14 +1540,14 @@ object PhoneHidRedirect {
                 shellGestureActive = true
                 shellDownTime = SystemClock.uptimeMillis()
                 // Cursor overlay already coalesced on relative move; force only on click.
-                publishHidCursorOverlay(layout, force = true)
+                publishHidCursorOverlay(layout)
                 return inject(MotionEvent.ACTION_DOWN, shellX, shellY, shellDownTime, shellDownTime)
             }
             MotionEvent.ACTION_MOVE, MotionEvent.ACTION_HOVER_MOVE -> {
                 if (!shellGestureActive) {
                     // Hover while picker open: coalesced overlay only (no force flood).
                     if (event.actionMasked == MotionEvent.ACTION_HOVER_MOVE) {
-                        publishHidCursorOverlay(layout, force = false)
+                        publishHidCursorOverlay(layout)
                     }
                     return true
                 }
@@ -1634,14 +1635,14 @@ object PhoneHidRedirect {
                     val (sx, sy) = shellTouchPoint(layout, dividerX, dividerY)
                     endDividerGesture(cancel = false)
                     commitDividerCursor(layout)
-                    publishOverlayShell(sx, sy, force = true)
+                    publishOverlayShell(sx, sy)
                     return true
                 }
                 val (sx, sy) = shellTouchPoint(layout, dividerX, dividerY)
                 inject(
                     MotionEvent.ACTION_MOVE, dividerX, dividerY, dividerDownTime, SystemClock.uptimeMillis(),
                 )
-                publishOverlayShell(sx, sy, force = true)
+                publishOverlayShell(sx, sy)
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_BUTTON_RELEASE, MotionEvent.ACTION_CANCEL -> {
@@ -1650,7 +1651,7 @@ object PhoneHidRedirect {
                 val (sx, sy) = shellTouchPoint(layout, dividerX, dividerY)
                 endDividerGesture(cancel = cancel)
                 commitDividerCursor(layout)
-                publishOverlayShell(sx, sy, force = true)
+                publishOverlayShell(sx, sy)
                 return true
             }
             else -> {
@@ -1660,7 +1661,7 @@ object PhoneHidRedirect {
                     inject(
                         MotionEvent.ACTION_MOVE, dividerX, dividerY, dividerDownTime, SystemClock.uptimeMillis(),
                     )
-                    publishOverlayShell(sx, sy, force = true)
+                    publishOverlayShell(sx, sy)
                 } else {
                     endDividerGesture(cancel = false)
                     commitDividerCursor(layout)
@@ -1687,7 +1688,7 @@ object PhoneHidRedirect {
         val next = layout.otherPane(cursorPane)
         resetCursorOnPane(layout, next, enterFromSeam = !center)
         CoreManagerService.focusHidPane(cursorPane)
-        publishHidCursorOverlay(layout, force = true)
+        publishHidCursorOverlay(layout)
         log(TAG, "mouse pane → $cursorPane @ ${cursorX.toInt()},${cursorY.toInt()}")
     }
 

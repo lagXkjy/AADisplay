@@ -234,7 +234,7 @@ object CoreManager : ICoreManager, DeathRecipient {
     override fun pullCarPlayAudio(maxBytes: Int): ByteArray {
         return try {
             getService()?.pullCarPlayAudio(maxBytes) ?: ByteArray(0)
-        } catch (e: Throwable) {
+        } catch (_: Throwable) {
             ByteArray(0)
         }
     }
@@ -242,7 +242,7 @@ object CoreManager : ICoreManager, DeathRecipient {
     override fun pullCarPlaySpeechAudio(maxBytes: Int): ByteArray {
         return try {
             getService()?.pullCarPlaySpeechAudio(maxBytes) ?: ByteArray(0)
-        } catch (e: Throwable) {
+        } catch (_: Throwable) {
             ByteArray(0)
         }
     }
@@ -250,7 +250,7 @@ object CoreManager : ICoreManager, DeathRecipient {
     override fun isCarPlaySpeechCaptureReady(): Boolean {
         return try {
             getService()?.isCarPlaySpeechCaptureReady() == true
-        } catch (e: Throwable) {
+        } catch (_: Throwable) {
             false
         }
     }
@@ -349,7 +349,7 @@ object CoreManager : ICoreManager, DeathRecipient {
     override fun scrollPane(pane: Int, x: Int, y: Int, vScroll: Int, hScroll: Int) {
         try {
             getService()?.scrollPane(pane, x, y, vScroll, hScroll)
-        } catch (e: Throwable) {
+        } catch (_: Throwable) {
             // oneway best-effort (CarPlay knob wheel)
         }
     }
@@ -372,7 +372,7 @@ object CoreManager : ICoreManager, DeathRecipient {
             reply.readException()
             val binder = reply.readStrongBinder()
             ICoreManager.Stub.asInterface(binder)
-        } catch (e: RemoteException) {
+        } catch (_: RemoteException) {
             Log.d(TAG, "Failed to get binder")
             null
         } finally {

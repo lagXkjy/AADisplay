@@ -1,5 +1,6 @@
 package io.github.nitsuya.aa.display.xposed.util
 
+import android.annotation.SuppressLint
 import android.content.res.Resources
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
@@ -31,6 +32,7 @@ object ModuleInit {
         classLoader = lpparam.classLoader
     }
 
+    @SuppressLint("DiscouragedPrivateApi")
     fun addModuleAssetPath(resources: Resources) {
         val path = modulePath
         if (path.isEmpty()) return
@@ -68,7 +70,7 @@ inline fun <T> tryOrNull(block: () -> T?): T? = try {
     null
 }
 
-inline fun <R> Result<R>.logexIfThrow(msg: String = "") {
+fun <R> Result<R>.logexIfThrow(msg: String = "") {
     exceptionOrNull()?.let { log("AADisplay_Reflect", msg, it) }
 }
 

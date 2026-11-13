@@ -611,11 +611,16 @@ internal class SplitLaunchRestore(private val c: SplitDisplayController) {
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(pkg)
             val pm = c.context.packageManager
             val flags = PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong())
-            val ri = pm.resolveActivity(intent, flags)
-                ?: pm.queryIntentActivities(intent, flags).firstOrNull()
-                ?: return null
-            val ai = ri.activityInfo ?: return null
-            val cn = ComponentName(ai.packageName, ai.name)
+            // resolveActivity() answers the *system* ResolverActivity ("android" package)
+            // as an ambiguity marker when the app registers several equal-priority
+            // LAUNCHER activities (Douyin: PadIconSplashActivity + SplashActivity →
+            // two phone icons). Launching that marker on the car VD shows the phone's
+            // empty chooser ("没有应用可执行此操作") — always pick the app's own activity.
+            val own = pm.queryIntentActivities(intent, flags)
+                .mapNotNull { it.activityInfo }
+                .filter { it.packageName == pkg }
+            val self = own.firstOrNull { it.enabled } ?: own.firstOrNull() ?: return null
+            val cn = ComponentName(self.packageName, self.name)
             PmResolveCache.put(pkg, cn)
             cn
         } catch (_: Throwable) {

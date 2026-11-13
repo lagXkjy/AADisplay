@@ -674,7 +674,6 @@ class AapSourceSession(
                 val usbInfo = if (usb != null) {
                     val now = SystemClock.uptimeMillis()
                     val dx = usb.rxBytes - lastHealthRxBits.first
-                    val dt = ((now - lastHealthRxBits.second) / 1000).coerceAtLeast(1)
                     lastHealthRxBits = usb.rxBytes to now
                     " usb[rx=${dx / 1024}KB/s ring=${usb.ringUsed()} link=${usb.linkState()} fault=${usb.readFault?.message ?: "none"}]"
                 } else { lastHealthRxBits = 0L to SystemClock.uptimeMillis(); "" }
@@ -861,8 +860,8 @@ class AapSourceSession(
             val (w, h) = resolutionOf(config.codecResolution)
             videoW = w.coerceAtLeast(16)
             videoH = h.coerceAtLeast(16)
-            widthMargin = config.widthMargin.toInt().coerceIn(0, videoW - 16)
-            heightMargin = config.heightMargin.toInt().coerceIn(0, videoH - 16)
+            widthMargin = config.widthMargin.coerceIn(0, videoW - 16)
+            heightMargin = config.heightMargin.coerceIn(0, videoH - 16)
             // Margins are total (L+R / T+B); keep them even so content centers cleanly.
             if (widthMargin and 1 != 0) widthMargin -= 1
             if (heightMargin and 1 != 0) heightMargin -= 1
@@ -1990,8 +1989,8 @@ class AapSourceSession(
      */
     private fun resolveSessionDpi(config: VideoConfiguration): Int {
         val huDpi = when {
-            config.density > 0 -> config.density.toInt()
-            config.realDensity > 0 -> config.realDensity.toInt()
+            config.density > 0 -> config.density
+            config.realDensity > 0 -> config.realDensity
             else -> 0
         }
         val override = runCatching { CoreApi.vdDensityDpi }.getOrDefault(0)
