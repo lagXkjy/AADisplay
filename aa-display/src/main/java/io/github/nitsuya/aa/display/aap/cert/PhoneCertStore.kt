@@ -105,7 +105,6 @@ object PhoneCertStore {
         val app = context.applicationContext
         val gh = gearheadInfo(app)
         val imported = loadIdentity(File(certRoot(app), IMPORTED))
-        val gen = File(certRoot(app), GENERATED).isDirectory
         val notAfter = imported?.certificate?.notAfter
         val days = notAfter?.let {
             ((it.time - System.currentTimeMillis()) / (24L * 3600_000L))
@@ -113,7 +112,7 @@ object PhoneCertStore {
         val meta = readMeta(app)
         return Status(
             hasCarService = imported != null,
-            hasSelfSigned = gen || true,
+            hasSelfSigned = true,
             subject = imported?.certificate?.subjectX500Principal?.name,
             notAfter = notAfter,
             daysRemaining = days,
@@ -241,11 +240,8 @@ object PhoneCertStore {
         return try {
             val pi = context.packageManager.getPackageInfo(GEARHEAD_PACKAGE, 0)
             @Suppress("DEPRECATION")
-            val code = if (android.os.Build.VERSION.SDK_INT >= 28) {
+            val code =
                 pi.longVersionCode
-            } else {
-                pi.versionCode.toLong()
-            }
             GhInfo(code, pi.versionName)
         } catch (_: PackageManager.NameNotFoundException) {
             null

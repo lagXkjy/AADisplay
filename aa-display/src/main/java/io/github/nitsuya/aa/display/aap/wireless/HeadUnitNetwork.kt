@@ -13,8 +13,6 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
-import android.os.Build
-import androidx.annotation.RequiresApi
 import net.prototux.aare.aap.AapLog
 import net.prototux.aare.aap.wireless.JoinResult
 import net.prototux.aare.aap.wireless.WifiCredentials
@@ -147,7 +145,7 @@ internal class HeadUnitNetwork(
         }
         return try {
             result.get(timeoutMs + 5_000, TimeUnit.MILLISECONDS)
-        } catch (e: TimeoutException) {
+        } catch (_: TimeoutException) {
             JoinResult.Failed(WppStatus.WIFI_NETWORK_UNAVAILABLE, "no address on \"${credentials.ssid}\" after ${timeoutMs / 1000} s")
         }
     }
@@ -230,7 +228,7 @@ internal class HeadUnitNetwork(
         wm.reconnect()
         return try {
             result.get(timeoutMs + 5_000, TimeUnit.MILLISECONDS)
-        } catch (e: TimeoutException) {
+        } catch (_: TimeoutException) {
             JoinResult.Failed(WppStatus.WIFI_NETWORK_UNAVAILABLE, "no address on \"${c.ssid}\" after ${timeoutMs / 1000} s")
         }
     }

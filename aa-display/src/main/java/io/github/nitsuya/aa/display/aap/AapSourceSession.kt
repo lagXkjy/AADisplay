@@ -314,7 +314,7 @@ class AapSourceSession(
             if (!running.get() || detached || aap != null) return
             val t = try {
                 connector.connectBlocking(device)
-            } catch (e: WirelessPermissionException) {
+            } catch (_: WirelessPermissionException) {
                 onStatus("需要蓝牙权限，请到系统设置里允许")
                 return
             } catch (e: Throwable) {

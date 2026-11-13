@@ -49,7 +49,7 @@ object AaCertSettingsUi {
         io.execute {
             val st = try {
                 PhoneCertStore.ensureExtracted(activity, force = force)
-            } catch (e: Throwable) {
+            } catch (_: Throwable) {
                 PhoneCertStore.status(activity).also {
                     main.post {
                         toast(activity, "准备失败，请稍后重试")

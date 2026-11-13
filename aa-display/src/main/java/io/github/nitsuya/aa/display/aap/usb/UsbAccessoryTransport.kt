@@ -224,7 +224,7 @@ class UsbAccessoryTransport(usb: UsbManager, val accessory: UsbAccessory) : Tran
          */
         fun isAndroidAuto(a: UsbAccessory): Boolean {
             if (!a.manufacturer.equals("Android", true)) return false
-            val model = a.model ?: return false
+            val model = a.model
             return model.startsWith("Android Auto", ignoreCase = true) ||
                 model.equals("Android Open Automotive Protocol", ignoreCase = true) ||
                 model.contains("Automotive Protocol", ignoreCase = true)
